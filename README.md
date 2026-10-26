@@ -57,10 +57,19 @@ channel, then fans the fragments out over a WebSocket.
 
 ```sh
 export PROVIEW_DEVICE_RTSP=192.168.0.100:554
+export PROVIEW_DEVICE_HOST=192.168.0.100:34567
+export PROVIEW_DEVICE_ONVIF=192.168.0.100:8899
 export PROVIEW_DEVICE_USER=admin
 export PROVIEW_DEVICE_PASS='the device password'
 cargo run --release -p proview-server
 ```
+
+Device control (ONVIF for movement and presets, DVRIP for settings and
+snapshots) is served under `/api/device/controls`: the capability report lists
+every feature per lens with the device wording that backs it, `ptz` moves the
+lower lens with an explicit timeout, and `snapshot`, `light`, `flip` and
+`record` read or write the DVRIP settings. `GET /api/device/controls/settings`
+returns the read-only ONVIF device, encoder, imaging and network view.
 
 `ffmpeg` must be on `PATH` for HEVC cameras (or set `PROVIEW_FFMPEG` to the
 binary). The camera in hand delivers H.265 only, so the server transcodes to

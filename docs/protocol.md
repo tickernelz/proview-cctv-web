@@ -117,21 +117,42 @@ Three are present in the SDK. In order of implementation cost:
 
 ## 6. DVRIP transport as implemented here
 
-The device-facing transport in `src/dvrip/` follows the framing that the SDK's
-`CNetTCP`/`CDevProtocol` classes speak: a fixed 20-byte header
+The device-facing transport in `crates/core/src/dvrip/` follows the framing that
+the SDK's `CNetTCP`/`CDevProtocol` classes speak: a fixed 20-byte header
 (`0xFF`, then session, sequence, channel, end-flag, message id, body length, all
-little-endian) followed by a JSON body.
+little-endian) followed by a JSON body terminated with `\n\0` on the wire. The
+client trims that tail on the way out of the socket before parsing.
 
-- Message ids used: `1000` login, `1001` logout, `1006` monitor start,
-  `1007` monitor stop. **These ids come from public DVRIP documentation, not
-  from this APK** — the APK drives the same device through `libFunSDK.so`, whose
-  ids are inside native code and were not extracted. Treat the ids as
-  unverified against this device until the probe reports a real session.
-- Login sends `{EncryptType, LoginType: "DVRIP-Web", PassWord, UserName}`. A
-  `Ret: 200` reply with a `Realm` triggers the second round with the realm
-  digest; `Ret: 100` means accepted. Both digest variants are attempted in a
-  fixed order, and the reply's `SessionID` (hex or decimal string) becomes the
-  session used by later frames.
+Login is a single request. `PassWord` carries the vendor's "sofia" hash: MD5 of
+the password, then every pair of adjacent digest bytes summed modulo 62 and
+mapped onto `0-9A-Za-z`, which yields eight characters. That is not a
+reconstruction: the same function ships in the device's own web UI as `MD5_8()`
+(`http://<ip>/js/main.js`), and it was confirmed on the wire afterwards.
+
+Observed on the IPC at `192.168.0.100` (firmware
+`V5.01.R02.G51A07F3.10010.346732.S.ONVIF 21.06`):
+
+| Request | Reply |
+|---|---|
+| login, `PassWord` = sofia hash | `Ret: 100`, `SessionID "0x00000017"`, `DeviceType "IPC "`, `ChannelNum 1`, `AliveInterval 30`, plus an `AdminToken` |
+| login, `PassWord` = `""` | `Ret: 203` (password is incorrect); no `Realm` challenge is offered |
+| login, `PassWord` = 32-character MD5 hex | `Ret: 203` |
+
+So the `ret 203` this project used to report was its own encoding, not the
+credentials: RTSP Digest and DVRIP now accept the same password. The candidate
+walk (plain MD5, double MD5, realm digest) is gone; the client sends the sofia
+hash once and raises a typed error otherwise.
+
+Message ids verified against this device: `1000` login (reply `1001`), `1001`
+logout, `1020` SystemInfo, `1040` config set, `1042` config get, `1360`
+abilities, `1452` OPTimeQuery, `1560` OPSNAP (binary JPEG reply on the same
+socket). Config names that exist on this firmware and are used by the control
+routes: `SystemFunction` (capability flags), `Camera` (its `WhiteLight` block and
+`Param[0].PictureFlip`/`PictureMirror`), `Record` (`RecordMode`), `SystemInfo`.
+
+A burst of rejected logins makes the device refuse **every** TCP port (80, 554,
+34567) for about a minute while ICMP still answers; it recovers by itself. That
+is why the client never loops over hash candidates.
 
 ## 7. Method
 
@@ -193,3 +214,55 @@ starts on a complete keyframe. Numbers live in `docs/performance.md`.
 
 `-fflags nobuffer` on the input demuxer was measured to discard frames on this
 stream (0 decodable frames instead of 72), so it is deliberately absent.
+
+## 9. Device control transport (ONVIF)
+
+`POST http://192.168.0.100:8899/onvif/device_service` speaks SOAP
+(`Server: hsoap/2.8`) and serves device, media, imaging and PTZ on the same
+path. Port 80 is the web UI: it answers `200` HTML for every path, so a 200
+there is not evidence of an ONVIF surface. UDP 3702 (WS-Discovery) does not
+answer. None of the calls below needed WS-Security.
+
+Measured against the IPC:
+
+| Call | Result |
+|---|---|
+| `GetDeviceInformation` | `H264` / `XM535_X6E-WEQ_8M` / `V5.01.R02.G51A07F3.10010.346732.S.ONVIF 21.06` |
+| `GetProfiles` | one profile `000`, video source `V_SRC_000`, encoder `000` |
+| `GetNodes` | `NODE_000`, 128 presets, `HomeSupported=true`, auxiliaries `Wiper start/stop` |
+| `GetPresets` | tokens `0`, `1`, `2` |
+| `ContinuousMove` with `Timeout` | `200`. `GotoPreset 1` moves the view 28.7 mean-luma points away from the home position, while presets `0` and `2` differ by 1.65 (same position), measured on 320x360 grey frames |
+| `GetVideoEncoderConfiguration 000` | H264 3072x2048, 12 fps, 1536 kbps, GOP 36 |
+| `GetImagingSettings` | `200` (brightness 50, `IrCutFilter OFF`, exposure `AUTO`) |
+| `GetNetworkInterfaces` | `eth0` 192.168.1.10, `eth3` 192.168.0.100 |
+| `GetStatus` | `ter:ActionNotSupported`: the firmware reports no position |
+| `RelativeMove` | **blocked in code**: on this firmware it stops every device service (80/554/8899/34567) for 35-45 s |
+
+The code follows from those results: every movement is a `ContinuousMove` with
+an explicit `Timeout` so the device stops itself, `RelativeMove` is refused
+before a packet leaves, and the logical position lives in the application and is
+restored with `GotoPreset`.
+Right after a `ContinuousMove` the endpoint can refuse a request for a second or
+two; only the idempotent `GotoPreset` is retried (three attempts, 1.5 s apart),
+never a movement, so a retry can never move the camera twice. Measured through
+the shipped route: home vs moved = 20.5 mean-luma points on a 0.4 noise floor,
+and `GotoPreset 0` brings the view back to 5.6, i.e. closer to home than to the
+moved position.
+
+Picture flip is the opposite case and stays `blocked`: `Camera.Param[0]` carried
+`PictureFlip`/`PictureMirror` (a write of `0x00000001` was acknowledged and read
+back, then restored), but the device now answers the same `Camera` read with an
+empty `Param` list, so the current state cannot be read. The control route and
+the capability row both report that reason instead of a value. PTZ is bound to the lower lens; the upper lens is
+reported `blocked` per lens instead of hidden. DVRIP (`34567`) stays the
+fallback for movement and the only path for settings, snapshot and record.
+
+Two-way audio stays blocked with a recorded offer rather than a guess: the RTSP
+SDP carries `m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) but no backchannel,
+and the ONVIF device service exposes no audio output. DVRIP reports
+`SupportTwoWayVoiceTalk=true`, so the missing piece is a capture path in the
+server, not the device API.
+
+Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
+lens arrives as one frame, so a two-viewport grid needs cropping, not a second
+channel.

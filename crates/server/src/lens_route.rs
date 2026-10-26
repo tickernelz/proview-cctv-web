@@ -240,6 +240,7 @@ mod tests {
             device_user: "admin".to_string(),
             device_pass: String::new(),
             fixture_dir: dir.to_string_lossy().to_string(),
+            device_onvif: None,
             device_host: None,
             device_rtsp: None,
             session_ttl_secs: 60,

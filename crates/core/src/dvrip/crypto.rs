@@ -1,21 +1,21 @@
 use md5::{Digest, Md5};
 
+const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
 pub fn md5_hex(input: &str) -> String {
     let mut hasher = Md5::new();
     hasher.update(input.as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
-pub fn login_hash(user: &str, password: &str) -> String {
-    md5_hex(&format!("{user}{password}"))
-}
-
-pub fn realm_hash(user: &str, realm: &str, password: &str) -> String {
-    md5_hex(&format!("{user}{realm}{password}"))
-}
-
-pub fn realm_hash_with_legacy_secret(user: &str, realm: &str, secret_hash: &str) -> String {
-    md5_hex(&format!("{user}{realm}{secret_hash}"))
+pub fn sofia_hash(input: &str) -> String {
+    let digest = Md5::digest(input.as_bytes());
+    let mut hash = String::with_capacity(8);
+    for pair in digest.chunks_exact(2) {
+        let index = (pair[0] as u16 + pair[1] as u16) % ALPHABET.len() as u16;
+        hash.push(ALPHABET[index as usize] as char);
+    }
+    hash
 }
 
 #[cfg(test)]
@@ -28,28 +28,27 @@ mod tests {
     }
 
     #[test]
-    fn login_hash_matches_known_vector() {
-        assert_eq!(login_hash("admin", "admin"), md5_hex("adminadmin"));
+    fn sofia_hash_matches_the_empty_password_vector() {
+        assert_eq!(sofia_hash(""), "tlJwpbo6");
     }
 
     #[test]
-    fn realm_hash_uses_the_realm_in_the_middle() {
-        assert_eq!(
-            realm_hash("admin", "abcd1234", "admin"),
-            md5_hex("adminabcd1234admin")
-        );
-        assert_ne!(
-            realm_hash("admin", "abcd1234", "admin"),
-            login_hash("admin", "admin")
-        );
+    fn sofia_hash_is_eight_alphanumeric_characters() {
+        for password in ["admin", "hunter2", "kamera-rumah", "correct horse"] {
+            let hash = sofia_hash(password);
+            assert_eq!(hash.len(), 8, "{password}");
+            assert!(hash.chars().all(|c| c.is_ascii_alphanumeric()), "{hash}");
+        }
     }
 
     #[test]
-    fn legacy_secret_variant_hashes_the_hash() {
-        let secret = login_hash("admin", "admin");
-        assert_eq!(
-            realm_hash_with_legacy_secret("admin", "abcd1234", &secret),
-            md5_hex(&format!("adminabcd1234{secret}"))
-        );
+    fn sofia_hash_folds_adjacent_md5_bytes_modulo_the_alphabet() {
+        let digest = Md5::digest(b"admin");
+        let expected: String = digest
+            .chunks_exact(2)
+            .map(|pair| ALPHABET[((pair[0] as u16 + pair[1] as u16) % 62) as usize] as char)
+            .collect();
+        assert_eq!(sofia_hash("admin"), expected);
+        assert_ne!(sofia_hash("admin"), md5_hex("admin")[..8].to_string());
     }
 }

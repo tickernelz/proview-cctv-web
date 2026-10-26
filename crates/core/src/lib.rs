@@ -1,9 +1,11 @@
 pub mod config;
+pub mod device;
 pub mod dvrip;
 pub mod lens;
 pub mod live;
 pub mod media;
 pub mod model;
+pub mod onvif;
 pub mod provider;
 pub mod rtsp;
 pub mod session;
