@@ -1,4 +1,5 @@
 pub mod nal;
+pub mod ps;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
