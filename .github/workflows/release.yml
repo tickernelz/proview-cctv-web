@@ -187,6 +187,10 @@ jobs:
       - name: Checksums
         run: |
           cd artifacts
+          for file in *; do
+            normalized="${file// /.}"
+            if [ "$file" != "$normalized" ]; then mv -- "$file" "$normalized"; fi
+          done
           sha256sum * > SHA256SUMS
           cat SHA256SUMS
       - name: Publish release
