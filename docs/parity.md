@@ -23,6 +23,16 @@ not is listed as `blocked` with the missing input.
 | Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | same cloud blocker |
 | Device online status | `pub-status.secu100.net:7700-7706`, `IXMCloud::GetDevsStatus` | blocked | same cloud blocker |
 
+## Application shell
+
+| Feature | Evidence | Status | Note |
+|---|---|---|---|
+| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in release `nightly-1` (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
+| Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; release `nightly-1` carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
+| Installer signing | — | blocked | no Apple Developer or Windows signing certificate (decision 2026-10-26); artefacts ship unsigned with `SHA256SUMS` |
+| Desktop app run on a real desktop | — | blocked | built and linked in CI, never launched on a graphical session; needs a person to click through |
+| Vendor-credential storage in OS keychain | requirement | blocked | `keyring` integration not written yet |
+
 ## Live view
 
 | Feature | Evidence | Status | Note |
