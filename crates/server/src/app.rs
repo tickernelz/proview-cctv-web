@@ -54,10 +54,10 @@ pub fn build_with(figment: Figment, config: Config) -> rocket::Rocket<rocket::Bu
         .mount("/api", crate::routes::api())
 }
 
-pub async fn serve(opts: ServeOptions) -> Result<ServerHandle, rocket::Error> {
+pub async fn serve(opts: ServeOptions) -> Result<ServerHandle, Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
     let rig = build(figment(&opts, port));
-    let server = rig.ignite().await?;
+    let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
     let address = SocketAddr::new(
         opts.address
