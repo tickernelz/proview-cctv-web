@@ -28,21 +28,26 @@ pub struct AccessUnit {
     pub pts_us: u64,
 }
 
+pub fn is_picture_start(nal: &[u8]) -> bool {
+    is_keyframe(nal) && nal.get(2).map(|byte| byte & 0x80 != 0).unwrap_or(false)
+}
+
 #[derive(Default)]
 pub struct Assembler {
     nals: Vec<Vec<u8>>,
     keyframe: bool,
     timestamp: u32,
-    expected: Option<u16>,
-    epoch: u64,
-    last: Option<u32>,
+    unwrapped: Option<u64>,
+    base: Option<u64>,
     in_sync: bool,
+    boundary: bool,
 }
 
 impl Assembler {
     pub fn new() -> Self {
         Self {
             in_sync: true,
+            boundary: true,
             ..Self::default()
         }
     }
@@ -51,27 +56,19 @@ impl Assembler {
         self.in_sync
     }
 
-    pub fn packet(
-        &mut self,
-        sequence: u16,
-        marker: bool,
-        nals: &[Vec<u8>],
-        timestamp: u32,
-    ) -> Option<AccessUnit> {
-        if let Some(expected) = self.expected {
-            if expected != sequence {
-                self.nals.clear();
-                self.keyframe = false;
-                self.in_sync = false;
-            }
-        }
-        self.expected = Some(sequence.wrapping_add(1));
+    pub fn gap(&mut self) {
+        self.nals.clear();
+        self.keyframe = false;
+        self.in_sync = false;
+        self.boundary = true;
+    }
+
+    pub fn packet(&mut self, marker: bool, nals: &[Vec<u8>], timestamp: u32) -> Option<AccessUnit> {
         if !self.in_sync {
-            if nals.iter().any(|nal| is_keyframe(nal)) {
-                self.in_sync = true;
-            } else {
+            if !self.boundary || !nals.iter().any(|nal| is_picture_start(nal)) {
                 return None;
             }
+            self.in_sync = true;
         }
         if self.nals.is_empty() {
             self.timestamp = timestamp;
@@ -85,28 +82,79 @@ impl Assembler {
         if marker {
             self.finish()
         } else {
+            self.boundary = false;
             None
         }
     }
 
     fn finish(&mut self) -> Option<AccessUnit> {
+        self.boundary = true;
         if self.nals.is_empty() {
             return None;
         }
         let nals = std::mem::take(&mut self.nals);
         let keyframe = std::mem::take(&mut self.keyframe);
-        if let Some(last) = self.last {
-            if self.timestamp.wrapping_sub(last) > u32::MAX / 2 {
-                self.epoch += 1 << 32;
+        let unwrapped = match self.unwrapped {
+            None => (1u64 << 32) + u64::from(self.timestamp),
+            Some(previous) => {
+                let delta = self.timestamp.wrapping_sub(previous as u32) as i32;
+                (previous as i64 + i64::from(delta)).max(0) as u64
             }
-        }
-        self.last = Some(self.timestamp);
-        let pts_us = ((self.timestamp as u64 + self.epoch) * 1_000_000) / 90_000;
+        };
+        self.unwrapped = Some(unwrapped);
+        let base = *self.base.get_or_insert(unwrapped);
+        let pts_us = (unwrapped.saturating_sub(base) * 1_000_000) / 90_000;
         Some(AccessUnit {
             nals,
             keyframe,
             pts_us,
         })
+    }
+}
+
+pub struct Reader {
+    depacketizer: Depacketizer,
+    assembler: Assembler,
+    expected: Option<u16>,
+}
+
+impl Default for Reader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Reader {
+    pub fn new() -> Self {
+        Self {
+            depacketizer: Depacketizer::new(),
+            assembler: Assembler::new(),
+            expected: None,
+        }
+    }
+
+    pub fn synced(&self) -> bool {
+        self.assembler.synced()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.depacketizer.dropped()
+    }
+
+    pub fn push(&mut self, packet: &RtpPacket<'_>) -> Option<AccessUnit> {
+        if let Some(expected) = self.expected {
+            if expected != packet.sequence {
+                self.depacketizer.discard();
+                self.assembler.gap();
+            }
+        }
+        self.expected = Some(packet.sequence.wrapping_add(1));
+        if !self.assembler.synced() && self.depacketizer.partial() {
+            return None;
+        }
+        let nals = self.depacketizer.push(packet);
+        self.assembler
+            .packet(packet.marker, &nals, packet.timestamp)
     }
 }
 
@@ -279,16 +327,21 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, String> {
         let right = bits.ue().ok_or("sps ended inside the conformance window")?;
         let top = bits.ue().ok_or("sps ended inside the conformance window")?;
         let bottom = bits.ue().ok_or("sps ended inside the conformance window")?;
-        let unit = if chroma_format_idc == 1 || chroma_format_idc == 2 {
+        let sub_width: u32 = if chroma_format_idc == 1 || chroma_format_idc == 2 {
             2
         } else {
             1
         };
-        width = width.saturating_sub(unit * (left + right));
-        height = height.saturating_sub(unit * (top + bottom));
+        let sub_height: u32 = if chroma_format_idc == 1 { 2 } else { 1 };
+        width = width.saturating_sub(sub_width.saturating_mul(left.saturating_add(right)));
+        height = height.saturating_sub(sub_height.saturating_mul(top.saturating_add(bottom)));
     }
-    let bit_depth_luma = bits.ue().ok_or("sps ended before the luma depth")? as u8 + 8;
-    let bit_depth_chroma = bits.ue().ok_or("sps ended before the chroma depth")? as u8 + 8;
+    let bit_depth_luma = u8::try_from(bits.ue().ok_or("sps ended before the luma depth")?)
+        .unwrap_or(8)
+        .saturating_add(8);
+    let bit_depth_chroma = u8::try_from(bits.ue().ok_or("sps ended before the chroma depth")?)
+        .unwrap_or(8)
+        .saturating_add(8);
     Ok(Sps {
         profile,
         width,
@@ -317,11 +370,9 @@ pub fn codec_string(profile: &ProfileTierLevel) -> String {
     while end > 2 && bytes[end - 1] == 0 {
         end -= 1;
     }
-    if end > 2 {
+    for byte in &bytes[2..end] {
         out.push('.');
-        for byte in &bytes[2..end] {
-            out.push_str(&format!("{byte:02X}"));
-        }
+        out.push_str(&format!("{byte:02X}"));
     }
     out
 }
@@ -393,10 +444,14 @@ impl Depacketizer {
         }
     }
 
-    fn discard(&mut self) {
+    pub fn discard(&mut self) {
         if self.fragment.take().is_some() {
             self.dropped += 1;
         }
+    }
+
+    pub fn partial(&self) -> bool {
+        self.fragment.is_some()
     }
 
     fn aggregation(&mut self, body: &[u8]) -> Vec<Vec<u8>> {
@@ -568,6 +623,15 @@ mod tests {
     }
 
     #[test]
+    fn extra_constraint_bytes_are_dot_separated() {
+        let profile = ProfileTierLevel {
+            constraints: 0xB023_0000_0000,
+            ..profile()
+        };
+        assert_eq!(codec_string(&profile), "hvc1.1.6.L120.B0.23");
+    }
+
+    #[test]
     fn emulation_prevention_bytes_are_removed_before_parsing() {
         let raw = [0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x03, 0x00, 0x02];
         assert_eq!(
@@ -616,22 +680,51 @@ mod tests {
         assert_eq!(hvcc[pps_array], 0x80 | 34);
     }
 
+    fn push_packet(
+        reader: &mut Reader,
+        marker: bool,
+        sequence: u16,
+        timestamp: u32,
+        body: &[u8],
+    ) -> Option<AccessUnit> {
+        let mut raw = vec![0x80, if marker { 0x80 } else { 0 } | 98];
+        raw.extend_from_slice(&sequence.to_be_bytes());
+        raw.extend_from_slice(&timestamp.to_be_bytes());
+        raw.extend_from_slice(&0xdead_beefu32.to_be_bytes());
+        raw.extend_from_slice(body);
+        let parsed = rtp::parse(&raw).expect("packet");
+        reader.push(&parsed)
+    }
+
     #[test]
-    fn a_packet_sequence_gap_drops_the_partial_access_unit() {
-        let mut assembler = Assembler::new();
-        assert!(assembler
-            .packet(10, false, &[vec![0x40, 0x01, 0x0c]], 90_000)
-            .is_none());
-        assert!(assembler
-            .packet(13, true, &[vec![0x02, 0x01, 0xbb]], 91_000)
-            .is_none());
-        assert!(!assembler.synced());
-        let unit = assembler
-            .packet(14, true, &[vec![0x26, 0x01, 0xaf]], 92_000)
-            .expect("a keyframe restores the assembler");
+    fn a_sequence_gap_drops_the_fragment_and_resyncs_on_a_picture_start() {
+        let mut reader = Reader::new();
+        assert!(push_packet(&mut reader, false, 1, 90_000, &[0x62, 0x01, 0x93, 0xaa]).is_none());
+        assert!(push_packet(&mut reader, true, 3, 90_000, &[0x62, 0x01, 0x53, 0xbb]).is_none());
+        assert!(!reader.synced());
+        assert!(push_packet(&mut reader, true, 4, 90_000, &[0x26, 0x01, 0x00, 0xcc]).is_none());
+        assert!(!reader.synced());
+        let unit = push_packet(&mut reader, true, 5, 90_000, &[0x26, 0x01, 0x80, 0xdd])
+            .expect("a picture start resynchronises");
         assert!(unit.keyframe);
-        assert_eq!(unit.nals.len(), 1);
-        assert_eq!(unit.pts_us, 1_022_222);
+        assert_eq!(unit.nals, vec![vec![0x26, 0x01, 0x80, 0xdd]]);
+        assert!(reader.synced());
+    }
+
+    #[test]
+    fn timestamps_unwrap_a_forward_wrap_and_a_backward_step() {
+        let mut assembler = Assembler::new();
+        let nals = vec![vec![0x26u8, 0x01, 0x80]];
+        let start = u32::MAX - 44_999;
+        assert_eq!(assembler.packet(true, &nals, start).unwrap().pts_us, 0);
+        assert_eq!(
+            assembler.packet(true, &nals, 45_000).unwrap().pts_us,
+            1_000_000
+        );
+        assert_eq!(
+            assembler.packet(true, &nals, 36_000).unwrap().pts_us,
+            900_000
+        );
     }
 
     #[test]
@@ -640,10 +733,10 @@ mod tests {
         let first = vec![0x26, 0x01, 0xaa];
         let second = vec![0x02, 0x01, 0xbb];
         assert!(assembler
-            .packet(1, false, std::slice::from_ref(&first), 0)
+            .packet(false, std::slice::from_ref(&first), 0)
             .is_none());
         let unit = assembler
-            .packet(2, true, std::slice::from_ref(&second), 0)
+            .packet(true, std::slice::from_ref(&second), 0)
             .expect("marker closes the unit");
         let bytes = avcc(&unit.nals);
         assert_eq!(bytes[..4], 3u32.to_be_bytes());
@@ -651,5 +744,105 @@ mod tests {
         assert_eq!(bytes[7..11], 3u32.to_be_bytes());
         assert_eq!(&bytes[11..14], second.as_slice());
         assert!(unit.keyframe);
+    }
+
+    struct Writer {
+        bits: Vec<u8>,
+    }
+
+    impl Writer {
+        fn new() -> Self {
+            Self { bits: Vec::new() }
+        }
+
+        fn u(&mut self, value: u32, count: u32) {
+            for index in (0..count).rev() {
+                self.bits.push(((value >> index) & 1) as u8);
+            }
+        }
+
+        fn ue(&mut self, value: u32) {
+            let code = value + 1;
+            let width = 32 - code.leading_zeros();
+            self.u(0, width - 1);
+            self.u(code, width);
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            let mut out = vec![0u8; self.bits.len().div_ceil(8)];
+            for (index, bit) in self.bits.iter().enumerate() {
+                if *bit == 1 {
+                    out[index / 8] |= 1 << (7 - index % 8);
+                }
+            }
+            out
+        }
+    }
+
+    #[test]
+    fn the_camera_sps_parses_to_its_real_size_and_codec() {
+        let sps = [
+            0x42, 0x01, 0x01, 0x01, 0x60, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03,
+            0x00, 0x00, 0x03, 0x00, 0x3f, 0xa0, 0x01, 0x20, 0x20, 0x02, 0x88, 0x7f, 0x9c, 0xba,
+            0xbc, 0x12, 0xe0, 0x80,
+        ];
+        let parsed = parse_sps(&sps).expect("camera sps");
+        assert_eq!(parsed.width, 2304);
+        assert_eq!(parsed.height, 2592);
+        assert_eq!(parsed.chroma_format_idc, 1);
+        assert_eq!(parsed.bit_depth_luma, 8);
+        assert_eq!(codec_string(&parsed.profile), "hvc1.1.6.L63");
+    }
+
+    #[test]
+    fn a_sps_with_sub_layers_is_parsed_past_them() {
+        let mut writer = Writer::new();
+        writer.u(0, 4);
+        writer.u(2, 3);
+        writer.u(1, 1);
+        writer.u(0, 2);
+        writer.u(0, 1);
+        writer.u(1, 5);
+        writer.u(0x6000_0000, 32);
+        for _ in 0..6 {
+            writer.u(0, 8);
+        }
+        writer.u(120, 8);
+        writer.u(1, 1);
+        writer.u(1, 1);
+        writer.u(1, 1);
+        writer.u(1, 1);
+        for _ in 0..6 {
+            writer.u(0, 2);
+        }
+        for _ in 0..2 {
+            for _ in 0..11 {
+                writer.u(0, 8);
+            }
+            writer.u(120, 8);
+        }
+        writer.ue(0);
+        writer.ue(1);
+        writer.ue(1920);
+        writer.ue(1080);
+        writer.u(0, 1);
+        writer.ue(0);
+        writer.ue(0);
+        writer.u(1, 1);
+        let mut nal = vec![0x42, 0x01];
+        nal.extend_from_slice(&writer.bytes());
+        let parsed = parse_sps(&nal).expect("synthetic sps");
+        assert_eq!(parsed.width, 1920);
+        assert_eq!(parsed.height, 1080);
+        assert_eq!(parsed.profile.level_idc, 120);
+        assert_eq!(parsed.chroma_format_idc, 1);
+        assert_eq!(parsed.bit_depth_luma, 8);
+    }
+
+    #[test]
+    fn only_the_first_slice_of_an_irap_counts_as_a_picture_start() {
+        assert!(is_picture_start(&[0x26, 0x01, 0x80]));
+        assert!(!is_picture_start(&[0x26, 0x01, 0x00]));
+        assert!(!is_picture_start(&[0x02, 0x01, 0x80]));
     }
 }

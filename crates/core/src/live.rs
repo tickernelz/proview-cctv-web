@@ -202,9 +202,20 @@ pub struct Subscription {
     pub receiver: broadcast::Receiver<Arc<LivePacket>>,
 }
 
+const PASSTHROUGH_CAPACITY: usize = 96;
+
 pub struct LiveHub {
     channels: Mutex<HashMap<StreamKey, Channel>>,
     capacity: usize,
+}
+
+impl LiveHub {
+    fn capacity_for(&self, mode: LiveMode) -> usize {
+        match mode {
+            LiveMode::Passthrough => PASSTHROUGH_CAPACITY.max(self.capacity),
+            LiveMode::Transcode => self.capacity,
+        }
+    }
 }
 
 impl Default for LiveHub {
@@ -222,10 +233,9 @@ impl LiveHub {
     }
 
     pub fn subscribe(&self, key: StreamKey) -> Subscription {
+        let capacity = self.capacity_for(key.mode);
         let mut guard = self.channels.lock().expect("live hub poisoned");
-        let channel = guard
-            .entry(key)
-            .or_insert_with(|| Channel::new(self.capacity));
+        let channel = guard.entry(key).or_insert_with(|| Channel::new(capacity));
         channel.subscribers += 1;
         Subscription {
             init: channel.init.clone(),
@@ -237,10 +247,9 @@ impl LiveHub {
     }
 
     pub fn publisher(&self, key: StreamKey) -> broadcast::Sender<Arc<LivePacket>> {
+        let capacity = self.capacity_for(key.mode);
         let mut guard = self.channels.lock().expect("live hub poisoned");
-        let channel = guard
-            .entry(key)
-            .or_insert_with(|| Channel::new(self.capacity));
+        let channel = guard.entry(key).or_insert_with(|| Channel::new(capacity));
         channel.publishers = channel.publishers.max(1);
         channel.sender.clone()
     }

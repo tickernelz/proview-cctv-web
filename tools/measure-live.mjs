@@ -148,6 +148,29 @@ function sampleTree(rootPid) {
   return { ticks, rss_kb: rss, processes };
 }
 
+function processRss(pid) {
+  try {
+    const status = readFileSync('/proc/' + pid + '/status', 'utf8');
+    const match = status.match(/VmRSS:\s+(\d+) kB/);
+    return match ? Number(match[1]) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function statsSnapshot(cookie) {
+  const reply = await fetch(base.replace(/\/$/, '') + '/api/live/stats', { headers: { cookie } });
+  if (!reply.ok) throw new Error('live stats answered ' + reply.status);
+  return reply.json();
+}
+
+function transcodePublishers(stats) {
+  const streams = Array.isArray(stats.streams) ? stats.streams : [];
+  return streams
+    .filter((stream) => stream.mode === 'transcode' && stream.publishers > 0)
+    .reduce((total, stream) => total + stream.publishers, 0);
+}
+
 function findServer() {
   if (process.env.PROVIEW_SERVER_PID) return Number(process.env.PROVIEW_SERVER_PID);
   const port = new URL(base).port || '80';
@@ -226,7 +249,8 @@ async function measureAvc() {
     cpu_percent_of_one_core: Number(cpuPercent.toFixed(1)),
     cpu_percent_per_viewer: Number((cpuPercent / viewers).toFixed(1)),
     rss_mib: Number((after.rss_kb / 1024).toFixed(1)),
-    server_rss_mib: Number((sampleTree(serverPid).rss_kb / 1024).toFixed(1)),
+    server_rss_mib: Number((processRss(serverPid) / 1024).toFixed(1)),
+    ffmpeg_processes: Math.max(0, after.processes - 1),
     processes: after.processes,
     sample_seconds: elapsed,
   };
@@ -236,6 +260,13 @@ async function measureHevc() {
   const cookie = await cookies();
   const path = '/ws/live?device=fixture-dev-0001&channel=1&quality=main&codec=hevc';
   const target = base.replace(/^http/, 'ws').replace(/\/$/, '') + path;
+  const warm = transcodePublishers(await statsSnapshot(cookie));
+  if (warm > 0) {
+    throw new Error(
+      'a transcode source for this camera is still warm (' + warm + ' publishers); ' +
+      'wait out the 60 s warm window before sampling passthrough',
+    );
+  }
   const before = sampleTree(serverPid);
   const wall = Date.now();
   const sockets = [];
@@ -298,6 +329,11 @@ async function measureHevc() {
   if (stderr.trim()) {
     throw new Error('the passthrough bytes did not decode: ' + stderr.trim().slice(0, 300));
   }
+  if (after.processes !== 1) {
+    throw new Error(
+      'the passthrough sample ran ' + after.processes + ' processes; ffmpeg must not be involved',
+    );
+  }
   const cpuPercent = ((after.ticks - before.ticks) / 100 / elapsed) * 100;
   return {
     mode: 'hevc-passthrough',
@@ -312,8 +348,9 @@ async function measureHevc() {
     bytes_per_second: Math.round(bytes / elapsed),
     decoded_without_error: stderr.trim() === '',
     cpu_percent_of_one_core: Number(cpuPercent.toFixed(1)),
-    cpu_percent_per_viewer: Number(cpuPercent.toFixed(1)),
+    cpu_percent_per_viewer: Number((cpuPercent / viewers).toFixed(2)),
     rss_mib: Number((after.rss_kb / 1024).toFixed(1)),
+    server_rss_mib: Number((processRss(serverPid) / 1024).toFixed(1)),
     processes: after.processes,
     sample_seconds: elapsed,
   };

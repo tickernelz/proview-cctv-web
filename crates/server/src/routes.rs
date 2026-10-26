@@ -345,7 +345,12 @@ fn ws_live(
         Some(_) => crate::stream::requested_mode(codec.as_deref()),
         None => LiveMode::Transcode,
     };
-    let key = StreamKey::new(device.clone(), channel, sub_stream, mode);
+    let key_device = if target.is_some() {
+        "local".to_string()
+    } else {
+        device.clone()
+    };
+    let key = StreamKey::new(key_device, channel, sub_stream, mode);
     let subscription = live.hub.subscribe(key.clone());
     let mut keep_alive = None;
     match target.clone() {

@@ -59,15 +59,22 @@ impl LiveState {
         let finish = self.sources.clone();
         let running = key.clone();
         let pump_stop = stop.clone();
+        let pump_alive = alive.clone();
         tokio::spawn(async move {
             proview_core::source::pump(pump_hub, running.clone(), target, pump_stop).await;
-            alive.store(false, Ordering::Relaxed);
-            finish.lock().expect("sources poisoned").remove(&running);
+            pump_alive.store(false, Ordering::Relaxed);
+            let mut guard = finish.lock().expect("sources poisoned");
+            if let Some(entry) = guard.get(&running) {
+                if Arc::ptr_eq(&entry.alive, &pump_alive) {
+                    guard.remove(&running);
+                }
+            }
         });
 
         let sources = self.sources.clone();
         let watcher_hub = self.hub.clone();
         let watcher_key = key.clone();
+        let watcher_alive = alive;
         tokio::spawn(async move {
             let mut idle_since: Option<Instant> = None;
             loop {
@@ -85,10 +92,12 @@ impl LiveState {
                     idle_since = None;
                 }
             }
-            sources
-                .lock()
-                .expect("sources poisoned")
-                .remove(&watcher_key);
+            let mut guard = sources.lock().expect("sources poisoned");
+            if let Some(entry) = guard.get(&watcher_key) {
+                if Arc::ptr_eq(&entry.alive, &watcher_alive) {
+                    guard.remove(&watcher_key);
+                }
+            }
         });
         true
     }

@@ -410,6 +410,20 @@ async fn pump_transcode(
     result
 }
 
+#[derive(Default)]
+struct Gate {
+    started: bool,
+}
+
+impl Gate {
+    fn accept(&mut self, keyframe: bool) -> bool {
+        if keyframe {
+            self.started = true;
+        }
+        self.started
+    }
+}
+
 struct HevcConfig {
     hvcc: Vec<u8>,
     codec: String,
@@ -489,9 +503,8 @@ async fn pump_passthrough(
         hub.publish_packet(key, LivePacket::config(Fragment::from(config.hvcc.clone())));
     }
 
-    let mut depacketizer = hevc::Depacketizer::new();
-    let mut assembler = hevc::Assembler::new();
-    let mut started = false;
+    let mut reader = hevc::Reader::new();
+    let mut gate = Gate::default();
     let mut units = 0u64;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
@@ -513,9 +526,7 @@ async fn pump_passthrough(
         if parsed.payload_type != video.payload_type {
             continue;
         }
-        let nals = depacketizer.push(&parsed);
-        let Some(unit) = assembler.packet(parsed.sequence, parsed.marker, &nals, parsed.timestamp)
-        else {
+        let Some(unit) = reader.push(&parsed) else {
             continue;
         };
         if config.is_none() {
@@ -534,12 +545,9 @@ async fn pump_passthrough(
                 }
             }
         }
-        if !unit.keyframe && !started {
+        if !gate.accept(unit.keyframe) {
             hub.note_drop(key);
             continue;
-        }
-        if unit.keyframe {
-            started = true;
         }
         let mut nals = unit.nals;
         if unit.keyframe {
@@ -558,7 +566,7 @@ async fn pump_passthrough(
 
     tracing::info!(
         units,
-        dropped = depacketizer.dropped(),
+        dropped = reader.dropped(),
         "passthrough source finished"
     );
     hub.publisher_done(key);
@@ -660,5 +668,14 @@ mod tests {
         assert_eq!(audio_clock("PCMA"), Some(8000));
         assert_eq!(audio_clock("PCMU"), Some(8000));
         assert_eq!(audio_clock("AAC"), None);
+    }
+
+    #[test]
+    fn the_gate_drops_deltas_until_the_first_keyframe() {
+        let mut gate = Gate::default();
+        assert!(!gate.accept(false));
+        assert!(!gate.accept(false));
+        assert!(gate.accept(true));
+        assert!(gate.accept(false));
     }
 }

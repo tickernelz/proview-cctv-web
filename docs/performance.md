@@ -117,6 +117,7 @@ PROVIEW_DEVICE_RTSP=192.168.0.100:554 PROVIEW_DEVICE_USER=… PROVIEW_DEVICE_PAS
   ./target/release/proview-server --listen 127.0.0.1:8790
 PROVIEW_MEASURE_EMAIL=… PROVIEW_MEASURE_PASSWORD=… \
   PROVIEW_BASE=http://127.0.0.1:8790/ PROVIEW_TRANSPORT=avc PROVIEW_VIEWERS=1 node tools/measure-live.mjs
+sleep 65
 PROVIEW_MEASURE_EMAIL=… PROVIEW_MEASURE_PASSWORD=… \
   PROVIEW_BASE=http://127.0.0.1:8790/ PROVIEW_TRANSPORT=hevc PROVIEW_VIEWERS=3 node tools/measure-live.mjs
 ```
@@ -129,15 +130,15 @@ collide with the provider switch.
 | Metric | transcode (MSE, H.264 out) | passthrough (WebCodecs, H.265 out) |
 |---|---|---|
 | processes serving the stream | server + 1 `ffmpeg` | server only |
-| click → first painted frame, cold source | 2.6 s and 5.0 s (two runs) | first keyframe on the socket 0.72 s |
+| click → first painted frame, cold source | 2.6 s, 5.0 s, 5.3 s (three runs) | first keyframe on the socket 0.56–0.78 s |
 | click → first painted frame, warm source | 240 / 120 / 120 / 111 ms | not offered: a passthrough viewer always joins at the next IDR |
-| CPU, 1 viewer | 81.1–85.4 % of one core | 0.2 % |
+| CPU, 1 viewer | 63.5–85.4 % of one core | 0.1–0.2 % |
 | CPU, 2 viewers | 83.3 % (41.7 % per viewer) | not measured |
 | CPU, 3 viewers | 79.5–81.5 % (26.5–27.2 % per viewer) | 0.5 % (0.2 % per viewer) |
-| RSS, server + children, 1 viewer | 314.7 MiB | 11.4 MiB fresh, 28.9 MiB after a transcode stream ran (allocator retention) |
+| RSS, server + children, 1 viewer | 283.1–314.7 MiB (server alone 23.9 MiB) | 11.4–33.9 MiB: the server is the only process, and the figure grows when a transcode stream ran earlier (allocator retention) |
 | RSS, server + children, 3 viewers | 284.8–294.0 MiB | 13.6 MiB |
-| wire bytes per 8 s, one viewer | 8.6 MB (baseline H.264) | 0.79–0.87 MB (H.265 untouched) |
-| wire bytes per 8 s, three viewers | 25.8 MB (3 × 8.6) | 2.6 MB (3 × 0.87) |
+| wire bytes per 8 s, one viewer | 8.6 MB (baseline H.264) | 0.75–1.11 MB (H.265 untouched) |
+| wire bytes per 8 s, three viewers | 25.8 MB (3 × 8.6) | 2.3–3.3 MB (3 × the one-viewer figure) |
 | audio | PCMA/8000 counted (2122 packets in 8 s), not forwarded | same |
 
 Reading the numbers:
@@ -148,13 +149,20 @@ Reading the numbers:
    streams, not four viewers per stream.
 2. Passthrough removes that cost instead of sharing it: 0.2 % of one core and
    11 MiB for the same camera, because the H.265 bitstream is forwarded as
-   access units instead of being decoded and re-encoded. It is also 10× cheaper
-   on the wire (0.87 MB vs 8.6 MB per 8 s).
-3. Cold start is the camera's IDR interval plus RTSP setup, not the server:
-   2.6–5.0 s for transcode, 0.72 s to the first keyframe on a passthrough
-   socket. Warm starts are 111–240 ms because the hub replays the newest
-   keyframe-start fragment (transcode) or sends the next IDR immediately when
-   the camera is already flowing (passthrough).
+   access units instead of being decoded and re-encoded. It is also 8–11×
+   cheaper on the wire (0.75–1.11 MB vs 8.6 MB per 8 s). The hub ring is sized
+   per transport — 8 fragments for transcode (each starts on a keyframe) and 96
+   access units for passthrough, about two GOPs at 12 fps — so a viewer that
+   jitters by half a second does not have to wait for the next IDR.
+3. Cold start for the transcode transport is the sum of RTSP setup, the
+   camera's IDR interval and ffmpeg's first output: `frag_keyframe` holds a
+   fragment until it can start on a keyframe, so the first painted frame
+   costs 2.6–5.0 s. The passthrough column reports the first keyframe
+   **on the socket** (0.56–0.72 s), which is the camera's own IDR cadence with
+   a warm RTSP session — a different stopwatch, not a cheaper cold start.
+   Warm starts are 111–240 ms because the hub replays the newest
+   keyframe-start fragment (transcode); passthrough has no replay and always
+   waits for the camera's next IDR.
 4. The frame really painted on this machine: Chromium reported `readyState 4`,
    `videoWidth 2304`, `videoHeight 2592` and an advancing `currentTime`, and a
    screenshot of that moment measured `YAVG 171.8`, `YMIN 16`, `YMAX 235` — a

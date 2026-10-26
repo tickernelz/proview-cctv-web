@@ -51,6 +51,19 @@ pub fn hello(meta: &StreamMeta) -> String {
     serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string())
 }
 
+fn forward(packet: &LivePacket, waiting_keyframe: &mut bool) -> bool {
+    if packet.kind == PacketKind::Config || packet.kind == PacketKind::Init {
+        return false;
+    }
+    if *waiting_keyframe {
+        if !packet.keyframe {
+            return false;
+        }
+        *waiting_keyframe = false;
+    }
+    true
+}
+
 pub fn frame(packet: &LivePacket) -> Vec<u8> {
     match packet.kind {
         PacketKind::AccessUnit => {
@@ -168,14 +181,8 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
             loop {
                 match receiver.recv().await {
                     Ok(packet) => {
-                        if packet.kind == PacketKind::Config || packet.kind == PacketKind::Init {
+                        if !forward(&packet, &mut waiting_keyframe) {
                             continue;
-                        }
-                        if waiting_keyframe {
-                            if !packet.keyframe {
-                                continue;
-                            }
-                            waiting_keyframe = false;
                         }
                         if stream
                             .send(ws::Message::Binary(frame(&packet)))
@@ -328,5 +335,21 @@ mod tests {
         assert_eq!(frame(&fragment), b"moofmdat".to_vec());
         let config = LivePacket::config(Fragment::from_static(b"hvcc"));
         assert_eq!(frame(&config), b"\x01hvcc".to_vec());
+    }
+
+    #[test]
+    fn a_caught_up_viewer_waits_for_the_next_keyframe() {
+        let delta = LivePacket::access_unit(Fragment::from_static(&[0, 0, 0, 1, 0x02]), false, 1);
+        let keyframe = LivePacket::access_unit(Fragment::from_static(&[0, 0, 0, 1, 0x26]), true, 2);
+        let config = LivePacket::config(Fragment::from_static(b"hvcc"));
+        let mut waiting = false;
+        assert!(forward(&delta, &mut waiting));
+        assert!(!forward(&config, &mut waiting));
+        waiting = true;
+        assert!(!forward(&delta, &mut waiting));
+        assert!(waiting);
+        assert!(forward(&keyframe, &mut waiting));
+        assert!(!waiting);
+        assert!(forward(&delta, &mut waiting));
     }
 }
