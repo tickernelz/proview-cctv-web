@@ -1,0 +1,10 @@
+[
+  {
+    "id": "fixture-dev-0001",
+    "name": "Fixture camera",
+    "model": "XMEye-Fixture",
+    "online": true,
+    "channels": 1,
+    "lan_host": "127.0.0.1:34567"
+  }
+]

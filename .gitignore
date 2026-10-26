@@ -1,0 +1,14 @@
+/target
+*.apk
+*.xapk
+*.so
+*.dex
+*.log
+.env
+.env.*
+secrets/
+recordings/
+captures/
+fixtures/*.m3u8
+fixtures/*.ts
+fixtures/*.mp4

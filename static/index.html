@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROVIEW CCTV web</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>PROVIEW CCTV</h1>
+    <button id="signout" hidden>Sign out</button>
+  </header>
+
+  <section id="login-view">
+    <form id="login-form" autocomplete="on">
+      <label>Account email
+        <input id="email" name="email" type="email" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p class="hint">Credentials go to this server only; the vendor session is kept server side.</p>
+  </section>
+
+  <section id="device-view" hidden>
+    <h2>Devices</h2>
+    <ul id="devices"></ul>
+    <div id="player">
+      <div id="player-status">Pick a device.</div>
+      <video id="video" controls playsinline hidden></video>
+    </div>
+  </section>
+
+  <p id="error" role="alert" hidden></p>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
