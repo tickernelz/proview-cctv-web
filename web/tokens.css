@@ -22,6 +22,13 @@
   --danger: oklch(0.66 0.19 22);
   --info: oklch(0.72 0.11 245);
 
+  --stage: oklch(0.11 0.006 265);
+  --stage-matte: oklch(0.2 0.008 265);
+  --stage-ink: oklch(0.9 0.006 265);
+  --stage-danger: oklch(0.74 0.16 22);
+  --scrim: oklch(0.13 0.01 265 / 0.88);
+  --on-scrim: oklch(0.98 0.002 265);
+
   --focus-ring: oklch(0.78 0.13 245);
 
   --radius-sm: 6px;
@@ -61,10 +68,10 @@
 :root[data-theme="light"] {
   color-scheme: light;
 
-  --bg: oklch(0.985 0.002 265);
+  --bg: oklch(0.965 0.003 265);
   --surface: oklch(1 0 0);
-  --surface-2: oklch(0.962 0.004 265);
-  --surface-3: oklch(0.93 0.006 265);
+  --surface-2: oklch(0.945 0.005 265);
+  --surface-3: oklch(0.91 0.007 265);
   --line: oklch(0.88 0.008 265);
   --line-soft: oklch(0.93 0.006 265);
 
