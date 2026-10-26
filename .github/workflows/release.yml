@@ -148,22 +148,39 @@ jobs:
         shell: bash
         run: cargo tauri build ${{ matrix.args }}
 
-      - name: Sign Windows installer when a certificate secret exists
-        if: runner.os == 'Windows' && env.WINDOWS_CERT_PFX_BASE64 != ''
+      - name: Sign Windows installers when a certificate secret exists
+        if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         run: |
+          if (-not $env:WINDOWS_CERT_PFX_BASE64) {
+            Write-Host 'SIGNING: skipped, no certificate secret configured'
+            exit 0
+          }
           $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
           [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
-          $files = Get-ChildItem -Recurse target -Include *.msi,*.exe | Where-Object { $_.FullName -match 'bundle' }
-          if (-not $files) { Write-Host 'no installers to sign'; exit 0 }
+
+          $files = Get-ChildItem -Path target -Recurse -File |
+            Where-Object { $_.Extension -in '.msi', '.exe' -and $_.FullName -like '*bundle*' }
+          if (-not $files) { Write-Host 'SIGNING: no installers found to sign'; exit 1 }
+          Write-Host "SIGNING: candidates $($files.Count)"
+
           $tool = Get-Command signtool.exe -ErrorAction SilentlyContinue
-          if (-not $tool) { Write-Host 'signtool unavailable, leaving installers unsigned'; exit 0 }
+          if (-not $tool) {
+            $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vswhere) {
+              $sdk = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.Windows11SDK.22621 -find 'WindowsSDK\bin\**\x64\signtool.exe' | Select-Object -First 1
+              if ($sdk) { $tool = Get-Item $sdk }
+            }
+          }
+          if (-not $tool) { Write-Host 'SIGNING: signtool.exe not found'; exit 1 }
+
+          $signed = 0
           foreach ($file in $files) {
             & $tool.Source sign /f $pfx /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $file.FullName
+            if ($LASTEXITCODE -eq 0) { Write-Host "SIGNING: signed $($file.Name)"; $signed++ }
           }
+          Write-Host "SIGNING: signed $signed installer(s)"
+          if ($signed -eq 0) { exit 1 }
 
       - name: Collect bundles
         shell: bash
