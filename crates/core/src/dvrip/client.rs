@@ -458,6 +458,7 @@ mod tests {
     #[tokio::test]
     async fn rejected_login_is_reported_with_the_device_message() {
         let addr = spawn_reply(vec![
+            serde_json::json!({"Ret": 401, "Error": "probe rejected"}),
             serde_json::json!({"Ret": 401, "Error": "bad password"}),
         ])
         .await;
