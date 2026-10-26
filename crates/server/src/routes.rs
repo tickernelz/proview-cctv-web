@@ -1,3 +1,6 @@
+#[path = "routes/cloud.rs"]
+pub mod cloud;
+
 use std::time::Duration;
 
 use futures_util::SinkExt;

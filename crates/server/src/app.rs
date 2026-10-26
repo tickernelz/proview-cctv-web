@@ -60,10 +60,12 @@ pub fn build_with_modes(
         .manage(Store::new())
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
+        .manage(crate::routes::cloud::CloudState::new())
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
         .mount("/api", crate::config::routes())
         .mount("/api", crate::lens_route::routes())
+        .mount("/api", crate::routes::cloud::api())
         .mount("/", crate::routes::live())
 }
 

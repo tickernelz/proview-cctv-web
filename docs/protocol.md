@@ -266,3 +266,108 @@ server, not the device API.
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
 channel.
+
+## 10. Cloud account: the v2 portal, as implemented here
+
+`crates/core/src/cloud/` implements the account cloud of the vendor's own
+browser client (`https://v2.xmeye.net`, a Vue SPA over
+`https://api.xmeye.net/api`), and the server mounts it at `/api/cloud/*`:
+`portal`, `captcha`, `session`, `logout`, `profile`, `devices`.
+
+### 10.1 Endpoints
+
+| Call | Request | Reply |
+|---|---|---|
+| captcha | `POST /api/transfer/image/v1/`, empty JSON body | `{code:200, data:{image:"<base64 JPEG>", codeToken:"<uuid>"}}` |
+| login | `POST /api/transfer/login/v1`, `{uname, upass, verCode, pkg?}`, header `Code-Token: <codeToken>` | `{code:2000, accessToken:"…"}` |
+| profile | `POST /api/transfer/userinfo2/v1`, `{Authorization:"<token>"}` | `data:{username, phone, email, …}` |
+| devices | `POST /api/transfer/mdlist/v1`, `{Authorization:"<token>"}`, header `Access-Token: <token>` | `data:{data:[{uuid, nickname, username, …}]}` |
+| status | `POST /api/transfer/devstatus/v1`, body `[{uuid}, …]`, header `Access-Token: <token>` | `data:[{uuid, status:"online" or "notfound", wakeUpStatus}]` |
+| caps | `POST /api/caps/status`, `{ver:2, sn:[uuid], caps:["xmc.css","net.cellular","net.dat"]}` | `data:{capsData:[{sn, cssNetVo, celVo}]}` |
+
+`pkg` is read by the SPA from its own URL (`?pkg=…`) and omitted when absent;
+it is not a proven tenant selector. Every authenticated call carries the token
+**twice**: inside the body as `Authorization` (an odd place, but that is what the
+SPA sends) and in the `Access-Token` header.
+
+### 10.2 The field digest
+
+Both `uname` and `upass` are AES, not clear text. The encoder is webpack module
+`c71e`, shipped in `chunk-0c782707.ebc888f7.js`:
+
+- key: `d86d7bab3d6ac01ad9dc6a897652f2d2`, parsed with `CryptoJS.enc.Hex.parse`
+  (16 bytes, so AES-128);
+- mode `ECB`, padding `Pkcs7`, output `CipherParams.toString()` = standard
+  base64 of the ciphertext, with no OpenSSL `Salted__` prefix;
+- `verCode` stays clear text; the account name travels digested too.
+
+Cross-checked byte for byte against CryptoJS 4 in node and `openssl enc
+-aes-128-ecb -nosalt -base64` for the same input, and implemented in
+`crates/core/src/cloud/digest.rs` with a reference vector in its tests.
+
+### 10.3 Session and tokens
+
+A successful login returns `accessToken` at the **top level** of the reply, not
+inside `data`. There is no refresh token and no server-side logout route: the
+SPA's "log out" only clears `localStorage`/`sessionStorage`. Because a second
+login needs a fresh captcha, an expired token cannot be renewed silently; this
+implementation drops the server-side session and asks the user to sign in
+again (`CloudError::Expired`, HTTP 401).
+
+The server keeps the token in its own process, keyed by an opaque session id in
+an `HttpOnly`, `SameSite=Strict` cookie. The account password is never stored:
+it is digested per login call and dropped.
+
+### 10.4 Reply codes seen
+
+| Code | Meaning |
+|---|---|
+| `2000` | success (login, device list, profile) |
+| `200` | success (captcha image, `caps/status`) |
+| `-1` | captcha wrong |
+| `-2` | captcha expired |
+| `4010` | captcha error |
+| `4048` | too many wrong captchas |
+| `4050` | requests too frequent |
+| `4000` | username or password wrong |
+| `4024` | email not registered |
+| `4025` | username not registered |
+| `4017` | username format rejected (checked on the decrypted value) |
+| `-4004` | `Access-Token` expired or missing |
+
+Codes are mapped to readable text in `cloud::types::user_message`; `-4004`
+becomes a session-expired error so the UI can re-prompt for a captcha.
+
+### 10.5 Live evidence (2026-10-26, this project's own probes)
+
+The digest is proven against the live service, not just against the bundle:
+
+| Probe | Reply |
+|---|---|
+| `usercheck/v1 {name: AES("zznobody9")}` | `4025 REG_USER_NOT_EXIST` |
+| `usercheckMail/v1 {mail: AES(<configured account>)}` | `4024 REG_MAIL_NOT_EXIST` |
+| `usercheck/v1 {name: <clear text>}` | HTTP 500 `-4004` (undecryptable) |
+| `login/v1` with a wrong captcha | `-1` |
+| `login/v1` with a valid captcha for the configured account | `4000` |
+| `POST /api/cloud/session` on this server, solved captcha, real account | HTTP 400 `email or password is wrong` (vendor `4000`) |
+
+The last row is the whole pipeline: the server digested the configured
+account's fields, the captcha was accepted (otherwise the vendor answers `-1`
+or `-2`), and the account itself was refused. An undecryptable field would
+have produced `-4004` instead, so the digest really is what the service read.
+
+Two conclusions. First, the service decrypts the field and validates the
+decrypted value (a format-invalid plaintext returns `4017`), so the key, mode,
+padding and encoding are correct. Second, **the configured account is not
+registered on this cloud**: `4024` is an answer about the account itself, not
+about the request. The mobile app therefore uses the tenant CSS path
+(section 3) rather than the portal; a portal login for that account stays
+blocked until the account exists there.
+
+### 10.6 What the client does not do
+
+- It does not solve captchas; `GET /api/cloud/captcha` returns the image and its
+  token to the caller, and the code is typed by a human.
+- It does not call `caps/status`; device capabilities are mapped only from the
+  fields of `mdlist/v1` (`channel`, `channelNum`, otherwise one channel).
+

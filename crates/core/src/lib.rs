@@ -1,3 +1,4 @@
+pub mod cloud;
 pub mod config;
 pub mod device;
 pub mod dvrip;
