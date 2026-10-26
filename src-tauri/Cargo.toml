@@ -1,0 +1,19 @@
+[package]
+name = "proview-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native desktop shell for PROVIEW CCTV"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+proview-server = { path = "../crates/server" }
+tauri = { version = "2", features = [] }
+tokio.workspace = true
+rand.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde.workspace = true

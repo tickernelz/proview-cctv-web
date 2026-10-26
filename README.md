@@ -76,6 +76,20 @@ fixtures/            recorded device metadata for local runs
 docs/protocol.md     the reverse-engineering record
 ```
 
+## Download and signing status
+
+Installers and server binaries come from one release per tag, with
+`SHA256SUMS`. None of them are code-signed — there is no Apple Developer
+certificate and no Windows signing certificate behind this project.
+
+| Platform | Signature | First-launch handling | Upgrade path |
+|---|---|---|---|
+| Windows (msi/nsis) | unsigned (2026-10-26) | SmartScreen → More info → Run anyway; `Unblock-File` first | SignPath Foundation, or Certum Open Source Code Signing |
+| macOS (dmg) | unsigned, ad-hoc `codesign -s -`, no notarization (2026-10-26) | right-click → Open, or `xattr -dr com.apple.quarantine` | Apple Developer ID + notarization |
+| Linux (AppImage/deb/rpm) | not required | `chmod +x` for AppImage | — |
+
+Details per platform: `docs/install.md`.
+
 ## Licence
 
 MIT, see `LICENSE`.
