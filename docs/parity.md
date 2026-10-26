@@ -27,6 +27,7 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
+| Device reachability probe | `CNetDevice`, DVRIP login | done | `POST /api/device/probe` connects and logs in over DVRIP; needs `PROVIEW_DEVICE_HOST` |
 | Live video | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor` | blocked | needs the device session: LAN RTSP/DVRIP on 554/34567, or cloud DSS/HLS |
 | Main / sub stream choice | `DevEncodeConfigActivity`, `SDKCONST$StreamType` | blocked | follows the transport |
 | Multi-channel grid | `CloudServiceChannelListActivity`, `MultiChnCombin` | blocked | follows the transport |

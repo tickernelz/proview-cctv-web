@@ -53,7 +53,8 @@ cargo run --release
 |---|---|---|
 | `PROVIEW_PROVIDER` | `fixture` | `fixture` or `proview` |
 | `PROVIEW_CLOUD_BASE` | `https://pub-token.xmeye.net` | vendor cloud base |
-| `PROVIEW_DEVICE_USER` | `admin` | device-side account for RTSP |
+| `PROVIEW_DEVICE_HOST` | unset | `host:port` of the camera/DVR for the DVRIP probe and, later, streaming |
+| `PROVIEW_DEVICE_USER` | `admin` | device-side account |
 | `PROVIEW_DEVICE_PASS` | empty | device-side password |
 | `PROVIEW_FIXTURE_DIR` | `fixtures` | fixture data directory |
 | `PROVIEW_SESSION_TTL` | `3600` | server session lifetime, seconds |
