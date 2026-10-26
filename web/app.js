@@ -140,6 +140,7 @@ function setStage(stateName, message) {
 }
 
 function stopPlayback() {
+  stopLive();
   if (state.hls) {
     state.hls.destroy();
     state.hls = null;
@@ -196,8 +197,86 @@ function explainStreamError(error) {
   return 'The stream could not be started.';
 }
 
+const live = { socket: null, media: null, buffer: null, queue: [], url: null };
+
+function stopLive() {
+  if (live.socket) {
+    live.socket.onmessage = null;
+    live.socket.close();
+    live.socket = null;
+  }
+  if (live.buffer && live.media && live.media.readyState === 'open') {
+    try {
+      live.media.removeSourceBuffer(live.buffer);
+    } catch {}
+  }
+  if (live.url) {
+    URL.revokeObjectURL(live.url);
+    live.url = null;
+  }
+  live.buffer = null;
+  live.media = null;
+  live.queue = [];
+}
+
+function pumpFragments() {
+  const buffer = live.buffer;
+  if (!buffer || buffer.updating) {
+    return;
+  }
+  const next = live.queue.shift();
+  if (!next) {
+    return;
+  }
+  try {
+    buffer.appendBuffer(next);
+  } catch (error) {
+    console.error('append failed, dropping to the next keyframe', error);
+    live.queue = [];
+  }
+}
+
+function playOverWebSocket(ticket) {
+  const video = el('video');
+  stopLive();
+  const media = new MediaSource();
+  live.media = media;
+  live.url = URL.createObjectURL(media);
+  video.src = live.url;
+
+  media.addEventListener('sourceopen', () => {
+    const buffer = media.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
+    live.buffer = buffer;
+    buffer.addEventListener('updateend', pumpFragments);
+
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const target = ticket.url.startsWith('/') ? scheme + '://' + location.host + ticket.url : ticket.url.replace(/^http/, 'ws');
+    const socket = new WebSocket(target);
+    socket.binaryType = 'arraybuffer';
+    live.socket = socket;
+    socket.onmessage = (event) => {
+      live.queue.push(new Uint8Array(event.data));
+      pumpFragments();
+    };
+    socket.onerror = () => setStage('error', 'The live socket failed to connect.');
+    socket.onclose = () => {
+      if (!video.paused) setStage('error', 'Live socket closed.');
+    };
+    video.play().catch(() => {});
+    setStage('playing', '');
+  }, { once: true });
+}
+
 async function play(ticket) {
   const video = el('video');
+  if (ticket.kind === 'ws') {
+    if (!window.MediaSource) {
+      setStage('error', 'This browser cannot play the live socket (no MediaSource).');
+      return;
+    }
+    playOverWebSocket(ticket);
+    return;
+  }
   if (ticket.kind === 'mp4' || ticket.url.endsWith('.mp4')) {
     video.src = ticket.url;
     await video.play().catch(() => {});

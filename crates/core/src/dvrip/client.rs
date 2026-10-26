@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -121,17 +122,84 @@ impl Connection {
         Ok((header, body))
     }
 
-    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, LoginError> {
-        let first = self
-            .login_attempt(user, &login_hash(user, password))
-            .await?;
-
-        if first.ret == 100 {
+    pub async fn login_variant(
+        &mut self,
+        user: &str,
+        password: &str,
+        variant: &str,
+    ) -> Result<LoginOk, LoginError> {
+        let candidate = match variant {
+            "md5" => login_hash(user, password),
+            "md5md5" => crate::dvrip::crypto::md5_hex(&login_hash(user, password)),
+            "plain" => password.to_string(),
+            other => {
+                return Err(LoginError::Rejected {
+                    ret: -1,
+                    message: Some(format!("unknown variant {other}")),
+                })
+            }
+        };
+        let response = self.login_attempt(user, &candidate).await?;
+        if response.ret == 100 {
             return Ok(LoginOk {
                 session: self.session,
-                device_type: first.device_type,
+                device_type: response.device_type,
             });
         }
+        if response.ret == 200 {
+            let realm = response
+                .realm
+                .clone()
+                .ok_or(LoginError::NoRealmAfterChallenge)?;
+            let retry = match variant {
+                "md5" => realm_hash(user, &realm, password),
+                "md5md5" => realm_hash_with_legacy_secret(user, &realm, &candidate),
+                _ => realm_hash(user, &realm, password),
+            };
+            let after = self.login_attempt(user, &retry).await?;
+            if after.ret == 100 {
+                return Ok(LoginOk {
+                    session: self.session,
+                    device_type: after.device_type,
+                });
+            }
+            return Err(LoginError::Rejected {
+                ret: after.ret,
+                message: after.error,
+            });
+        }
+        Err(LoginError::Rejected {
+            ret: response.ret,
+            message: response.error,
+        })
+    }
+
+    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, LoginError> {
+        let probe = self.login_attempt(user, "").await?;
+        if probe.ret == 100 {
+            return Ok(LoginOk {
+                session: self.session,
+                device_type: probe.device_type,
+            });
+        }
+        let first = if probe.ret == 200 {
+            probe
+        } else {
+            let direct = self
+                .login_attempt(user, &login_hash(user, password))
+                .await?;
+            if direct.ret == 100 {
+                return Ok(LoginOk {
+                    session: self.session,
+                    device_type: direct.device_type,
+                });
+            }
+            return Err(LoginError::Rejected {
+                ret: direct.ret,
+                message: direct.error,
+            });
+        };
+
         if first.ret != 200 {
             return Err(LoginError::Rejected {
                 ret: first.ret,
@@ -181,7 +249,8 @@ impl Connection {
             .await
             .map_err(LoginError::Io)?;
         let (_, payload) = self.recv().await.map_err(LoginError::Frame)?;
-        let parsed: LoginResponse = serde_json::from_slice(&payload).map_err(LoginError::Json)?;
+        let mut deserializer = serde_json::Deserializer::from_slice(&payload);
+        let parsed = LoginResponse::deserialize(&mut deserializer).map_err(LoginError::Json)?;
         if let Some(raw) = parsed.session_id.as_deref() {
             if let Some(session) = parse_session_id(raw) {
                 self.session = session;

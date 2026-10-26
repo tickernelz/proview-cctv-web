@@ -39,19 +39,17 @@ pub fn figment(opts: &ServeOptions, port: u16) -> Figment {
 }
 
 pub fn build(figment: Figment) -> rocket::Rocket<rocket::Build> {
-    rocket::custom(figment)
-        .manage(Config::from_env())
-        .manage(Store::new())
-        .mount("/", crate::routes::files())
-        .mount("/api", crate::routes::api())
+    build_with(figment, Config::from_env())
 }
 
 pub fn build_with(figment: Figment, config: Config) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
         .manage(Store::new())
+        .manage(crate::live_state::LiveState::new())
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
+        .mount("/", crate::routes::live())
 }
 
 pub async fn serve(opts: ServeOptions) -> Result<ServerHandle, Box<rocket::Error>> {

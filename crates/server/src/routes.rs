@@ -1,12 +1,15 @@
 use std::time::Duration;
 
+use futures_util::SinkExt;
 use proview_core::config::Config;
+use proview_core::live::StreamKey;
 use proview_core::provider::{self, Device, ProviderError, StreamTicket};
 use proview_core::session::{self, Store};
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
 use rocket::serde::json::Json;
 use rocket::State;
+use rocket_ws as ws;
 use serde::{Deserialize, Serialize};
 
 pub fn files() -> Vec<rocket::route::Route> {
@@ -15,6 +18,10 @@ pub fn files() -> Vec<rocket::route::Route> {
 
 pub fn api() -> Vec<rocket::route::Route> {
     routes![login, logout, me, devices, stream, probe_device, health]
+}
+
+pub fn live() -> Vec<rocket::route::Route> {
+    routes![ws_live]
 }
 
 #[get("/")]
@@ -162,8 +169,11 @@ pub struct DeviceProbe {
     pub device_type: Option<String>,
 }
 
-#[post("/device/probe")]
-async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure> {
+#[post("/device/probe?<variant>")]
+async fn probe_device(
+    variant: Option<String>,
+    cfg: &State<Config>,
+) -> Result<Json<DeviceProbe>, Failure> {
     let host = cfg
         .device_host
         .clone()
@@ -171,10 +181,15 @@ async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure>
     let mut connection = proview_core::dvrip::client::Connection::connect(&host)
         .await
         .map_err(|e| fail(Status::BadGateway, format!("connect {host}: {e}")))?;
-    let login = connection
-        .login(&cfg.device_user, &cfg.device_pass)
-        .await
-        .map_err(|e| fail(Status::BadGateway, format!("login {host}: {e}")))?;
+    let login = match variant.as_deref() {
+        Some(name) => {
+            connection
+                .login_variant(&cfg.device_user, &cfg.device_pass, name)
+                .await
+        }
+        None => connection.login(&cfg.device_user, &cfg.device_pass).await,
+    }
+    .map_err(|e| fail(Status::BadGateway, format!("login {host}: {e}")))?;
     let session = login.session;
     let device_type = login.device_type;
     let _ = connection.logout().await;
@@ -204,6 +219,66 @@ async fn stream(
         .await
         .map(Json)
         .map_err(|e| fail(status_for(&e), e.to_string()))
+}
+
+#[get("/ws/live?<device>&<channel>&<quality>")]
+#[allow(clippy::too_many_arguments)]
+fn ws_live(
+    ws: ws::WebSocket,
+    device: String,
+    channel: Option<u32>,
+    quality: Option<String>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    live: &State<crate::live_state::LiveState>,
+    cookies: &CookieJar<'_>,
+) -> Result<ws::Channel<'static>, Failure> {
+    let id = session_id(cookies)?;
+    restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    let channel = channel.unwrap_or(1);
+    let sub_stream = quality.as_deref() == Some("sub");
+    let stem = if sub_stream { "sub" } else { "main" };
+    let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
+    let plan = live
+        .plan_for(&path, 25)
+        .map_err(|e| fail(Status::NotFound, e))?;
+
+    let key = StreamKey::new(device, channel, sub_stream);
+    let mut receiver = live.hub.subscribe(key.clone());
+    live.ensure_publisher(key.clone(), plan.clone());
+    let state = live.inner().clone();
+
+    Ok(ws.channel(move |mut stream| {
+        Box::pin(async move {
+            let _keep_alive = plan;
+            loop {
+                match receiver.recv().await {
+                    Ok(fragment) => {
+                        if stream
+                            .send(ws::Message::Binary(fragment.to_vec()))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            skipped,
+                            "viewer fell behind, skipping to the next fragment"
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            state.release(&key);
+            let _ = stream.send(ws::Message::Close(None)).await;
+            Ok(())
+        })
+    }))
 }
 
 #[get("/media/<device>/<channel>/<quality>")]

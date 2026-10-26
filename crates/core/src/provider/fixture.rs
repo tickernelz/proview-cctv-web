@@ -83,8 +83,8 @@ impl CameraProvider for Fixture {
             )));
         }
         Ok(StreamTicket {
-            kind: StreamKind::Mp4,
-            url: format!("/media/{device}/{channel}/{name}.mp4"),
+            kind: StreamKind::Ws,
+            url: format!("/ws/live?device={device}&channel={channel}&quality={name}"),
             expires_in: 300,
         })
     }

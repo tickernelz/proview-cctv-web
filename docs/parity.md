@@ -37,9 +37,10 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Device reachability probe | `CNetDevice`, DVRIP login | partial | route `POST /api/device/probe` is implemented and tested only for the unconfigured case (400). No real device has been contacted yet, so the handshake itself is unproven |
+| Device reachability probe | `CNetDevice`, DVRIP login | partial | route `POST /api/device/probe` exists. A real IPC at `192.168.0.100` answers on DVRIP 34567 and RTSP 554 (`Server: H264DVR 1.0`), but DVRIP login returns `ret 203`; the DVRIP hash for this firmware is not solved |
 | Recorded-clip playback path | `Fun_MediaDownloadM3u8ByUrl`, `CMediaFile` | partial | Annex-B clip → fMP4 is served and plays in Chromium (verified with ffprobe + in-browser decode); the live transport feeding it does not exist yet |
-| Live video | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor` | blocked | needs the device session: LAN RTSP/DVRIP on 554/34567, or cloud DSS/HLS |
+| Local RTSP live view | RTSP client inside `libFunSDK.so` | blocked | the IPC exposes RTSP 554 and a `DESCRIBE` returns 401/200 depending on credentials, but the device password is not available to this project (owner has no local login); no stream has been pulled |
+| Live video over cloud P2P | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor`, `xmnat` | blocked | the owner reaches the camera only through the PROVIEW cloud P2P path; cloud login envelope is unsolved, so no session exists |
 | Main / sub stream choice | `DevEncodeConfigActivity`, `SDKCONST$StreamType` | blocked | follows the transport |
 | Multi-channel grid | `CloudServiceChannelListActivity`, `MultiChnCombin` | blocked | follows the transport |
 | Snapshot | `SDK_AlarmFucntionTypes`, `Fun_MediaRealPlayEx` | blocked | client-side frame grab once video runs |
