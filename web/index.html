@@ -10,16 +10,37 @@
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
+<svg class="sprite" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-live" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.2" fill="currentColor"/><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-opacity="0.45" stroke-width="1.3"/></symbol>
+<symbol id="i-grid" viewBox="0 0 16 16"><rect x="1.6" y="1.6" width="5.4" height="5.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="1.6" width="5.4" height="5.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="1.6" y="9" width="5.4" height="5.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="9" y="9" width="5.4" height="5.4" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-settings" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8 1.4v2M8 12.6v2M1.4 8h2M12.6 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-mic" viewBox="0 0 16 16"><rect x="6" y="1.8" width="4" height="7.4" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M3.6 8a4.4 4.4 0 0 0 8.8 0M8 12.4v1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-speaker" viewBox="0 0 16 16"><path d="M2.4 6h2.2L8 3v10L4.6 10H2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10.4 5.6a3.4 3.4 0 0 1 0 4.8M12.4 3.6a6.2 6.2 0 0 1 0 8.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-speaker-off" viewBox="0 0 16 16"><path d="M2.4 6h2.2L8 3v10L4.6 10H2.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M10.6 6.2l3.6 3.6M14.2 6.2l-3.6 3.6" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="i-record" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.2" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2.6" fill="currentColor"/></symbol>
+<symbol id="i-camera" viewBox="0 0 16 16"><path d="M1.8 5.4h2.6l1-1.6h5.2l1 1.6h2.6v7H1.8z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8.8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.3"/></symbol>
+<symbol id="i-expand" viewBox="0 0 16 16"><path d="M2 6V2h4M14 10v4h-4M14 6V2h-4M2 10v4h4" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-flip" viewBox="0 0 16 16"><path d="M8 2.4a5.6 5.6 0 1 1-5.2 3.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M2.2 2.2v3.8h3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13.4 8a5.4 5.4 0 1 1-1.6-3.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M13.8 2.2v3.6h-3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
+
 <header class="topbar">
   <div class="mark">
     <span class="mark-dot" aria-hidden="true"></span>
     <span class="mark-name">PROVIEW</span>
     <span class="mark-sub">cctv</span>
   </div>
+
+  <nav id="view-nav" class="view-nav" aria-label="Views" hidden>
+    <a href="#live" data-view="live" aria-current="page"><svg aria-hidden="true"><use href="#i-live"></use></svg><span>Live</span></a>
+    <a href="#grid" data-view="grid"><svg aria-hidden="true"><use href="#i-grid"></use></svg><span>Grid</span></a>
+    <a href="#settings" data-view="settings"><svg aria-hidden="true"><use href="#i-settings"></use></svg><span>Settings</span></a>
+  </nav>
+
   <div class="topbar-actions">
-    <button id="theme-toggle" class="ghost" type="button" aria-label="Switch colour theme">Theme</button>
+    <button id="theme-toggle" class="ghost compact" type="button" aria-label="Switch colour theme">Theme</button>
     <span id="account" class="account" hidden></span>
-    <button id="signout" class="ghost" type="button" hidden>Sign out</button>
+    <button id="signout" class="ghost compact" type="button" hidden>Sign out</button>
   </div>
 </header>
 
@@ -28,58 +49,291 @@
     <div class="login-panel">
       <h1 id="login-title">Watch your cameras from the desktop</h1>
       <p class="lede">Sign in with the same PROVIEW account your phone uses. The session stays on this server; the browser only holds an opaque cookie.</p>
-      <form id="login-form" autocomplete="on" novalidate>
-        <label for="email">Account email</label>
-        <input id="email" name="email" type="email" autocomplete="username" required spellcheck="false">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-        <button id="login-submit" class="primary" type="submit">
-          <span class="label">Sign in</span>
+
+      <div class="mode-switch" role="tablist" aria-label="Sign-in method">
+        <button id="tab-cloud" type="button" role="tab" aria-selected="true" aria-controls="panel-cloud">Cloud account</button>
+        <button id="tab-local" type="button" role="tab" aria-selected="false" aria-controls="panel-local" tabindex="-1">This network</button>
+      </div>
+
+      <div id="panel-cloud" role="tabpanel" aria-labelledby="tab-cloud" tabindex="0">
+        <form id="login-form" autocomplete="on" novalidate>
+          <label for="email">Account email</label>
+          <input id="email" name="email" type="email" autocomplete="username" required spellcheck="false">
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+          <button id="login-submit" class="primary" type="submit">
+            <span class="label">Sign in</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+        <p id="login-error" class="field-error" role="alert" hidden></p>
+      </div>
+
+      <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" tabindex="0" hidden>
+        <p class="field-note">This network path signs in to the camera itself. Its address lives in the server configuration; the credentials below go straight to that camera.</p>
+        <p id="local-mode" class="field-note compact" role="status">Checking which provider the server uses…</p>
+        <form id="local-form">
+          <label for="local-user">Camera username</label>
+          <input id="local-user" name="local-user" type="text" autocomplete="username" spellcheck="false" disabled>
+          <label for="local-pass">Camera password</label>
+          <input id="local-pass" name="local-pass" type="password" autocomplete="current-password" disabled>
+          <button id="local-submit" class="primary" type="submit" disabled>
+            <span class="label">Sign in to the camera</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+        </form>
+        <button id="local-connect" class="ghost" type="button">
+          <span class="label">Probe the camera on this network</span>
           <span class="spinner" aria-hidden="true"></span>
         </button>
-      </form>
-      <p id="login-error" class="field-error" role="alert" hidden></p>
+        <p id="local-error" class="field-error" role="alert" hidden></p>
+        <dl id="local-report" class="report" hidden>
+          <div><dt>Host</dt><dd id="local-host"></dd></div>
+          <div><dt>Session</dt><dd id="local-session"></dd></div>
+          <div><dt>Device type</dt><dd id="local-type"></dd></div>
+          <div><dt>Video</dt><dd id="local-video"></dd></div>
+          <div><dt>Audio</dt><dd id="local-audio"></dd></div>
+          <div><dt>Frame rate</dt><dd id="local-fps"></dd></div>
+        </dl>
+        <p id="local-next" class="field-note" hidden>This server is set to the camera on this network, so signing in with the cloud account will also show that camera.</p>
+      </div>
     </div>
   </section>
 
-  <section id="app-view" class="app" hidden aria-labelledby="devices-title">
-    <div class="section-head">
-      <h2 id="devices-title">Devices</h2>
-      <button id="refresh" class="ghost" type="button">Refresh</button>
-    </div>
-
-    <div id="devices-skeleton" class="skeleton-list" hidden aria-hidden="true">
-      <div class="skeleton"></div>
-      <div class="skeleton"></div>
-    </div>
-
-    <ul id="devices" class="device-list" aria-live="polite"></ul>
-
-    <p id="devices-empty" class="empty" hidden>
-      No devices on this account yet. Add the camera in the phone app first, then refresh here.
-    </p>
-
-    <section id="player" class="player" hidden aria-labelledby="player-title">
-      <div class="player-head">
-        <h3 id="player-title">Live</h3>
-        <div class="player-controls">
-          <label class="inline" for="channel">Channel</label>
-          <select id="channel"></select>
-          <label class="inline" for="quality">Stream</label>
-          <select id="quality">
-            <option value="main">Main</option>
-            <option value="sub">Sub</option>
-          </select>
-          <button id="snapshot" class="ghost" type="button">Snapshot</button>
-          <button id="fullscreen" class="ghost" type="button">Fullscreen</button>
-        </div>
+  <div id="app-view" class="shell" hidden>
+    <section class="rail" aria-labelledby="devices-title">
+      <div class="section-head">
+        <h2 id="devices-title">Devices</h2>
+        <button id="refresh" class="ghost compact" type="button" aria-label="Refresh device list">
+          <svg aria-hidden="true"><use href="#i-refresh"></use></svg>
+          <span>Refresh</span>
+        </button>
       </div>
-      <div class="stage">
-        <video id="video" controls playsinline hidden></video>
-        <div id="stage-status" class="stage-status" role="status">Pick a device to start.</div>
+
+      <div id="devices-skeleton" class="skeleton-list" hidden aria-hidden="true">
+        <div class="skeleton"></div>
+        <div class="skeleton"></div>
       </div>
+
+      <ul id="devices" class="device-list" aria-live="polite"></ul>
+
+      <p id="devices-empty" class="empty" hidden>No devices on this account yet. Add the camera in the phone app first, then refresh here.</p>
     </section>
-  </section>
+
+    <div class="content">
+      <section id="view-live" class="view" aria-labelledby="live-title">
+        <div class="view-head">
+          <h1 id="live-title" tabindex="-1">Live</h1>
+          <div id="source-badge" class="source-badge" data-source="idle">
+            <span class="source-dot" aria-hidden="true"></span>
+            <span id="source-label">No stream</span>
+          </div>
+        </div>
+
+        <div class="live-body">
+          <div class="live-main">
+            <div class="live-toolbar">
+              <div class="lens-picker" role="radiogroup" aria-labelledby="lens-label">
+                <span id="lens-label" class="field-label">View</span>
+                <label class="seg"><input type="radio" name="lensview" value="combined" checked><span>Combined</span></label>
+                <label class="seg" id="seg-upper"><input type="radio" name="lensview" value="0"><span>Upper lens</span></label>
+                <label class="seg" id="seg-lower"><input type="radio" name="lensview" value="1"><span>Lower lens</span></label>
+              </div>
+              <div class="channel-picker">
+                <label for="channel" class="field-label">Channel</label>
+                <select id="channel"></select>
+              </div>
+              <div class="quality-picker">
+                <span class="field-label" id="qualitybar-label">Quality</span>
+                <div class="seg-group" role="radiogroup" aria-labelledby="qualitybar-label">
+                  <label class="seg"><input type="radio" name="qualitybar" value="main"><span>HD</span></label>
+                  <label class="seg"><input type="radio" name="qualitybar" value="sub"><span>SD</span></label>
+                </div>
+              </div>
+            </div>
+
+            <div class="stage-shell" id="stage-shell">
+            <div class="stage" id="stage" data-state="idle">
+              <div class="lens-crop" id="lens-crop">
+                <video id="video" playsinline muted></video>
+                <div class="osd osd-name" id="osd-name" hidden></div>
+                <div class="osd osd-time" id="osd-time" aria-hidden="true" hidden></div>
+              </div>
+              <p class="stage-status" id="stage-status" role="status">Pick a device to start.</p>
+            </div>
+
+            <div class="stage-bar" role="toolbar" aria-label="Stream controls">
+              <button id="intercom" class="ctl" type="button" data-requires="device" data-act="intercom" aria-describedby="device-note">
+                <svg aria-hidden="true"><use href="#i-mic"></use></svg><span>Intercom</span>
+              </button>
+              <button id="mute" class="ctl" type="button" aria-pressed="true">
+                <svg aria-hidden="true"><use href="#i-speaker-off"></use></svg><span>Mute</span>
+              </button>
+              <button id="record" class="ctl" type="button" aria-pressed="false">
+                <svg aria-hidden="true"><use href="#i-record"></use></svg><span>Record</span>
+              </button>
+              <button id="snapshot" class="ctl" type="button">
+                <svg aria-hidden="true"><use href="#i-camera"></use></svg><span>Snapshot</span>
+              </button>
+              <button id="fullscreen" class="ctl" type="button">
+                <svg aria-hidden="true"><use href="#i-expand"></use></svg><span>Expand</span>
+              </button>
+            </div>
+
+            <p id="lens-source" class="field-note compact">Lens layout: waiting for the first frame.</p>
+
+            <details class="note-block">
+              <summary>Why the two lens views differ</summary>
+              <div class="note-body">
+                <p><strong>The camera sends one stream.</strong> Both lenses arrive stacked in a single frame: the upper half is one lens, the lower half the other. The app crops one half when you ask for a single lens, so switching views costs no second connection.</p>
+                <p><strong>One lens is motorized, the other is not.</strong> The moving lens can pan and tilt from the app. The fixed lens cannot move on its own; it is aimed by turning the housing by hand. A fixed lens that refuses to pan is the hardware, not a fault.</p>
+                <p id="lens-roles-note" class="field-note">Which half is the moving lens comes from the device capabilities. While the server does not report them, the views are labelled by position, not by role.</p>
+              </div>
+            </details>
+            </div>
+          </div>
+
+          <section class="panel" aria-labelledby="controls-title">
+            <h2 id="controls-title">Camera controls</h2>
+            <p id="device-note" class="field-note">Device controls have not been checked yet.</p>
+
+            <div class="panel-group" role="group" aria-labelledby="ptz-title">
+              <h3 id="ptz-title">Pan and tilt</h3>
+              <div class="ptz" id="ptz" aria-hidden="false">
+                <button type="button" class="ptz-key" data-act="up" data-requires="device" aria-label="Tilt up" aria-describedby="device-note">Up</button>
+                <button type="button" class="ptz-key" data-act="left" data-requires="device" aria-label="Pan left" aria-describedby="device-note">Left</button>
+                <button type="button" class="ptz-key" data-act="home" data-requires="device" aria-label="Stop pan and tilt" aria-describedby="device-note">Stop</button>
+                <button type="button" class="ptz-key" data-act="right" data-requires="device" aria-label="Pan right" aria-describedby="device-note">Right</button>
+                <button type="button" class="ptz-key" data-act="down" data-requires="device" aria-label="Tilt down" aria-describedby="device-note">Down</button>
+              </div>
+              <p class="field-note">Only the motorized lens can be moved here. The fixed lens is aimed by hand.</p>
+            </div>
+
+            <div class="panel-group" role="group" aria-labelledby="device-actions-title">
+              <h3 id="device-actions-title">Device actions</h3>
+              <div class="panel-actions">
+                <button type="button" data-act="tracking" data-requires="device" aria-describedby="device-note">Auto-tracking</button>
+                <button type="button" data-act="cruise" data-requires="device" aria-describedby="device-note">Cruise</button>
+                <button type="button" data-act="presets" data-requires="device" aria-describedby="device-note">Presets</button>
+                <button type="button" data-act="strobe" data-requires="device" aria-describedby="device-note">Strobe light</button>
+                <button type="button" data-act="alarm" data-requires="device" aria-describedby="device-note">Audio alarm</button>
+                <button type="button" data-act="cloud-storage" data-requires="device" aria-describedby="device-note">Cloud storage</button>
+                <button type="button" data-act="sd-album" data-requires="device" aria-describedby="device-note">SD card album</button>
+              </div>
+            </div>
+
+            <div class="panel-group" id="preset-block" role="group" aria-labelledby="preset-title" hidden>
+              <h3 id="preset-title">Presets on the device</h3>
+              <div id="presets" class="panel-actions"></div>
+            </div>
+
+            <p id="control-status" class="field-note compact" role="status" hidden></p>
+
+            <details class="note-block" id="capability-block" hidden>
+              <summary>What the device reports it can do</summary>
+              <div class="note-body">
+                <p id="capability-summary" class="field-note compact">The server returned no capability rows.</p>
+                <table class="capabilities">
+                  <caption class="visually-hidden">Device capability report from the server</caption>
+                  <thead>
+                    <tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">State</th><th scope="col">Evidence</th></tr>
+                  </thead>
+                  <tbody id="capability-rows"></tbody>
+                </table>
+              </div>
+            </details>
+
+            <div class="panel-group" role="group" aria-labelledby="local-actions-title">
+              <h3 id="local-actions-title">In this browser</h3>
+              <div class="panel-actions">
+                <button id="flip" type="button" aria-pressed="false">Flip 180°</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-grid" class="view" hidden aria-labelledby="grid-title">
+        <div class="view-head">
+          <h1 id="grid-title" tabindex="-1">Grid</h1>
+          <p id="grid-summary" class="field-note">Pick a device to fill the grid.</p>
+        </div>
+        <div id="grid" class="channel-grid"></div>
+        <p id="grid-empty" class="empty" hidden>This device reports one channel, so there is nothing to tile. Multi-channel devices fill this view with one tile per channel.</p>
+      </section>
+
+      <section id="view-settings" class="view" hidden aria-labelledby="settings-title">
+        <div class="view-head">
+          <h1 id="settings-title" tabindex="-1">Settings</h1>
+          <p class="field-note">Stored in this browser only.</p>
+        </div>
+
+        <div class="settings-group" role="group" aria-labelledby="set-appearance">
+          <h2 id="set-appearance">Appearance</h2>
+          <fieldset class="choice">
+            <legend>Theme</legend>
+            <label><input type="radio" name="theme" value="system" checked><span>Match the system</span></label>
+            <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+            <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+          </fieldset>
+          <fieldset class="choice">
+            <legend>Overlay on the picture</legend>
+            <label class="switch"><input type="checkbox" id="set-osd" checked><span>Device name and clock</span></label>
+          </fieldset>
+        </div>
+
+        <div class="settings-group" role="group" aria-labelledby="set-connection">
+        <h2 id="set-connection">Connection</h2>
+        <p class="field-note">Which provider answers: the vendor cloud, or the camera on this network. Switching re-opens the device list through the new provider; this session may need to sign in again if that provider rejects it.</p>
+        <fieldset class="choice">
+          <legend>Provider</legend>
+          <label><input type="radio" name="mode" value="cloud"><span>Cloud account</span></label>
+          <label><input type="radio" name="mode" value="local"><span>This network</span></label>
+        </fieldset>
+        <p id="mode-status" class="field-note compact" role="status">Not checked yet.</p>
+        <p id="mode-notice" class="notice" role="status" hidden></p>
+      </div>
+
+      <div class="settings-group" role="group" aria-labelledby="set-playback">
+          <h2 id="set-playback">Playback</h2>
+          <fieldset class="choice">
+            <legend>Stream quality when a device opens</legend>
+            <label><input type="radio" name="quality" value="main" checked><span>HD (main stream)</span></label>
+            <label><input type="radio" name="quality" value="sub"><span>SD (sub stream)</span></label>
+          </fieldset>
+          <fieldset class="choice">
+            <legend>Lens view when a device opens</legend>
+            <label><input type="radio" name="lens" value="combined" checked><span>Combined</span></label>
+            <label><input type="radio" name="lens" value="0"><span>Top lens</span></label>
+            <label><input type="radio" name="lens" value="1"><span>Bottom lens</span></label>
+          </fieldset>
+          <fieldset class="choice">
+            <legend>Audio</legend>
+            <label class="switch"><input type="checkbox" id="set-muted" checked><span>Start muted</span></label>
+          </fieldset>
+        </div>
+
+        <div class="settings-group" role="group" aria-labelledby="set-server">
+          <h2 id="set-server">Server</h2>
+          <p class="field-note">Facts read from this server right now; nothing is cached.</p>
+          <button id="run-checks" class="secondary" type="button">Run checks</button>
+          <dl class="report">
+            <div><dt>Health</dt><dd id="check-health">Not checked</dd></div>
+            <div><dt>Account</dt><dd id="check-account">Not checked</dd></div>
+            <div><dt>Camera probe</dt><dd id="check-probe">Not checked</dd></div>
+            <div><dt>Stream ticket</dt><dd id="check-ticket">Not checked</dd></div>
+          </dl>
+          <details class="note-block">
+            <summary>What each check calls</summary>
+            <div class="note-body">
+              <p><code>GET /api/health</code> · <code>GET /api/me</code> · <code>POST /api/device/rtsp</code> · <code>GET /api/stream</code> for the selected device.</p>
+              <p>A failure here is the server's real answer for this machine, including a refused camera address.</p>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+  </div>
 
   <p id="app-error" class="banner" role="alert" hidden></p>
 </main>
