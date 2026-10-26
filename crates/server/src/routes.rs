@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ModeStore;
 
+pub mod control;
+
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, app_js, style_css, tokens_css, media_clip]
 }
@@ -29,6 +31,9 @@ pub fn api() -> Vec<rocket::route::Route> {
         rtsp_probe,
         health
     ]
+    .into_iter()
+    .chain(control::routes())
+    .collect()
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
@@ -66,9 +71,9 @@ pub struct StatusBody {
     pub message: String,
 }
 
-type Failure = (Status, Json<StatusBody>);
+pub(crate) type Failure = (Status, Json<StatusBody>);
 
-fn fail(status: Status, message: impl Into<String>) -> Failure {
+pub(crate) fn fail(status: Status, message: impl Into<String>) -> Failure {
     (
         status,
         Json(StatusBody {
@@ -87,7 +92,7 @@ fn status_for(err: &ProviderError) -> Status {
     }
 }
 
-fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
+pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
     cookies
         .get_private("pvw_session")
         .map(|c| c.value().to_string())
@@ -234,16 +239,15 @@ pub struct DeviceProbe {
     pub host: String,
     pub session: u32,
     pub device_type: Option<String>,
+    pub channels: Option<u32>,
+    pub alive_interval: Option<u32>,
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub framerate: Option<u32>,
 }
 
-#[post("/device/probe?<variant>")]
-async fn probe_device(
-    variant: Option<String>,
-    cfg: &State<Config>,
-) -> Result<Json<DeviceProbe>, Failure> {
+#[post("/device/probe")]
+async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure> {
     let host = cfg
         .device_host
         .clone()
@@ -251,17 +255,14 @@ async fn probe_device(
     let mut connection = proview_core::dvrip::client::Connection::connect(&host)
         .await
         .map_err(|e| fail(Status::BadGateway, format!("connect {host}: {e}")))?;
-    let login = match variant.as_deref() {
-        Some(name) => {
-            connection
-                .login_variant(&cfg.device_user, &cfg.device_pass, name)
-                .await
-        }
-        None => connection.login(&cfg.device_user, &cfg.device_pass).await,
-    }
-    .map_err(|e| fail(Status::BadGateway, format!("login {host}: {e}")))?;
+    let login = connection
+        .login(&cfg.device_user, &cfg.device_pass)
+        .await
+        .map_err(|e| fail(Status::BadGateway, format!("login {host}: {e}")))?;
     let session = login.session;
     let device_type = login.device_type;
+    let channels = login.channels;
+    let alive_interval = login.alive_interval;
     let _ = connection.logout().await;
 
     let (video_codec, audio_codec, framerate) = match cfg.device_rtsp.as_deref() {
@@ -287,6 +288,8 @@ async fn probe_device(
         host,
         session,
         device_type,
+        channels,
+        alive_interval,
         video_codec,
         audio_codec,
         framerate,

@@ -11,6 +11,7 @@ fn config(kind: ProviderKind, device_rtsp: Option<&str>) -> Config {
         device_user: "admin".to_string(),
         device_pass: "device-password".to_string(),
         fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),
+        device_onvif: None,
         device_host: None,
         device_rtsp: device_rtsp.map(str::to_string),
         session_ttl_secs: 3600,

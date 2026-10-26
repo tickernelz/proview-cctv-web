@@ -1,74 +1,143 @@
-use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use super::crypto::{login_hash, realm_hash, realm_hash_with_legacy_secret};
+use super::crypto::sofia_hash;
 use super::frame::{FrameError, Header};
 use super::msg;
 
 #[derive(Debug)]
-pub enum LoginError {
+pub enum DvrError {
     Io(std::io::Error),
     Frame(FrameError),
-    Json(serde_json::Error),
-    Rejected { ret: i64, message: Option<String> },
-    NoRealmAfterChallenge,
+    Malformed(String),
+    Rejected { ret: i64, reason: &'static str },
+    RealmChallenge { realm: String },
+    NoReply,
 }
 
-impl std::fmt::Display for LoginError {
+impl std::fmt::Display for DvrError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoginError::Io(e) => write!(f, "io: {e}"),
-            LoginError::Frame(e) => write!(f, "frame: {e:?}"),
-            LoginError::Json(e) => write!(f, "json: {e}"),
-            LoginError::Rejected { ret, message } => match message {
-                Some(m) => write!(f, "device rejected login (ret {ret}): {m}"),
-                None => write!(f, "device rejected login (ret {ret})"),
-            },
-            LoginError::NoRealmAfterChallenge => {
-                write!(f, "device asked for realm login without a Realm field")
-            }
+            DvrError::Io(error) => write!(f, "io: {error}"),
+            DvrError::Frame(error) => write!(f, "frame: {error:?}"),
+            DvrError::Malformed(detail) => write!(f, "unexpected reply: {detail}"),
+            DvrError::Rejected { ret, reason } => write!(f, "device returned ret {ret}: {reason}"),
+            DvrError::RealmChallenge { realm } => write!(
+                f,
+                "device asked for a realm challenge (realm {realm}); this device family answers the sofia hash directly and no verified realm digest exists"
+            ),
+            DvrError::NoReply => write!(f, "device sent no reply"),
         }
     }
 }
 
-impl std::error::Error for LoginError {}
+impl std::error::Error for DvrError {}
 
-#[derive(Debug)]
+impl From<std::io::Error> for DvrError {
+    fn from(error: std::io::Error) -> Self {
+        DvrError::Io(error)
+    }
+}
+
+impl From<FrameError> for DvrError {
+    fn from(error: FrameError) -> Self {
+        DvrError::Frame(error)
+    }
+}
+
+pub fn describe_ret(ret: i64) -> &'static str {
+    match ret {
+        100 => "ok",
+        101 => "unknown error",
+        103 => "request not permitted",
+        104 => "user already logged in",
+        105 => "user is not logged in",
+        106 => "username or password is incorrect",
+        107 => "user lacks permission",
+        118 => "ptz protocol not set",
+        150 => "ok, device restart required",
+        202 => "user is not logged in",
+        203 => "password is incorrect",
+        204 => "user is invalid",
+        205 => "ip locked",
+        206 => "user is in the blacklist",
+        207 => "blacklisted",
+        208 => "invalid input",
+        502 => "command is invalid",
+        503 => "talk is already open",
+        504 => "talk is not open",
+        605 => "feature not supported",
+        607 => "configuration does not exist",
+        _ => "device error",
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginOk {
     pub session: u32,
     pub device_type: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct LoginResponse {
-    #[serde(rename = "Ret")]
-    ret: i64,
-    #[serde(rename = "SessionID", default)]
-    session_id: Option<String>,
-    #[serde(rename = "Realm", default)]
-    realm: Option<String>,
-    #[serde(rename = "DeviceType", default)]
-    device_type: Option<String>,
-    #[serde(rename = "Error", default)]
-    error: Option<String>,
-}
-
-fn parse_session_id(raw: &str) -> Option<u32> {
-    let trimmed = raw.trim();
-    let without_prefix = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"));
-    match without_prefix {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => trimmed.parse::<u32>().ok(),
-    }
+    pub channels: Option<u32>,
+    pub alive_interval: Option<u32>,
 }
 
 pub struct Connection {
     stream: TcpStream,
     session: u32,
     sequence: u32,
+}
+
+fn trim_reply(payload: &[u8]) -> &[u8] {
+    let mut end = payload.len();
+    while end > 0 && matches!(payload[end - 1], 0 | b'\n' | b'\r') {
+        end -= 1;
+    }
+    &payload[..end]
+}
+
+fn parse_json(payload: &[u8]) -> Result<Value, DvrError> {
+    serde_json::from_slice(trim_reply(payload)).map_err(|error| {
+        DvrError::Malformed(format!(
+            "{error}: {}",
+            String::from_utf8_lossy(trim_reply(payload))
+                .chars()
+                .take(120)
+                .collect::<String>()
+        ))
+    })
+}
+
+fn ret_of(reply: &Value) -> Result<i64, DvrError> {
+    reply
+        .get("Ret")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| DvrError::Malformed("reply has no Ret field".to_string()))
+}
+
+pub fn require_ok(reply: &Value) -> Result<i64, DvrError> {
+    let ret = ret_of(reply)?;
+    if ret == 100 || ret == 150 {
+        return Ok(ret);
+    }
+    Err(DvrError::Rejected {
+        ret,
+        reason: describe_ret(ret),
+    })
+}
+
+fn parse_session_id(raw: &str) -> Option<u32> {
+    let trimmed = raw.trim();
+    match trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => trimmed.parse::<u32>().ok(),
+    }
+}
+
+fn field(reply: &Value, names: &[&str]) -> Option<Value> {
+    names.iter().find_map(|name| reply.get(*name).cloned())
 }
 
 impl Connection {
@@ -82,25 +151,37 @@ impl Connection {
         })
     }
 
+    pub fn session(&self) -> u32 {
+        self.session
+    }
+
     fn next_sequence(&mut self) -> u32 {
         self.sequence = self.sequence.wrapping_add(1);
         self.sequence
     }
 
-    pub async fn send(&mut self, id: u16, channel: u8, body: &[u8]) -> std::io::Result<u32> {
+    async fn send_frame(&mut self, id: u16, body: &[u8]) -> std::io::Result<()> {
         let sequence = self.next_sequence();
         let header = Header {
             session: self.session,
             sequence,
-            channel,
+            channel: 0,
             end: true,
             id,
             length: body.len() as u32,
         };
         self.stream.write_all(&header.encode()).await?;
         self.stream.write_all(body).await?;
-        self.stream.flush().await?;
-        Ok(sequence)
+        self.stream.flush().await
+    }
+
+    async fn send_json(&mut self, id: u16, body: &Value) -> Result<(), DvrError> {
+        let mut payload =
+            serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        payload.push(b'\n');
+        payload.push(0);
+        self.send_frame(id, &payload).await?;
+        Ok(())
     }
 
     pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), FrameError> {
@@ -117,185 +198,113 @@ impl Connection {
                 .await
                 .map_err(|_| FrameError::NotEnoughData)?;
         }
-        self.session = header.session;
+        if header.session != 0 {
+            self.session = header.session;
+        }
         Ok((header, body))
     }
 
-    pub async fn login_variant(
-        &mut self,
-        user: &str,
-        password: &str,
-        variant: &str,
-    ) -> Result<LoginOk, LoginError> {
-        let candidate = match variant {
-            "md5" => login_hash(user, password),
-            "md5md5" => crate::dvrip::crypto::md5_hex(&login_hash(user, password)),
-            "plain" => password.to_string(),
-            other => {
-                return Err(LoginError::Rejected {
-                    ret: -1,
-                    message: Some(format!("unknown variant {other}")),
-                })
-            }
-        };
-        let response = self.login_attempt(user, &candidate).await?;
-        if response.ret == 100 {
-            return Ok(LoginOk {
-                session: self.session,
-                device_type: response.device_type,
-            });
-        }
-        if response.ret == 200 {
-            let realm = response
-                .realm
-                .clone()
-                .ok_or(LoginError::NoRealmAfterChallenge)?;
-            let retry = match variant {
-                "md5" => realm_hash(user, &realm, password),
-                "md5md5" => realm_hash_with_legacy_secret(user, &realm, &candidate),
-                _ => realm_hash(user, &realm, password),
-            };
-            let after = self.login_attempt(user, &retry).await?;
-            if after.ret == 100 {
-                return Ok(LoginOk {
-                    session: self.session,
-                    device_type: after.device_type,
-                });
-            }
-            return Err(LoginError::Rejected {
-                ret: after.ret,
-                message: after.error,
-            });
-        }
-        Err(LoginError::Rejected {
-            ret: response.ret,
-            message: response.error,
-        })
+    pub async fn request(&mut self, id: u16, body: Value) -> Result<Value, DvrError> {
+        self.send_json(id, &body).await?;
+        self.await_reply(8).await
     }
 
-    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, LoginError> {
-        let probe = self.login_attempt(user, "").await?;
-        if probe.ret == 100 {
-            return Ok(LoginOk {
-                session: self.session,
-                device_type: probe.device_type,
-            });
-        }
-        let first = if probe.ret == 200 {
-            probe
-        } else {
-            let direct = self
-                .login_attempt(user, &login_hash(user, password))
-                .await?;
-            if direct.ret == 100 {
-                return Ok(LoginOk {
-                    session: self.session,
-                    device_type: direct.device_type,
-                });
-            }
-            return Err(LoginError::Rejected {
-                ret: direct.ret,
-                message: direct.error,
-            });
-        };
-
-        if first.ret != 200 {
-            return Err(LoginError::Rejected {
-                ret: first.ret,
-                message: first.error,
-            });
-        }
-
-        let realm = first
-            .realm
-            .clone()
-            .ok_or(LoginError::NoRealmAfterChallenge)?;
-        let secret = login_hash(user, password);
-        let candidates = [
-            realm_hash(user, &realm, password),
-            realm_hash_with_legacy_secret(user, &realm, &secret),
-        ];
-
-        let mut last = first;
-        for candidate in candidates {
-            let response = self.login_attempt(user, &candidate).await?;
-            if response.ret == 100 {
-                return Ok(LoginOk {
-                    session: self.session,
-                    device_type: response.device_type,
-                });
-            }
-            last = response;
-        }
-        Err(LoginError::Rejected {
-            ret: last.ret,
-            message: last.error,
-        })
-    }
-
-    async fn login_attempt(
-        &mut self,
-        user: &str,
-        password_hash: &str,
-    ) -> Result<LoginResponse, LoginError> {
-        let body = serde_json::json!({
-            "EncryptType": "MD5",
-            "LoginType": "DVRIP-Web",
-            "PassWord": password_hash,
-            "UserName": user,
-        });
-        self.send(msg::LOGIN_REQUEST, 0, body.to_string().as_bytes())
-            .await
-            .map_err(LoginError::Io)?;
-        let (_, payload) = self.recv().await.map_err(LoginError::Frame)?;
-        let mut deserializer = serde_json::Deserializer::from_slice(&payload);
-        let parsed = LoginResponse::deserialize(&mut deserializer).map_err(LoginError::Json)?;
-        if let Some(raw) = parsed.session_id.as_deref() {
-            if let Some(session) = parse_session_id(raw) {
-                self.session = session;
-            }
-        }
-        Ok(parsed)
-    }
-
-    pub async fn start_monitor(&mut self, channel: u8, sub_stream: bool) -> std::io::Result<u32> {
-        let body = serde_json::json!({
-            "Name": "OPMonitor",
-            "OPMonitor": {
-                "Action": "Start",
-                "Parameter": {
-                    "Channel": channel,
-                    "CombinMode": "CONNECT",
-                    "StreamType": if sub_stream { "Extra1" } else { "Main" },
-                    "TransMode": "TCP",
+    async fn await_reply(&mut self, attempts: usize) -> Result<Value, DvrError> {
+        for _ in 0..attempts {
+            let (_, payload) = self.recv().await?;
+            if let Ok(value) = parse_json(&payload) {
+                if value.is_object() {
+                    return Ok(value);
                 }
             }
+        }
+        Err(DvrError::NoReply)
+    }
+
+    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, DvrError> {
+        let body = json!({
+            "EncryptType": "MD5",
+            "LoginType": "DVRIP-Web",
+            "PassWord": sofia_hash(password),
+            "UserName": user,
         });
-        self.send(msg::MONITOR_START, channel, body.to_string().as_bytes())
-            .await
+        let reply = self.request(msg::LOGIN, body).await?;
+        let ret = ret_of(&reply)?;
+        if ret == 200 {
+            let realm = field(&reply, &["Realm"])
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default();
+            return Err(DvrError::RealmChallenge { realm });
+        }
+        require_ok(&reply)?;
+        if let Some(session) = field(&reply, &["SessionID"])
+            .and_then(|value| value.as_str().map(parse_session_id))
+            .flatten()
+        {
+            self.session = session;
+        }
+        Ok(LoginOk {
+            session: self.session,
+            device_type: field(&reply, &["DeviceType ", "DeviceType"])
+                .and_then(|value| value.as_str().map(str::to_string)),
+            channels: field(&reply, &["ChannelNum"])
+                .and_then(|value| value.as_u64())
+                .map(|value| value as u32),
+            alive_interval: field(&reply, &["AliveInterval"])
+                .and_then(|value| value.as_u64())
+                .map(|value| value as u32),
+        })
     }
 
-    pub async fn stop_monitor(&mut self, channel: u8) -> std::io::Result<u32> {
-        let body = serde_json::json!({
-            "Name": "OPMonitor",
-            "OPMonitor": { "Action": "Stop", "Parameter": { "Channel": channel } }
-        });
-        self.send(msg::MONITOR_STOP, channel, body.to_string().as_bytes())
-            .await
+    pub async fn keep_alive(&mut self) -> Result<(), DvrError> {
+        let session = format!("0x{:08X}", self.session);
+        let reply = self
+            .request(
+                msg::KEEP_ALIVE,
+                json!({ "Name": "KeepAlive", "SessionID": session }),
+            )
+            .await?;
+        require_ok(&reply).map(|_| ())
     }
 
-    pub async fn read_frame(&mut self) -> Result<(Header, Vec<u8>), FrameError> {
-        self.recv().await
-    }
-
-    pub async fn logout(&mut self) -> std::io::Result<()> {
-        self.send(msg::LOGOUT, 0, b"{}").await?;
+    pub async fn logout(&mut self) -> Result<(), DvrError> {
+        let session = format!("0x{:08X}", self.session);
+        let reply = self
+            .request(msg::LOGOUT, json!({ "Name": "", "SessionID": session }))
+            .await?;
         self.session = 0;
-        Ok(())
+        require_ok(&reply).map(|_| ())
     }
 
-    pub fn session(&self) -> u32 {
-        self.session
+    pub async fn snapshot(&mut self, channel: u8) -> Result<Vec<u8>, DvrError> {
+        let session = format!("0x{:08X}", self.session);
+        self.send_json(
+            msg::SNAP,
+            &json!({
+                "Name": "OPSNAP",
+                "SessionID": session,
+                "OPSNAP": { "Channel": channel },
+            }),
+        )
+        .await?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            let (_, payload) = self.recv().await?;
+            if payload.len() > 3 && payload[0] == 0xff && payload[1] == 0xd8 && payload[2] == 0xff {
+                return Ok(payload);
+            }
+            if let Ok(reply) = parse_json(&payload) {
+                if let Ok(ret) = ret_of(&reply) {
+                    if ret != 100 {
+                        return Err(DvrError::Rejected {
+                            ret,
+                            reason: describe_ret(ret),
+                        });
+                    }
+                }
+            }
+        }
+        Err(DvrError::NoReply)
     }
 }
 
@@ -304,38 +313,51 @@ mod tests {
     use super::*;
     use tokio::net::TcpListener;
 
-    async fn spawn_reply(replies: Vec<serde_json::Value>) -> String {
+    async fn serve(replies: Vec<Vec<u8>>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            let mut seen = Vec::new();
             for reply in replies {
                 let mut header_bytes = [0u8; super::super::HEADER_LEN];
                 if socket.read_exact(&mut header_bytes).await.is_err() {
-                    return;
+                    break;
                 }
                 let header = Header::decode(&header_bytes).unwrap();
                 let mut body = vec![0u8; header.length as usize];
                 socket.read_exact(&mut body).await.unwrap();
+                seen.push(String::from_utf8_lossy(&body).into_owned());
 
-                let payload = reply.to_string();
                 let response = Header {
                     session: 0x1122_3344,
                     sequence: header.sequence,
                     channel: 0,
                     end: true,
-                    id: header.id,
-                    length: payload.len() as u32,
+                    id: header.id.wrapping_add(1),
+                    length: reply.len() as u32,
                 };
                 socket.write_all(&response.encode()).await.unwrap();
-                socket.write_all(payload.as_bytes()).await.unwrap();
+                socket.write_all(&reply).await.unwrap();
             }
+            seen
         });
-        format!("{addr}")
+        (format!("{addr}"), handle)
+    }
+
+    fn json_reply(value: Value) -> Vec<u8> {
+        let mut payload = value.to_string().into_bytes();
+        payload.push(b'\n');
+        payload.push(0);
+        payload
+    }
+
+    async fn connect(address: &str) -> Connection {
+        Connection::connect(address).await.unwrap()
     }
 
     #[test]
-    fn session_id_is_read_from_hex_or_decimal() {
+    fn session_ids_parse_from_hex_or_decimal() {
         assert_eq!(parse_session_id("0x00a1b2c3"), Some(0x00a1_b2c3));
         assert_eq!(parse_session_id("0X0000002A"), Some(42));
         assert_eq!(parse_session_id("42"), Some(42));
@@ -343,131 +365,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_login_succeeds_when_the_device_answers_100() {
-        let addr = spawn_reply(vec![serde_json::json!({"Ret": 100, "DeviceType": "IPC"})]).await;
-        let mut connection = Connection::connect(&addr).await.unwrap();
-        let ok = connection.login("admin", "admin").await.unwrap();
-        assert_eq!(ok.session, 0x1122_3344);
+    async fn login_sends_the_sofia_hash_and_accepts_the_devices_field_names() {
+        let (address, handle) = serve(vec![json_reply(json!({
+            "Ret": 100,
+            "SessionID": "0x00000017",
+            "DeviceType ": "IPC",
+            "ChannelNum": 1,
+            "AliveInterval": 30,
+            "AdminToken": "ignored",
+        }))])
+        .await;
+        let mut connection = connect(&address).await;
+
+        let ok = connection.login("admin", "hunter2").await.unwrap();
+
+        assert_eq!(ok.session, 0x17);
         assert_eq!(ok.device_type.as_deref(), Some("IPC"));
+        assert_eq!(ok.channels, Some(1));
+        assert_eq!(ok.alive_interval, Some(30));
+        let sent: Value =
+            serde_json::from_str(handle.await.unwrap()[0].trim_end_matches('\0')).unwrap();
+        assert_eq!(sent["UserName"], "admin");
+        assert_eq!(sent["LoginType"], "DVRIP-Web");
+        assert_eq!(sent["EncryptType"], "MD5");
+        assert_eq!(sent["PassWord"], sofia_hash("hunter2"));
+        assert_ne!(sent["PassWord"], "hunter2");
     }
 
     #[tokio::test]
-    async fn realm_challenge_is_answered_with_the_realm_hash() {
-        let realm = "a1b2c3d4";
-        let expected = realm_hash("admin", realm, "admin");
-        let replies = vec![
-            serde_json::json!({"Ret": 200, "Realm": realm, "EncryptType": "MD5"}),
-            serde_json::json!({"Ret": 100}),
-        ];
+    async fn rejected_login_reports_the_device_reason() {
+        let (address, _handle) = serve(vec![json_reply(json!({ "Ret": 203 }))]).await;
+        let mut connection = connect(&address).await;
+        match connection.login("admin", "nope").await {
+            Err(DvrError::Rejected { ret, reason }) => {
+                assert_eq!(ret, 203);
+                assert_eq!(reason, "password is incorrect");
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn realm_challenge_is_reported_instead_of_guessed_again() {
+        let (address, handle) =
+            serve(vec![json_reply(json!({ "Ret": 200, "Realm": "a1b2c3d4" }))]).await;
+        let mut connection = connect(&address).await;
+        match connection.login("admin", "admin").await {
+            Err(DvrError::RealmChallenge { realm }) => assert_eq!(realm, "a1b2c3d4"),
+            other => panic!("expected realm challenge, got {other:?}"),
+        }
+        assert_eq!(handle.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn trailing_nul_and_newline_in_replies_are_ignored() {
+        let (address, _handle) = serve(vec![json_reply(json!({
+            "Ret": 100,
+            "SessionID": "7",
+        }))])
+        .await;
+        let mut connection = connect(&address).await;
+        let ok = connection.login("admin", "admin").await.unwrap();
+        assert_eq!(ok.session, 7);
+    }
+
+    async fn serve_pushes(replies: Vec<Vec<u8>>) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let mut seen = Vec::new();
+            let mut header_bytes = [0u8; super::super::HEADER_LEN];
+            socket.read_exact(&mut header_bytes).await.unwrap();
+            let header = Header::decode(&header_bytes).unwrap();
+            let mut body = vec![0u8; header.length as usize];
+            socket.read_exact(&mut body).await.unwrap();
             for reply in replies {
-                let mut header_bytes = [0u8; super::super::HEADER_LEN];
-                socket.read_exact(&mut header_bytes).await.unwrap();
-                let header = Header::decode(&header_bytes).unwrap();
-                let mut body = vec![0u8; header.length as usize];
-                socket.read_exact(&mut body).await.unwrap();
-                seen.push(String::from_utf8(body).unwrap());
-
-                let payload = reply.to_string();
                 let response = Header {
-                    session: 0x5566_7788,
+                    session: 0x3355_7799,
                     sequence: header.sequence,
                     channel: 0,
                     end: true,
-                    id: header.id,
-                    length: payload.len() as u32,
+                    id: header.id.wrapping_add(1),
+                    length: reply.len() as u32,
                 };
                 socket.write_all(&response.encode()).await.unwrap();
-                socket.write_all(payload.as_bytes()).await.unwrap();
+                socket.write_all(&reply).await.unwrap();
             }
-            let second: serde_json::Value = serde_json::from_str(&seen[1]).unwrap();
-            assert_eq!(second["PassWord"], expected);
         });
-
-        let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
-        let ok = connection.login("admin", "admin").await.unwrap();
-        assert_eq!(ok.session, 0x5566_7788);
+        format!("{addr}")
     }
 
     #[tokio::test]
-    async fn monitor_start_sends_the_documented_shape_and_media_is_returned_raw() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-
-            let mut header_bytes = [0u8; super::super::HEADER_LEN];
-            socket.read_exact(&mut header_bytes).await.unwrap();
-            let header = Header::decode(&header_bytes).unwrap();
-            let mut body = vec![0u8; header.length as usize];
-            socket.read_exact(&mut body).await.unwrap();
-            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
-            let media = [0u8, 0, 0, 1, 0x65, 0x88, 0x84];
-            let response = Header {
-                session: 7,
-                sequence: header.sequence,
-                channel: 3,
-                end: true,
-                id: header.id,
-                length: media.len() as u32,
-            };
-            socket.write_all(&response.encode()).await.unwrap();
-            socket.write_all(&media).await.unwrap();
-            request
-        });
-
-        let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
-        connection.start_monitor(3, false).await.unwrap();
-        let (header, payload) = connection.read_frame().await.unwrap();
-        let request = handle.await.unwrap();
-
-        assert_eq!(request["Name"], "OPMonitor");
-        assert_eq!(request["OPMonitor"]["Action"], "Start");
-        assert_eq!(request["OPMonitor"]["Parameter"]["Channel"], 3);
-        assert_eq!(request["OPMonitor"]["Parameter"]["StreamType"], "Main");
-        assert_eq!(header.id, super::super::msg::MONITOR_START);
-        assert_eq!(header.channel, 3);
-        assert_eq!(payload, vec![0u8, 0, 0, 1, 0x65, 0x88, 0x84]);
-    }
-
-    #[tokio::test]
-    async fn sub_stream_selects_the_extra_stream() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut header_bytes = [0u8; super::super::HEADER_LEN];
-            socket.read_exact(&mut header_bytes).await.unwrap();
-            let header = Header::decode(&header_bytes).unwrap();
-            let mut body = vec![0u8; header.length as usize];
-            socket.read_exact(&mut body).await.unwrap();
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
-        });
-        let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
-        connection.start_monitor(1, true).await.unwrap();
-        let request = handle.await.unwrap();
-        assert_eq!(request["OPMonitor"]["Parameter"]["StreamType"], "Extra1");
-    }
-
-    #[tokio::test]
-    async fn rejected_login_is_reported_with_the_device_message() {
-        let addr = spawn_reply(vec![
-            serde_json::json!({"Ret": 401, "Error": "probe rejected"}),
-            serde_json::json!({"Ret": 401, "Error": "bad password"}),
+    async fn snapshot_returns_the_jpeg_payload_after_a_text_reply() {
+        let jpeg = vec![0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10];
+        let address = serve_pushes(vec![
+            json_reply(json!({ "Ret": 100, "Name": "OPSNAP" })),
+            jpeg.clone(),
         ])
         .await;
-        let mut connection = Connection::connect(&addr).await.unwrap();
-        match connection.login("admin", "nope").await {
-            Err(LoginError::Rejected { ret, message }) => {
-                assert_eq!(ret, 401);
-                assert_eq!(message.as_deref(), Some("bad password"));
+        let mut connection = connect(&address).await;
+        let picture = connection.snapshot(0).await.unwrap();
+        assert_eq!(picture, jpeg);
+    }
+
+    #[tokio::test]
+    async fn snapshot_failure_code_is_reported_instead_of_waiting() {
+        let address = serve_pushes(vec![json_reply(json!({ "Ret": 605, "Name": "OPSNAP" }))]).await;
+        let mut connection = connect(&address).await;
+        match connection.snapshot(0).await {
+            Err(DvrError::Rejected { ret, reason }) => {
+                assert_eq!(ret, 605);
+                assert_eq!(reason, "feature not supported");
             }
-            other => panic!("expected rejection, got {other:?}"),
+            other => panic!("expected a rejection, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn bare_numeric_error_codes_are_mapped_to_their_meaning() {
+        assert_eq!(describe_ret(203), "password is incorrect");
+        assert_eq!(describe_ret(605), "feature not supported");
+        assert_eq!(describe_ret(607), "configuration does not exist");
+        assert!(describe_ret(100).contains("ok"));
     }
 }

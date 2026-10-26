@@ -10,6 +10,7 @@ fn config(local: bool) -> proview_core::config::Config {
         device_pass: "device-password".to_string(),
         fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),
         device_host: None,
+        device_onvif: None,
         device_rtsp: local.then(|| "192.0.2.10:554".to_string()),
         session_ttl_secs: 3600,
     }
@@ -221,4 +222,61 @@ fn logout_invalidates_the_session() {
         client.get("/api/devices").dispatch().status(),
         Status::Unauthorized
     );
+}
+
+#[test]
+fn control_routes_require_a_session() {
+    let client = client();
+    assert_eq!(
+        client.get("/api/device/controls").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        client
+            .post("/api/device/controls/ptz?pan=0.5")
+            .dispatch()
+            .status(),
+        Status::Unauthorized
+    );
+}
+
+#[test]
+fn capability_report_lists_both_backends_as_unconfigured() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+
+    let response = client.get("/api/device/controls").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body: serde_json::Value = serde_json::from_str(&response.into_string().unwrap()).unwrap();
+    assert_eq!(body["onvif"], false);
+    assert_eq!(body["dvrip"], false);
+    let rows = body["capabilities"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["feature"] == "onvif transport"
+        && row["state"] == "blocked"
+        && row["backend"] == "onvif"
+        && row["lens"] == "device"));
+    assert!(rows
+        .iter()
+        .any(|row| row["feature"] == "dvrip settings" && row["state"] == "blocked"));
+}
+
+#[test]
+fn ptz_move_needs_a_velocity_and_a_known_lens() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+
+    let no_velocity = client
+        .post("/api/device/controls/ptz?lens=bottom")
+        .dispatch();
+    assert_eq!(no_velocity.status(), Status::BadRequest);
+
+    let unknown_lens = client
+        .post("/api/device/controls/ptz?lens=middle&pan=0.4")
+        .dispatch();
+    assert_eq!(unknown_lens.status(), Status::BadRequest);
+
+    let no_backend = client
+        .post("/api/device/controls/ptz?lens=bottom&pan=0.4")
+        .dispatch();
+    assert_eq!(no_backend.status(), Status::BadGateway);
 }
