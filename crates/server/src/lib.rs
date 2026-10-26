@@ -3,6 +3,7 @@ extern crate rocket;
 
 pub mod app;
 pub mod config;
+pub mod lens_route;
 pub mod live_state;
 pub mod routes;
 
