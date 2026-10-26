@@ -27,7 +27,8 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Device reachability probe | `CNetDevice`, DVRIP login | done | `POST /api/device/probe` connects and logs in over DVRIP; needs `PROVIEW_DEVICE_HOST` |
+| Device reachability probe | `CNetDevice`, DVRIP login | partial | route `POST /api/device/probe` is implemented and tested only for the unconfigured case (400). No real device has been contacted yet, so the handshake itself is unproven |
+| Recorded-clip playback path | `Fun_MediaDownloadM3u8ByUrl`, `CMediaFile` | partial | Annex-B clip → fMP4 is served and plays in Chromium (verified with ffprobe + in-browser decode); the live transport feeding it does not exist yet |
 | Live video | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor` | blocked | needs the device session: LAN RTSP/DVRIP on 554/34567, or cloud DSS/HLS |
 | Main / sub stream choice | `DevEncodeConfigActivity`, `SDKCONST$StreamType` | blocked | follows the transport |
 | Multi-channel grid | `CloudServiceChannelListActivity`, `MultiChnCombin` | blocked | follows the transport |
