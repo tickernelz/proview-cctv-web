@@ -22,7 +22,13 @@ impl Store {
     pub fn put(&self, id: String, session: VendorSession, ttl: Duration) {
         let mut guard = self.inner.lock().expect("session store poisoned");
         guard.retain(|_, e| e.expires > Instant::now());
-        guard.insert(id, Entry { session, expires: Instant::now() + ttl });
+        guard.insert(
+            id,
+            Entry {
+                session,
+                expires: Instant::now() + ttl,
+            },
+        );
     }
 
     pub fn get(&self, id: &str) -> Option<VendorSession> {
@@ -37,12 +43,17 @@ impl Store {
     }
 
     pub fn remove(&self, id: &str) {
-        self.inner.lock().expect("session store poisoned").remove(id);
+        self.inner
+            .lock()
+            .expect("session store poisoned")
+            .remove(id);
     }
 }
 
 pub fn new_id() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    (0..32).map(|_| format!("{:x}", rng.gen_range(0u8..16))).collect()
+    (0..32)
+        .map(|_| format!("{:x}", rng.gen_range(0u8..16)))
+        .collect()
 }

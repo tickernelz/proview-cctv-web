@@ -59,7 +59,9 @@ impl CameraProvider for Proview {
                 "account login envelope (CssCenter JSON) is not solved yet; vendor returned no session cookie",
             ));
         }
-        Ok(VendorSession { account: user.to_string(), opaque: "cookie".to_string() })
+        Ok(VendorSession {
+            account: user.to_string(),
+        })
     }
 
     async fn devices(&self, _session: &VendorSession) -> Result<Vec<Device>, ProviderError> {

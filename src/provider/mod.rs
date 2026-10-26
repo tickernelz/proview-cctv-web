@@ -50,7 +50,6 @@ pub enum StreamKind {
 #[derive(Debug, Clone)]
 pub struct VendorSession {
     pub account: String,
-    pub opaque: String,
 }
 
 #[async_trait::async_trait]

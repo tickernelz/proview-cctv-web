@@ -9,7 +9,9 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new(cfg: &Config) -> Self {
-        Self { dir: PathBuf::from(&cfg.fixture_dir) }
+        Self {
+            dir: PathBuf::from(&cfg.fixture_dir),
+        }
     }
 
     fn load_devices(&self) -> Result<Vec<Device>, ProviderError> {
@@ -34,10 +36,18 @@ impl CameraProvider for Fixture {
         let raw = std::fs::read_to_string(path)?;
         let expected: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| ProviderError::Upstream(e.to_string()))?;
-        let want_user = expected.get("email").and_then(|v| v.as_str()).unwrap_or_default();
-        let want_pass = expected.get("password").and_then(|v| v.as_str()).unwrap_or_default();
+        let want_user = expected
+            .get("email")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let want_pass = expected
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if constant_time_eq(user, want_user) && constant_time_eq(pass, want_pass) {
-            Ok(VendorSession { account: user.to_string(), opaque: "fixture-session".to_string() })
+            Ok(VendorSession {
+                account: user.to_string(),
+            })
         } else {
             Err(ProviderError::BadCredentials)
         }
@@ -60,7 +70,9 @@ impl CameraProvider for Fixture {
             .find(|d| d.id == device)
             .ok_or_else(|| ProviderError::UnknownDevice(device.to_string()))?;
         if channel < 1 || channel > found.channels {
-            return Err(ProviderError::UnknownDevice(format!("{device} channel {channel}")));
+            return Err(ProviderError::UnknownDevice(format!(
+                "{device} channel {channel}"
+            )));
         }
         let name = if high { "main" } else { "sub" };
         let path = self.dir.join(format!("{device}_ch{channel}_{name}.m3u8"));

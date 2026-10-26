@@ -15,7 +15,7 @@ pub fn files() -> Vec<rocket::route::Route> {
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
-    routes![login, logout, devices, stream, health]
+    routes![login, logout, me, devices, stream, health]
 }
 
 #[get("/")]
@@ -47,7 +47,13 @@ pub struct StatusBody {
 type Failure = (Status, Json<StatusBody>);
 
 fn fail(status: Status, message: impl Into<String>) -> Failure {
-    (status, Json(StatusBody { ok: false, message: message.into() }))
+    (
+        status,
+        Json(StatusBody {
+            ok: false,
+            message: message.into(),
+        }),
+    )
 }
 
 fn status_for(err: &ProviderError) -> Status {
@@ -92,14 +98,21 @@ async fn login(
         .map_err(|e| fail(status_for(&e), e.to_string()))?;
 
     let id = session::new_id();
-    store.put(id.clone(), vendor, Duration::from_secs(cfg.session_ttl_secs));
+    store.put(
+        id.clone(),
+        vendor,
+        Duration::from_secs(cfg.session_ttl_secs),
+    );
     cookies.add_private(
         Cookie::build(("pvw_session", id))
             .http_only(true)
             .same_site(SameSite::Strict)
             .build(),
     );
-    Ok(Json(StatusBody { ok: true, message: "signed in".to_string() }))
+    Ok(Json(StatusBody {
+        ok: true,
+        message: "signed in".to_string(),
+    }))
 }
 
 #[post("/logout")]
@@ -108,7 +121,17 @@ fn logout(store: &State<Store>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
         store.remove(c.value());
         cookies.remove_private(c);
     }
-    Json(StatusBody { ok: true, message: "signed out".to_string() })
+    Json(StatusBody {
+        ok: true,
+        message: "signed out".to_string(),
+    })
+}
+
+#[get("/me")]
+fn me(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Json<serde_json::Value>, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    Ok(Json(serde_json::json!({ "account": vendor.account })))
 }
 
 #[get("/devices")]

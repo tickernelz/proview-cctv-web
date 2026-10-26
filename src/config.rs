@@ -28,8 +28,7 @@ impl Config {
                 .unwrap_or_else(|_| "https://pub-token.xmeye.net".to_string()),
             device_user: env::var("PROVIEW_DEVICE_USER").unwrap_or_else(|_| "admin".to_string()),
             device_pass: env::var("PROVIEW_DEVICE_PASS").unwrap_or_default(),
-            fixture_dir: env::var("PROVIEW_FIXTURE_DIR")
-                .unwrap_or_else(|_| "fixtures".to_string()),
+            fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| "fixtures".to_string()),
             session_ttl_secs: env::var("PROVIEW_SESSION_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())
