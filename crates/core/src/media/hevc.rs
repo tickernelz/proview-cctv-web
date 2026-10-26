@@ -149,9 +149,6 @@ impl Reader {
             }
         }
         self.expected = Some(packet.sequence.wrapping_add(1));
-        if !self.assembler.synced() && self.depacketizer.partial() {
-            return None;
-        }
         let nals = self.depacketizer.push(packet);
         self.assembler
             .packet(packet.marker, &nals, packet.timestamp)
@@ -709,6 +706,82 @@ mod tests {
         assert!(unit.keyframe);
         assert_eq!(unit.nals, vec![vec![0x26, 0x01, 0x80, 0xdd]]);
         assert!(reader.synced());
+    }
+
+    fn fragmented_idr(reader: &mut Reader, first: u16, timestamp: u32) -> Option<AccessUnit> {
+        assert!(push_packet(
+            reader,
+            false,
+            first,
+            timestamp,
+            &[0x62, 0x01, 0x93, 0x80, 0x11]
+        )
+        .is_none());
+        assert!(push_packet(
+            reader,
+            false,
+            first + 1,
+            timestamp,
+            &[0x62, 0x01, 0x13, 0x22]
+        )
+        .is_none());
+        push_packet(
+            reader,
+            true,
+            first + 2,
+            timestamp,
+            &[0x62, 0x01, 0x53, 0x33],
+        )
+    }
+
+    #[test]
+    fn a_fragmented_idr_after_a_gap_resyncs() {
+        let mut reader = Reader::new();
+        assert!(push_packet(
+            &mut reader,
+            false,
+            1,
+            3_000,
+            &[0x62, 0x01, 0x93, 0x80, 0xaa]
+        )
+        .is_none());
+        assert!(push_packet(&mut reader, true, 3, 3_000, &[0x62, 0x01, 0x53, 0xbb]).is_none());
+        assert!(!reader.synced());
+        let unit = fragmented_idr(&mut reader, 4, 9_000).expect("a fragmented idr resynchronises");
+        assert!(unit.keyframe);
+        assert_eq!(unit.nals, vec![vec![0x26, 0x01, 0x80, 0x11, 0x22, 0x33]]);
+        assert!(reader.synced());
+        assert!(fragmented_idr(&mut reader, 7, 18_000).is_some());
+    }
+
+    #[test]
+    fn a_gap_landing_on_an_idr_fu_start_resyncs_on_the_next_idr() {
+        let mut reader = Reader::new();
+        assert!(push_packet(&mut reader, true, 1, 3_000, &[0x02, 0x01, 0x80, 0x01]).is_some());
+        let unit =
+            fragmented_idr(&mut reader, 5, 9_000).expect("the idr after the gap resynchronises");
+        assert!(unit.keyframe);
+        assert!(reader.synced());
+    }
+
+    #[test]
+    fn a_lost_middle_fragment_does_not_publish_a_truncated_keyframe() {
+        let mut reader = Reader::new();
+        assert!(push_packet(
+            &mut reader,
+            false,
+            1,
+            9_000,
+            &[0x62, 0x01, 0x93, 0x80, 0xaa]
+        )
+        .is_none());
+        let unit = push_packet(&mut reader, true, 3, 9_000, &[0x62, 0x01, 0x53, 0xcc]);
+        assert!(
+            unit.is_none(),
+            "published {:02x?}",
+            unit.map(|unit| unit.nals)
+        );
+        assert!(!reader.synced());
     }
 
     #[test]

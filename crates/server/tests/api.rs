@@ -1,3 +1,5 @@
+use proview_core::provider::Mode;
+use proview_server::config::ModeStore;
 use rocket::http::{ContentType, Status};
 use rocket::local::blocking::Client;
 use serde_json::json;
@@ -17,19 +19,27 @@ fn config(local: bool) -> proview_core::config::Config {
 }
 
 fn client() -> Client {
-    let figment = rocket::Config::figment()
-        .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
-        .merge(("port", 0));
-    Client::tracked(proview_server::build_with(figment, config(false)))
-        .expect("valid rocket instance")
+    Client::tracked(proview_server::build_with_modes(
+        figment(),
+        config(false),
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .expect("valid rocket instance")
 }
 
 fn local_client() -> Client {
-    let figment = rocket::Config::figment()
+    Client::tracked(proview_server::build_with_modes(
+        figment(),
+        config(true),
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .expect("valid rocket instance")
+}
+
+fn figment() -> rocket::figment::Figment {
+    rocket::Config::figment()
         .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
-        .merge(("port", 0));
-    Client::tracked(proview_server::build_with(figment, config(true)))
-        .expect("valid rocket instance")
+        .merge(("port", 0))
 }
 
 fn sign_in(client: &Client) -> Status {

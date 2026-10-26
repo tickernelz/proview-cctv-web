@@ -104,7 +104,7 @@ H.265, ~12 fps delivered), same workstation under WSL2, release build, Chrome
 156 headless driven over CDP. One run per row. The box was also running four
 other streams' dev servers, so the CPU column is an upper bound for an idle
 box, not a floor. A passthrough row is only valid when the transcode source for
-the same camera has already idled out (60 s warm window); the run at 94 % in
+the same camera has already idled out (60 s of idle, noticed within 3 s); the run at 94 % in
 this session was a transcode child still alive during a passthrough sample and
 is not quoted below.
 
@@ -117,7 +117,7 @@ PROVIEW_DEVICE_RTSP=192.168.0.100:554 PROVIEW_DEVICE_USER=… PROVIEW_DEVICE_PAS
   ./target/release/proview-server --listen 127.0.0.1:8790
 PROVIEW_MEASURE_EMAIL=… PROVIEW_MEASURE_PASSWORD=… \
   PROVIEW_BASE=http://127.0.0.1:8790/ PROVIEW_TRANSPORT=avc PROVIEW_VIEWERS=1 node tools/measure-live.mjs
-sleep 65
+sleep 70
 PROVIEW_MEASURE_EMAIL=… PROVIEW_MEASURE_PASSWORD=… \
   PROVIEW_BASE=http://127.0.0.1:8790/ PROVIEW_TRANSPORT=hevc PROVIEW_VIEWERS=3 node tools/measure-live.mjs
 ```
@@ -158,7 +158,7 @@ Reading the numbers:
    camera's IDR interval and ffmpeg's first output: `frag_keyframe` holds a
    fragment until it can start on a keyframe, so the first painted frame
    costs 2.6–5.0 s. The passthrough column reports the first keyframe
-   **on the socket** (0.56–0.72 s), which is the camera's own IDR cadence with
+   **on the socket** (0.56–0.78 s), which is the camera's own IDR cadence with
    a warm RTSP session — a different stopwatch, not a cheaper cold start.
    Warm starts are 111–240 ms because the hub replays the newest
    keyframe-start fragment (transcode); passthrough has no replay and always

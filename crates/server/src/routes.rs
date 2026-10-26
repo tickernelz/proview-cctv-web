@@ -183,20 +183,34 @@ pub struct RtspReport {
     pub framerate: Option<u32>,
 }
 
+const RTSP_CHANNEL: u32 = 1;
+
 fn rtsp_target_stream(cfg: &Config, sub_stream: bool) -> Option<proview_core::source::RtspTarget> {
     let target = cfg.device_rtsp.clone()?;
     let (host, port) = target.rsplit_once(':').unwrap_or((target.as_str(), "554"));
     let port = port.parse().unwrap_or(554);
-    let path = if sub_stream {
-        "/user=&password=&channel=1&stream=1.sdp?real_stream"
-    } else {
-        "/user=&password=&channel=1&stream=0.sdp?real_stream"
-    };
+    let path = format!(
+        "/user=&password=&channel={RTSP_CHANNEL}&stream={}.sdp?real_stream",
+        u8::from(sub_stream)
+    );
     Some(
         proview_core::source::RtspTarget::from_host_port(host, port)
-            .with_path(path)
+            .with_path(&path)
             .with_credentials(&cfg.device_user, &cfg.device_pass),
     )
+}
+
+fn stream_key(
+    device: &str,
+    channel: u32,
+    sub_stream: bool,
+    mode: LiveMode,
+    source: Option<&proview_core::source::RtspTarget>,
+) -> StreamKey {
+    match source {
+        Some(_) => StreamKey::new("local", RTSP_CHANNEL, sub_stream, mode),
+        None => StreamKey::new(device, channel, sub_stream, mode),
+    }
 }
 
 #[post("/device/rtsp")]
@@ -345,12 +359,7 @@ fn ws_live(
         Some(_) => crate::stream::requested_mode(codec.as_deref()),
         None => LiveMode::Transcode,
     };
-    let key_device = if target.is_some() {
-        "local".to_string()
-    } else {
-        device.clone()
-    };
-    let key = StreamKey::new(key_device, channel, sub_stream, mode);
+    let key = stream_key(&device, channel, sub_stream, mode, target.as_ref());
     let subscription = live.hub.subscribe(key.clone());
     let mut keep_alive = None;
     match target.clone() {
@@ -404,4 +413,57 @@ fn media_clip(
     let mp4 = proview_core::stream::annexb_to_fmp4(&clip, 25)
         .map_err(|e| fail(Status::UnprocessableEntity, e.to_string()))?;
     Ok((rocket::http::ContentType::new("video", "mp4"), mp4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rtsp_target_stream, stream_key, RTSP_CHANNEL};
+    use proview_core::config::{Config, ProviderKind};
+    use proview_core::live::LiveMode;
+
+    fn config(rtsp: Option<&str>) -> Config {
+        Config {
+            provider: ProviderKind::Fixture,
+            cloud_base: "https://pub-token.xmeye.net".to_string(),
+            device_user: "admin".to_string(),
+            device_pass: "device-password".to_string(),
+            fixture_dir: "fixtures".to_string(),
+            device_host: None,
+            device_rtsp: rtsp.map(str::to_string),
+            device_onvif: None,
+            session_ttl_secs: 3600,
+        }
+    }
+
+    #[test]
+    fn every_requested_channel_names_the_one_rtsp_upstream() {
+        let cfg = config(Some("192.0.2.10:554"));
+        let target = rtsp_target_stream(&cfg, false).expect("rtsp target");
+        let first = stream_key("cam-0001", 1, false, LiveMode::Passthrough, Some(&target));
+        let second = stream_key("cam-0001", 4, false, LiveMode::Passthrough, Some(&target));
+        assert_eq!(first, second);
+        assert_eq!(first.device, "local");
+        assert_eq!(first.channel, RTSP_CHANNEL);
+
+        let fixture = stream_key("cam-0001", 4, true, LiveMode::Transcode, None);
+        assert_eq!(fixture.device, "cam-0001");
+        assert_eq!(fixture.channel, 4);
+        assert!(fixture.sub_stream);
+        assert_eq!(fixture.mode, LiveMode::Transcode);
+    }
+
+    #[test]
+    fn the_rtsp_target_streams_the_channel_its_key_names() {
+        let cfg = config(Some("192.0.2.10:554"));
+        let main = rtsp_target_stream(&cfg, false).expect("rtsp target");
+        let sub = rtsp_target_stream(&cfg, true).expect("rtsp target");
+        assert!(main.path.contains(&format!("channel={RTSP_CHANNEL}&")));
+        assert!(main.path.contains("stream=0.sdp"));
+        assert!(sub.path.contains("stream=1.sdp"));
+        assert_eq!(main.host, "192.0.2.10");
+        assert_eq!(main.port, 554);
+        assert_eq!(main.user, "admin");
+        assert_eq!(main.password, "device-password");
+        assert!(rtsp_target_stream(&config(None), false).is_none());
+    }
 }
