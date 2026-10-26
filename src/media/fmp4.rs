@@ -359,9 +359,11 @@ mod tests {
             u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]),
             1
         );
+        let data_offset = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
         assert_eq!(
-            u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]),
-            0
+            data_offset as usize,
+            moof_size + 8,
+            "data offset must point at the first sample inside mdat"
         );
         assert_eq!(
             u32::from_be_bytes([payload[12], payload[13], payload[14], payload[15]]),
