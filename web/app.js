@@ -14,8 +14,7 @@ const state = {
   channel: 1,
   lens: null,
   lensSupport: 'unknown',
-  capabilitySupport: 'unknown',
-  control: { available: false, reason: 'Device controls have not been checked yet.' },
+  control: { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null },
   players: new Map(),
   ticket: null,
   mode: null,
@@ -220,7 +219,10 @@ function renderMode() {
   }
   status.textContent = 'Mode: ' + modeName(state.mode.mode) + ' · answering: ' + state.mode.source;
   if (state.mode.notice) {
-    notice.textContent = 'Fallback: ' + (state.mode.notice.message || 'this network is not reachable, so the other provider answered.');
+    notice.textContent =
+      'Fallback: ' +
+      (state.mode.notice.message || 'this network is not reachable, so the other provider answered.') +
+      (state.mode.notice.to ? ' Answering provider: ' + state.mode.notice.to + '.' : '');
     notice.hidden = false;
   } else {
     notice.hidden = true;
@@ -245,6 +247,7 @@ function setLocalFormEnabled(enabled) {
 async function setMode(mode) {
   try {
     state.mode = await api('/api/config/mode', { method: 'POST', body: JSON.stringify({ mode }) });
+    state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null };
     renderMode();
     await loadDevices();
     if (state.selectedId) {
@@ -327,11 +330,11 @@ function setStage(stateName, message) {
   stage.dataset.state = stateName;
   el('stage-status').textContent = message || '';
   el('stage-status').hidden = stateName === 'playing';
-  el('lens-crop').hidden = stateName !== 'playing';
-  const playing = stateName === 'playing';
-  el('record').disabled = !playing;
-  el('snapshot').disabled = !playing;
-  el('flip').disabled = !playing;
+  const showing = stateName === 'playing' || stateName === 'stalled';
+  el('lens-crop').hidden = !showing;
+  el('record').disabled = stateName !== 'playing';
+  el('snapshot').disabled = !showing;
+  el('flip').disabled = !showing;
   renderOsd();
   layoutLensCrop();
 }
@@ -367,9 +370,87 @@ class StreamPlayer {
     this.queue = [];
     this.url = null;
     this.hls = null;
+    this.watchdog = null;
+    this.lastTime = 0;
+    this.lastAdvance = 0;
+    this.stalled = false;
+    this.metadataTimer = null;
+    this.announced = false;
+  }
+
+  expectFirstFrame() {
+    const video = this.video;
+    this.announced = false;
+    const announce = () => {
+      if (this.announced) {
+        return;
+      }
+      this.announced = true;
+      if (this.metadataTimer) {
+        window.clearTimeout(this.metadataTimer);
+        this.metadataTimer = null;
+      }
+      this.startWatchdog();
+      this.onState('playing', '');
+    };
+    if (video.videoWidth > 0) {
+      announce();
+      return;
+    }
+    video.addEventListener('loadedmetadata', announce, { once: true });
+    this.metadataTimer = window.setTimeout(() => {
+      if (!this.announced) {
+        this.onState('error', 'The stream connected but sent no picture this browser could decode.');
+      }
+    }, 6000);
+  }
+
+  startWatchdog() {
+    this.stopWatchdog();
+    this.lastTime = this.video.currentTime;
+    this.lastAdvance = Date.now();
+    this.stalled = false;
+    this.watchdog = window.setInterval(() => {
+      const now = Date.now();
+      const time = this.video.currentTime;
+      if (time !== this.lastTime) {
+        this.lastTime = time;
+        this.lastAdvance = now;
+        if (this.stalled) {
+          this.stalled = false;
+          this.onState('playing', '');
+        }
+        return;
+      }
+      if (this.video.paused) {
+        return;
+      }
+      const idle = Math.round((now - this.lastAdvance) / 1000);
+      if (idle >= 3) {
+        this.stalled = true;
+        this.onState(
+          'stalled',
+          'The picture has not advanced for ' +
+            idle +
+            ' s. The last decoded frame stays on screen, and the clock on it is not the time of what you see.',
+        );
+      }
+    }, 1000);
+  }
+
+  stopWatchdog() {
+    if (this.watchdog) {
+      window.clearInterval(this.watchdog);
+      this.watchdog = null;
+    }
   }
 
   destroy() {
+    this.stopWatchdog();
+    if (this.metadataTimer) {
+      window.clearTimeout(this.metadataTimer);
+      this.metadataTimer = null;
+    }
     if (this.socket) {
       this.socket.onmessage = null;
       this.socket.onclose = null;
@@ -476,8 +557,8 @@ class StreamPlayer {
         }
       };
       video.muted = state.muted;
+      this.expectFirstFrame();
       video.play().catch(() => {});
-      this.onState('playing', '');
     }, { once: true });
   }
 
@@ -493,8 +574,8 @@ class StreamPlayer {
     }
     if (ticket.kind === 'mp4' || ticket.url.endsWith('.mp4')) {
       video.src = ticket.url;
+      this.expectFirstFrame();
       await video.play().catch(() => {});
-      this.onState('playing', '');
       return;
     }
     if (ticket.kind !== 'hls') {
@@ -511,14 +592,14 @@ class StreamPlayer {
       hls.loadSource(ticket.url);
       hls.attachMedia(video);
       this.hls = hls;
+      this.expectFirstFrame();
       await video.play().catch(() => {});
-      this.onState('playing', '');
       return;
     }
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = ticket.url;
+      this.expectFirstFrame();
       await video.play().catch(() => {});
-      this.onState('playing', '');
       return;
     }
     this.onState('error', 'This browser has no HLS support and no hls.js is loaded.');
@@ -533,6 +614,9 @@ function stagePlayer() {
       el('source-badge').dataset.source = name === 'playing' ? 'live' : name;
       if (name === 'error') {
         el('source-label').textContent = 'Stream failed';
+      }
+      if (name === 'stalled') {
+        el('source-label').textContent = 'Stalled · the last frame stays on screen';
       }
       if (name === 'playing') {
         renderSourceBadge();
@@ -666,6 +750,7 @@ function normaliseLens(payload, source) {
     lenses: lenses.map((lens, index) => ({
       index: typeof lens.index === 'number' ? lens.index : index,
       label: lensLabel(lens, index),
+      rawLabel: typeof lens.label === 'string' ? lens.label.toLowerCase() : '',
       role: lensRole(lens),
       crop: normaliseCrop(lens.crop, dims),
     })),
@@ -749,6 +834,11 @@ async function loadLens(deviceId, channel) {
     if (error.status === 404 || error.status === 501) {
       state.lensSupport = 'absent';
       renderLensPicker();
+      return;
+    }
+    if (error.status === 401) {
+      showLogin();
+      setLoginError('Session expired. Sign in again.');
       return;
     }
     console.error('lens contract failed', error);
@@ -867,71 +957,234 @@ function currentCrop() {
 }
 
 function renderControlAvailability() {
-  const available = state.control.available;
+  const rows = state.control.rows;
   const note = el('device-note');
-  note.textContent = available
-    ? state.control.summary || 'Device controls are reported by the server.'
-    : state.control.reason;
-  note.title = available ? '' : state.control.detail || state.control.reason;
+  if (state.control.error) {
+    note.textContent = 'Device controls could not be read: ' + state.control.error;
+    note.title = '';
+  } else if (!rows.length) {
+    note.textContent = 'Device controls have not been checked yet.';
+    note.title = '';
+  } else {
+    const supported = rows.filter((row) => row.state === 'supported').length;
+    const backends = [state.control.onvif ? 'ONVIF' : null, state.control.dvrip ? 'DVRIP' : null].filter(Boolean);
+    note.textContent =
+      'Device controls: ' +
+      supported +
+      ' of ' +
+      rows.length +
+      ' capability rows are usable' +
+      (backends.length ? ' over ' + backends.join(' and ') : '') +
+      '; blocked ones keep the device\u2019s own reason, listed under "What the device reports it can do".';
+    note.title = '';
+  }
   for (const button of document.querySelectorAll('[data-requires="device"]')) {
-    button.disabled = !available;
-    if (!available) {
+    const verdict = buttonVerdict(button);
+    button.disabled = !verdict.ok;
+    button.title = verdict.why;
+    if (verdict.why) {
       button.setAttribute('aria-describedby', 'device-note');
+    } else {
+      button.removeAttribute('aria-describedby');
     }
+  }
+  renderCapabilities();
+}
+
+const CONTROL_FEATURE = {
+  up: 'ptz move',
+  down: 'ptz move',
+  left: 'ptz move',
+  right: 'ptz move',
+  home: 'ptz move',
+  presets: 'ptz preset',
+  strobe: 'white light',
+  cruise: 'ptz patrol',
+  intercom: 'two-way audio',
+};
+
+const CONTROL_ABSENT = {
+  tracking: 'No auto-tracking call exists on this server, and the capability report lists none for this device.',
+  alarm: 'No audio-alarm call exists on this server; the device reports white light and two-way audio, not an alarm.',
+  'cloud-storage': 'No server call for cloud storage in this build: the cloud API exposes the device list only.',
+  'sd-album': 'No server call for the SD card album in this build: the cloud API exposes the device list only.',
+};
+
+function movingLensName() {
+  const entry = lensEntries().find((lens) => lens.role === 'moving');
+  const raw = entry ? entry.rawLabel : '';
+  return raw === 'top' || raw === 'bottom' ? raw : 'bottom';
+}
+
+function capabilityRow(feature, lens) {
+  const rows = state.control.rows.filter((row) => row.feature === feature);
+  if (lens) {
+    const exact = rows.find((row) => row.lens === lens);
+    if (exact) {
+      return exact;
+    }
+  }
+  return rows.find((row) => row.state === 'supported') || rows[0] || null;
+}
+
+function buttonVerdict(button) {
+  if (!state.control.rows.length) {
+    return { ok: false, why: state.control.error || 'Device controls have not been checked yet.' };
+  }
+  const act = button.dataset.act || '';
+  const feature = CONTROL_FEATURE[act];
+  if (!feature) {
+    return { ok: false, why: CONTROL_ABSENT[act] || 'No server call exists for this action in this build.' };
+  }
+  const lens = feature === 'ptz move' || feature === 'ptz preset' ? movingLensName() : null;
+  const row = capabilityRow(feature, lens);
+  if (!row) {
+    return { ok: false, why: 'The capability report does not list "' + feature + '" for this device.' };
+  }
+  if (row.state !== 'supported') {
+    return { ok: false, why: row.evidence || 'The device reports "' + feature + '" as blocked.' };
+  }
+  if (act === 'home' && !state.control.onvif) {
+    return { ok: false, why: 'Stopping pan and tilt is served by the ONVIF channel, which this server does not expose.' };
+  }
+  return { ok: true, why: row.evidence || '' };
+}
+
+function renderCapabilities() {
+  const body = el('capability-rows');
+  body.replaceChildren();
+  const rows = state.control.rows;
+  el('capability-block').hidden = rows.length === 0;
+  el('capability-summary').textContent = rows.length
+    ? rows.length + ' rows from GET /api/device/controls on this server.'
+    : 'The server returned no capability rows.';
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    for (const [name, text] of [
+      ['feature', row.feature],
+      ['lens', row.lens],
+      ['backend', row.backend],
+      ['state', row.state],
+      ['evidence', row.evidence],
+    ]) {
+      const cell = document.createElement('td');
+      cell.className = name;
+      cell.textContent = text == null ? '' : String(text);
+      if (name === 'state') {
+        cell.dataset.state = row.state;
+      }
+      tr.append(cell);
+    }
+    body.append(tr);
   }
 }
 
-async function probeControlChannel(device, channel) {
-  if (state.capabilitySupport === 'absent') {
+async function probeControlChannel(device) {
+  if (state.control.checkedFor === device.id) {
     renderControlAvailability();
     return;
   }
   try {
-    const payload = await api('/api/device/capabilities?device=' + enc(device.id) + '&channel=' + enc(channel));
-    state.capabilitySupport = 'present';
-    const controls = Array.isArray(payload && payload.controls) ? payload.controls : [];
+    const payload = await api('/api/device/controls');
     state.control = {
-      available: true,
-      controls,
-      summary: 'Device controls: ' + (controls.length ? controls.map((entry) => entry.label || entry.id).join(', ') : 'the server lists none for this channel') + '.',
+      rows: Array.isArray(payload.capabilities) ? payload.capabilities : [],
+      onvif: payload.onvif === true,
+      dvrip: payload.dvrip === true,
+      error: null,
+      checkedFor: device.id,
     };
   } catch (error) {
-    if (error.status === 404 || error.status === 501) {
-      state.capabilitySupport = 'absent';
-      state.control = {
-        available: false,
-        reason:
-          'Device controls need the control channel; the server answered ' +
-          (error.message || error.status) +
-          ', so these stay disabled.',
-        detail:
-          'GET /api/device/capabilities returned ' +
-          (error.message || error.status) +
-          '. Pan, presets, cruise, strobe, alarm, intercom, cloud storage and the SD album are disabled until the server exposes that channel.',
-      };
-    } else {
-      state.control = { available: false, reason: 'Device controls could not be checked: ' + error.status + ' ' + error.message };
+    if (error.status === 401) {
+      showLogin();
+      setLoginError('Session expired. Sign in again.');
+      return;
     }
+    state.control = {
+      rows: [],
+      onvif: false,
+      dvrip: false,
+      error: error.status + ' ' + error.message,
+      checkedFor: null,
+    };
   }
   renderControlAvailability();
 }
 
-async function sendControl(action, params) {
-  if (!state.control.available) {
+function setControlStatus(message, ok) {
+  const box = el('control-status');
+  box.textContent = message || '';
+  box.hidden = !message;
+  box.dataset.ok = ok === undefined ? '' : String(ok);
+}
+
+let controlBusy = false;
+
+async function loadPresets() {
+  const block = el('preset-block');
+  const list = el('presets');
+  list.replaceChildren();
+  setControlStatus('Reading the presets stored on the device\u2026');
+  const presets = await api('/api/device/controls/presets');
+  if (!presets.length) {
+    block.hidden = true;
+    setControlStatus('The device reports no presets.', true);
     return;
   }
-  const device = selectedDevice();
-  if (!device) {
-    return;
-  }
-  try {
-    await api('/api/device/control', {
-      method: 'POST',
-      body: JSON.stringify({ device: device.id, channel: state.channel, action, params: params || {} }),
+  for (const preset of presets) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = preset.name || preset.token;
+    button.title = 'GotoPreset ' + preset.token;
+    button.addEventListener('click', async () => {
+      try {
+        await api('/api/device/controls/preset/goto?token=' + enc(preset.token), { method: 'POST' });
+        setControlStatus('Moved to preset ' + (preset.name || preset.token) + '.', true);
+      } catch (error) {
+        setControlStatus('The device refused preset ' + (preset.name || preset.token) + ': ' + error.status + ' ' + error.message, false);
+      }
     });
-    setBanner('');
+    list.append(button);
+  }
+  block.hidden = false;
+  setControlStatus(presets.length + ' preset' + (presets.length === 1 ? '' : 's') + ' stored on the device.', true);
+}
+
+async function toggleWhiteLight() {
+  const current = await api('/api/device/controls/light');
+  const next = current.mode === 'always' ? 'off' : 'always';
+  const applied = await api('/api/device/controls/light?mode=' + enc(next), { method: 'POST' });
+  setControlStatus('White light: ' + (applied.mode || next) + ' (it was ' + (current.mode || 'not reported') + ').', true);
+}
+
+async function sendControl(action) {
+  if (controlBusy) {
+    return;
+  }
+  if (!selectedDevice()) {
+    return;
+  }
+  controlBusy = true;
+  try {
+    if (action === 'home') {
+      const stopped = await api('/api/device/controls/ptz/stop', { method: 'POST' });
+      setControlStatus(stopped.detail || 'Pan and tilt stopped.', true);
+    } else if (action === 'up' || action === 'down' || action === 'left' || action === 'right') {
+      const velocity = { up: [0, -0.5], down: [0, 0.5], left: [-0.5, 0], right: [0.5, 0] }[action];
+      const query =
+        'lens=' + enc(movingLensName()) + '&pan=' + velocity[0] + '&tilt=' + velocity[1] + '&hold_ms=600';
+      const moved = await api('/api/device/controls/ptz?' + query, { method: 'POST' });
+      setControlStatus('Moved the ' + moved.lens + ' lens over ' + moved.backend + ' for ' + moved.hold_ms + ' ms.', true);
+    } else if (action === 'presets') {
+      await loadPresets();
+    } else if (action === 'strobe') {
+      await toggleWhiteLight();
+    } else {
+      setControlStatus('No server call exists for "' + action + '" in this build.', false);
+    }
   } catch (error) {
-    setBanner('The device did not confirm "' + action + '": ' + error.message);
+    setControlStatus('The device refused "' + action + '": ' + error.status + ' ' + error.message, false);
+  } finally {
+    controlBusy = false;
   }
 }
 
@@ -951,9 +1204,14 @@ async function selectDevice(deviceId, options = {}) {
   setStage('loading', 'Requesting stream…');
   el('osd-name').textContent = device.name;
   startClock();
+  el('preset-block').hidden = true;
+  setControlStatus('');
   await loadLens(device.id, state.channel);
   await requestStream();
-  await probeControlChannel(device, state.channel);
+  await probeControlChannel(device);
+  if (state.view === 'grid') {
+    startGrid();
+  }
 }
 
 async function requestStream() {
@@ -1135,7 +1393,12 @@ function toggleRecord() {
   el('record').querySelector('span').textContent = 'Stop';
 }
 
+const gridTask = { token: 0, key: null, running: false };
+
 function stopGrid() {
+  gridTask.token += 1;
+  gridTask.key = null;
+  gridTask.running = false;
   for (const [id, player] of state.players) {
     if (id.startsWith('grid:')) {
       player.destroy();
@@ -1145,14 +1408,32 @@ function stopGrid() {
 }
 
 async function startGrid() {
-  stopGrid();
+  const device = selectedDevice();
+  const key = device
+    ? [device.id, device.channels, state.prefs.quality].join(':')
+    : 'none';
+  if (gridTask.running && gridTask.key === key) {
+    return;
+  }
+  gridTask.token += 1;
+  const token = gridTask.token;
+  gridTask.key = key;
+  gridTask.running = true;
+  for (const [id, player] of state.players) {
+    if (id.startsWith('grid:')) {
+      player.destroy();
+      state.players.delete(id);
+    }
+  }
   const grid = el('grid');
   grid.replaceChildren();
-  const device = selectedDevice();
   if (!device) {
     el('grid-empty').hidden = false;
     el('grid-empty').textContent = 'Pick a device on the left, then this view fills with one tile per channel.';
     el('grid-summary').textContent = 'No device selected.';
+    if (token === gridTask.token) {
+      gridTask.running = false;
+    }
     return;
   }
   const count = Math.max(1, device.channels || 1);
@@ -1164,6 +1445,9 @@ async function startGrid() {
   grid.dataset.count = String(count);
 
   for (let channel = 1; channel <= count; channel += 1) {
+    if (token !== gridTask.token || state.view !== 'grid') {
+      return;
+    }
     const tile = document.createElement('article');
     tile.className = 'tile';
     tile.dataset.state = 'loading';
@@ -1207,6 +1491,10 @@ async function startGrid() {
       const ticket = await api(
         '/api/stream?device=' + enc(device.id) + '&channel=' + channel + '&quality=' + enc(state.prefs.quality),
       );
+      if (token !== gridTask.token || state.view !== 'grid') {
+        player.destroy();
+        return;
+      }
       await player.play(ticket);
     } catch (error) {
       tile.dataset.state = 'error';
@@ -1214,6 +1502,9 @@ async function startGrid() {
       status.title = error.message;
       console.error('grid stream failed', error);
     }
+  }
+  if (token === gridTask.token) {
+    gridTask.running = false;
   }
 }
 

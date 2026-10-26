@@ -195,14 +195,14 @@
 
           <section class="panel" aria-labelledby="controls-title">
             <h2 id="controls-title">Camera controls</h2>
-            <p id="device-note" class="field-note">Device controls are unavailable until the server exposes the control channel.</p>
+            <p id="device-note" class="field-note">Device controls have not been checked yet.</p>
 
             <div class="panel-group" role="group" aria-labelledby="ptz-title">
               <h3 id="ptz-title">Pan and tilt</h3>
               <div class="ptz" id="ptz" aria-hidden="false">
                 <button type="button" class="ptz-key" data-act="up" data-requires="device" aria-label="Tilt up" aria-describedby="device-note">Up</button>
                 <button type="button" class="ptz-key" data-act="left" data-requires="device" aria-label="Pan left" aria-describedby="device-note">Left</button>
-                <button type="button" class="ptz-key" data-act="home" data-requires="device" aria-label="Centre the lens" aria-describedby="device-note">Centre</button>
+                <button type="button" class="ptz-key" data-act="home" data-requires="device" aria-label="Stop pan and tilt" aria-describedby="device-note">Stop</button>
                 <button type="button" class="ptz-key" data-act="right" data-requires="device" aria-label="Pan right" aria-describedby="device-note">Right</button>
                 <button type="button" class="ptz-key" data-act="down" data-requires="device" aria-label="Tilt down" aria-describedby="device-note">Down</button>
               </div>
@@ -221,6 +221,27 @@
                 <button type="button" data-act="sd-album" data-requires="device" aria-describedby="device-note">SD card album</button>
               </div>
             </div>
+
+            <div class="panel-group" id="preset-block" role="group" aria-labelledby="preset-title" hidden>
+              <h3 id="preset-title">Presets on the device</h3>
+              <div id="presets" class="panel-actions"></div>
+            </div>
+
+            <p id="control-status" class="field-note compact" role="status" hidden></p>
+
+            <details class="note-block" id="capability-block" hidden>
+              <summary>What the device reports it can do</summary>
+              <div class="note-body">
+                <p id="capability-summary" class="field-note compact">The server returned no capability rows.</p>
+                <table class="capabilities">
+                  <caption class="visually-hidden">Device capability report from the server</caption>
+                  <thead>
+                    <tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">State</th><th scope="col">Evidence</th></tr>
+                  </thead>
+                  <tbody id="capability-rows"></tbody>
+                </table>
+              </div>
+            </details>
 
             <div class="panel-group" role="group" aria-labelledby="local-actions-title">
               <h3 id="local-actions-title">In this browser</h3>
@@ -263,7 +284,7 @@
 
         <div class="settings-group" role="group" aria-labelledby="set-connection">
         <h2 id="set-connection">Connection</h2>
-        <p class="field-note">Which provider answers: the vendor cloud, or the camera on this network.</p>
+        <p class="field-note">Which provider answers: the vendor cloud, or the camera on this network. Switching re-opens the device list through the new provider; this session may need to sign in again if that provider rejects it.</p>
         <fieldset class="choice">
           <legend>Provider</legend>
           <label><input type="radio" name="mode" value="cloud"><span>Cloud account</span></label>

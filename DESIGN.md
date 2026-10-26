@@ -26,8 +26,10 @@ All colours are OKLCH tokens. Brand anchor: warm crimson, taken as the
 | `--primary` | `oklch(0.62 0.19 27)` | `oklch(0.52 0.19 27)` | primary action, live/selected |
 | `--success` `--warning` `--danger` `--info` | hue 155 / 78 / 22 / 245 | darker variants | device online, warnings, errors, focus |
 
-Contrast is verified numerically with `tools/contrast.py` (OKLCH → sRGB →
-relative luminance). Measured, not eyeballed:
+Contrast is verified numerically with `tools/contrast.py`, which parses
+`web/tokens.css` itself (OKLCH → sRGB → relative luminance) and exits non-zero
+when a pair falls under its floor: 4.5:1 for text, 3:1 for graphics. Measured,
+not eyeballed:
 
 | Pair | Dark | Light |
 |---|---|---|
@@ -37,18 +39,26 @@ relative luminance). Measured, not eyeballed:
 | muted on bg | 8.41:1 | 5.42:1 |
 | muted on surface | 7.68:1 | 6.00:1 |
 | muted on surface-2 | 6.74:1 | 5.11:1 |
-| primary on bg | 4.87:1 | 5.49:1 |
+| muted on primary-soft (selected device row) | 7.45:1 | 4.63:1 |
+| primary-ink on primary | 4.81:1 | 5.90:1 |
 | success on surface | 7.61:1 | 5.16:1 |
 | danger on surface | 5.21:1 | 5.83:1 |
-| warning on surface | 8.71:1 | 4.02:1 |
+| stage-ink on stage | 15.18:1 | 15.18:1 |
+| stage-danger on stage-matte | 7.30:1 | 7.30:1 |
+| focus-ring on bg | 9.74:1 | 5.27:1 |
 | on-scrim over a white frame | 14.48:1 | 14.48:1 |
 | on-scrim over a mid frame | 17.13:1 | 17.13:1 |
 
-Every text pair used in the interface clears 4.5:1 except two non-text usages:
-`--primary` as an icon fill in dark (4.44:1, above the 3:1 graphics floor) and
-`--warning` as a dot in light (4.02:1, same floor). Both are graphics, never
-body text. `--on-scrim` is measured against the worst case, a white video frame
-behind an 88% scrim, because the picture under the overlay is uncontrolled.
+Every text pair clears 4.5:1. Two pairs only clear the 3:1 graphics floor and
+are never used as text: `--primary` as an icon fill on `--surface` in dark
+(4.44:1) and `--warning` as a status dot or a notice border in light (4.02:1).
+`--on-scrim` is measured against the worst case, a white video frame behind an
+88% scrim, because the picture under the overlay is uncontrolled.
+
+The stage is dark in both themes, so anything drawn on it uses stage tokens that
+do not flip with the theme: `--stage-ink` and `--stage-danger`. A theme-flipping
+`--muted` measured 3.01:1 on the stage in the light theme, which is why those
+tokens exist.
 
 The accent is never used for decoration; if a control is not primary, selected,
 or in error, it is neutral.
@@ -63,10 +73,11 @@ timestamps. Display headings use `letter-spacing: -0.02em`, well inside the
 
 ## Layout
 
-- Single column, max 1080px, generous vertical rhythm from a 4px-based space
-  scale (4/8/12/16/24/32/48).
-- The stage is the anchor: 16:9, black, rounded 14px, and it never shrinks for
-  chrome.
+- One content column inside a 1440px page, generous vertical rhythm from a
+  4px-based space scale (4/8/12/16/24/32/48).
+- The stage is the anchor: black, rounded 14px, sized from the picture's own
+  aspect — or the lens crop's when one lens is selected — and it never shrinks
+  for chrome.
 - Rows over cards. A device is a row with a status dot, a name, mono meta and
   one action — not a card, never a nested card.
 - Responsive is structural only: the row collapses to two columns under 720px.
@@ -87,9 +98,13 @@ disabled and loading. The sign-in button demonstrates the loading contract:
 ## Surfaces
 
 **Login.** One panel, two modes as tabs: cloud account (default) and this
-network. The local tab asks the server to probe the camera it is configured
-with; the form never carries camera credentials, because those live in the
-server environment. Both modes end in the same place: the device list.
+network. The local tab posts the camera username and password to this server,
+which signs in to the camera address from its own environment; the browser keeps
+no copy, only the server's opaque session cookie. The tab stays disabled until
+`GET /api/config/mode` reports the local provider, and it says where to switch.
+A separate probe button reads the camera's DVRIP login and RTSP description so a
+wrong address fails on the login screen instead of after it. Both modes end in
+the same place: the device list.
 
 **Shell.** A 260px device rail and a content column. The rail scrolls on its
 own; the content column never shrinks below its stage. Under 860px the rail
@@ -104,6 +119,16 @@ is wide, so it keeps its own proportions with the player surface around it. The
 OSD sits inside the picture box, not at the frame's corners. The stage is the
 fullscreen target.
 
+**Stage states.** Four, each named on screen: `loading` ("Requesting stream…"
+with a spinner), `playing`, `stalled` and `error`. `playing` begins only after the
+browser has decoded a frame, so a tile never claims to play while it is blank; a
+socket that opens and sends nothing decodable becomes `error` after six seconds.
+A picture that stops advancing while the socket stays open becomes `stalled`: the
+last frame stays on screen, a scrim caption says how long it has been frozen and
+that the clock on it is not the time of what is shown, and snapshot stays enabled
+because the frame is real. An open connection is never treated as proof of a
+moving picture.
+
 **Lens views.** Combined shows the frame the camera sent. A single lens crops
 one region of that same frame in the browser — no second connection, no second
 decode. Crops come from the lens contract when the server publishes one; until
@@ -111,19 +136,27 @@ it does, the geometry of the frame decides the split and the caption says so.
 The caption is not decoration: it is the only place that states whether the
 layout was reported or inferred.
 
-**Grid.** One tile per channel of the selected device, `auto-fit` at 360px
-minimum so four channels land as a 2×2. Every tile shows the whole frame, not
+**Grid.** One tile per channel of the selected device, `auto-fit` at 320px
+minimum: two channels sit side by side from 1000px, four land as a 2×2 at
+1280px. Every tile shows the whole frame, not
 the lens crop chosen in the live view: the grid is an overview, and a tile that
 silently cropped half the picture would hide a lens. Each tile is its own stream
 and its own failure: a channel with no recording says so inside that tile while
 the others keep playing. Tiles open the live view on their channel.
 
 **Control panel.** Two groups with different honesty. In-browser controls act
-immediately (mute, record, snapshot, flip, quality, expand). Device controls
-require the server's control channel: the panel probes
-`GET /api/device/capabilities` once per session and, when that endpoint answers
-404, renders every device button disabled with the status it actually received.
-Nothing in the panel pretends to have moved a camera.
+immediately (mute, record, snapshot, flip, quality, expand). Device controls are
+driven by the server's own capability report: the panel calls
+`GET /api/device/controls` once per device, disables each button whose feature
+the report marks `blocked`, and prints the device's evidence under "What the
+device reports it can do". A button is enabled only when its feature is
+`supported` for the lens it would move, so pan and tilt follow the motorised
+lens and refuse the fixed one before a packet leaves. Enabled actions call their
+real endpoint and echo the server's answer: `POST /api/device/controls/ptz`
+reports the lens, backend and hold time it applied, presets are read from
+`GET /api/device/controls/presets` and listed by name, and the white light
+toggles through its current mode. Nothing in the panel pretends to have moved a
+camera.
 
 **Source badge.** A pill over the stage naming transport, quality, channel and
 the source that answered — `cloud`, `local` or `fixture`, taken from the stream
@@ -143,10 +176,11 @@ real status, including a refused camera address. Display preferences live in
 change.
 
 **Lens roles.** The moving lens pans and tilts from the app; the fixed lens is
-aimed by turning the housing by hand. The interface says this in the lens
-disclosure and labels a lens by role only when the server reports the role.
-Until then it labels them by position — "upper" and "lower" — and the disclosure
-says why.
+aimed by turning the housing by hand. The picker labels each lens by role —
+"Top lens (fixed)", "Bottom lens (moving)" — only when the lens contract reports
+`ptz` for it. Before that it labels them by position, and the disclosure says
+which half is which and why a fixed lens that refuses to pan is hardware, not a
+fault.
 
 ## Motion
 
