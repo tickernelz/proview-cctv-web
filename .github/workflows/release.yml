@@ -117,6 +117,9 @@ jobs:
             os: macos-latest
             args: '--target universal-apple-darwin'
     runs-on: ${{ matrix.os }}
+    env:
+      WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+      WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
