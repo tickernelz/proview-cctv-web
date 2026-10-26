@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rand::RngCore;
 use proview_server::ServeOptions;
+use rand::RngCore;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 fn local_secret() -> String {
@@ -11,6 +11,11 @@ fn local_secret() -> String {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("proview-desktop {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -23,8 +28,14 @@ fn main() {
         .build()
         .expect("tokio runtime");
 
-    let options = ServeOptions { address: "127.0.0.1".to_string(), port: 0, secret_key: Some(local_secret()) };
-    let handle = runtime.block_on(proview_server::serve(options)).expect("local server");
+    let options = ServeOptions {
+        address: "127.0.0.1".to_string(),
+        port: 0,
+        secret_key: Some(local_secret()),
+    };
+    let handle = runtime
+        .block_on(proview_server::serve(options))
+        .expect("local server");
     let url = format!("http://{}/", handle.address);
     tracing::info!(%url, "serving local session");
 
