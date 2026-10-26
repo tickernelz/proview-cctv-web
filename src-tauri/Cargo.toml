@@ -10,10 +10,13 @@ description = "Native desktop shell for PROVIEW CCTV"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+proview-core = { path = "../crates/core" }
 proview-server = { path = "../crates/server" }
+keyring.workspace = true
 tauri = { version = "2", features = [] }
 tokio.workspace = true
 rand.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde.workspace = true
+serde_json.workspace = true
