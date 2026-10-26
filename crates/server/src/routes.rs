@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use proview_core::config::Config;
 use proview_core::live::StreamKey;
-use proview_core::provider::{self, Device, ProviderError, StreamTicket};
+use proview_core::provider::{self, Device, ProviderError, StreamKind, StreamTicket};
 use proview_core::session::{self, Store};
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
@@ -163,6 +163,43 @@ pub struct RtspReport {
     pub framerate: Option<u32>,
 }
 
+fn urlencoding_light(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+                c.to_string()
+            } else {
+                let mut encoded = String::new();
+                for byte in c.to_string().as_bytes() {
+                    encoded.push_str(&format!("%{byte:02X}"));
+                }
+                encoded
+            }
+        })
+        .collect()
+}
+
+fn rtsp_target(cfg: &Config) -> Option<proview_core::source::RtspTarget> {
+    rtsp_target_stream(cfg, false)
+}
+
+fn rtsp_target_stream(cfg: &Config, sub_stream: bool) -> Option<proview_core::source::RtspTarget> {
+    let target = cfg.device_rtsp.clone()?;
+    let (host, port) = target.rsplit_once(':').unwrap_or((target.as_str(), "554"));
+    let port = port.parse().unwrap_or(554);
+    let path = if sub_stream {
+        "/user=&password=&channel=1&stream=1.sdp?real_stream"
+    } else {
+        "/user=&password=&channel=1&stream=0.sdp?real_stream"
+    };
+    Some(
+        proview_core::source::RtspTarget::from_host_port(host, port)
+            .with_path(path)
+            .with_credentials(&cfg.device_user, &cfg.device_pass),
+    )
+}
+
 #[post("/device/rtsp")]
 async fn rtsp_probe(cfg: &State<Config>) -> Result<Json<RtspReport>, Failure> {
     let target = cfg
@@ -191,6 +228,16 @@ async fn devices(
 ) -> Result<Json<Vec<Device>>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
+    if let Some(target) = rtsp_target(cfg) {
+        return Ok(Json(vec![Device {
+            id: "local".to_string(),
+            name: format!("Camera at {}", target.host),
+            model: "LAN camera".to_string(),
+            online: true,
+            channels: 1,
+            lan_host: Some(format!("{}:{}", target.host, target.port)),
+        }]));
+    }
     let provider = provider::build(cfg);
     provider
         .devices(&vendor)
@@ -275,6 +322,19 @@ async fn stream(
 ) -> Result<Json<StreamTicket>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
+    let _ = vendor;
+    if rtsp_target(cfg).is_some() {
+        let channel = channel.unwrap_or(1);
+        let quality = quality.unwrap_or_else(|| "main".to_string());
+        return Ok(Json(StreamTicket {
+            kind: StreamKind::Ws,
+            url: format!(
+                "/ws/live?device={}&channel={channel}&quality={quality}",
+                urlencoding_light(&device)
+            ),
+            expires_in: cfg.session_ttl_secs,
+        }));
+    }
     let provider = provider::build(cfg);
     let high = quality.as_deref() != Some("sub");
     provider
@@ -303,20 +363,85 @@ fn ws_live(
     }
     let channel = channel.unwrap_or(1);
     let sub_stream = quality.as_deref() == Some("sub");
-    let stem = if sub_stream { "sub" } else { "main" };
-    let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
-    let plan = live
-        .plan_for(&path, 25)
-        .map_err(|e| fail(Status::NotFound, e))?;
-
-    let key = StreamKey::new(device, channel, sub_stream);
-    let mut receiver = live.hub.subscribe(key.clone());
-    live.ensure_publisher(key.clone(), plan.clone());
+    let key = StreamKey::new(device.clone(), channel, sub_stream);
+    let subscription = live.hub.subscribe(key.clone());
+    let mut keep_alive = None;
+    match rtsp_target_stream(cfg, sub_stream) {
+        Some(target) => {
+            live.ensure_rtsp_source(key.clone(), target);
+        }
+        None => {
+            let stem = if sub_stream { "sub" } else { "main" };
+            let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
+            let plan = live
+                .plan_for(&path, 25)
+                .map_err(|e| fail(Status::NotFound, e))?;
+            live.ensure_publisher(key.clone(), plan.clone());
+            keep_alive = Some(plan);
+        }
+    }
     let state = live.inner().clone();
+    let proview_core::live::Subscription {
+        init,
+        last,
+        mut receiver,
+    } = subscription;
 
+    let restart_target = rtsp_target_stream(cfg, sub_stream);
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
-            let _keep_alive = plan;
+            let _keep_alive = keep_alive;
+            for _ in 0..240 {
+                if init.lock().map(|slot| slot.is_some()).unwrap_or(false) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            if init.lock().map(|slot| slot.is_none()).unwrap_or(true) {
+                if let Some(target) = restart_target.clone() {
+                    let live = state.clone();
+                    live.ensure_rtsp_source(key.clone(), target);
+                    for _ in 0..240 {
+                        if init.lock().map(|slot| slot.is_some()).unwrap_or(false) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                }
+            }
+            let ready = init.lock().ok().and_then(|slot| slot.clone());
+            match ready {
+                Some(segment) => {
+                    if stream
+                        .send(ws::Message::Binary(segment.to_vec()))
+                        .await
+                        .is_err()
+                    {
+                        state.release(&key);
+                        return Ok(());
+                    }
+                }
+                None => {
+                    let _ = stream
+                        .send(ws::Message::Text(
+                            "the live source did not produce video".to_string(),
+                        ))
+                        .await;
+                    state.release(&key);
+                    let _ = stream.send(ws::Message::Close(None)).await;
+                    return Ok(());
+                }
+            }
+            if let Some(segment) = last.lock().ok().and_then(|slot| slot.clone()) {
+                if stream
+                    .send(ws::Message::Binary(segment.to_vec()))
+                    .await
+                    .is_err()
+                {
+                    state.release(&key);
+                    return Ok(());
+                }
+            }
             loop {
                 match receiver.recv().await {
                     Ok(fragment) => {

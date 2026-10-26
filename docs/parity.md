@@ -39,16 +39,18 @@ not is listed as `blocked` with the missing input.
 |---|---|---|---|
 | Device reachability probe | `CNetDevice`, DVRIP login | partial | route `POST /api/device/probe` exists. A real IPC at `192.168.0.100` answers on DVRIP 34567 and RTSP 554 (`Server: H264DVR 1.0`), but DVRIP login returns `ret 203`; the DVRIP hash for this firmware is not solved |
 | Recorded-clip playback path | `Fun_MediaDownloadM3u8ByUrl`, `CMediaFile` | partial | Annex-B clip → fMP4 is served and plays in Chromium (verified with ffprobe + in-browser decode); the live transport feeding it does not exist yet |
-| Local RTSP live view | RTSP client inside `libFunSDK.so` | blocked | the IPC exposes RTSP 554 and a `DESCRIBE` returns 401/200 depending on credentials, but the device password is not available to this project (owner has no local login); no stream has been pulled |
-| Live video over cloud P2P | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor`, `xmnat` | blocked | the owner reaches the camera only through the PROVIEW cloud P2P path; cloud login envelope is unsolved, so no session exists |
-| Main / sub stream choice | `DevEncodeConfigActivity`, `SDKCONST$StreamType` | blocked | follows the transport |
-| Multi-channel grid | `CloudServiceChannelListActivity`, `MultiChnCombin` | blocked | follows the transport |
-| Snapshot | `SDK_AlarmFucntionTypes`, `Fun_MediaRealPlayEx` | blocked | client-side frame grab once video runs |
-| Fullscreen | UI-only | blocked | follows the transport |
-| Two-way audio | `TALK:Java_com_lib_FunSDK_DevStarTalk`, `opTalk` | blocked | audio transport (`g711a/g711u`) is a separate channel |
+| Local RTSP live view | RTSP client inside `libFunSDK.so` | done | `crates/core/src/rtsp.rs` (Digest session, SETUP/PLAY over TCP interleaved) plus `media/rtp.rs` and `media/hevc.rs` pull the IPC at `192.168.0.100:554`: 72 access units in 6 s, all decodable by ffmpeg, played in Chromium through the fMP4/WebSocket hub |
+| Live video over cloud P2P | `DeviceMediaActivity`, `CMediaChannel`, `OPMonitor`, `xmnat` | blocked | the portal bundle gave up the login encoder (AES-128-ECB, key in webpack module `c71e`, `POST https://api.xmeye.net/api/transfer/login/v1` with a `Code-Token` captcha), but the PROVIEW account is a white-label account and that global portal answers `wrong param`; the white-label path runs through `IXMAccount` inside `libFunSDK.so` and is not solved |
+| Main / sub stream choice | `DevEncodeConfigActivity`, `SDKCONST$StreamType` | done | `stream=0` yields 2304x2592 and `stream=1` yields 640x720 from the same camera, both verified by pulling and probing the capture |
+| Multi-channel grid | `CloudServiceChannelListActivity`, `MultiChnCombin` | blocked | the LAN camera is a single-channel IPC; a grid needs the cloud device list plus multiple channels |
+| Snapshot | `SDK_AlarmFucntionTypes`, `Fun_MediaRealPlayEx` | partial | the button draws the current frame to a canvas and downloads a PNG; not exercised against the live stream yet |
+| Fullscreen | UI-only | partial | `requestFullscreen` wired on the stage; not exercised in the verification run |
+| Two-way audio | `TALK:Java_com_lib_FunSDK_DevStarTalk`, `opTalk` | blocked | the camera offers PCMA over RTSP, but the transcode path drops audio and no talk channel is implemented |
 | PTZ | `CInterfaceParser::ToMNetSDKPTZCommand`, `EPTZCMD` | blocked | follows the device session |
 | Fisheye dewarp | `libfisheye.so` | blocked | not attempted; vendor maths |
-| Video decode in browser | `player_hls_flv` in the vendor web client | partial | HLS path wired in the UI; no source yet |
+| Video decode in browser | `player_hls_flv` in the vendor web client | done | H.264 fMP4 over WebSocket into MSE, verified in headless Chromium (2304x2592, playback clock advancing); a screenshot of the live frame is attached to the issue |
+| Live source lifecycle | design | done | one upstream per (device, channel, stream); the init segment plus the newest fragment are kept so a late viewer starts on a keyframe; the source stays warm 60 s after the last viewer leaves and stops itself |
+| Multi-viewer fan-out | design | done | two viewers on one stream share a single RTSP session and one transcode; verified with a raw WS client and a browser tab |
 
 ## Recording / playback
 

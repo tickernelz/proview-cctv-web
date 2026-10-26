@@ -2,11 +2,33 @@ use rocket::http::{ContentType, Status};
 use rocket::local::blocking::Client;
 use serde_json::json;
 
+fn config(local: bool) -> proview_core::config::Config {
+    proview_core::config::Config {
+        provider: proview_core::config::ProviderKind::Fixture,
+        cloud_base: "https://pub-token.xmeye.net".to_string(),
+        device_user: "admin".to_string(),
+        device_pass: "device-password".to_string(),
+        fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),
+        device_host: None,
+        device_rtsp: local.then(|| "192.0.2.10:554".to_string()),
+        session_ttl_secs: 3600,
+    }
+}
+
 fn client() -> Client {
     let figment = rocket::Config::figment()
         .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
         .merge(("port", 0));
-    Client::tracked(proview_server::build(figment)).expect("valid rocket instance")
+    Client::tracked(proview_server::build_with(figment, config(false)))
+        .expect("valid rocket instance")
+}
+
+fn local_client() -> Client {
+    let figment = rocket::Config::figment()
+        .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
+        .merge(("port", 0));
+    Client::tracked(proview_server::build_with(figment, config(true)))
+        .expect("valid rocket instance")
 }
 
 fn sign_in(client: &Client) -> Status {
@@ -19,6 +41,26 @@ fn sign_in(client: &Client) -> Status {
         )
         .dispatch()
         .status()
+}
+
+#[test]
+fn local_mode_lists_the_lan_camera_and_returns_a_ws_ticket() {
+    let client = local_client();
+    assert_eq!(sign_in(&client), Status::Ok);
+
+    let devices = client.get("/api/devices").dispatch();
+    assert_eq!(devices.status(), Status::Ok);
+    let list: serde_json::Value = serde_json::from_str(&devices.into_string().unwrap()).unwrap();
+    assert_eq!(list[0]["id"], "local");
+    assert_eq!(list[0]["lan_host"], "192.0.2.10:554");
+
+    let ticket = client
+        .get("/api/stream?device=local&channel=1&quality=main")
+        .dispatch();
+    assert_eq!(ticket.status(), Status::Ok);
+    let body: serde_json::Value = serde_json::from_str(&ticket.into_string().unwrap()).unwrap();
+    assert_eq!(body["kind"], "ws");
+    assert_eq!(body["url"], "/ws/live?device=local&channel=1&quality=main");
 }
 
 #[test]

@@ -63,6 +63,15 @@ pub fn plan_clip(track: &TrackConfig, samples: &[Sample], per_fragment: usize) -
 struct Channel {
     sender: broadcast::Sender<Fragment>,
     subscribers: usize,
+    publishers: usize,
+    init: Arc<Mutex<Option<Fragment>>>,
+    last: Arc<Mutex<Option<Fragment>>>,
+}
+
+pub struct Subscription {
+    pub init: Arc<Mutex<Option<Fragment>>>,
+    pub last: Arc<Mutex<Option<Fragment>>>,
+    pub receiver: broadcast::Receiver<Fragment>,
 }
 
 pub struct LiveHub {
@@ -72,7 +81,7 @@ pub struct LiveHub {
 
 impl Default for LiveHub {
     fn default() -> Self {
-        Self::new(64)
+        Self::new(8)
     }
 }
 
@@ -84,17 +93,74 @@ impl LiveHub {
         }
     }
 
-    pub fn subscribe(&self, key: StreamKey) -> broadcast::Receiver<Fragment> {
+    pub fn subscribe(&self, key: StreamKey) -> Subscription {
         let mut guard = self.channels.lock().expect("live hub poisoned");
         let channel = guard.entry(key).or_insert_with(|| {
             let (sender, _) = broadcast::channel(self.capacity);
             Channel {
                 sender,
                 subscribers: 0,
+                publishers: 0,
+                init: Arc::new(Mutex::new(None)),
+                last: Arc::new(Mutex::new(None)),
             }
         });
         channel.subscribers += 1;
-        channel.sender.subscribe()
+        Subscription {
+            init: channel.init.clone(),
+            last: channel.last.clone(),
+            receiver: channel.sender.subscribe(),
+        }
+    }
+
+    pub fn init_slot(&self, key: &StreamKey) -> Arc<Mutex<Option<Fragment>>> {
+        let mut guard = self.channels.lock().expect("live hub poisoned");
+        let channel = guard.entry(key.clone()).or_insert_with(|| {
+            let (sender, _) = broadcast::channel(self.capacity);
+            Channel {
+                sender,
+                subscribers: 0,
+                publishers: 0,
+                init: Arc::new(Mutex::new(None)),
+                last: Arc::new(Mutex::new(None)),
+            }
+        });
+        channel.init.clone()
+    }
+
+    pub fn publish_init(&self, key: &StreamKey, init: Fragment) {
+        let guard = self.channels.lock().expect("live hub poisoned");
+        if let Some(channel) = guard.get(key) {
+            if let Ok(mut slot) = channel.init.lock() {
+                *slot = Some(init);
+            }
+        }
+    }
+
+    pub fn publish(&self, key: &StreamKey, fragment: Fragment) {
+        let guard = self.channels.lock().expect("live hub poisoned");
+        if let Some(channel) = guard.get(key) {
+            if let Ok(mut slot) = channel.last.lock() {
+                *slot = Some(fragment.clone());
+            }
+            let _ = channel.sender.send(fragment);
+        }
+    }
+
+    pub fn has_publisher(&self, key: &StreamKey) -> bool {
+        let guard = self.channels.lock().expect("live hub poisoned");
+        guard
+            .get(key)
+            .map(|channel| channel.publishers > 0)
+            .unwrap_or(false)
+    }
+
+    pub fn subscriber_count(&self, key: &StreamKey) -> usize {
+        let guard = self.channels.lock().expect("live hub poisoned");
+        guard
+            .get(key)
+            .map(|channel| channel.sender.receiver_count())
+            .unwrap_or(0)
     }
 
     pub fn publisher(&self, key: StreamKey) -> broadcast::Sender<Fragment> {
@@ -104,16 +170,30 @@ impl LiveHub {
             Channel {
                 sender,
                 subscribers: 0,
+                publishers: 0,
+                init: Arc::new(Mutex::new(None)),
+                last: Arc::new(Mutex::new(None)),
             }
         });
+        channel.publishers = channel.publishers.max(1);
         channel.sender.clone()
+    }
+
+    pub fn publisher_done(&self, key: &StreamKey) {
+        let mut guard = self.channels.lock().expect("live hub poisoned");
+        if let Some(channel) = guard.get_mut(key) {
+            channel.publishers = channel.publishers.saturating_sub(1);
+            if channel.publishers == 0 && channel.subscribers == 0 {
+                guard.remove(key);
+            }
+        }
     }
 
     pub fn release(&self, key: &StreamKey) {
         let mut guard = self.channels.lock().expect("live hub poisoned");
         if let Some(channel) = guard.get_mut(key) {
             channel.subscribers = channel.subscribers.saturating_sub(1);
-            if channel.subscribers == 0 {
+            if channel.subscribers == 0 && channel.publishers == 0 {
                 guard.remove(key);
             }
         }
@@ -124,22 +204,20 @@ impl LiveHub {
     }
 }
 
-pub fn spawn_publisher(sender: broadcast::Sender<Fragment>, plan: Arc<ClipPlan>) {
+pub fn spawn_publisher(hub: Arc<LiveHub>, key: StreamKey, init: Fragment, plan: Arc<ClipPlan>) {
+    hub.publish_init(&key, init);
+    let sender = hub.publisher(key.clone());
     tokio::spawn(async move {
         let mut ticker = interval(plan.fragment_duration);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        if sender.send(plan.init.clone()).is_err() {
-            return;
-        }
         for index in (0usize..).cycle() {
             ticker.tick().await;
             if sender.receiver_count() == 0 {
+                hub.publisher_done(&key);
                 return;
             }
             let fragment = plan.fragments[index % plan.fragments.len()].clone();
-            if sender.send(fragment).is_err() {
-                return;
-            }
+            hub.publish(&key, fragment);
         }
     });
 }
@@ -186,22 +264,40 @@ mod tests {
     async fn hub_releases_a_stream_when_the_last_subscriber_leaves() {
         let hub = LiveHub::new(8);
         let key = StreamKey::new("dev", 1, false);
-        let _receiver = hub.subscribe(key.clone());
+        let subscription = hub.subscribe(key.clone());
         assert_eq!(hub.active_streams(), 1);
+        drop(subscription);
         hub.release(&key);
         assert_eq!(hub.active_streams(), 0);
     }
 
     #[tokio::test]
-    async fn subscribers_receive_the_init_segment_first() {
+    async fn a_late_subscriber_sees_the_stored_init_segment() {
         let hub = LiveHub::new(8);
         let key = StreamKey::new("dev", 1, false);
-        let mut receiver = hub.subscribe(key.clone());
-        let sender = hub.publisher(key.clone());
         let plan = Arc::new(plan_clip(&track(), &samples(25), 25));
-        spawn_publisher(sender, plan.clone());
-        let first = receiver.recv().await.expect("init segment");
-        assert_eq!(first, plan.init);
+        let first = hub.subscribe(key.clone());
+        hub.publish_init(&key, plan.init.clone());
+        assert_eq!(first.init.lock().unwrap().clone(), Some(plan.init.clone()));
+        let late = hub.subscribe(key.clone());
+        assert_eq!(late.init.lock().unwrap().clone(), Some(plan.init.clone()));
+        hub.release(&key);
+        hub.release(&key);
+    }
+
+    #[tokio::test]
+    async fn fragments_reach_every_subscriber() {
+        let hub = Arc::new(LiveHub::new(8));
+        let key = StreamKey::new("dev", 1, false);
+        let first = hub.subscribe(key.clone());
+        let mut second = hub.subscribe(key.clone()).receiver;
+        let mut receiver = first.receiver;
+        let plan = Arc::new(plan_clip(&track(), &samples(25), 25));
+        spawn_publisher(hub.clone(), key.clone(), plan.init.clone(), plan.clone());
+        let one = receiver.recv().await.expect("first viewer fragment");
+        let two = second.recv().await.expect("second viewer fragment");
+        assert_eq!(one, two);
+        hub.release(&key);
         hub.release(&key);
     }
 }

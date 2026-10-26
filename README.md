@@ -19,9 +19,9 @@ proven and what is not.
 | Annex-B NAL splitter, H.264/H.265 detection | works, tested |
 | Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
 | H.264 SPS parse (dimensions, profile) | works, tested |
-| Vendor cloud login | partially mapped, returns `501` until the envelope is solved |
+| Vendor cloud login | partially mapped; the portal login encoder is recovered but the PROVIEW account lives on the white-label cloud, not the global portal |
 | Device list from the vendor cloud | not implemented |
-| Live video to the browser | not implemented |
+| Live video to the browser | works: RTSP pull + H.265 depacketize + one transcode per stream + fMP4 over WebSocket into MSE; verified against a real IPC |
 
 The server never sends a vendor token to the browser: the browser holds only an
 opaque `pvw_session` cookie, and every vendor call happens server side.
@@ -48,13 +48,38 @@ export PROVIEW_CLOUD_BASE=https://pub-token.xmeye.net
 cargo run --release
 ```
 
+## Live view from a LAN camera
+
+The local provider needs no cloud account: point the server at the camera's
+RTSP endpoint and it pulls, depacketizes and transcodes the stream once per
+channel, then fans the fragments out over a WebSocket.
+
+```sh
+export PROVIEW_DEVICE_RTSP=192.168.0.100:554
+export PROVIEW_DEVICE_USER=admin
+export PROVIEW_DEVICE_PASS='the device password'
+cargo run --release -p proview-server
+```
+
+`ffmpeg` must be on `PATH` for HEVC cameras (or set `PROVIEW_FFMPEG` to the
+binary). The camera in hand delivers H.265 only, so the server transcodes to
+H.264 baseline once per (device, channel, stream) and every viewer shares the
+result; browsers do not have to decode HEVC. Measured latency and memory are in
+`docs/performance.md`, the protocol in `docs/protocol.md` section 8.
+
+The stream source stays warm for 60 s after the last viewer leaves, so
+re-opening a camera is a warm start (~200 ms) instead of a cold one (~2.5-5 s,
+bounded by the camera's keyframe interval).
+
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `PROVIEW_PROVIDER` | `fixture` | `fixture` or `proview` |
 | `PROVIEW_CLOUD_BASE` | `https://pub-token.xmeye.net` | vendor cloud base |
-| `PROVIEW_DEVICE_HOST` | unset | `host:port` of the camera/DVR for the DVRIP probe and, later, streaming |
+| `PROVIEW_DEVICE_HOST` | unset | `host:port` of the camera for the DVRIP probe |
+| `PROVIEW_DEVICE_RTSP` | unset | `host:port` of the camera RTSP endpoint; when set, the UI streams from the LAN instead of the fixture |
+| `PROVIEW_FFMPEG` | `ffmpeg` | ffmpeg binary used for the HEVC to H.264 bridge |
 | `PROVIEW_DEVICE_USER` | `admin` | device-side account |
 | `PROVIEW_DEVICE_PASS` | empty | device-side password |
 | `PROVIEW_FIXTURE_DIR` | `fixtures` | fixture data directory |

@@ -2950,6 +2950,7 @@ name = "proview-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "md-5",
  "rand 0.8.8",

@@ -4,24 +4,50 @@ Rule for this repository: a number that was not measured is not a number. Every
 change that touches the frame path records before/after here, produced by a
 script under `tools/` so anyone can repeat it.
 
-## What is measurable today
+## Live path, local RTSP (measured 2026-10-26)
 
-The live transport (device → server → browser) does not exist yet, so the only
-end-to-end path is a recorded Annex-B clip converted to fragmented MP4 on
-request. That path exercises NAL splitting, SPS parsing, the moov/moof/mdat
-writer and Rocket's response, which is exactly the code the live path will
-reuse.
+Camera: PROVIEW IPC at `192.168.0.100`, RTSP 554, main stream
+2304×2592 H.265 (25 fps declared, 12 fps delivered), sub stream 640×720 H.265.
+Server: release build on a Ryzen-class workstation under WSL2, single run per
+row. Driver: headless Chromium over CDP, clicking the device row and polling
+`video.readyState`/ `currentTime`, so the number includes RTSP setup, the
+protocol exchange, the first keyframe, the transcode and the MSE append.
+
+| Metric | Value |
+|---|---|
+| click → first decoded frame, cold source | 2.5 s / 5.3 s / 2.6 s (three runs) |
+| click → first decoded frame, warm source (last fragment replayed) | 168 ms / 328 ms |
+| RTSP open → first video NAL | 389–765 ms |
+| access units pulled in 6 s (main stream) | 72 (matches `ffmpeg -i` control: 72) |
+| media bytes pulled in 6 s (main) | 557–575 KB |
+| sub stream 640×720, 4 s | 47 access units, 67 KB |
+| WebSocket payload per 8 s while streaming | 7.5–10 MB (H.264 baseline out) |
+| server RSS idle | 8.9–9.2 MiB |
+| server RSS while one viewer streams | 16–38 MiB |
+| server RSS after the viewer left, source warm | 20–33 MiB |
+
+Reading the numbers:
+
+1. Cold start is dominated by the camera's IDR interval (~2–3 s at 12 fps): the
+   server transcodes from the first keyframe, and the device offers no way to
+   request one over this RTSP session. Warm start replays the last complete
+   fragment, which is why it drops to ~200 ms. The 60 s warm window after the
+   last viewer leaves is what turns device switching into a warm start.
+2. The stream is re-encoded to H.264 baseline because the IPC delivers H.265
+   only; the sub stream is the cheap option at 640×720.
+3. RSS while streaming is not flat: the broadcast ring holds up to 8 fragments
+   and each fragment is 2–4 MB at this resolution. That is the first thing to
+   attack before a 4-tile grid, together with a bitrate cap
+   (`-maxrate`) so a fragment cannot grow past the ring budget.
+
+## Recorded clip path (measured 2026-10-26, commit `a2a87ae`)
 
 ```sh
 cargo build --release -p proview-server
 ./tools/measure-clip.sh target/release/proview-server
 ```
 
-Recorded on a Ryzen-class workstation (WSL2), single run, 640×360 baseline clip,
-72 frames, 47 KB source:
-
-Measured 2026-10-26, commit `a2a87ae`, `proview-server` release build,
-single run of `tools/measure-clip.sh`:
+640×360 baseline clip, 72 frames, 47 KB source:
 
 | Metric | Value |
 |---|---|
@@ -30,45 +56,28 @@ single run of `tools/measure-clip.sh`:
 | first byte (warm, mean of 10) | 0.5 ms |
 | full body (warm, mean of 10) | 0.7 ms |
 | body size | 48 776 B |
-| server RSS after run | 9.7 MiB |
-| CPU over the run | below the 10 ms jiffy resolution of `/proc/<pid>/stat` |
 
-The warm number is the useful one: muxing a 72-frame clip costs well under a
-millisecond, so the moov/moof writer will not be the bottleneck once a live
-transport feeds it.
+## Targets and what is still open
 
-## Targets for the live path (not yet met)
-
-These are commitments, not measurements:
-
-| Metric | Target |
-|---|---|
-| click → first decoded frame | < 1.2 s on LAN |
-| CPU per viewer, 720p H.264 | < 4 % of one core |
-| RSS per active stream | < 40 MiB |
-| 4-tile grid, mid-range laptop | no dropped frames, < 25 % of one core |
+| Metric | Target | State |
+|---|---|---|
+| click → first decoded frame, warm source | < 1.2 s | met (168–328 ms) |
+| click → first decoded frame, cold source | < 1.2 s | not met (2.5–5.3 s), bounded by the camera IDR interval |
+| CPU per viewer, 720p H.264 | < 4 % of one core | not measured yet for the live path (transcode cost unmeasured) |
+| RSS per active stream | < 40 MiB | borderline (16–38 MiB at 2304×2592) |
+| 4-tile grid, mid-range laptop | no dropped frames, < 25 % of one core | not implemented; the grid is a single stage today |
 
 ## Design decisions behind the numbers
 
-1. **One upstream per (device, channel, stream).** A hub broadcasts fragments to
-   all viewers; a second browser tab must not open a second vendor session. A
-   joining viewer starts at the next IDR so it never decodes a partial GOP.
-2. **Frame path stays allocation-light.** `bytes::Bytes`/Arc sharing, a reusable
-   output buffer per viewer, slow clients dropped to the next keyframe instead
-   of growing an unbounded queue.
-3. **Allocator and runtime.** mimalloc (or jemalloc) as the global allocator,
-   tokio multi-thread, one task per upstream plus one writer task per viewer,
-   `TCP_NODELAY` on the WebSocket.
-4. **Transport.** Binary WebSocket carrying fMP4 for live; HLS/FLV only for the
-   vendor's own cloud restream.
-5. **Frontend.** `VideoDecoder` (WebCodecs) first, MSE second, canvas paint via
-   `requestAnimationFrame`; off-screen tiles paused with `IntersectionObserver`
-   and the decoded-tile budget set from measurement.
-
-## How each future number gets recorded
-
-`tools/measure-clip.sh` is the template: start the binary on a fixed port, log
-in, hit the endpoint N times, report time-to-first-byte, total time, byte count,
-RSS and CPU seconds from `/proc`. A live-path script (`tools/measure-live.sh`)
-will add: click→frame using the browser's `requestVideoFrameCallback`, and CPU
-per viewer derived from `process_cpu_seconds_total` deltas.
+1. **One upstream per (device, channel, stream).** The hub broadcasts fMP4
+   fragments to every viewer and keeps the init segment plus the last fragment,
+   so a joining viewer starts on a complete keyframe instead of a partial GOP.
+2. **Warm window instead of reconnect cost.** A source keeps running for 60 s
+   after the last viewer leaves; the camera's IDR interval makes a cold start
+   the dominant cost otherwise.
+3. **Bounded buffers.** The hub ring is 8 fragments; the browser keeps a 12 s
+   window and jumps to the live edge when it falls more than 2 s behind, so
+   memory does not grow with uptime.
+4. **Single transcode per stream.** H.265→H.264 happens once per
+   (device, channel, stream) in `ffmpeg`, not per viewer; viewers share the
+   output.

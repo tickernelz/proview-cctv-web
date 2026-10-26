@@ -112,7 +112,7 @@ Three are present in the SDK. In order of implementation cost:
 2. `sign` / `sn` derivation for `/reqToken`.
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).
-4. Whether this device exposes RTSP on the local network, and with which path.
+4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
 5. P2P media channel details.
 
 ## 6. DVRIP transport as implemented here
@@ -140,3 +140,56 @@ small ADRP/ADD cross-reference scanner over the aarch64 `.text` to bind string
 literals to the functions that use them, plus plain HTTP probes for the live
 behaviour. The APK, the `.so` files, the extracted application credentials and
 any capture stay outside this repository.
+
+## 8. RTSP transport as implemented here
+
+The IPC on the owner's LAN (192.168.0.100) answers RTSP on 554 with
+`Server: H264DVR 1.0` (the OEM stack name, not proof of a DVR) and Digest auth,
+realm taken from the `WWW-Authenticate` challenge. `crates/core/src/rtsp.rs`
+speaks the session by hand:
+
+1. `DESCRIBE` without credentials → `401` plus the challenge; the same request
+   is replayed with the RFC 2069-style digest (`HA1 = md5(user:realm:password)`,
+   `HA2 = md5(method:uri)`, no `qop`).
+2. The 200 body is SDP parsed into tracks. Parameter sets arrive **base64** in
+   `a=fmtp`: `sprop-vps`, `sprop-sps`, `sprop-pps`. The parser also accepts a
+   hex encoding because the same OEM ships both.
+3. `SETUP` uses `Transport: RTP/AVP/TCP;unicast;interleaved=0-1`. The device
+   may answer with a different pair (`interleaved=2-3` was observed); the
+   assigned pair is read from the response and used, never assumed.
+4. `PLAY`, then media arrives as interleaved frames: `0x24`, channel byte,
+   length (big-endian u16), RTP packet.
+5. `TEARDOWN` when the viewer leaves.
+
+Stream selection uses the OEM path instead of a second session: `stream=0` is
+the main stream (2304×2592 H.265 on this camera, 25 fps declared, ~12 fps
+delivered) and `stream=1` the sub stream (640×720). Both pull fine with the
+same Digest credentials.
+
+### RTP → HEVC
+
+`crates/core/src/media/rtp.rs` decodes the fixed header, CSRC list, extension
+header and padding. `crates/core/src/media/hevc.rs` depacketizes RFC 7798:
+single NAL units pass through, type 48 (AP) is split on its 16-bit length
+prefixes, type 49 (FU) is reassembled, type 50 (PACI) is skipped.
+
+The FU header carries the first byte of the NAL header (`F` and `Type`), and the
+**second byte must be taken from the FU payload header** rather than from the
+fragment data. Dropping it produced a stream that ffprobe read (parameter sets
+intact, resolution correct) but could not decode: every access unit lost one
+byte. Caught by pulling six seconds from the real camera and running
+`ffmpeg -i capture.h265 -f null -`: 72 of 72 frames decoded after the fix, zero
+before.
+
+### HEVC → browser
+
+Browsers cannot be assumed to decode HEVC (WebKitGTK usually cannot, Windows
+depends on the installed codec). The server transcodes once per stream: NAL
+units go into `ffmpeg` as Annex-B (`-f hevc` in, libx264 baseline out,
+`empty_moov+frag_keyframe`), and the fMP4 on stdout is split on box boundaries
+into one init segment plus one fragment per keyframe. Both are broadcast over
+WebSocket; the hub keeps the init and the newest fragment so a late viewer
+starts on a complete keyframe. Numbers live in `docs/performance.md`.
+
+`-fflags nobuffer` on the input demuxer was measured to discard frames on this
+stream (0 decodable frames instead of 72), so it is deliberately absent.

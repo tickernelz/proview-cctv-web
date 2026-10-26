@@ -219,6 +219,30 @@ function stopLive() {
   live.queue = [];
 }
 
+const LIVE_WINDOW_SECONDS = 12;
+const LIVE_TARGET_LAG_SECONDS = 1.0;
+
+function followLiveEdge() {
+  const video = el('video');
+  const buffer = live.buffer;
+  if (!video || !buffer || buffer.buffered.length === 0) {
+    return;
+  }
+  const end = buffer.buffered.end(buffer.buffered.length - 1);
+  const start = buffer.buffered.start(0);
+  const insideBuffer = video.currentTime >= start && video.currentTime <= end;
+  const behind = !insideBuffer || video.currentTime < end - LIVE_TARGET_LAG_SECONDS - 2;
+  if (behind) {
+    video.currentTime = Math.max(start, end - LIVE_TARGET_LAG_SECONDS);
+    video.play().catch(() => {});
+  }
+  if (start < end - LIVE_WINDOW_SECONDS && !buffer.updating) {
+    try {
+      buffer.remove(0, end - LIVE_WINDOW_SECONDS);
+    } catch {}
+  }
+}
+
 function pumpFragments() {
   const buffer = live.buffer;
   if (!buffer || buffer.updating) {
@@ -226,6 +250,7 @@ function pumpFragments() {
   }
   const next = live.queue.shift();
   if (!next) {
+    followLiveEdge();
     return;
   }
   try {
@@ -247,7 +272,10 @@ function playOverWebSocket(ticket) {
   media.addEventListener('sourceopen', () => {
     const buffer = media.addSourceBuffer('video/mp4; codecs="avc1.42E01E"');
     live.buffer = buffer;
-    buffer.addEventListener('updateend', pumpFragments);
+    buffer.addEventListener('updateend', () => {
+      pumpFragments();
+      followLiveEdge();
+    });
 
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     const target = ticket.url.startsWith('/') ? scheme + '://' + location.host + ticket.url : ticket.url.replace(/^http/, 'ws');
@@ -262,6 +290,7 @@ function playOverWebSocket(ticket) {
     socket.onclose = () => {
       if (!video.paused) setStage('error', 'Live socket closed.');
     };
+    video.muted = true;
     video.play().catch(() => {});
     setStage('playing', '');
   }, { once: true });
