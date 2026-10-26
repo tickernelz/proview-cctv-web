@@ -471,6 +471,7 @@ pub struct RtspSession {
     tracks: Vec<Track>,
     video: Option<usize>,
     interleaved: Option<(u8, u8)>,
+    audio_interleaved: Option<(u8, u8)>,
 }
 
 impl RtspSession {
@@ -502,6 +503,7 @@ impl RtspSession {
             tracks: Vec::new(),
             video: None,
             interleaved: None,
+            audio_interleaved: None,
         };
         let url = session.url.clone();
         let (head, body) = session
@@ -525,6 +527,43 @@ impl RtspSession {
 
     pub fn video_track(&self) -> Option<&Track> {
         self.video.and_then(|index| self.tracks.get(index))
+    }
+
+    pub fn audio_track(&self) -> Option<&Track> {
+        self.tracks
+            .iter()
+            .find(|track| track.kind == MediaKind::Audio)
+    }
+
+    pub fn audio_channel(&self) -> Option<u8> {
+        self.audio_interleaved.map(|pair| pair.0)
+    }
+
+    pub async fn setup_audio(&mut self, requested: (u8, u8)) -> Result<(u8, u8), RtspError> {
+        let index = self
+            .tracks
+            .iter()
+            .position(|track| track.kind == MediaKind::Audio)
+            .ok_or_else(|| RtspError::Parse("sdp has no audio track".to_string()))?;
+        let track_url = match self.tracks[index].control.clone() {
+            Some(control) if control.starts_with("rtsp://") => control,
+            Some(control) => format!("{}/{}", self.url.trim_end_matches('/'), control),
+            None => self.url.clone(),
+        };
+        let transport = format!(
+            "Transport: RTP/AVP/TCP;unicast;interleaved={}-{}",
+            requested.0, requested.1
+        );
+        let (head, _) = self.request("SETUP", track_url, &[transport]).await?;
+        let status = head.lines().next().unwrap_or("").to_string();
+        if !status.contains(" 200") {
+            return Err(RtspError::Status(status));
+        }
+        let assigned = header_value(&head, "transport")
+            .and_then(|value| parse_interleaved(&value))
+            .unwrap_or(requested);
+        self.audio_interleaved = Some(assigned);
+        Ok(assigned)
     }
 
     pub fn video_channel(&self) -> Option<u8> {

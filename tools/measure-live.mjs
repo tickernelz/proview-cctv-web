@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const base = process.env.PROVIEW_BASE || 'http://127.0.0.1:8787/';
 const email = process.env.PROVIEW_MEASURE_EMAIL || 'fixture@example.invalid';
 const password = process.env.PROVIEW_MEASURE_PASSWORD || 'fixture-password';
 const port = Number(process.env.PROVIEW_CDP_PORT || 9333);
 const profile = process.env.PROVIEW_CDP_PROFILE || '/tmp/proview-measure-profile';
+const mode = process.env.PROVIEW_TRANSPORT === 'hevc' ? 'hevc' : 'avc';
+const viewers = Math.max(1, Number(process.env.PROVIEW_VIEWERS || 1));
+const sampleMs = Math.max(1000, Number(process.env.PROVIEW_SAMPLE_MS || 8000));
+const sampleSeconds = Number(process.env.PROVIEW_SAMPLE_SECONDS || 8);
+const out = process.env.PROVIEW_OUT || '';
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const chrome = spawn('google-chrome', [
   '--headless=new', '--no-sandbox', '--disable-gpu',
@@ -14,7 +22,6 @@ const chrome = spawn('google-chrome', [
   '--user-data-dir=' + profile, 'about:blank',
 ], { stdio: 'ignore' });
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const call = async (path, init) => (await fetch('http://127.0.0.1:' + port + path, init)).json();
 
 let up = false;
@@ -26,56 +33,308 @@ if (!up) {
   process.exit(1);
 }
 
-const target = await call('/json/new?' + encodeURIComponent(base), { method: 'PUT' });
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-let id = 0;
-const pending = new Map();
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  if (message.id && pending.has(message.id)) {
-    pending.get(message.id)(message);
-    pending.delete(message.id);
+class Tab {
+  constructor(socket, targetId) {
+    this.targetId = targetId;
+    this.socket = socket;
+    this.id = 0;
+    this.pending = new Map();
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.id && this.pending.has(message.id)) {
+        this.pending.get(message.id)(message);
+        this.pending.delete(message.id);
+      }
+    };
   }
-};
-await new Promise((resolve) => { socket.onopen = resolve; });
-
-const send = (method, params) => new Promise((resolve) => {
-  const messageId = ++id;
-  pending.set(messageId, resolve);
-  socket.send(JSON.stringify({ id: messageId, method, params: params || {} }));
-});
-
-const evaluate = async (expression) => {
-  const reply = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  const result = reply.result || {};
-  if (result.exceptionDetails) return null;
-  return result.result ? result.result.value : null;
-};
-
-await send('Page.enable');
-await send('Runtime.enable');
-await sleep(1200);
-
-await evaluate("(function(){var e=document.querySelector('#login-form input[type=email]');var p=document.querySelector('#login-form input[type=password]');if(!e)return 0;e.value=" + JSON.stringify(email) + ";p.value=" + JSON.stringify(password) + ";document.querySelector('#login-submit').click();return 1;})()");
-
-for (let i = 0; i < 60; i++) {
-  const count = await evaluate("document.querySelectorAll('#devices li button').length");
-  if (typeof count === 'number' && count > 0) break;
-  await sleep(200);
+  static async open(url) {
+    const target = await call('/json/new?' + encodeURIComponent(url), { method: 'PUT' });
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve) => { socket.onopen = resolve; });
+    const tab = new Tab(socket, target.id);
+    await tab.send('Page.enable');
+    await tab.send('Runtime.enable');
+    return tab;
+  }
+  send(method, params) {
+    return new Promise((resolve) => {
+      const messageId = ++this.id;
+      this.pending.set(messageId, resolve);
+      this.socket.send(JSON.stringify({ id: messageId, method, params: params || {} }));
+    });
+  }
+  async evaluate(expression) {
+    const reply = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
+    const result = reply.result || {};
+    if (result.exceptionDetails) return null;
+    return result.result ? result.result.value : null;
+  }
+  async waitFor(expression, tries, gap) {
+    for (let i = 0; i < tries; i++) {
+      if (await this.evaluate(expression)) return true;
+      await sleep(gap);
+    }
+    return false;
+  }
+  async activate() {
+    if (this.targetId) await fetch('http://127.0.0.1:' + port + '/json/activate/' + this.targetId);
+  }
+  close() {
+    this.socket.close();
+  }
 }
 
-const started = Date.now();
-await evaluate("(function(){var b=document.querySelector('#devices li button');if(!b)return 0;b.click();return 1;})()");
+const login = (tab) => tab.evaluate(
+  "(function(){var e=document.querySelector('#login-form input[type=email]');var p=document.querySelector('#login-form input[type=password]');" +
+  "if(!e)return 0;e.value=" + JSON.stringify(email) + ";p.value=" + JSON.stringify(password) +
+  ";document.querySelector('#login-submit').click();return 1;})()",
+);
 
-let firstFrame = -1;
-for (let i = 0; i < 400; i++) {
-  const playing = await evaluate("(function(){var v=document.querySelector('video');return !!(v && v.readyState>=2 && v.currentTime>0);})()");
-  if (playing === true) { firstFrame = Date.now() - started; break; }
-  await sleep(50);
+const devicesReady = "document.querySelectorAll('#devices li button').length > 0";
+const clickFirstDevice = "(function(){var b=document.querySelector('#devices li button');if(!b)return 0;b.click();return 1;})()";
+const playing = "(function(){var v=document.querySelector('video');return !!(v && v.readyState>=2 && v.currentTime>0);})()";
+const videoState = "(function(){var v=document.querySelector('video');if(!v)return null;return {width:v.videoWidth,height:v.videoHeight,time:v.currentTime,readyState:v.readyState};})()";
+
+function avccToAnnexB(buffer) {
+  const parts = [];
+  let offset = 0;
+  while (offset + 4 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    offset += 4;
+    if (length === 0 || offset + length > buffer.length) break;
+    parts.push(Buffer.from([0, 0, 0, 1]), buffer.subarray(offset, offset + length));
+    offset += length;
+  }
+  return Buffer.concat(parts);
 }
 
-const state = await evaluate("(function(){var v=document.querySelector('video');if(!v)return null;return {width:v.videoWidth,height:v.videoHeight,time:v.currentTime,readyState:v.readyState};})()");
-console.log(JSON.stringify({ base, click_to_first_frame_ms: firstFrame, video: state }, null, 2));
+function processTree(rootPid) {
+  const parents = new Map();
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let stat;
+    try { stat = readFileSync('/proc/' + entry + '/stat', 'utf8'); } catch { continue; }
+    const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    parents.set(Number(entry), Number(tail[1]));
+  }
+  const tree = new Set([rootPid]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const [pid, parent] of parents) {
+      if (tree.has(parent) && !tree.has(pid)) { tree.add(pid); added = true; }
+    }
+  }
+  return [...tree];
+}
 
-socket.close();
+function sampleTree(rootPid) {
+  let ticks = 0;
+  let rss = 0;
+  let processes = 0;
+  for (const pid of processTree(rootPid)) {
+    let stat;
+    let status;
+    try {
+      stat = readFileSync('/proc/' + pid + '/stat', 'utf8');
+      status = readFileSync('/proc/' + pid + '/status', 'utf8');
+    } catch { continue; }
+    processes += 1;
+    const tail = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    ticks += Number(tail[11]) + Number(tail[12]);
+    const match = status.match(/VmRSS:\s+(\d+) kB/);
+    if (match) rss += Number(match[1]);
+  }
+  return { ticks, rss_kb: rss, processes };
+}
+
+function findServer() {
+  if (process.env.PROVIEW_SERVER_PID) return Number(process.env.PROVIEW_SERVER_PID);
+  const port = new URL(base).port || '80';
+  let fallback = 0;
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let cmd;
+    try { cmd = readFileSync('/proc/' + entry + '/cmdline', 'utf8'); } catch { continue; }
+    if (!cmd.includes('proview-server')) continue;
+    if (cmd.includes('--listen') && cmd.includes(':' + port)) return Number(entry);
+    if (!fallback) fallback = Number(entry);
+  }
+  return fallback;
+}
+
+const cookies = async () => {
+  const tab = await Tab.open(base);
+  await sleep(1200);
+  await login(tab);
+  if (!(await tab.waitFor(devicesReady, 60, 200))) {
+    throw new Error('the device list never appeared; check the login fixture');
+  }
+  const reply = await tab.send('Storage.getCookies');
+  const all = (reply.result && reply.result.cookies) || [];
+  tab.close();
+  return all.map((cookie) => cookie.name + '=' + cookie.value).join('; ');
+};
+
+async function measureAvc() {
+  const first = await Tab.open(base);
+  await sleep(1200);
+  await login(first);
+  if (!(await first.waitFor(devicesReady, 60, 200))) {
+    throw new Error('the device list never appeared; check the login fixture');
+  }
+  const extra = [];
+  for (let i = 1; i < viewers; i++) {
+    const tab = await Tab.open(base);
+    if (!(await tab.waitFor(devicesReady, 60, 200))) {
+      throw new Error('a second viewer never reached the device list');
+    }
+    extra.push(tab);
+  }
+  const tabs = [first, ...extra];
+  const started = Date.now();
+  const frames = [];
+  for (const tab of tabs) {
+    await tab.activate();
+    await sleep(150);
+    const clicked = Date.now();
+    await tab.evaluate(clickFirstDevice);
+    let elapsed = -1;
+    for (let i = 0; i < 400; i++) {
+      if (await tab.evaluate(playing)) {
+        elapsed = Date.now() - clicked;
+        break;
+      }
+      await sleep(50);
+    }
+    frames.push(elapsed);
+  }
+  const before = sampleTree(serverPid);
+  const wall = Date.now();
+  await sleep(sampleMs);
+  const after = sampleTree(serverPid);
+  const elapsed = (Date.now() - wall) / 1000;
+  const states = await Promise.all(tabs.map((tab) => tab.evaluate(videoState)));
+  for (const tab of tabs) tab.close();
+  const cpuPercent = ((after.ticks - before.ticks) / 100 / elapsed) * 100;
+  return {
+    mode: 'avc-transcode',
+    viewers,
+    started_at: new Date(started).toISOString(),
+    click_to_first_frame_ms: frames,
+    video: states,
+    cpu_percent_of_one_core: Number(cpuPercent.toFixed(1)),
+    cpu_percent_per_viewer: Number((cpuPercent / viewers).toFixed(1)),
+    rss_mib: Number((after.rss_kb / 1024).toFixed(1)),
+    server_rss_mib: Number((sampleTree(serverPid).rss_kb / 1024).toFixed(1)),
+    processes: after.processes,
+    sample_seconds: elapsed,
+  };
+}
+
+async function measureHevc() {
+  const cookie = await cookies();
+  const path = '/ws/live?device=fixture-dev-0001&channel=1&quality=main&codec=hevc';
+  const target = base.replace(/^http/, 'ws').replace(/\/$/, '') + path;
+  const before = sampleTree(serverPid);
+  const wall = Date.now();
+  const sockets = [];
+  for (let index = 0; index < viewers; index++) {
+    sockets.push(new WebSocket(target, { headers: { cookie } }));
+  }
+  const socket = sockets[0];
+  socket.binaryType = 'arraybuffer';
+  let hello = null;
+  let config = null;
+  let firstKeyframe = -1;
+  let keyframes = 0;
+  let deltas = 0;
+  let bytes = 0;
+  let otherBytes = 0;
+  for (const extra of sockets.slice(1)) {
+    extra.binaryType = 'arraybuffer';
+    extra.onmessage = (event) => {
+      if (typeof event.data !== 'string') otherBytes += event.data.byteLength;
+    };
+  }
+  const started = Date.now();
+  const decoder = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'hevc', '-i', 'pipe:0', '-f', 'null', '-'], { stdio: ['pipe', 'ignore', 'pipe'] });
+  let stderr = '';
+  decoder.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+  const finished = new Promise((resolve) => decoder.on('exit', resolve));
+  socket.onmessage = (event) => {
+    if (typeof event.data === 'string') {
+      hello = JSON.parse(event.data);
+      return;
+    }
+    const view = new Uint8Array(event.data);
+    bytes += view.length;
+    const kind = view[0];
+    if (kind === 1) { config = view.length - 1; return; }
+    if (kind === 2) {
+      keyframes += 1;
+      if (firstKeyframe < 0) firstKeyframe = Date.now() - started;
+    }
+    if (kind === 3) deltas += 1;
+    decoder.stdin.write(avccToAnnexB(Buffer.from(view.subarray(9))));
+  };
+  await new Promise((resolve, reject) => {
+    let ready = 0;
+    for (const item of sockets) {
+      item.onopen = () => {
+        ready += 1;
+        if (ready === sockets.length) resolve();
+      };
+      item.onerror = () => reject(new Error('the live socket failed to connect'));
+    }
+  });
+  await sleep(sampleSeconds * 1000);
+  const after = sampleTree(serverPid);
+  const elapsed = (Date.now() - wall) / 1000;
+  socket.onmessage = null;
+  for (const item of sockets) item.close();
+  decoder.stdin.end();
+  await Promise.race([finished, sleep(5000)]);
+  if (stderr.trim()) {
+    throw new Error('the passthrough bytes did not decode: ' + stderr.trim().slice(0, 300));
+  }
+  const cpuPercent = ((after.ticks - before.ticks) / 100 / elapsed) * 100;
+  return {
+    mode: 'hevc-passthrough',
+    viewers,
+    other_viewer_bytes: otherBytes,
+    hello,
+    config_bytes: config,
+    first_keyframe_ms: firstKeyframe,
+    keyframes,
+    deltas,
+    media_bytes: bytes,
+    bytes_per_second: Math.round(bytes / elapsed),
+    decoded_without_error: stderr.trim() === '',
+    cpu_percent_of_one_core: Number(cpuPercent.toFixed(1)),
+    cpu_percent_per_viewer: Number(cpuPercent.toFixed(1)),
+    rss_mib: Number((after.rss_kb / 1024).toFixed(1)),
+    processes: after.processes,
+    sample_seconds: elapsed,
+  };
+}
+
+const serverPid = findServer();
+if (!serverPid) {
+  console.error('proview-server is not running; set PROVIEW_SERVER_PID');
+  process.exit(1);
+}
+
+let report;
+try {
+  report = mode === 'hevc' ? await measureHevc() : await measureAvc();
+} catch (error) {
+  console.error(error.message);
+  chrome.kill();
+  process.exit(1);
+}
+report.base = base;
+report.server_pid = serverPid;
+console.log(JSON.stringify(report, null, 2));
+if (out) writeFileSync(out, JSON.stringify(report, null, 2));
 chrome.kill();
