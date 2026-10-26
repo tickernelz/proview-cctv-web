@@ -358,11 +358,33 @@ have produced `-4004` instead, so the digest really is what the service read.
 
 Two conclusions. First, the service decrypts the field and validates the
 decrypted value (a format-invalid plaintext returns `4017`), so the key, mode,
-padding and encoding are correct. Second, **the configured account is not
-registered on this cloud**: `4024` is an answer about the account itself, not
-about the request. The mobile app therefore uses the tenant CSS path
-(section 3) rather than the portal; a portal login for that account stays
-blocked until the account exists there.
+padding and encoding are correct. Second, the answers above are about the
+**request as we sent it**: an email as `uname` on `api.xmeye.net` is answered
+`4024`/`4000`, i.e. this service does not hold that email as an account.
+
+What that does **not** prove is that the owner's account is absent from the
+vendor cloud. The app shows an account id (`67e…8302`) next to a filled email,
+so the login identifier is probably the id, not the address. Measured bounds:
+
+| Probe | Reply | Reading |
+|---|---|---|
+| `usercheck/v1 {name: AES("67e…")}` (id-shaped, not the real id) | `4025 REG_USER_NOT_EXIST` | the portal accepts that shape as a username, so the id hypothesis is testable here |
+| `usercheck/v1 {name: AES("a@b.c")}` | `4017 REG_USER_FORMAT` | an address is not a valid `uname` on this endpoint at all |
+| `usercheckMail/v1 {mail: AES(<email>)}` | `4024` | the email is not bound to a portal account |
+
+So `4024` for the address is consistent with "the address is not the login
+identifier", not only with "the account is elsewhere". Whoever fills in the
+real id can settle it with one `usercheck` call.
+
+The mobile path is a different protocol on different hosts, now measured: the
+SDK's `logInByAccount` target comes from `GetServerDSNAndPort`, an ALC/CSS
+gateway. On this network `access-alc.secu100.net` answers on 6602
+(`AlarmCenter`), 6502 (TLS, `AlarmCenter`), 6614 and 6615 (TLS)
+(`CssCenter`); 6603/6503 are closed, and every path on those gateways returns
+the same JSON-envelope error, so the URL path carries no meaning there — the
+message does. The transfer API is not served there: `api.xmeye.net` has
+`/api/transfer/*` and no `/webservice/*` (404 from nginx), and the gateways
+have the envelope and no `/api/transfer/*`.
 
 ### 10.6 What the client does not do
 
