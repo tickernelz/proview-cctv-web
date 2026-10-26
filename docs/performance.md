@@ -20,12 +20,22 @@ cargo build --release -p proview-server
 Recorded on a Ryzen-class workstation (WSL2), single run, 640×360 baseline clip,
 72 frames, 47 KB source:
 
+Measured 2026-10-26, commit `a2a87ae`, `proview-server` release build,
+single run of `tools/measure-clip.sh`:
+
 | Metric | Value |
 |---|---|
-| first byte (cold, includes muxing) | see latest run below |
-| full body (cold) | |
-| full body (warm, mean of 10) | |
-| server RSS after run | |
+| first byte (cold, includes muxing) | 1.6 ms |
+| full body (cold) | 1.8 ms |
+| first byte (warm, mean of 10) | 0.5 ms |
+| full body (warm, mean of 10) | 0.7 ms |
+| body size | 48 776 B |
+| server RSS after run | 9.7 MiB |
+| CPU over the run | below the 10 ms jiffy resolution of `/proc/<pid>/stat` |
+
+The warm number is the useful one: muxing a 72-frame clip costs well under a
+millisecond, so the moov/moof writer will not be the bottleneck once a live
+transport feeds it.
 
 ## Targets for the live path (not yet met)
 

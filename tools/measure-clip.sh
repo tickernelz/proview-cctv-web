@@ -14,8 +14,8 @@ if [ ! -f "$root/fixtures/fixture-dev-0001_ch1_main.h264" ]; then
   exit 1
 fi
 
-ROCKET_SECRET_KEY=$(openssl rand -base64 32) ROCKET_PORT="$port" ROCKET_ADDRESS=127.0.0.1 \
-  "$binary" > /tmp/proview-measure.log 2>&1 &
+ROCKET_SECRET_KEY=$(openssl rand -base64 32) \
+  "$binary" --listen "127.0.0.1:$port" > /tmp/proview-measure.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null || true' EXIT
 
