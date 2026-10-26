@@ -394,6 +394,74 @@ have the envelope and no `/api/transfer/*`.
   fields of `mdlist/v1` (`channel`, `channelNum`, otherwise one channel).
 
 
+## 10A. The app's own cloud is REST on api.jftechws.com
+
+Captured from the owner's phone through mitmproxy after the app was patched to
+trust a user CA (Wira, 2026-10-26). This is the app's account/feature API, and it
+is **not** the portal of section 10 and **not** the `CssCenter` gateway of
+section 3:
+
+```
+POST https://api.jftechws.com/privacy/query
+  uuid: <the APP_UUID from the manifest>
+  appKey: <the APP_KEY from the manifest>
+  versionName: 1.0.4
+  Accept-Language: in
+  Authorization: (empty before login)
+  Content-Type: application/json; charset=UTF-8
+  User-Agent: okhttp/3.12.0
+  body: {"accessKey":"…","lan":"in","pkg":"com.proview.cctv"}
+```
+
+The base URL is a literal in the APK (`com/xworld/utils/PrivacyUtils.java`:
+`https://api.jftechws.com`), it speaks plain REST/JSON, and `Authorization` is
+the slot that fills in after login.
+
+Route behaviour from this network (headers as above, empty body where not
+noted):
+
+| Call | Reply |
+|---|---|
+| `POST /privacy/query` with `{accessKey, lan, pkg}` | `{"code":5004,"msg":"Param Error","data":null}` |
+| `POST /login`, `/user/login`, `/account/login`, `/app/login`, `/user/query`, `/device/list`, `/user/register` | `{"error_msg":"404 Route Not Found"}` |
+
+The 404 body is the framework's, so a route exists only when the reply carries
+`code`/`msg`/`data`. That makes the surface enumerable without credentials, but
+only along the paths the client actually calls — the login path is not among
+the Retrofit interfaces in the APK (they cover privacy, promotion, cloud drive,
+customer service and the legacy `…/{version}/{timeMillis}/{secret}.rs` family),
+so it is either native or built at runtime.
+
+Two hardening facts that shape any further capture attempt:
+
+1. A repackaged build (the `apk-mitm` step needed for user-CA trust) is
+   redirected to Google Play on launch, so the app checks its own signature.
+2. The original build was restored, and targetSdk 35 means it does not trust a
+   user CA either. Capturing its TLS therefore needs a pcap (host and port
+   only), a rooted device, or a Frida hook — not another certificate install.
+
+The account login is **not** part of this REST surface. `libFunSDK.so` carries
+the login path itself — `/webservice/app/user/logInByAccount` with query
+`username=%s&password=%s&time=%lld&token=%s` and a `Set-Cookie` session
+(section 3) — and `IXMAccount::XM_Video_Login_XMAccount` at `0xf3fc2c` builds it,
+AES-encrypting both fields first. The host for that call comes from
+`GetServerDSNAndPort`, i.e. one of the ALC gateways, not from
+`api.jftechws.com`.
+
+So the surface splits cleanly:
+
+| Surface | Host | What it carries |
+|---|---|---|
+| portal (section 10) | `api.xmeye.net` | web client login, device list, captcha |
+| app REST (this section) | `api.jftechws.com` | privacy, promotion, cloud drive, binding (`/listbind`, `/createbind`), caps |
+| app account login (section 3) | ALC host from discovery | `/webservice/app/user/logInByAccount`, AES query, cookie session |
+
+A capture that only shows `api.jftechws.com` therefore says nothing about the
+login itself; the login is the native call, and reading it needs either a pcap
+(the gateway answers plain HTTP on some ports, so the query may be in cleartext)
+or a Frida hook.
+
+
 ## 11. Live passthrough transport (stream 2)
 
 A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards
