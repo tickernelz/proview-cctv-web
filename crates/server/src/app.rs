@@ -1,5 +1,7 @@
 use std::net::{SocketAddr, TcpListener};
+use std::path::PathBuf;
 
+use crate::config::ModeStore;
 use proview_core::config::Config;
 use proview_core::session::Store;
 use rocket::figment::Figment;
@@ -9,6 +11,7 @@ pub struct ServeOptions {
     pub address: String,
     pub port: u16,
     pub secret_key: Option<String>,
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Default for ServeOptions {
@@ -17,6 +20,7 @@ impl Default for ServeOptions {
             address: "127.0.0.1".to_string(),
             port: 8787,
             secret_key: None,
+            data_dir: None,
         }
     }
 }
@@ -43,18 +47,36 @@ pub fn build(figment: Figment) -> rocket::Rocket<rocket::Build> {
 }
 
 pub fn build_with(figment: Figment, config: Config) -> rocket::Rocket<rocket::Build> {
+    build_with_modes(figment, config, ModeStore::from_env(None))
+}
+
+pub fn build_with_modes(
+    figment: Figment,
+    config: Config,
+    modes: ModeStore,
+) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
         .manage(Store::new())
+        .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
+        .mount("/api", crate::config::routes())
         .mount("/", crate::routes::live())
 }
 
 pub async fn serve(opts: ServeOptions) -> Result<ServerHandle, Box<rocket::Error>> {
+    serve_with(opts, Config::from_env()).await
+}
+
+pub async fn serve_with(
+    opts: ServeOptions,
+    config: Config,
+) -> Result<ServerHandle, Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
-    let rig = build(figment(&opts, port));
+    let modes = ModeStore::from_env(opts.data_dir.as_deref());
+    let rig = build_with_modes(figment(&opts, port), config, modes);
     let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
     let address = SocketAddr::new(

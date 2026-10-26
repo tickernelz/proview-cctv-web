@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use super::{CameraProvider, Device, ProviderError, StreamKind, StreamTicket, VendorSession};
+use super::{
+    Alarm, Device, DeviceSettings, Provider, ProviderError, ProviderSource, Recording, StreamKind,
+    StreamTicket, VendorSession,
+};
 use crate::config::Config;
 
 pub struct Fixture {
@@ -29,8 +32,15 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+const NO_ACCOUNT_CLOUD: &str =
+    "the fixture provider has no cloud account, recordings or alarms; it only replays recorded clips";
+
 #[async_trait::async_trait]
-impl CameraProvider for Fixture {
+impl Provider for Fixture {
+    fn source(&self) -> ProviderSource {
+        ProviderSource::Fixture
+    }
+
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
         let path = self.dir.join("account.json");
         let raw = std::fs::read_to_string(path)?;
@@ -86,6 +96,40 @@ impl CameraProvider for Fixture {
             kind: StreamKind::Ws,
             url: format!("/ws/live?device={device}&channel={channel}&quality={name}"),
             expires_in: 300,
+            source: ProviderSource::Fixture,
         })
+    }
+
+    async fn playback(
+        &self,
+        _session: &VendorSession,
+        _device: &str,
+        _channel: u32,
+    ) -> Result<Vec<Recording>, ProviderError> {
+        Err(ProviderError::NotImplemented(NO_ACCOUNT_CLOUD))
+    }
+
+    async fn alarms(
+        &self,
+        _session: &VendorSession,
+        _limit: u32,
+    ) -> Result<Vec<Alarm>, ProviderError> {
+        Err(ProviderError::NotImplemented(NO_ACCOUNT_CLOUD))
+    }
+
+    async fn settings(
+        &self,
+        _session: &VendorSession,
+        _device: &str,
+    ) -> Result<DeviceSettings, ProviderError> {
+        Err(ProviderError::NotImplemented(NO_ACCOUNT_CLOUD))
+    }
+
+    async fn save_settings(
+        &self,
+        _session: &VendorSession,
+        _settings: &DeviceSettings,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::NotImplemented(NO_ACCOUNT_CLOUD))
     }
 }

@@ -31,7 +31,9 @@ not is listed as `blocked` with the missing input.
 | Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; release `nightly-1` carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
 | Installer signing | — | blocked | no Apple Developer or Windows signing certificate (decision 2026-10-26); artefacts ship unsigned with `SHA256SUMS` |
 | Desktop app run on a real desktop | — | blocked | built and linked in CI, never launched on a graphical session; needs a person to click through |
-| Vendor-credential storage in OS keychain | requirement | blocked | `keyring` integration not written yet |
+| Vendor-credential storage in OS keychain | requirement | partial | `src-tauri/src/keychain.rs` stores one JSON blob per profile through `keyring` (macOS Keychain, Windows Credential Manager, Secret Service), read at startup and writable with `proview-desktop --store-credentials`; the CLI round trip is exercised, the desktop window is not |
+| Provider seam (`cloud` / `local`) | requirement | done | `crates/core/src/provider/`: one `Provider` trait for device list, live, playback, alarms and settings, with `CloudProvider` (default) and `LocalProvider` behind `Router` |
+| Mode selection and fallback | requirement | done | `GET/POST /api/config/mode`; desktop persists the choice in `app_data_dir/mode.json`, server keeps it per session; local without a host or with an unreachable host falls back to cloud and reports why |
 
 ## Live view
 
@@ -87,7 +89,8 @@ not is listed as `blocked` with the missing input.
 |---|---|
 | Desktop browser UI | the point of the project |
 | Server-side vendor session | keeps the vendor token out of JavaScript |
-| Provider seam (`fixture` / `proview`) | lets the UI be exercised without an account |
+| Provider seam (`fixture` / `cloud` / `local`) | lets the UI be exercised without an account, and picks LAN or cloud per profile |
+| Mode and fallback reporting | the UI can say which provider answered instead of failing silently |
 
 ## Blockers, consolidated
 

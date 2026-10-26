@@ -39,10 +39,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         address,
         port,
         secret_key: std::env::var("ROCKET_SECRET_KEY").ok(),
+        data_dir: None,
     };
     let handle = proview_server::serve(opts).await?;
     tracing::info!(address = %handle.address, "proview-server listening");
-    tokio::signal::ctrl_c().await?;
+    shutdown_signal().await?;
     handle.shutdown.notify();
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }

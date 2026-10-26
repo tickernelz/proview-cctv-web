@@ -3,7 +3,7 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use proview_core::config::Config;
 use proview_core::live::StreamKey;
-use proview_core::provider::{self, Device, ProviderError, StreamKind, StreamTicket};
+use proview_core::provider::{self, Device, Provider, ProviderError, Router, StreamTicket};
 use proview_core::session::{self, Store};
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
@@ -11,6 +11,8 @@ use rocket::serde::json::Json;
 use rocket::State;
 use rocket_ws as ws;
 use serde::{Deserialize, Serialize};
+
+use crate::config::ModeStore;
 
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, app_js, style_css, tokens_css, media_clip]
@@ -109,10 +111,14 @@ async fn login(
     body: Json<LoginBody>,
     cfg: &State<Config>,
     store: &State<Store>,
+    modes: &State<ModeStore>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
-    let provider = provider::build(cfg);
-    let vendor = provider
+    let current = cookies
+        .get_private("pvw_session")
+        .map(|c| c.value().to_string());
+    let router = Router::new(cfg, modes.mode_for(current.as_deref()));
+    let vendor = router
         .login(&body.email, &body.password)
         .await
         .map_err(|e| fail(status_for(&e), e.to_string()))?;
@@ -129,16 +135,22 @@ async fn login(
             .same_site(SameSite::Strict)
             .build(),
     );
-    Ok(Json(StatusBody {
-        ok: true,
-        message: "signed in".to_string(),
-    }))
+    let message = match router.resolution().notice {
+        Some(notice) => format!("signed in via {}: {}", notice.to.as_str(), notice.message),
+        None => format!("signed in via {}", router.source().as_str()),
+    };
+    Ok(Json(StatusBody { ok: true, message }))
 }
 
 #[post("/logout")]
-fn logout(store: &State<Store>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
+fn logout(
+    store: &State<Store>,
+    modes: &State<ModeStore>,
+    cookies: &CookieJar<'_>,
+) -> Json<StatusBody> {
     if let Some(c) = cookies.get_private("pvw_session") {
         store.remove(c.value());
+        modes.forget(c.value());
         cookies.remove_private(c);
     }
     Json(StatusBody {
@@ -161,27 +173,6 @@ pub struct RtspReport {
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub framerate: Option<u32>,
-}
-
-fn urlencoding_light(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-                c.to_string()
-            } else {
-                let mut encoded = String::new();
-                for byte in c.to_string().as_bytes() {
-                    encoded.push_str(&format!("%{byte:02X}"));
-                }
-                encoded
-            }
-        })
-        .collect()
-}
-
-fn rtsp_target(cfg: &Config) -> Option<proview_core::source::RtspTarget> {
-    rtsp_target_stream(cfg, false)
 }
 
 fn rtsp_target_stream(cfg: &Config, sub_stream: bool) -> Option<proview_core::source::RtspTarget> {
@@ -224,22 +215,13 @@ async fn rtsp_probe(cfg: &State<Config>) -> Result<Json<RtspReport>, Failure> {
 async fn devices(
     cfg: &State<Config>,
     store: &State<Store>,
+    modes: &State<ModeStore>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<Vec<Device>>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
-    if let Some(target) = rtsp_target(cfg) {
-        return Ok(Json(vec![Device {
-            id: "local".to_string(),
-            name: format!("Camera at {}", target.host),
-            model: "LAN camera".to_string(),
-            online: true,
-            channels: 1,
-            lan_host: Some(format!("{}:{}", target.host, target.port)),
-        }]));
-    }
-    let provider = provider::build(cfg);
-    provider
+    let router = Router::new(cfg, modes.mode_for(Some(&id)));
+    router
         .devices(&vendor)
         .await
         .map(Json)
@@ -318,26 +300,14 @@ async fn stream(
     quality: Option<String>,
     cfg: &State<Config>,
     store: &State<Store>,
+    modes: &State<ModeStore>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StreamTicket>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
-    let _ = vendor;
-    if rtsp_target(cfg).is_some() {
-        let channel = channel.unwrap_or(1);
-        let quality = quality.unwrap_or_else(|| "main".to_string());
-        return Ok(Json(StreamTicket {
-            kind: StreamKind::Ws,
-            url: format!(
-                "/ws/live?device={}&channel={channel}&quality={quality}",
-                urlencoding_light(&device)
-            ),
-            expires_in: cfg.session_ttl_secs,
-        }));
-    }
-    let provider = provider::build(cfg);
+    let router = Router::new(cfg, modes.mode_for(Some(&id)));
     let high = quality.as_deref() != Some("sub");
-    provider
+    router
         .stream(&vendor, &device, channel.unwrap_or(1), high)
         .await
         .map(Json)
