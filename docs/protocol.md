@@ -462,6 +462,48 @@ login itself; the login is the native call, and reading it needs either a pcap
 or a Frida hook.
 
 
+## 10B. A cloud session without the account: the JF portal device login
+
+`cloud.jufenginfo.com` is the classic JF cloud portal. It accepts a **device**
+login, so a cloud session exists without any account credential:
+
+| Call | Result |
+|---|---|
+| `GET /verification_produce?_=2` | JPEG captcha + `JSESSIONID` |
+| `POST /cloud_device_macLogin_main` with `deviceMy.mac`, `deviceMy.username`, `deviceMy.password`, `verificationCode2` | `{"status":1200,"tips":"success:"}`, session rotated and a `macCookie` issued |
+| `GET /macLogin` | frames `/cloud/video/index.jsp?mac=…&username=…&password=…` |
+| `GET` that frame | `200`, 105,009 bytes, `<title>NETSuveillance WEB</title>` |
+
+Reproduced on 2026-10-26 from this box with the device serial
+`7f92970ddf5282743hrc` and the credentials in `secrets/device.env`: the login
+returned `1200`, the cookie jar held `JSESSIONID` + `macCookie`, and the framed
+page came back with the byte count and title above. Device username and password
+are encrypted by the portal page before the call; the same values from the
+working LAN session are accepted.
+
+What this is and is not:
+
+- It is a **cloud** path to the device UI, reachable from anywhere the portal is
+  reachable, and it needs no account, no captcha solving beyond the device step,
+  and no P2P.
+- It is **device-scoped**, not account-scoped: it does not enumerate the
+  account's devices, so it cannot replace `/transfer/mdlist/v1`.
+- Sessions are per family. The portal rotates `JSESSIONID` on every
+  session-creating call, so a device jar and an account jar must not be shared.
+
+### Correction to section 10.1: never send `pkg`
+
+On `/api/transfer/login/v1`, adding a `pkg` field to the body makes the server
+answer `5005 wrong param` for **any** credentials, correct or not. Without
+`pkg` the answers are the meaningful ones (`2000` success, `4000` wrong
+credentials). The Rust client does not send `pkg`, which is why its answers were
+`4000` rather than `5005`. Treat any `5005` as "the request shape is wrong", not
+as "the account is wrong".
+
+Related rate limit, measured: around ten `usercheck` calls in a few minutes make
+every shape answer `5005` as well, so burst probing erases information.
+
+
 ## 11. Live passthrough transport (stream 2)
 
 A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards
