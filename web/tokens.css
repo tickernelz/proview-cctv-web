@@ -23,6 +23,7 @@
   --info: oklch(0.72 0.11 245);
 
   --stage: oklch(0.11 0.006 265);
+  --stage-matte: oklch(0.2 0.008 265);
   --scrim: oklch(0.13 0.01 265 / 0.88);
   --on-scrim: oklch(0.98 0.002 265);
 

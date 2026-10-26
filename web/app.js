@@ -629,22 +629,80 @@ function normaliseCrop(crop, dims) {
   };
 }
 
+const LENS_WORDS = { full: 'Full frame', top: 'Top lens', middle: 'Middle lens', bottom: 'Bottom lens' };
+
+function lensLabel(lens, index) {
+  const raw = typeof lens.label === 'string' ? lens.label : '';
+  const word = LENS_WORDS[raw.toLowerCase()];
+  if (word) {
+    return word;
+  }
+  return raw || 'Lens ' + (index + 1);
+}
+
+function lensRole(lens) {
+  if (lens.ptz === true) {
+    return 'moving';
+  }
+  if (lens.ptz === false) {
+    return 'fixed';
+  }
+  return lens.role === 'moving' || lens.role === 'fixed' ? lens.role : 'unknown';
+}
+
 function normaliseLens(payload, source) {
   const streams = Array.isArray(payload && payload.streams) ? payload.streams : [];
-  const dims = { width: streams[0] && streams[0].width ? streams[0].width : 1, height: streams[0] && streams[0].height ? streams[0].height : 1 };
+  const dims = {
+    width: streams[0] && streams[0].width ? streams[0].width : 1,
+    height: streams[0] && streams[0].height ? streams[0].height : 1,
+  };
   const lenses = Array.isArray(payload && payload.lenses) ? payload.lenses : [];
   return {
     deviceId: payload && payload.deviceId ? payload.deviceId : state.selectedId,
     channel: payload && payload.channel ? payload.channel : state.channel,
     streams,
+    countSource: payload && payload.countSource ? payload.countSource : null,
+    cropsVerified: payload && payload.cropsVerified === true,
     lenses: lenses.map((lens, index) => ({
       index: typeof lens.index === 'number' ? lens.index : index,
-      label: lens.label || 'Lens ' + (index + 1),
-      role: lens.role === 'moving' || lens.role === 'fixed' ? lens.role : 'unknown',
+      label: lensLabel(lens, index),
+      role: lensRole(lens),
       crop: normaliseCrop(lens.crop, dims),
     })),
     source,
   };
+}
+
+function contractCaption(lens) {
+  const countRule =
+    lens.countSource === 'capability'
+      ? 'reported by the device capabilities'
+      : lens.countSource === 'geometry'
+        ? 'inferred from the frame ratio'
+        : 'reported by the device';
+  const size = lens.streams[0] ? lens.streams[0].width + '×' + lens.streams[0].height : 'unknown size';
+  const moving = lens.lenses.find((entry) => entry.role === 'moving');
+  const fixed = lens.lenses.find((entry) => entry.role === 'fixed');
+  const roles = [];
+  if (moving) {
+    roles.push(moving.label.toLowerCase() + ' can pan and tilt');
+  }
+  if (fixed) {
+    roles.push(fixed.label.toLowerCase() + ' is aimed by hand');
+  }
+  return (
+    'Lens layout: ' +
+    lens.lenses.length +
+    ' lens' +
+    (lens.lenses.length === 1 ? '' : 'es') +
+    ', ' +
+    countRule +
+    ' (' +
+    size +
+    ')' +
+    (roles.length ? ' · ' + roles.join(' · ') : '') +
+    '.'
+  );
 }
 
 function deriveLensFromFrame() {
@@ -667,8 +725,8 @@ function deriveLensFromFrame() {
       channel: state.channel,
       streams,
       lenses: [
-        { index: 0, label: 'Upper lens', role: 'unknown', crop: { x: 0, y: 0, w: 1, h: 0.5 } },
-        { index: 1, label: 'Lower lens', role: 'unknown', crop: { x: 0, y: 0.5, w: 1, h: 0.5 } },
+        { index: 0, label: 'top', crop: { x: 0, y: 0, w: 1, h: 0.5 } },
+        { index: 1, label: 'bottom', crop: { x: 0, y: 0.5, w: 1, h: 0.5 } },
       ],
     },
     'geometry',
@@ -716,8 +774,9 @@ function renderLensPicker() {
 
   if (hasPair) {
     const [first, second] = entries;
-    upperLabel.textContent = first.role === 'moving' ? 'Upper lens (moving)' : first.role === 'fixed' ? 'Upper lens (fixed)' : 'Upper lens';
-    lowerLabel.textContent = second.role === 'moving' ? 'Lower lens (moving)' : second.role === 'fixed' ? 'Lower lens (fixed)' : 'Lower lens';
+    const suffix = (entry) => (entry.role === 'moving' ? ' (moving)' : entry.role === 'fixed' ? ' (fixed)' : '');
+    upperLabel.textContent = first.label + suffix(first);
+    lowerLabel.textContent = second.label + suffix(second);
     upper.querySelector('input').value = String(first.index);
     lower.querySelector('input').value = String(second.index);
   } else if (entries.length === 1) {
@@ -731,8 +790,7 @@ function renderLensPicker() {
   } else if (!state.lens) {
     note.textContent = 'Lens layout: waiting for the first frame.';
   } else if (state.lens.source === 'contract') {
-    const dims = state.lens.streams[0] ? state.lens.streams[0].width + '×' + state.lens.streams[0].height : 'unknown size';
-    note.textContent = 'Lens layout: reported by the device (' + state.lens.lenses.length + ' lens, ' + dims + ').';
+    note.textContent = contractCaption(state.lens);
   } else {
     const dims = state.lens.streams[0].width + '×' + state.lens.streams[0].height;
     note.textContent =

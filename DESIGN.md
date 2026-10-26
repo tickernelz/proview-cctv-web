@@ -21,6 +21,7 @@ All colours are OKLCH tokens. Brand anchor: warm crimson, taken as the
 | `--surface` | `oklch(0.21 0.01 265)` | `oklch(1 0 0)` | bars, rows |
 | `--surface-2/3` | `0.26` / `0.31` | `0.945` / `0.91` | raised controls, hover |
 | `--line` / `--line-soft` | `0.34` / `0.27` | `0.88` / `0.93` | borders |
+| `--stage` / `--stage-matte` | `0.11` / `0.20` | same | video, player matte |
 | `--ink` / `--ink-dim` / `--muted` | `0.96` / `0.84` / `0.74` | `0.22` / `0.34` / `0.50` | text |
 | `--primary` | `oklch(0.62 0.19 27)` | `oklch(0.52 0.19 27)` | primary action, live/selected |
 | `--success` `--warning` `--danger` `--info` | hue 155 / 78 / 22 / 245 | darker variants | device online, warnings, errors, focus |

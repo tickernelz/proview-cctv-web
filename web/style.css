@@ -324,7 +324,7 @@ button[aria-busy="true"] .label { opacity: 0.7; }
   justify-self: stretch;
   width: 100%;
   min-height: 220px;
-  background: var(--stage);
+  background: var(--stage-matte);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-lg);
   overflow: hidden;
@@ -445,7 +445,7 @@ button[aria-busy="true"] .label { opacity: 0.7; }
 .tile-open { background: transparent; border: 1px solid transparent; padding: var(--space-1) var(--space-2); font-size: var(--text-sm); color: var(--ink-dim); }
 .tile-open:hover:not(:disabled) { color: var(--ink); background: var(--surface-2); }
 .tile-chip { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted); border: 1px solid var(--line-soft); border-radius: 999px; padding: 0 var(--space-2); }
-.tile-stage { position: relative; overflow: hidden; aspect-ratio: 16 / 9; background: var(--stage); border-radius: var(--radius-md); display: grid; place-items: center; }
+.tile-stage { position: relative; overflow: hidden; aspect-ratio: 16 / 9; background: var(--stage-matte); border-radius: var(--radius-md); display: grid; place-items: center; }
 .tile-stage video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; background: var(--stage); }
 .tile-status { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; padding: var(--space-3); text-align: center; font-size: var(--text-sm); color: var(--muted); }
 .tile[data-state="playing"] .tile-status { display: none; }
