@@ -17,7 +17,16 @@ pub fn files() -> Vec<rocket::route::Route> {
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
-    routes![login, logout, me, devices, stream, probe_device, health]
+    routes![
+        login,
+        logout,
+        me,
+        devices,
+        stream,
+        probe_device,
+        rtsp_probe,
+        health
+    ]
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
@@ -145,6 +154,35 @@ fn me(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Json<serde_json::
     Ok(Json(serde_json::json!({ "account": vendor.account })))
 }
 
+#[derive(Serialize)]
+pub struct RtspReport {
+    pub ok: bool,
+    pub host: String,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub framerate: Option<u32>,
+}
+
+#[post("/device/rtsp")]
+async fn rtsp_probe(cfg: &State<Config>) -> Result<Json<RtspReport>, Failure> {
+    let target = cfg
+        .device_rtsp
+        .clone()
+        .ok_or_else(|| fail(Status::BadRequest, "PROVIEW_DEVICE_RTSP is not configured"))?;
+    let (host, port) = target.rsplit_once(':').unwrap_or((target.as_str(), "554"));
+    let port: u16 = port.parse().unwrap_or(554);
+    let info = proview_core::rtsp::describe(host, port, "/", &cfg.device_user, &cfg.device_pass)
+        .await
+        .map_err(|e| fail(Status::BadGateway, format!("rtsp {target}: {e}")))?;
+    Ok(Json(RtspReport {
+        ok: true,
+        host: target,
+        video_codec: info.video_codec,
+        audio_codec: info.audio_codec,
+        framerate: info.framerate,
+    }))
+}
+
 #[get("/devices")]
 async fn devices(
     cfg: &State<Config>,
@@ -167,6 +205,9 @@ pub struct DeviceProbe {
     pub host: String,
     pub session: u32,
     pub device_type: Option<String>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub framerate: Option<u32>,
 }
 
 #[post("/device/probe?<variant>")]
@@ -193,11 +234,33 @@ async fn probe_device(
     let session = login.session;
     let device_type = login.device_type;
     let _ = connection.logout().await;
+
+    let (video_codec, audio_codec, framerate) = match cfg.device_rtsp.as_deref() {
+        Some(rtsp) => {
+            let (rtsp_host, rtsp_port) = rtsp.rsplit_once(':').unwrap_or((rtsp, "554"));
+            let port = rtsp_port.parse().unwrap_or(554);
+            let info = proview_core::rtsp::describe(
+                rtsp_host,
+                port,
+                "/",
+                &cfg.device_user,
+                &cfg.device_pass,
+            )
+            .await
+            .map_err(|e| fail(Status::BadGateway, format!("rtsp {rtsp}: {e}")))?;
+            (info.video_codec, info.audio_codec, info.framerate)
+        }
+        None => (None, None, None),
+    };
+
     Ok(Json(DeviceProbe {
         ok: true,
         host,
         session,
         device_type,
+        video_codec,
+        audio_codec,
+        framerate,
     }))
 }
 

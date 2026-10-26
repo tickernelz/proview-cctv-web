@@ -1,4 +1,3 @@
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;

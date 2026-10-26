@@ -8,6 +8,7 @@ pub struct Config {
     pub device_pass: String,
     pub fixture_dir: String,
     pub device_host: Option<String>,
+    pub device_rtsp: Option<String>,
     pub session_ttl_secs: u64,
 }
 
@@ -38,6 +39,9 @@ impl Config {
             device_pass: env::var("PROVIEW_DEVICE_PASS").unwrap_or_default(),
             fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| default_fixture_dir()),
             device_host: env::var("PROVIEW_DEVICE_HOST")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            device_rtsp: env::var("PROVIEW_DEVICE_RTSP")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
             session_ttl_secs: env::var("PROVIEW_SESSION_TTL")
