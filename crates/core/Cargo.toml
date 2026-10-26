@@ -13,6 +13,7 @@ tokio.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 md-5.workspace = true
+aes.workspace = true
 rand.workspace = true
 bytes.workspace = true
 base64.workspace = true
