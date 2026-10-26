@@ -1,0 +1,48 @@
+use proview_server::ServeOptions;
+use tracing_subscriber::EnvFilter;
+
+fn argument(name: &str) -> Option<String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(item) = args.next() {
+        if item == name {
+            return args.next();
+        }
+        if let Some(rest) = item.strip_prefix(&format!("{name}=")) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    if argument("--version").is_some() {
+        println!("proview-server {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let listen = argument("--listen")
+        .or_else(|| std::env::var("PROVIEW_LISTEN").ok())
+        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
+    let (address, port) = listen
+        .rsplit_once(':')
+        .map(|(host, port)| (host.to_string(), port.parse().unwrap_or(8787)))
+        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8787));
+
+    let opts = ServeOptions {
+        address,
+        port,
+        secret_key: std::env::var("ROCKET_SECRET_KEY").ok(),
+    };
+    let handle = proview_server::serve(opts).await?;
+    tracing::info!(address = %handle.address, "proview-server listening");
+    tokio::signal::ctrl_c().await?;
+    handle.shutdown.notify();
+    Ok(())
+}

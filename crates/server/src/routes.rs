@@ -1,14 +1,13 @@
 use std::time::Duration;
 
+use proview_core::config::Config;
+use proview_core::provider::{self, Device, ProviderError, StreamTicket};
+use proview_core::session::{self, Store};
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
 use rocket::serde::json::Json;
 use rocket::State;
 use serde::{Deserialize, Serialize};
-
-use crate::config::Config;
-use crate::provider::{self, Device, ProviderError, StreamTicket};
-use crate::session::{self, Store};
 
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, app_js, style_css, tokens_css, media_clip]
@@ -20,57 +19,27 @@ pub fn api() -> Vec<rocket::route::Route> {
 
 #[get("/")]
 fn index() -> RawHtml<&'static str> {
-    RawHtml(include_str!("../static/index.html"))
+    RawHtml(include_str!("../../../web/index.html"))
 }
 
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../static/app.js"))
-}
-
-#[get("/media/<device>/<channel>/<quality>")]
-fn media_clip(
-    device: String,
-    channel: u32,
-    quality: String,
-    cfg: &State<Config>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<(rocket::http::ContentType, Vec<u8>), Failure> {
-    let id = session_id(cookies)?;
-    restore(store, &id)?;
-    if device.contains('/') || device.contains("..") {
-        return Err(fail(Status::BadRequest, "invalid device id"));
-    }
-    let stem = quality.trim_end_matches(".mp4");
-    if stem != "main" && stem != "sub" {
-        return Err(fail(Status::BadRequest, "quality must be main or sub"));
-    }
-    let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
-    let clip = std::fs::read(&path).map_err(|_| {
-        fail(
-            Status::NotFound,
-            format!("no recorded clip for {device} ch{channel}"),
-        )
-    })?;
-    let mp4 = crate::stream::annexb_to_fmp4(&clip, 25)
-        .map_err(|e| fail(Status::UnprocessableEntity, e.to_string()))?;
-    Ok((rocket::http::ContentType::new("video", "mp4"), mp4))
+    RawJavaScript(include_str!("../../../web/app.js"))
 }
 
 #[get("/tokens.css")]
 fn tokens_css() -> RawCss<&'static str> {
-    RawCss(include_str!("../static/tokens.css"))
+    RawCss(include_str!("../../../web/tokens.css"))
 }
 
 #[get("/style.css")]
 fn style_css() -> RawCss<&'static str> {
-    RawCss(include_str!("../static/style.css"))
+    RawCss(include_str!("../../../web/style.css"))
 }
 
 #[get("/health")]
 fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "ok": true, "service": "proview-cctv-web" }))
+    Json(serde_json::json!({ "ok": true, "service": "proview-server" }))
 }
 
 #[derive(Serialize)]
@@ -169,6 +138,22 @@ fn me(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Json<serde_json::
     Ok(Json(serde_json::json!({ "account": vendor.account })))
 }
 
+#[get("/devices")]
+async fn devices(
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<Vec<Device>>, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    let provider = provider::build(cfg);
+    provider
+        .devices(&vendor)
+        .await
+        .map(Json)
+        .map_err(|e| fail(status_for(&e), e.to_string()))
+}
+
 #[derive(Serialize)]
 pub struct DeviceProbe {
     pub ok: bool,
@@ -183,7 +168,7 @@ async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure>
         .device_host
         .clone()
         .ok_or_else(|| fail(Status::BadRequest, "PROVIEW_DEVICE_HOST is not configured"))?;
-    let mut connection = crate::dvrip::client::Connection::connect(&host)
+    let mut connection = proview_core::dvrip::client::Connection::connect(&host)
         .await
         .map_err(|e| fail(Status::BadGateway, format!("connect {host}: {e}")))?;
     let login = connection
@@ -199,22 +184,6 @@ async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure>
         session,
         device_type,
     }))
-}
-
-#[get("/devices")]
-async fn devices(
-    cfg: &State<Config>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<Vec<Device>>, Failure> {
-    let id = session_id(cookies)?;
-    let vendor = restore(store, &id)?;
-    let provider = provider::build(cfg);
-    provider
-        .devices(&vendor)
-        .await
-        .map(Json)
-        .map_err(|e| fail(status_for(&e), e.to_string()))
 }
 
 #[get("/stream?<device>&<channel>&<quality>")]
@@ -235,4 +204,34 @@ async fn stream(
         .await
         .map(Json)
         .map_err(|e| fail(status_for(&e), e.to_string()))
+}
+
+#[get("/media/<device>/<channel>/<quality>")]
+fn media_clip(
+    device: String,
+    channel: u32,
+    quality: String,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<(rocket::http::ContentType, Vec<u8>), Failure> {
+    let id = session_id(cookies)?;
+    restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    let stem = quality.trim_end_matches(".mp4");
+    if stem != "main" && stem != "sub" {
+        return Err(fail(Status::BadRequest, "quality must be main or sub"));
+    }
+    let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
+    let clip = std::fs::read(&path).map_err(|_| {
+        fail(
+            Status::NotFound,
+            format!("no recorded clip for {device} ch{channel}"),
+        )
+    })?;
+    let mp4 = proview_core::stream::annexb_to_fmp4(&clip, 25)
+        .map_err(|e| fail(Status::UnprocessableEntity, e.to_string()))?;
+    Ok((rocket::http::ContentType::new("video", "mp4"), mp4))
 }

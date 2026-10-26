@@ -1198,17 +1198,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "proview-cctv-web"
+name = "proview-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "md-5",
  "rand 0.8.8",
  "reqwest",
- "rocket",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "proview-server"
+version = "0.1.0"
+dependencies = [
+ "proview-core",
+ "reqwest",
+ "rocket",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -17,6 +17,13 @@ pub enum ProviderKind {
     Proview,
 }
 
+fn default_fixture_dir() -> String {
+    if std::path::Path::new("fixtures").is_dir() {
+        return "fixtures".to_string();
+    }
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string()
+}
+
 impl Config {
     pub fn from_env() -> Self {
         let provider = match env::var("PROVIEW_PROVIDER").as_deref() {
@@ -29,7 +36,7 @@ impl Config {
                 .unwrap_or_else(|_| "https://pub-token.xmeye.net".to_string()),
             device_user: env::var("PROVIEW_DEVICE_USER").unwrap_or_else(|_| "admin".to_string()),
             device_pass: env::var("PROVIEW_DEVICE_PASS").unwrap_or_default(),
-            fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| "fixtures".to_string()),
+            fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| default_fixture_dir()),
             device_host: env::var("PROVIEW_DEVICE_HOST")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
