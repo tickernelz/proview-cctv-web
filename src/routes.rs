@@ -15,7 +15,7 @@ pub fn files() -> Vec<rocket::route::Route> {
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
-    routes![login, logout, me, devices, stream, health]
+    routes![login, logout, me, devices, stream, probe_device, health]
 }
 
 #[get("/")]
@@ -132,6 +132,38 @@ fn me(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Json<serde_json::
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
     Ok(Json(serde_json::json!({ "account": vendor.account })))
+}
+
+#[derive(Serialize)]
+pub struct DeviceProbe {
+    pub ok: bool,
+    pub host: String,
+    pub session: u32,
+    pub device_type: Option<String>,
+}
+
+#[post("/device/probe")]
+async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure> {
+    let host = cfg
+        .device_host
+        .clone()
+        .ok_or_else(|| fail(Status::BadRequest, "PROVIEW_DEVICE_HOST is not configured"))?;
+    let mut connection = crate::dvrip::client::Connection::connect(&host)
+        .await
+        .map_err(|e| fail(Status::BadGateway, format!("connect {host}: {e}")))?;
+    let login = connection
+        .login(&cfg.device_user, &cfg.device_pass)
+        .await
+        .map_err(|e| fail(Status::BadGateway, format!("login {host}: {e}")))?;
+    let session = login.session;
+    let device_type = login.device_type;
+    let _ = connection.logout().await;
+    Ok(Json(DeviceProbe {
+        ok: true,
+        host,
+        session,
+        device_type,
+    }))
 }
 
 #[get("/devices")]

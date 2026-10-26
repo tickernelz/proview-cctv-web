@@ -7,6 +7,7 @@ pub struct Config {
     pub device_user: String,
     pub device_pass: String,
     pub fixture_dir: String,
+    pub device_host: Option<String>,
     pub session_ttl_secs: u64,
 }
 
@@ -29,6 +30,9 @@ impl Config {
             device_user: env::var("PROVIEW_DEVICE_USER").unwrap_or_else(|_| "admin".to_string()),
             device_pass: env::var("PROVIEW_DEVICE_PASS").unwrap_or_default(),
             fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| "fixtures".to_string()),
+            device_host: env::var("PROVIEW_DEVICE_HOST")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
             session_ttl_secs: env::var("PROVIEW_SESSION_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())

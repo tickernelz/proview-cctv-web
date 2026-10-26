@@ -68,6 +68,20 @@ fn stream_outside_the_channel_range_is_not_found() {
 }
 
 #[test]
+fn device_probe_reports_a_configuration_error_before_any_network_call() {
+    let client = client();
+    let response = client.post("/api/device/probe").dispatch();
+    let status = response.status();
+    assert!(
+        status == Status::BadRequest || status == Status::BadGateway,
+        "unexpected status {status}"
+    );
+    if std::env::var("PROVIEW_DEVICE_HOST").is_err() {
+        assert_eq!(status, Status::BadRequest);
+    }
+}
+
+#[test]
 fn logout_invalidates_the_session() {
     let client = client();
     assert_eq!(sign_in(&client), Status::Ok);
