@@ -6,9 +6,9 @@ use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-use crate::live::{Fragment, LiveHub, StreamKey};
+use crate::live::{Fragment, LiveHub, LiveMode, LivePacket, StreamKey, StreamMeta};
 use crate::media::{hevc, rtp};
-use crate::rtsp::RtspSession;
+use crate::rtsp::{RtspSession, Track};
 
 #[derive(Debug, Clone)]
 pub struct RtspTarget {
@@ -53,6 +53,7 @@ pub enum SourceError {
     Ffmpeg(String),
     NoVideoTrack,
     FfmpegMissing,
+    PassthroughNeedsHevc(String),
 }
 
 impl std::fmt::Display for SourceError {
@@ -65,6 +66,10 @@ impl std::fmt::Display for SourceError {
             SourceError::FfmpegMissing => write!(
                 f,
                 "ffmpeg is not installed; set PROVIEW_FFMPEG or install ffmpeg for HEVC cameras"
+            ),
+            SourceError::PassthroughNeedsHevc(codec) => write!(
+                f,
+                "passthrough needs an H.265 camera, this one announces {codec}"
             ),
         }
     }
@@ -220,10 +225,21 @@ async fn drain_stderr(mut child: Child) -> Option<String> {
 }
 
 pub async fn pump(hub: Arc<LiveHub>, key: StreamKey, target: RtspTarget, stop: Arc<AtomicBool>) {
-    tracing::info!(device = %key.device, host = %target.host, "live source starting");
+    tracing::info!(device = %key.device, mode = key.mode.as_str(), host = %target.host, "live source starting");
     match pump_inner(&hub, &key, target, &stop).await {
-        Ok(()) => tracing::info!(device = %key.device, "live source finished"),
-        Err(error) => tracing::warn!(%error, device = %key.device, "live source stopped"),
+        Ok(()) => {
+            tracing::info!(device = %key.device, mode = key.mode.as_str(), "live source finished")
+        }
+        Err(error) => {
+            tracing::warn!(%error, device = %key.device, mode = key.mode.as_str(), "live source stopped")
+        }
+    }
+}
+
+fn audio_clock(codec: &str) -> Option<u32> {
+    match codec {
+        "PCMA" | "PCMU" => Some(8000),
+        _ => None,
     }
 }
 
@@ -242,17 +258,62 @@ async fn pump_inner(
     )
     .await
     .map_err(SourceError::Rtsp)?;
-    let track = session
+    let video = session
         .video_track()
         .cloned()
         .ok_or(SourceError::NoVideoTrack)?;
+    let audio = session.audio_track().cloned();
     session
         .setup_video((0, 1))
         .await
         .map_err(SourceError::Rtsp)?;
+    let audio_channel = match &audio {
+        Some(track) => match session.setup_audio((2, 3)).await {
+            Ok(pair) => {
+                tracing::info!(codec = %track.codec, channel = pair.0, "audio track set up");
+                Some(pair.0)
+            }
+            Err(error) => {
+                tracing::warn!(%error, codec = %track.codec, "audio setup refused");
+                None
+            }
+        },
+        None => None,
+    };
     session.play().await.map_err(SourceError::Rtsp)?;
 
-    let mut child = ffmpeg_command(&track.codec)
+    let mut meta = StreamMeta {
+        video_codec: Some(video.codec.clone()),
+        audio_codec: audio.as_ref().map(|track| track.codec.clone()),
+        audio_clock: audio.as_ref().and_then(|track| audio_clock(&track.codec)),
+        ..StreamMeta::default()
+    };
+    if let (Some(vps), Some(sps), Some(pps)) = (&video.vps, &video.sps, &video.pps) {
+        if let Ok(config) = hevc_config(vps, sps, pps) {
+            meta.width = Some(config.width);
+            meta.height = Some(config.height);
+            meta.codec_string = Some(config.codec.clone());
+        }
+    }
+    hub.set_meta(key, meta.clone());
+
+    match key.mode {
+        LiveMode::Passthrough => {
+            pump_passthrough(hub, key, session, video, audio_channel, meta, stop).await
+        }
+        LiveMode::Transcode => pump_transcode(hub, key, session, video, audio_channel, stop).await,
+    }
+}
+
+async fn pump_transcode(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+    mut session: RtspSession,
+    video: Track,
+    audio_channel: Option<u8>,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), SourceError> {
+    let mut child = ffmpeg_command(&video.codec)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -268,7 +329,7 @@ async fn pump_inner(
     let mut stdin = child.stdin.take().ok_or(SourceError::FfmpegMissing)?;
     let mut stdout = child.stdout.take().ok_or(SourceError::FfmpegMissing)?;
 
-    let parameter_sets: Vec<u8> = [track.vps.as_ref(), track.sps.as_ref(), track.pps.as_ref()]
+    let parameter_sets: Vec<u8> = [video.vps.as_ref(), video.sps.as_ref(), video.pps.as_ref()]
         .into_iter()
         .flatten()
         .fold(Vec::new(), |mut acc, parameter| {
@@ -283,7 +344,6 @@ async fn pump_inner(
     }
 
     let _sender = hub.publisher(key.clone());
-    let init_slot = hub.init_slot(key);
     let publish_hub = hub.clone();
     let publish_key = key.clone();
     let reader = tokio::spawn(async move {
@@ -298,9 +358,7 @@ async fn pump_inner(
             for piece in splitter.push(&chunk[..read]) {
                 match piece {
                     Piece::Init(bytes) => {
-                        if let Ok(mut slot) = init_slot.lock() {
-                            *slot = Some(bytes.clone());
-                        }
+                        publish_hub.publish_packet(&publish_key, LivePacket::init(bytes));
                     }
                     Piece::Fragment(bytes) => {
                         publish_hub.publish(&publish_key, bytes);
@@ -316,16 +374,20 @@ async fn pump_inner(
         if stop.load(Ordering::Relaxed) {
             break Ok(());
         }
-        let packet =
+        let (channel, packet) =
             match tokio::time::timeout(Duration::from_secs(10), session.next_packet()).await {
-                Ok(Ok((_, payload))) => payload,
+                Ok(Ok(packet)) => packet,
                 Ok(Err(error)) => break Err(SourceError::Rtsp(error)),
                 Err(_) => continue,
             };
+        if Some(channel) == audio_channel {
+            hub.note_audio(key);
+            continue;
+        }
         let Some(parsed) = rtp::parse(&packet) else {
             continue;
         };
-        if parsed.payload_type != track.payload_type {
+        if parsed.payload_type != video.payload_type {
             continue;
         }
         written.clear();
@@ -345,6 +407,170 @@ async fn pump_inner(
     if let Some(text) = stderr {
         tracing::debug!(%text, "ffmpeg stderr");
     }
+    result
+}
+
+#[derive(Default)]
+struct Gate {
+    started: bool,
+}
+
+impl Gate {
+    fn accept(&mut self, keyframe: bool) -> bool {
+        if keyframe {
+            self.started = true;
+        }
+        self.started
+    }
+}
+
+struct HevcConfig {
+    hvcc: Vec<u8>,
+    codec: String,
+    width: u32,
+    height: u32,
+}
+
+fn hevc_config(vps: &[u8], sps: &[u8], pps: &[u8]) -> Result<HevcConfig, String> {
+    let parsed = hevc::parse_sps(sps)?;
+    Ok(HevcConfig {
+        hvcc: hevc::build_hvcc(&parsed, vps, sps, pps),
+        codec: hevc::codec_string(&parsed.profile),
+        width: parsed.width,
+        height: parsed.height,
+    })
+}
+
+struct ParameterSets {
+    vps: Option<Vec<u8>>,
+    sps: Option<Vec<u8>>,
+    pps: Option<Vec<u8>>,
+}
+
+fn parameter_sets(track: &Track) -> ParameterSets {
+    ParameterSets {
+        vps: track.vps.clone(),
+        sps: track.sps.clone(),
+        pps: track.pps.clone(),
+    }
+}
+
+fn ensure_parameter_sets(nals: &mut Vec<Vec<u8>>, sets: &ParameterSets) {
+    let has = |kind: u8| nals.iter().any(|nal| hevc::nal_type(nal) == Some(kind));
+    let mut prefix = Vec::new();
+    if !has(32) {
+        if let Some(vps) = &sets.vps {
+            prefix.push(vps.clone());
+        }
+    }
+    if !has(33) {
+        if let Some(sps) = &sets.sps {
+            prefix.push(sps.clone());
+        }
+    }
+    if !has(34) {
+        if let Some(pps) = &sets.pps {
+            prefix.push(pps.clone());
+        }
+    }
+    if prefix.is_empty() {
+        return;
+    }
+    prefix.extend(std::mem::take(nals));
+    *nals = prefix;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pump_passthrough(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+    mut session: RtspSession,
+    video: Track,
+    audio_channel: Option<u8>,
+    mut meta: StreamMeta,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), SourceError> {
+    if !video.codec.eq_ignore_ascii_case("H265") {
+        return Err(SourceError::PassthroughNeedsHevc(video.codec.clone()));
+    }
+    let sets = parameter_sets(&video);
+    let mut config = match (&sets.vps, &sets.sps, &sets.pps) {
+        (Some(vps), Some(sps), Some(pps)) => hevc_config(vps, sps, pps).ok(),
+        _ => None,
+    };
+    let _sender = hub.publisher(key.clone());
+    if let Some(config) = config.as_ref() {
+        hub.publish_packet(key, LivePacket::config(Fragment::from(config.hvcc.clone())));
+    }
+
+    let mut reader = hevc::Reader::new();
+    let mut gate = Gate::default();
+    let mut units = 0u64;
+    let result = loop {
+        if stop.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        let (channel, packet) =
+            match tokio::time::timeout(Duration::from_secs(10), session.next_packet()).await {
+                Ok(Ok(packet)) => packet,
+                Ok(Err(error)) => break Err(SourceError::Rtsp(error)),
+                Err(_) => continue,
+            };
+        if Some(channel) == audio_channel {
+            hub.note_audio(key);
+            continue;
+        }
+        let Some(parsed) = rtp::parse(&packet) else {
+            continue;
+        };
+        if parsed.payload_type != video.payload_type {
+            continue;
+        }
+        let Some(unit) = reader.push(&parsed) else {
+            continue;
+        };
+        if config.is_none() {
+            if let (Some(vps), Some(sps), Some(pps)) = (
+                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(32)),
+                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(33)),
+                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(34)),
+            ) {
+                if let Ok(built) = hevc_config(vps, sps, pps) {
+                    meta.width = Some(built.width);
+                    meta.height = Some(built.height);
+                    meta.codec_string = Some(built.codec.clone());
+                    hub.set_meta(key, meta.clone());
+                    hub.publish_packet(key, LivePacket::config(Fragment::from(built.hvcc.clone())));
+                    config = Some(built);
+                }
+            }
+        }
+        if !gate.accept(unit.keyframe) {
+            hub.note_drop(key);
+            continue;
+        }
+        let mut nals = unit.nals;
+        if unit.keyframe {
+            ensure_parameter_sets(&mut nals, &sets);
+        }
+        units += 1;
+        hub.publish_packet(
+            key,
+            LivePacket::access_unit(
+                Fragment::from(hevc::avcc(&nals)),
+                unit.keyframe,
+                unit.pts_us,
+            ),
+        );
+    };
+
+    tracing::info!(
+        units,
+        dropped = reader.dropped(),
+        "passthrough source finished"
+    );
+    hub.publisher_done(key);
+    let _ = tokio::time::timeout(Duration::from_secs(2), session.teardown()).await;
     result
 }
 
@@ -419,5 +645,37 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-f", "h264"]));
         assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
         assert!(!args.contains(&"libx264".to_string()));
+    }
+
+    #[test]
+    fn parameter_sets_are_prepended_when_the_stream_omits_them() {
+        let sets = ParameterSets {
+            vps: Some(vec![0x40, 0x01, 0x0c]),
+            sps: Some(vec![0x42, 0x01, 0x01]),
+            pps: Some(vec![0x44, 0x01, 0xc0]),
+        };
+        let mut nals = vec![vec![0x26, 0x01, 0xaf]];
+        ensure_parameter_sets(&mut nals, &sets);
+        assert_eq!(nals.len(), 4);
+        assert_eq!(hevc::nal_type(&nals[0]), Some(32));
+        assert_eq!(hevc::nal_type(&nals[1]), Some(33));
+        assert_eq!(hevc::nal_type(&nals[2]), Some(34));
+        assert_eq!(hevc::nal_type(&nals[3]), Some(19));
+    }
+
+    #[test]
+    fn audio_clock_is_known_for_the_g711_codecs() {
+        assert_eq!(audio_clock("PCMA"), Some(8000));
+        assert_eq!(audio_clock("PCMU"), Some(8000));
+        assert_eq!(audio_clock("AAC"), None);
+    }
+
+    #[test]
+    fn the_gate_drops_deltas_until_the_first_keyframe() {
+        let mut gate = Gate::default();
+        assert!(!gate.accept(false));
+        assert!(!gate.accept(false));
+        assert!(gate.accept(true));
+        assert!(gate.accept(false));
     }
 }

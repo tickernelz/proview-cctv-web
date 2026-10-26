@@ -371,3 +371,33 @@ blocked until the account exists there.
 - It does not call `caps/status`; device capabilities are mapped only from the
   fields of `mdlist/v1` (`channel`, `channelNum`, otherwise one channel).
 
+
+## 11. Live passthrough transport (stream 2)
+
+A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards
+the camera's HEVC access units straight to a WebCodecs client. The socket opens
+with one JSON text frame
+`{"type":"hello","mode":"passthrough","codec":"hvc1.1.6.L63","width":2304,"height":2592,"audio":"PCMA","audio_clock":8000}`
+followed by binary frames:
+
+| first byte | payload |
+|---|---|
+| `0x01` | HEVCDecoderConfigurationRecord (`hvcC`), for `VideoDecoder.configure({codec, description})` |
+| `0x02` | keyframe access unit: `u64` pts in µs (big endian), then `u32` length + NAL, repeated |
+| `0x03` | delta access unit, same payload layout |
+
+A viewer joins at the next IDR and is resynchronised at the next IDR when it
+falls behind; an RTP sequence gap drops the partial fragment and only a NAL
+with its first-slice flag at an access-unit boundary restores the stream. The
+codec string comes from the SPS `profile_tier_level` and the SPS payload is
+de-escaped (`00 00 03` → `00 00`) before it is parsed, otherwise the camera's
+SPS yields a zero size. Every keyframe access unit repeats VPS, SPS and PPS in
+band. The MSE transport keeps the raw fMP4 framing: init segment first, then
+fragments with no header bytes.
+
+`GET /api/live/stats` (session required) reports one row per active hub key:
+transport, subscribers, publishers, packets, keyframes, bytes, audio packets,
+drops, codecs and dimensions. The measurement tool reads this endpoint before
+sampling and refuses a passthrough sample while a transcode publisher for the
+same camera is still alive, because the two transports would otherwise share
+the CPU figure.

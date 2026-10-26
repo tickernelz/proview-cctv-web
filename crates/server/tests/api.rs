@@ -280,3 +280,18 @@ fn ptz_move_needs_a_velocity_and_a_known_lens() {
         .dispatch();
     assert_eq!(no_backend.status(), Status::BadGateway);
 }
+
+#[test]
+fn live_stats_needs_a_session_and_starts_empty() {
+    let client = local_client();
+    assert_eq!(
+        client.get("/api/live/stats").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client.get("/api/live/stats").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body: serde_json::Value = serde_json::from_str(&response.into_string().unwrap()).unwrap();
+    assert_eq!(body["active_streams"], 0);
+    assert_eq!(body["streams"].as_array().map(Vec::len), Some(0));
+}

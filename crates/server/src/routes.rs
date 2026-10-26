@@ -3,9 +3,8 @@ pub mod cloud;
 
 use std::time::Duration;
 
-use futures_util::SinkExt;
 use proview_core::config::Config;
-use proview_core::live::StreamKey;
+use proview_core::live::{LiveMode, StreamKey};
 use proview_core::provider::{self, Device, Provider, ProviderError, Router, StreamTicket};
 use proview_core::session::{self, Store};
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -32,7 +31,8 @@ pub fn api() -> Vec<rocket::route::Route> {
         stream,
         probe_device,
         rtsp_probe,
-        health
+        health,
+        crate::stream::stats
     ]
     .into_iter()
     .chain(control::routes())
@@ -102,7 +102,7 @@ pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
         .ok_or_else(|| fail(Status::Unauthorized, "not signed in"))
 }
 
-fn restore(store: &State<Store>, id: &str) -> Result<provider::VendorSession, Failure> {
+pub(crate) fn restore(store: &State<Store>, id: &str) -> Result<provider::VendorSession, Failure> {
     store
         .get(id)
         .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
@@ -320,13 +320,14 @@ async fn stream(
         .map_err(|e| fail(status_for(&e), e.to_string()))
 }
 
-#[get("/ws/live?<device>&<channel>&<quality>")]
+#[get("/ws/live?<device>&<channel>&<quality>&<codec>")]
 #[allow(clippy::too_many_arguments)]
 fn ws_live(
     ws: ws::WebSocket,
     device: String,
     channel: Option<u32>,
     quality: Option<String>,
+    codec: Option<String>,
     cfg: &State<Config>,
     store: &State<Store>,
     live: &State<crate::live_state::LiveState>,
@@ -339,12 +340,22 @@ fn ws_live(
     }
     let channel = channel.unwrap_or(1);
     let sub_stream = quality.as_deref() == Some("sub");
-    let key = StreamKey::new(device.clone(), channel, sub_stream);
+    let target = rtsp_target_stream(cfg, sub_stream);
+    let mode = match target {
+        Some(_) => crate::stream::requested_mode(codec.as_deref()),
+        None => LiveMode::Transcode,
+    };
+    let key_device = if target.is_some() {
+        "local".to_string()
+    } else {
+        device.clone()
+    };
+    let key = StreamKey::new(key_device, channel, sub_stream, mode);
     let subscription = live.hub.subscribe(key.clone());
     let mut keep_alive = None;
-    match rtsp_target_stream(cfg, sub_stream) {
-        Some(target) => {
-            live.ensure_rtsp_source(key.clone(), target);
+    match target.clone() {
+        Some(source) => {
+            live.ensure_rtsp_source(key.clone(), source);
         }
         None => {
             let stem = if sub_stream { "sub" } else { "main" };
@@ -356,93 +367,13 @@ fn ws_live(
             keep_alive = Some(plan);
         }
     }
-    let state = live.inner().clone();
-    let proview_core::live::Subscription {
-        init,
-        last,
-        mut receiver,
-    } = subscription;
-
-    let restart_target = rtsp_target_stream(cfg, sub_stream);
-    Ok(ws.channel(move |mut stream| {
-        Box::pin(async move {
-            let _keep_alive = keep_alive;
-            for _ in 0..240 {
-                if init.lock().map(|slot| slot.is_some()).unwrap_or(false) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            if init.lock().map(|slot| slot.is_none()).unwrap_or(true) {
-                if let Some(target) = restart_target.clone() {
-                    let live = state.clone();
-                    live.ensure_rtsp_source(key.clone(), target);
-                    for _ in 0..240 {
-                        if init.lock().map(|slot| slot.is_some()).unwrap_or(false) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(25)).await;
-                    }
-                }
-            }
-            let ready = init.lock().ok().and_then(|slot| slot.clone());
-            match ready {
-                Some(segment) => {
-                    if stream
-                        .send(ws::Message::Binary(segment.to_vec()))
-                        .await
-                        .is_err()
-                    {
-                        state.release(&key);
-                        return Ok(());
-                    }
-                }
-                None => {
-                    let _ = stream
-                        .send(ws::Message::Text(
-                            "the live source did not produce video".to_string(),
-                        ))
-                        .await;
-                    state.release(&key);
-                    let _ = stream.send(ws::Message::Close(None)).await;
-                    return Ok(());
-                }
-            }
-            if let Some(segment) = last.lock().ok().and_then(|slot| slot.clone()) {
-                if stream
-                    .send(ws::Message::Binary(segment.to_vec()))
-                    .await
-                    .is_err()
-                {
-                    state.release(&key);
-                    return Ok(());
-                }
-            }
-            loop {
-                match receiver.recv().await {
-                    Ok(fragment) => {
-                        if stream
-                            .send(ws::Message::Binary(fragment.to_vec()))
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(
-                            skipped,
-                            "viewer fell behind, skipping to the next fragment"
-                        );
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            state.release(&key);
-            let _ = stream.send(ws::Message::Close(None)).await;
-            Ok(())
-        })
-    }))
+    let session = crate::stream::LiveSession {
+        key,
+        subscription,
+        restart: target,
+        keep_alive,
+    };
+    Ok(crate::stream::channel(ws, live.inner().clone(), session))
 }
 
 #[get("/media/<device>/<channel>/<quality>")]
