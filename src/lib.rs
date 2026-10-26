@@ -8,3 +8,4 @@ pub mod media;
 pub mod provider;
 pub mod routes;
 pub mod session;
+pub mod stream;

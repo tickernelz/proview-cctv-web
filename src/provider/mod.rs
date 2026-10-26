@@ -45,6 +45,7 @@ pub enum StreamKind {
     Hls,
     Rtsp,
     Flv,
+    Mp4,
 }
 
 #[derive(Debug, Clone)]

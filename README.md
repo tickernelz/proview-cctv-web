@@ -17,7 +17,8 @@ proven and what is not.
 | Fixture provider (device list, stream ticket) | works, default |
 | DVRIP framing, login handshake, session | works, tested against a mock device |
 | Annex-B NAL splitter, H.264/H.265 detection | works, tested |
-| Media packaging to fMP4/MSE | not implemented |
+| Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
+| H.264 SPS parse (dimensions, profile) | works, tested |
 | Vendor cloud login | partially mapped, returns `501` until the envelope is solved |
 | Device list from the vendor cloud | not implemented |
 | Live video to the browser | not implemented |

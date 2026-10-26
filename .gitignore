@@ -9,6 +9,7 @@
 secrets/
 recordings/
 captures/
+fixtures/*.h264
 fixtures/*.m3u8
 fixtures/*.ts
 fixtures/*.mp4

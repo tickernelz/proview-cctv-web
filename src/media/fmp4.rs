@@ -191,42 +191,44 @@ pub fn media_segment(sequence: u32, base_decode_time: u64, samples: &[Sample]) -
 
     let mut tfhd = Vec::new();
     tfhd.extend_from_slice(&1u32.to_be_bytes());
-    tfhd.extend_from_slice(&0u32.to_be_bytes());
     let tfhd = full_box(b"tfhd", 0, 0x020000, &tfhd);
 
     let tfdt_body: Vec<u8> = base_decode_time.to_be_bytes().to_vec();
     let tfdt = full_box(b"tfdt", 1, 0, &tfdt_body);
 
-    let data_offset = 0u32;
-    let mut trun = Vec::new();
-    trun.extend_from_slice(&(samples.len() as u32).to_be_bytes());
-    trun.extend_from_slice(&data_offset.to_be_bytes());
-    trun.extend_from_slice(&0x0000_0201u32.to_be_bytes());
-    for sample in samples {
-        trun.extend_from_slice(&sample.duration.to_be_bytes());
-        trun.extend_from_slice(&(sample.data.len() as u32).to_be_bytes());
-        trun.extend_from_slice(
-            &if sample.keyframe {
+    let build_trun = |data_offset: u32| -> Vec<u8> {
+        let mut trun = Vec::new();
+        trun.extend_from_slice(&(samples.len() as u32).to_be_bytes());
+        trun.extend_from_slice(&data_offset.to_be_bytes());
+        trun.extend_from_slice(&0x0200_0000u32.to_be_bytes());
+        for sample in samples {
+            trun.extend_from_slice(&sample.duration.to_be_bytes());
+            trun.extend_from_slice(&(sample.data.len() as u32).to_be_bytes());
+            let flags = if sample.keyframe {
                 0x0200_0000u32
             } else {
                 0x0101_0000u32
-            }
-            .to_be_bytes(),
-        );
-        trun.extend_from_slice(&0u32.to_be_bytes());
-    }
-    let trun = full_box(b"trun", 0, 0x000701, &trun);
+            };
+            trun.extend_from_slice(&flags.to_be_bytes());
+        }
+        full_box(b"trun", 0, 0x000705, &trun)
+    };
 
-    let mut traf = Vec::new();
-    traf.extend(tfhd);
-    traf.extend(tfdt);
-    traf.extend(trun);
-    let traf = box_bytes(b"traf", &traf);
+    let assemble = |trun: Vec<u8>| -> Vec<u8> {
+        let mut traf = Vec::new();
+        traf.extend(tfhd.clone());
+        traf.extend(tfdt.clone());
+        traf.extend(trun);
+        let traf = box_bytes(b"traf", &traf);
+        let mut moof = Vec::new();
+        moof.extend(mfhd.clone());
+        moof.extend(traf);
+        box_bytes(b"moof", &moof)
+    };
 
-    let mut moof = Vec::new();
-    moof.extend(mfhd);
-    moof.extend(traf);
-    let moof = box_bytes(b"moof", &moof);
+    let probe = assemble(build_trun(0));
+    let data_offset = (probe.len() + 8) as u32;
+    let moof = assemble(build_trun(data_offset));
 
     let mut mdat_payload = Vec::new();
     for sample in samples {

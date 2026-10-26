@@ -11,7 +11,7 @@ use crate::provider::{self, Device, ProviderError, StreamTicket};
 use crate::session::{self, Store};
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css]
+    routes![index, app_js, style_css, tokens_css, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -26,6 +26,36 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../static/app.js"))
+}
+
+#[get("/media/<device>/<channel>/<quality>")]
+fn media_clip(
+    device: String,
+    channel: u32,
+    quality: String,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<(rocket::http::ContentType, Vec<u8>), Failure> {
+    let id = session_id(cookies)?;
+    restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    let stem = quality.trim_end_matches(".mp4");
+    if stem != "main" && stem != "sub" {
+        return Err(fail(Status::BadRequest, "quality must be main or sub"));
+    }
+    let path = format!("{}/{device}_ch{channel}_{stem}.h264", cfg.fixture_dir);
+    let clip = std::fs::read(&path).map_err(|_| {
+        fail(
+            Status::NotFound,
+            format!("no recorded clip for {device} ch{channel}"),
+        )
+    })?;
+    let mp4 = crate::stream::annexb_to_fmp4(&clip, 25)
+        .map_err(|e| fail(Status::UnprocessableEntity, e.to_string()))?;
+    Ok((rocket::http::ContentType::new("video", "mp4"), mp4))
 }
 
 #[get("/tokens.css")]

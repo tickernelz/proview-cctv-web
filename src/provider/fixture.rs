@@ -75,16 +75,16 @@ impl CameraProvider for Fixture {
             )));
         }
         let name = if high { "main" } else { "sub" };
-        let path = self.dir.join(format!("{device}_ch{channel}_{name}.m3u8"));
+        let path = self.dir.join(format!("{device}_ch{channel}_{name}.h264"));
         if !path.exists() {
             return Err(ProviderError::Upstream(format!(
-                "fixture stream missing: {}",
+                "no recorded clip at {}",
                 path.display()
             )));
         }
         Ok(StreamTicket {
-            kind: StreamKind::Hls,
-            url: format!("/media/{device}/ch{channel}/{name}.m3u8"),
+            kind: StreamKind::Mp4,
+            url: format!("/media/{device}/{channel}/{name}.mp4"),
             expires_in: 300,
         })
     }

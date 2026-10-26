@@ -197,11 +197,17 @@ function explainStreamError(error) {
 }
 
 async function play(ticket) {
+  const video = el('video');
+  if (ticket.kind === 'mp4' || ticket.url.endsWith('.mp4')) {
+    video.src = ticket.url;
+    await video.play().catch(() => {});
+    setStage('playing', '');
+    return;
+  }
   if (ticket.kind !== 'hls') {
     setStage('error', 'Unsupported stream kind: ' + ticket.kind);
     return;
   }
-  const video = el('video');
   if (window.Hls && window.Hls.isSupported()) {
     const hls = new window.Hls({ lowLatencyMode: true });
     hls.on(window.Hls.Events.ERROR, (_event, data) => {
