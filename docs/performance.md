@@ -81,3 +81,18 @@ cargo build --release -p proview-server
 4. **Single transcode per stream.** H.265→H.264 happens once per
    (device, channel, stream) in `ffmpeg`, not per viewer; viewers share the
    output.
+
+## Lens metadata endpoint (measured 2026-10-26)
+
+`GET /api/lens` reads the frame size out of the SPS, so the whole call is RTSP
+`DESCRIBE` work and it never touches the media path.
+
+| Metric | Value |
+|---|---|
+| full call, main + sub, live camera (HTTP 200) | 457 ms |
+| handshakes per call | one per requested quality, so two by default and one with `quality=main` |
+| bytes added to a dual-lens view | 0 (the crop is client-side geometry, the stream is unchanged) |
+| server CPU added by a dual-lens view | 0 (no second session, no second transcode) |
+
+The endpoint is metadata, not a frame path: calling it per device selection does
+not move the numbers in the tables above.

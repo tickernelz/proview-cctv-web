@@ -22,6 +22,7 @@ proven and what is not.
 | Vendor cloud login | partially mapped; the portal login encoder is recovered but the PROVIEW account lives on the white-label cloud, not the global portal |
 | Device list from the vendor cloud | not implemented |
 | Live video to the browser | works: RTSP pull + H.265 depacketize + one transcode per stream + fMP4 over WebSocket into MSE; verified against a real IPC |
+| Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
 
 The server never sends a vendor token to the browser: the browser holds only an
 opaque `pvw_session` cookie, and every vendor call happens server side.
@@ -87,6 +88,8 @@ bounded by the camera's keyframe interval).
 | `PROVIEW_MODE` | `cloud` | `cloud` or `local`; bootstrap default for `GET /api/config/mode` |
 | `PROVIEW_DATA_DIR` | unset | directory for `mode.json`; the desktop passes its `app_data_dir`, a server leaves it unset to keep the mode per session |
 | `PROVIEW_PROFILE` | `default` | keychain profile name for the desktop device credentials |
+| `PROVIEW_LENS_CAPABILITIES` | unset | comma-separated `SystemFunctionBean$OtherFunction` lens flags (`MultiLensTwoSensor`, `SupportGunBallTwoSensorPtzLocate`, …); the device JSON that would supply them is still blocked |
+| `PROVIEW_LENS_PTZ` | unset | lens index that pans/tilts; overrides the measured default (bottom lens) |
 
 Nothing here is a vendor secret. The extracted application credentials from the
 APK are deliberately **not** in this repository; `docs/protocol.md` records
@@ -102,6 +105,7 @@ src/routes.rs        JSON API + static files
 static/              UI (no build step)
 fixtures/            recorded device metadata for local runs
 docs/protocol.md     the reverse-engineering record
+docs/contracts/      wire contracts (lens.md: dual-lens crop payload)
 ```
 
 ## Download and signing status

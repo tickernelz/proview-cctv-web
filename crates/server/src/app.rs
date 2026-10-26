@@ -63,6 +63,7 @@ pub fn build_with_modes(
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
         .mount("/api", crate::config::routes())
+        .mount("/api", crate::lens_route::routes())
         .mount("/", crate::routes::live())
 }
 
