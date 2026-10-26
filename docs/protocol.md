@@ -115,7 +115,25 @@ Three are present in the SDK. In order of implementation cost:
 4. Whether this device exposes RTSP on the local network, and with which path.
 5. P2P media channel details.
 
-## 6. Method
+## 6. DVRIP transport as implemented here
+
+The device-facing transport in `src/dvrip/` follows the framing that the SDK's
+`CNetTCP`/`CDevProtocol` classes speak: a fixed 20-byte header
+(`0xFF`, then session, sequence, channel, end-flag, message id, body length, all
+little-endian) followed by a JSON body.
+
+- Message ids used: `1000` login, `1001` logout, `1006` monitor start,
+  `1007` monitor stop. **These ids come from public DVRIP documentation, not
+  from this APK** — the APK drives the same device through `libFunSDK.so`, whose
+  ids are inside native code and were not extracted. Treat the ids as
+  unverified against this device until the probe reports a real session.
+- Login sends `{EncryptType, LoginType: "DVRIP-Web", PassWord, UserName}`. A
+  `Ret: 200` reply with a `Realm` triggers the second round with the realm
+  digest; `Ret: 100` means accepted. Both digest variants are attempted in a
+  fixed order, and the reply's `SessionID` (hex or decimal string) becomes the
+  session used by later frames.
+
+## 7. Method
 
 `apktool` (manifest, resources), `jadx` (DEX), `readelf`/symbol table plus a
 small ADRP/ADD cross-reference scanner over the aarch64 `.text` to bind string
