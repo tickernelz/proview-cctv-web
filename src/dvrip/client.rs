@@ -190,6 +190,36 @@ impl Connection {
         Ok(parsed)
     }
 
+    pub async fn start_monitor(&mut self, channel: u8, sub_stream: bool) -> std::io::Result<u32> {
+        let body = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Start",
+                "Parameter": {
+                    "Channel": channel,
+                    "CombinMode": "CONNECT",
+                    "StreamType": if sub_stream { "Extra1" } else { "Main" },
+                    "TransMode": "TCP",
+                }
+            }
+        });
+        self.send(msg::MONITOR_START, channel, body.to_string().as_bytes())
+            .await
+    }
+
+    pub async fn stop_monitor(&mut self, channel: u8) -> std::io::Result<u32> {
+        let body = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": { "Action": "Stop", "Parameter": { "Channel": channel } }
+        });
+        self.send(msg::MONITOR_STOP, channel, body.to_string().as_bytes())
+            .await
+    }
+
+    pub async fn read_frame(&mut self) -> Result<(Header, Vec<u8>), FrameError> {
+        self.recv().await
+    }
+
     pub async fn logout(&mut self) -> std::io::Result<()> {
         self.send(msg::LOGOUT, 0, b"{}").await?;
         self.session = 0;
@@ -293,6 +323,67 @@ mod tests {
         let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
         let ok = connection.login("admin", "admin").await.unwrap();
         assert_eq!(ok.session, 0x5566_7788);
+    }
+
+    #[tokio::test]
+    async fn monitor_start_sends_the_documented_shape_and_media_is_returned_raw() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+
+            let mut header_bytes = [0u8; super::super::HEADER_LEN];
+            socket.read_exact(&mut header_bytes).await.unwrap();
+            let header = Header::decode(&header_bytes).unwrap();
+            let mut body = vec![0u8; header.length as usize];
+            socket.read_exact(&mut body).await.unwrap();
+            let request: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+            let media = [0u8, 0, 0, 1, 0x65, 0x88, 0x84];
+            let response = Header {
+                session: 7,
+                sequence: header.sequence,
+                channel: 3,
+                end: true,
+                id: header.id,
+                length: media.len() as u32,
+            };
+            socket.write_all(&response.encode()).await.unwrap();
+            socket.write_all(&media).await.unwrap();
+            request
+        });
+
+        let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
+        connection.start_monitor(3, false).await.unwrap();
+        let (header, payload) = connection.read_frame().await.unwrap();
+        let request = handle.await.unwrap();
+
+        assert_eq!(request["Name"], "OPMonitor");
+        assert_eq!(request["OPMonitor"]["Action"], "Start");
+        assert_eq!(request["OPMonitor"]["Parameter"]["Channel"], 3);
+        assert_eq!(request["OPMonitor"]["Parameter"]["StreamType"], "Main");
+        assert_eq!(header.id, super::super::msg::MONITOR_START);
+        assert_eq!(header.channel, 3);
+        assert_eq!(payload, vec![0u8, 0, 0, 1, 0x65, 0x88, 0x84]);
+    }
+
+    #[tokio::test]
+    async fn sub_stream_selects_the_extra_stream() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut header_bytes = [0u8; super::super::HEADER_LEN];
+            socket.read_exact(&mut header_bytes).await.unwrap();
+            let header = Header::decode(&header_bytes).unwrap();
+            let mut body = vec![0u8; header.length as usize];
+            socket.read_exact(&mut body).await.unwrap();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+        });
+        let mut connection = Connection::connect(&format!("{addr}")).await.unwrap();
+        connection.start_monitor(1, true).await.unwrap();
+        let request = handle.await.unwrap();
+        assert_eq!(request["OPMonitor"]["Parameter"]["StreamType"], "Extra1");
     }
 
     #[tokio::test]
