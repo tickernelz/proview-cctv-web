@@ -1,16 +1,19 @@
-use super::{CameraProvider, Device, ProviderError, StreamKind, StreamTicket, VendorSession};
+use super::{
+    Alarm, Device, DeviceSettings, Provider, ProviderError, ProviderSource, Recording, StreamKind,
+    StreamTicket, VendorSession,
+};
 use crate::config::Config;
 
 const LOGIN_PATH: &str = "/webservice/app/user/logInByAccount";
 
-pub struct Proview {
+pub struct CloudProvider {
     base: String,
     device_user: String,
     device_pass: String,
     http: reqwest::Client,
 }
 
-impl Proview {
+impl CloudProvider {
     pub fn new(cfg: &Config) -> Self {
         let http = reqwest::Client::builder()
             .user_agent("proview-cctv-web/0.1")
@@ -28,7 +31,11 @@ impl Proview {
 }
 
 #[async_trait::async_trait]
-impl CameraProvider for Proview {
+impl Provider for CloudProvider {
+    fn source(&self) -> ProviderSource {
+        ProviderSource::Cloud
+    }
+
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
         let url = format!("{}{}", self.base, LOGIN_PATH);
         let response = self
@@ -80,6 +87,47 @@ impl CameraProvider for Proview {
         let _ = (&self.device_user, &self.device_pass, StreamKind::Rtsp);
         Err(ProviderError::NotImplemented(
             "live stream needs the device session: LAN RTSP or CSS HLS, neither wired yet",
+        ))
+    }
+
+    async fn playback(
+        &self,
+        _session: &VendorSession,
+        _device: &str,
+        _channel: u32,
+    ) -> Result<Vec<Recording>, ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "cloud playback needs the CSS file-search envelope, which is not solved yet",
+        ))
+    }
+
+    async fn alarms(
+        &self,
+        _session: &VendorSession,
+        _limit: u32,
+    ) -> Result<Vec<Alarm>, ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "cloud alarms need the push channel on 7700-7706, which is not mapped yet",
+        ))
+    }
+
+    async fn settings(
+        &self,
+        _session: &VendorSession,
+        _device: &str,
+    ) -> Result<DeviceSettings, ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "cloud device settings need the CSS config envelope, which is not solved yet",
+        ))
+    }
+
+    async fn save_settings(
+        &self,
+        _session: &VendorSession,
+        _settings: &DeviceSettings,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "cloud device settings need the CSS config envelope, which is not solved yet",
         ))
     }
 }

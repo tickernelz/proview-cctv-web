@@ -78,12 +78,15 @@ bounded by the camera's keyframe interval).
 | `PROVIEW_PROVIDER` | `fixture` | `fixture` or `proview` |
 | `PROVIEW_CLOUD_BASE` | `https://pub-token.xmeye.net` | vendor cloud base |
 | `PROVIEW_DEVICE_HOST` | unset | `host:port` of the camera for the DVRIP probe |
-| `PROVIEW_DEVICE_RTSP` | unset | `host:port` of the camera RTSP endpoint; when set, the UI streams from the LAN instead of the fixture |
+| `PROVIEW_DEVICE_RTSP` | unset | `host:port` of the camera RTSP endpoint; required by `local` mode |
 | `PROVIEW_FFMPEG` | `ffmpeg` | ffmpeg binary used for the HEVC to H.264 bridge |
 | `PROVIEW_DEVICE_USER` | `admin` | device-side account |
 | `PROVIEW_DEVICE_PASS` | empty | device-side password |
 | `PROVIEW_FIXTURE_DIR` | `fixtures` | fixture data directory |
 | `PROVIEW_SESSION_TTL` | `3600` | server session lifetime, seconds |
+| `PROVIEW_MODE` | `cloud` | `cloud` or `local`; bootstrap default for `GET /api/config/mode` |
+| `PROVIEW_DATA_DIR` | unset | directory for `mode.json`; the desktop passes its `app_data_dir`, a server leaves it unset to keep the mode per session |
+| `PROVIEW_PROFILE` | `default` | keychain profile name for the desktop device credentials |
 
 Nothing here is a vendor secret. The extracted application credentials from the
 APK are deliberately **not** in this repository; `docs/protocol.md` records

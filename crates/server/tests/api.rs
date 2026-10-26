@@ -43,14 +43,44 @@ fn sign_in(client: &Client) -> Status {
         .status()
 }
 
+fn body(response: rocket::local::blocking::LocalResponse<'_>) -> serde_json::Value {
+    serde_json::from_str(&response.into_string().unwrap()).unwrap()
+}
+
+fn choose_mode<'a>(client: &'a Client, mode: &str) -> rocket::local::blocking::LocalResponse<'a> {
+    client
+        .post("/api/config/mode")
+        .header(ContentType::JSON)
+        .body(json!({ "mode": mode }).to_string())
+        .dispatch()
+}
+
 #[test]
-fn local_mode_lists_the_lan_camera_and_returns_a_ws_ticket() {
+fn the_mode_defaults_to_cloud_before_any_session_exists() {
+    let client = client();
+    let response = client.get("/api/config/mode").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let report = body(response);
+    assert_eq!(report["mode"], "cloud");
+    assert_eq!(report["source"], "fixture");
+    assert!(report["notice"].is_null());
+}
+
+#[test]
+fn local_mode_lists_the_lan_camera_and_names_the_stream_source() {
     let client = local_client();
     assert_eq!(sign_in(&client), Status::Ok);
 
+    let chosen = choose_mode(&client, "local");
+    assert_eq!(chosen.status(), Status::Ok);
+    let report = body(chosen);
+    assert_eq!(report["mode"], "local");
+    assert_eq!(report["source"], "local");
+    assert!(report["notice"].is_null());
+
     let devices = client.get("/api/devices").dispatch();
     assert_eq!(devices.status(), Status::Ok);
-    let list: serde_json::Value = serde_json::from_str(&devices.into_string().unwrap()).unwrap();
+    let list = body(devices);
     assert_eq!(list[0]["id"], "local");
     assert_eq!(list[0]["lan_host"], "192.0.2.10:554");
 
@@ -58,9 +88,68 @@ fn local_mode_lists_the_lan_camera_and_returns_a_ws_ticket() {
         .get("/api/stream?device=local&channel=1&quality=main")
         .dispatch();
     assert_eq!(ticket.status(), Status::Ok);
-    let body: serde_json::Value = serde_json::from_str(&ticket.into_string().unwrap()).unwrap();
+    let body = body(ticket);
     assert_eq!(body["kind"], "ws");
     assert_eq!(body["url"], "/ws/live?device=local&channel=1&quality=main");
+    assert_eq!(body["source"], "local");
+}
+
+#[test]
+fn choosing_local_without_a_host_reports_the_cloud_fallback() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+
+    let chosen = choose_mode(&client, "local");
+    assert_eq!(chosen.status(), Status::Ok);
+    let report = body(chosen);
+    assert_eq!(report["mode"], "local");
+    assert_eq!(report["source"], "fixture");
+    assert_eq!(report["notice"]["from"], "local");
+    assert_eq!(report["notice"]["to"], "fixture");
+    let message = report["notice"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("PROVIEW_DEVICE_RTSP"),
+        "the notice names the missing setting: {message}"
+    );
+
+    let devices = client.get("/api/devices").dispatch();
+    assert_eq!(devices.status(), Status::Ok);
+    assert_eq!(body(devices)[0]["id"], "fixture-dev-0001");
+
+    let again = client.get("/api/config/mode").dispatch();
+    assert_eq!(body(again)["source"], "fixture");
+}
+
+#[test]
+fn a_mode_choice_needs_a_session_and_ends_with_it() {
+    let client = client();
+    assert_eq!(choose_mode(&client, "local").status(), Status::Unauthorized);
+
+    assert_eq!(sign_in(&client), Status::Ok);
+    assert_eq!(choose_mode(&client, "local").status(), Status::Ok);
+    assert_eq!(client.post("/api/logout").dispatch().status(), Status::Ok);
+
+    let report = body(client.get("/api/config/mode").dispatch());
+    assert_eq!(report["mode"], "cloud");
+}
+
+#[test]
+fn the_login_message_names_the_provider_that_answered() {
+    let client = client();
+    let response = client
+        .post("/api/login")
+        .header(ContentType::JSON)
+        .body(
+            json!({ "email": "fixture@example.invalid", "password": "fixture-password" })
+                .to_string(),
+        )
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let message = body(response)["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(message.contains("signed in via fixture"), "{message}");
 }
 
 #[test]
