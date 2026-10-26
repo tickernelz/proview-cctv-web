@@ -1,0 +1,93 @@
+:root {
+  color-scheme: dark;
+
+  --bg: oklch(0.16 0.008 265);
+  --surface: oklch(0.21 0.01 265);
+  --surface-2: oklch(0.26 0.012 265);
+  --surface-3: oklch(0.31 0.014 265);
+  --line: oklch(0.34 0.014 265);
+  --line-soft: oklch(0.27 0.012 265);
+
+  --ink: oklch(0.96 0.004 265);
+  --ink-dim: oklch(0.84 0.008 265);
+  --muted: oklch(0.74 0.012 265);
+
+  --primary: oklch(0.62 0.19 27);
+  --primary-hover: oklch(0.67 0.19 27);
+  --primary-ink: oklch(0.17 0.02 27);
+  --primary-soft: oklch(0.62 0.19 27 / 0.14);
+
+  --success: oklch(0.72 0.15 155);
+  --warning: oklch(0.78 0.14 78);
+  --danger: oklch(0.66 0.19 22);
+  --info: oklch(0.72 0.11 245);
+
+  --focus-ring: oklch(0.78 0.13 245);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --z-base: 0;
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-toast: 500;
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: oklch(0.985 0.002 265);
+  --surface: oklch(1 0 0);
+  --surface-2: oklch(0.962 0.004 265);
+  --surface-3: oklch(0.93 0.006 265);
+  --line: oklch(0.88 0.008 265);
+  --line-soft: oklch(0.93 0.006 265);
+
+  --ink: oklch(0.22 0.012 265);
+  --ink-dim: oklch(0.34 0.012 265);
+  --muted: oklch(0.5 0.014 265);
+
+  --primary: oklch(0.52 0.19 27);
+  --primary-hover: oklch(0.47 0.19 27);
+  --primary-ink: oklch(0.99 0.004 27);
+  --primary-soft: oklch(0.52 0.19 27 / 0.1);
+
+  --success: oklch(0.52 0.13 155);
+  --warning: oklch(0.6 0.13 78);
+  --danger: oklch(0.53 0.19 22);
+  --info: oklch(0.52 0.13 245);
+
+  --focus-ring: oklch(0.5 0.15 245);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+  }
+}

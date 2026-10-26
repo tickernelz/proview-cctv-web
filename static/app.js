@@ -1,11 +1,27 @@
-const state = { devices: [], current: null };
+const state = {
+  devices: [],
+  selected: null,
+  hls: null,
+  busy: false,
+};
 
 const el = (id) => document.getElementById(id);
 
-function showError(message) {
-  const box = el('error');
-  box.textContent = message;
+function setBanner(message) {
+  const banner = el('app-error');
+  banner.textContent = message || '';
+  banner.hidden = !message;
+}
+
+function setLoginError(message) {
+  const box = el('login-error');
+  box.textContent = message || '';
   box.hidden = !message;
+}
+
+function setBusy(button, busy) {
+  button.setAttribute('aria-busy', busy ? 'true' : 'false');
+  button.disabled = busy;
 }
 
 async function api(path, options = {}) {
@@ -15,83 +31,303 @@ async function api(path, options = {}) {
     ...options,
   });
   const text = await response.text();
-  const body = text ? JSON.parse(text) : null;
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+  }
   if (!response.ok) {
-    throw new Error(body && body.message ? body.message : response.status + ' ' + response.statusText);
+    const message = body && body.message ? body.message : response.status + ' ' + response.statusText;
+    const error = new Error(message);
+    error.status = response.status;
+    throw error;
   }
   return body;
 }
 
-function signedIn() {
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem('pvw_theme', theme);
+  } catch {}
+}
+
+function initTheme() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem('pvw_theme');
+  } catch {}
+  if (!stored) {
+    stored = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  applyTheme(stored);
+  el('theme-toggle').addEventListener('click', () => {
+    applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  });
+}
+
+function showLogin() {
+  el('login-view').hidden = false;
+  el('app-view').hidden = true;
+  el('account').hidden = true;
+  el('signout').hidden = true;
+}
+
+function showApp(account) {
   el('login-view').hidden = true;
-  el('device-view').hidden = false;
+  el('app-view').hidden = false;
+  el('account').textContent = account || '';
+  el('account').hidden = !account;
   el('signout').hidden = false;
 }
 
-function signedOut() {
-  el('login-view').hidden = false;
-  el('device-view').hidden = true;
-  el('signout').hidden = true;
-  el('devices').replaceChildren();
-  el('video').hidden = true;
-}
-
-async function loadDevices() {
-  state.devices = await api('/api/devices');
+function renderDevices() {
   const list = el('devices');
   list.replaceChildren();
   for (const device of state.devices) {
     const item = document.createElement('li');
-    const button = document.createElement('button');
-    button.textContent = device.name + ' (' + device.model + ', ' + device.channels + ' ch)';
-    button.addEventListener('click', () => openDevice(device));
-    item.append(button);
-    if (!device.online) {
-      const badge = document.createElement('span');
-      badge.className = 'offline';
-      badge.textContent = 'offline';
-      item.append(badge);
-    }
+    item.className = 'device';
+    item.dataset.selected = state.selected && state.selected.id === device.id ? 'true' : 'false';
+
+    const dot = document.createElement('span');
+    dot.className = 'status-dot';
+    dot.dataset.online = device.online ? 'true' : 'false';
+    dot.setAttribute('role', 'img');
+    dot.setAttribute('aria-label', device.online ? 'Online' : 'Offline');
+
+    const body = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'device-name';
+    name.textContent = device.name;
+    const meta = document.createElement('div');
+    meta.className = 'device-meta';
+    meta.textContent = [device.model, device.channels + ' ch', device.id].filter(Boolean).join(' · ');
+    body.append(name, meta);
+
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'ghost';
+    action.textContent = state.selected && state.selected.id === device.id ? 'Watching' : 'Watch';
+    action.addEventListener('click', () => selectDevice(device));
+
+    item.append(dot, body, action);
     list.append(item);
+  }
+  el('devices-empty').hidden = state.devices.length > 0;
+}
+
+function fillChannels(device) {
+  const select = el('channel');
+  select.replaceChildren();
+  const count = Math.max(1, device.channels || 1);
+  for (let index = 1; index <= count; index += 1) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = String(index);
+    select.append(option);
   }
 }
 
-async function openDevice(device) {
-  state.current = device;
-  el('player-status').textContent = 'Requesting stream for ' + device.name + '…';
-  el('video').hidden = true;
+function setStage(stateName, message) {
+  const stage = el('stage-status').parentElement;
+  stage.dataset.state = stateName;
+  el('stage-status').textContent = message;
+  el('stage-status').hidden = stateName === 'playing';
+  el('video').hidden = stateName !== 'playing';
+}
+
+function stopPlayback() {
+  if (state.hls) {
+    state.hls.destroy();
+    state.hls = null;
+  }
+  const video = el('video');
+  video.pause();
+  video.removeAttribute('src');
+  video.load();
+}
+
+async function selectDevice(device) {
+  state.selected = device;
+  renderDevices();
+  fillChannels(device);
+  el('player').hidden = false;
+  el('player-title').textContent = 'Live · ' + device.name;
+  await requestStream();
+}
+
+async function requestStream() {
+  const device = state.selected;
+  if (!device) {
+    return;
+  }
+  stopPlayback();
+  setStage('loading', 'Requesting stream…');
   try {
-    const ticket = await api('/api/stream?device=' + encodeURIComponent(device.id) + '&channel=1&quality=main');
-    el('player-status').textContent = 'Stream ' + ticket.kind + ' for ' + device.name;
-    if (ticket.kind === 'hls' && window.Hls && window.Hls.isSupported()) {
-      const video = el('video');
-      const hls = new window.Hls();
-      hls.loadSource(ticket.url);
-      hls.attachMedia(video);
-      video.hidden = false;
-    }
+    const channel = el('channel').value || '1';
+    const quality = el('quality').value;
+    const ticket = await api(
+      '/api/stream?device=' + encodeURIComponent(device.id) + '&channel=' + encodeURIComponent(channel) + '&quality=' + encodeURIComponent(quality),
+    );
+    await play(ticket);
   } catch (error) {
-    el('player-status').textContent = 'No stream: ' + error.message;
+    setStage('error', explainStreamError(error));
+    el('stage-status').title = error.message;
+  }
+}
+
+function explainStreamError(error) {
+  console.error('stream request failed', error);
+  if (error.status === 501) {
+    return 'Live video is not wired yet: the device transport is still being built, so there is no frame to show.';
+  }
+  if (error.status === 404) {
+    return 'That channel does not exist on this device.';
+  }
+  if (error.status === 401) {
+    return 'Session expired. Sign in again.';
+  }
+  if (error.status === 502) {
+    return 'The stream source did not answer with a playable stream.';
+  }
+  return 'The stream could not be started.';
+}
+
+async function play(ticket) {
+  if (ticket.kind !== 'hls') {
+    setStage('error', 'Unsupported stream kind: ' + ticket.kind);
+    return;
+  }
+  const video = el('video');
+  if (window.Hls && window.Hls.isSupported()) {
+    const hls = new window.Hls({ lowLatencyMode: true });
+    hls.on(window.Hls.Events.ERROR, (_event, data) => {
+      if (data && data.fatal) {
+        setStage('error', 'Playlist could not be loaded: ' + data.type);
+      }
+    });
+    hls.loadSource(ticket.url);
+    hls.attachMedia(video);
+    state.hls = hls;
+    await video.play().catch(() => {});
+    setStage('playing', '');
+    return;
+  }
+  if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = ticket.url;
+    await video.play().catch(() => {});
+    setStage('playing', '');
+    return;
+  }
+  setStage('error', 'This browser has no HLS support and no hls.js is loaded.');
+}
+
+async function loadDevices() {
+  setBanner('');
+  el('devices-skeleton').hidden = false;
+  el('devices').replaceChildren();
+  el('devices-empty').hidden = true;
+  try {
+    state.devices = await api('/api/devices');
+    renderDevices();
+  } catch (error) {
+    if (error.status === 401) {
+      showLogin();
+      setLoginError('Session expired. Sign in again.');
+      return;
+    }
+    setBanner('Could not load devices: ' + error.message);
+  } finally {
+    el('devices-skeleton').hidden = true;
+  }
+}
+
+async function signedIn() {
+  try {
+    const me = await api('/api/me');
+    showApp(me.account);
+    await loadDevices();
+  } catch {
+    showLogin();
   }
 }
 
 el('login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  showError('');
+  setLoginError('');
+  const button = el('login-submit');
+  setBusy(button, true);
   try {
     await api('/api/login', {
       method: 'POST',
       body: JSON.stringify({ email: el('email').value, password: el('password').value }),
     });
     el('password').value = '';
-    signedIn();
-    await loadDevices();
+    await signedIn();
   } catch (error) {
-    showError(error.message);
+    setLoginError(
+      error.status === 401 ? 'That email and password were not accepted.' : 'Sign in failed: ' + error.message,
+    );
+  } finally {
+    setBusy(button, false);
   }
 });
 
 el('signout').addEventListener('click', async () => {
-  await api('/api/logout', { method: 'POST' }).catch(() => {});
-  signedOut();
+  try {
+    await api('/api/logout', { method: 'POST' });
+  } catch {}
+  stopPlayback();
+  state.selected = null;
+  state.devices = [];
+  el('player').hidden = true;
+  showLogin();
 });
+
+el('refresh').addEventListener('click', () => {
+  loadDevices();
+});
+
+el('channel').addEventListener('change', () => {
+  if (state.selected) {
+    requestStream();
+  }
+});
+
+el('quality').addEventListener('change', () => {
+  if (state.selected) {
+    requestStream();
+  }
+});
+
+el('snapshot').addEventListener('click', () => {
+  const video = el('video');
+  if (!state.selected || video.hidden || !video.videoWidth) {
+    setStage('error', 'No frame to capture yet.');
+    return;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const link = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  link.download = state.selected.id + '_' + stamp + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+});
+
+el('fullscreen').addEventListener('click', async () => {
+  const stage = el('stage-status').parentElement;
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+  } else {
+    await stage.requestFullscreen().catch(() => setStage('error', 'Fullscreen was refused by the browser.'));
+  }
+});
+
+initTheme();
+signedIn();

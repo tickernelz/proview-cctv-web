@@ -11,7 +11,7 @@ use crate::provider::{self, Device, ProviderError, StreamTicket};
 use crate::session::{self, Store};
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css]
+    routes![index, app_js, style_css, tokens_css]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -26,6 +26,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../static/app.js"))
+}
+
+#[get("/tokens.css")]
+fn tokens_css() -> RawCss<&'static str> {
+    RawCss(include_str!("../static/tokens.css"))
 }
 
 #[get("/style.css")]

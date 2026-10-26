@@ -1,42 +1,89 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PROVIEW CCTV web</title>
+<title>PROVIEW CCTV</title>
+<link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
-  <header>
-    <h1>PROVIEW CCTV</h1>
-    <button id="signout" hidden>Sign out</button>
-  </header>
+<a class="skip" href="#main">Skip to content</a>
 
-  <section id="login-view">
-    <form id="login-form" autocomplete="on">
-      <label>Account email
-        <input id="email" name="email" type="email" autocomplete="username" required>
-      </label>
-      <label>Password
+<header class="topbar">
+  <div class="mark">
+    <span class="mark-dot" aria-hidden="true"></span>
+    <span class="mark-name">PROVIEW</span>
+    <span class="mark-sub">cctv</span>
+  </div>
+  <div class="topbar-actions">
+    <button id="theme-toggle" class="ghost" type="button" aria-label="Switch colour theme">Theme</button>
+    <span id="account" class="account" hidden></span>
+    <button id="signout" class="ghost" type="button" hidden>Sign out</button>
+  </div>
+</header>
+
+<main id="main">
+  <section id="login-view" class="login" aria-labelledby="login-title">
+    <div class="login-panel">
+      <h1 id="login-title">Watch your cameras from the desktop</h1>
+      <p class="lede">Sign in with the same PROVIEW account your phone uses. The session stays on this server; the browser only holds an opaque cookie.</p>
+      <form id="login-form" autocomplete="on" novalidate>
+        <label for="email">Account email</label>
+        <input id="email" name="email" type="email" autocomplete="username" required spellcheck="false">
+        <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required>
-      </label>
-      <button type="submit">Sign in</button>
-    </form>
-    <p class="hint">Credentials go to this server only; the vendor session is kept server side.</p>
-  </section>
-
-  <section id="device-view" hidden>
-    <h2>Devices</h2>
-    <ul id="devices"></ul>
-    <div id="player">
-      <div id="player-status">Pick a device.</div>
-      <video id="video" controls playsinline hidden></video>
+        <button id="login-submit" class="primary" type="submit">
+          <span class="label">Sign in</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+      <p id="login-error" class="field-error" role="alert" hidden></p>
     </div>
   </section>
 
-  <p id="error" role="alert" hidden></p>
+  <section id="app-view" class="app" hidden aria-labelledby="devices-title">
+    <div class="section-head">
+      <h2 id="devices-title">Devices</h2>
+      <button id="refresh" class="ghost" type="button">Refresh</button>
+    </div>
+
+    <div id="devices-skeleton" class="skeleton-list" hidden aria-hidden="true">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>
+
+    <ul id="devices" class="device-list" aria-live="polite"></ul>
+
+    <p id="devices-empty" class="empty" hidden>
+      No devices on this account yet. Add the camera in the phone app first, then refresh here.
+    </p>
+
+    <section id="player" class="player" hidden aria-labelledby="player-title">
+      <div class="player-head">
+        <h3 id="player-title">Live</h3>
+        <div class="player-controls">
+          <label class="inline" for="channel">Channel</label>
+          <select id="channel"></select>
+          <label class="inline" for="quality">Stream</label>
+          <select id="quality">
+            <option value="main">Main</option>
+            <option value="sub">Sub</option>
+          </select>
+          <button id="snapshot" class="ghost" type="button">Snapshot</button>
+          <button id="fullscreen" class="ghost" type="button">Fullscreen</button>
+        </div>
+      </div>
+      <div class="stage">
+        <video id="video" controls playsinline hidden></video>
+        <div id="stage-status" class="stage-status" role="status">Pick a device to start.</div>
+      </div>
+    </section>
+  </section>
+
+  <p id="app-error" class="banner" role="alert" hidden></p>
 </main>
+
 <script src="/app.js"></script>
 </body>
 </html>
