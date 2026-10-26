@@ -53,5 +53,5 @@ fn main() {
         .expect("tauri application");
 
     handle.shutdown.notify();
-    let _ = runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
 }
