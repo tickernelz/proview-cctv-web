@@ -78,8 +78,8 @@ test('the panel asks object storage once per thumbnail and reuses it across poll
   });
   try {
     await signIn(page, server.base);
-    await page.wait("!document.querySelector('.alarm-fab').hidden", 'the alarm bell');
-    await page.evaluate("document.querySelector('.alarm-fab').click()");
+    await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell');
+    await page.evaluate("document.querySelector('.alarm-bell').click()");
     await page.wait("document.querySelectorAll('.alarm-row').length === 3", 'three alarm rows');
     await until(() => polls >= 4, 45000, 'four poll cycles');
     await sleep(1200);
@@ -92,8 +92,8 @@ test('the panel asks object storage once per thumbnail and reuses it across poll
     );
 
     await page.goto(server.base + '/?signed-in#live');
-    await page.wait("!document.querySelector('.alarm-fab').hidden", 'the alarm bell after reload');
-    await page.evaluate("document.querySelector('.alarm-fab').click()");
+    await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell after reload');
+    await page.evaluate("document.querySelector('.alarm-bell').click()");
     await page.wait("document.querySelectorAll('.alarm-row img').length === 3", 'three thumbnails after reload');
     await sleep(800);
     const reload = pictures - first;
