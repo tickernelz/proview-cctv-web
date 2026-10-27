@@ -154,13 +154,7 @@ impl std::fmt::Debug for VendorSession {
         formatter
             .debug_struct("VendorSession")
             .field("account", &self.account)
-            .field(
-                "token",
-                &self
-                    .token
-                    .as_ref()
-                    .map(|token| format!("{}..{}", &token[..4.min(token.len())], token.len())),
-            )
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .finish()
     }
 }

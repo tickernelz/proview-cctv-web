@@ -50,9 +50,10 @@ impl std::fmt::Debug for Identity {
 
 fn redacted(value: &str) -> String {
     if value.is_empty() {
-        return String::new();
+        String::new()
+    } else {
+        "<redacted>".to_string()
     }
-    format!("{}..{}", &value[..4.min(value.len())], value.len())
 }
 
 impl Identity {
@@ -161,6 +162,14 @@ pub fn body_key(tsid: &str, app_secret: &str) -> String {
     }
     key.truncate(BLOCK);
     key
+}
+
+fn next_counter(previous: u32) -> u32 {
+    if previous >= COUNTER_WRAP {
+        1
+    } else {
+        previous + 1
+    }
 }
 
 pub fn signed_request(identity: &Identity, counter: u32, millis: u64) -> Signed {
@@ -323,23 +332,8 @@ impl EnvelopeClient {
     }
 
     fn next(&self) -> Signed {
-        let mut current = self.counter.load(Ordering::SeqCst);
-        loop {
-            let next = if current + 1 >= COUNTER_WRAP {
-                1
-            } else {
-                current + 1
-            };
-            match self.counter.compare_exchange_weak(
-                current,
-                next,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return signed_request(&self.identity, next, now_millis()),
-                Err(seen) => current = seen,
-            }
-        }
+        let counter = next_counter(self.counter.fetch_add(1, Ordering::Relaxed));
+        signed_request(&self.identity, counter, now_millis())
     }
 
     fn signed(
@@ -384,7 +378,7 @@ impl EnvelopeClient {
     pub async fn login_envelope(&self, account: &str, password: &str) -> CloudResult<Tokens> {
         if !self.identity.is_complete() {
             return Err(CloudError::Malformed(
-                "the cloud login needs the app uuid and app key; set PROVIEW_APP_UUID and PROVIEW_APP_KEY"
+                "the cloud login needs the app uuid, app key and app secret; set PROVIEW_APP_UUID, PROVIEW_APP_KEY and PROVIEW_APP_SECRET"
                     .to_string(),
             ));
         }
@@ -663,6 +657,17 @@ mod tests {
         assert_eq!(url_encode("a@b.c"), "a%40b.c");
         assert_eq!(url_encode("Tu!long-1_2*3(4)"), "Tu!long-1_2*3(4)");
         assert_eq!(url_encode("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn the_counter_wraps_at_the_documented_point() {
+        assert_eq!(next_counter(0), 1);
+        assert_eq!(next_counter(1), 2);
+        assert_eq!(next_counter(COUNTER_WRAP - 1), COUNTER_WRAP);
+        assert_eq!(next_counter(COUNTER_WRAP), 1);
+        assert_eq!(next_counter(u32::MAX), 1);
+        let tsid = signed_request(&Identity::default(), COUNTER_WRAP, 7).tsid;
+        assert_eq!(tsid, "00385287");
     }
 
     #[test]

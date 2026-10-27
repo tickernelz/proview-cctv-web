@@ -10,7 +10,6 @@ pub struct CloudProvider {
     client: EnvelopeClient,
     device_user: String,
     device_pass: String,
-    device_id: String,
 }
 
 impl CloudProvider {
@@ -23,20 +22,7 @@ impl CloudProvider {
             client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             device_user: cfg.device_user.clone(),
             device_pass: cfg.device_pass.clone(),
-            device_id: std::env::var("PROVIEW_DEVICE_ID")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "00000000000000000000".to_string()),
         }
-    }
-
-    pub async fn device_token(&self, session: &VendorSession) -> Result<String, ProviderError> {
-        let token = self.token(session)?;
-        self.client
-            .device_token(token, &self.device_id)
-            .await
-            .map_err(map_cloud)
     }
 
     fn token<'a>(&self, session: &'a VendorSession) -> Result<&'a str, ProviderError> {

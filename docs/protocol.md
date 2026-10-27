@@ -110,7 +110,7 @@ Cost: about 65 s per login on this workstation (qemu, no KVM for this guest).
 The signed request shape, read from the SDK and from the harness traffic:
 
 ```
-POST https://<host>/v3/<tsid>/<sig>.rs
+POST https://<host>/<endpoint>/v3/<tsid>/<sig>.rs
 Accept: */*
 Accept-Charset: utf-8
 Accept-Encoding: gzip
@@ -277,7 +277,7 @@ identity; the app key material itself is supplied through
 repository.
 
 Live run from this box, `cargo run -p proview-core --example envelope_login`,
-three consecutive runs on 2026-10-27: login 0.24-0.50 s, device token
+three consecutive runs on 2026-10-27: login 0.24-0.33 s, device token
 0.20-0.39 s, device list 0.06-0.07 s, refresh 0.13 s, one device returned each
 time (`uuid 7f92970ddf5282743hrc`, a nickname, an owner account and one
 channel). The qemu harness of section 3A needs about 65 s for the same three

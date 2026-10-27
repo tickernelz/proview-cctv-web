@@ -1,8 +1,9 @@
 # Performance
 
-> Cloud login, 2026-10-27: the Rust envelope path needs 0.63-0.94 s from the
-> sign-in call to the device list, against 65 s for the qemu SDK harness. The
-> measurement and its per-step split are in section "Cloud account login".
+> Cloud login, 2026-10-27: the Rust envelope path needs 0.30-0.39 s for the
+> product path (sign-in, then the device list), against 65 s for the qemu SDK
+> harness. The per-step split, including the example's extra device-token and
+> refresh calls at 0.63-0.94 s, is in section "Cloud account login".
 
 
 Rule for this repository: a number that was not measured is not a number. Every

@@ -86,7 +86,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Identity the app ships for the signed cloud login.",
-        true,
+        false,
     ),
     field(
         "PROVIEW_APP_KEY",
@@ -95,7 +95,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Key that travels in the appKey header of the signed cloud login.",
-        true,
+        false,
     ),
     field(
         "PROVIEW_APP_SECRET",
@@ -104,15 +104,6 @@ pub const FIELDS: &[Field] = &[
         Kind::Secret,
         &[],
         "Secret the login signature and body key are derived from.",
-        true,
-    ),
-    field(
-        "PROVIEW_DEVICE_ID",
-        "Platform device id",
-        "Cloud",
-        Kind::Text,
-        &[],
-        "Device id sent with the platform device-token call; twenty zeros by default.",
         false,
     ),
     field(
@@ -609,6 +600,9 @@ mod tests {
             "PROVIEW_PORTAL_BASE",
             "PROVIEW_CAPS_BASE",
             "PROVIEW_CLOUD_SESSION_TTL",
+            "PROVIEW_APP_UUID",
+            "PROVIEW_APP_KEY",
+            "PROVIEW_APP_SECRET",
         ] {
             assert!(
                 !restart.contains(&key),
