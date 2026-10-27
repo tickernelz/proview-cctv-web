@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::local::LocalProvider;
 use super::{
-    build, Alarm, Device, DeviceSettings, Mode, Provider, ProviderError, ProviderSource, Recording,
-    StreamTicket, VendorSession,
+    build, Alarm, CloudPath, Device, DeviceSettings, Mode, Provider, ProviderError, ProviderSource,
+    Recording, StreamTicket, VendorSession,
 };
 use crate::config::Config;
 
@@ -219,6 +219,20 @@ impl Provider for Router {
         match self.active().stream(session, device, channel, high).await {
             Ok(ticket) => Ok(ticket),
             Err(err) => self.retry_stream(err, session, device, channel, high).await,
+        }
+    }
+
+    async fn cloud_path(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<CloudPath, ProviderError> {
+        match self.active().cloud_path(session, device).await {
+            Ok(path) => Ok(path),
+            Err(err) => match self.take_over(&err) {
+                Some(fallback) => fallback.cloud_path(session, device).await,
+                None => Err(err),
+            },
         }
     }
 

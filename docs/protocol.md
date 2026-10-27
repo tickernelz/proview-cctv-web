@@ -788,6 +788,27 @@ What that leaves, in order of cost: the constructor that stores the key
 because the code that stores `0x1f40830` was not located), or a different
 encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
 
+### 4C.13 The path is also a diagnostic
+
+`GET /api/cloud-path?device=<serial>` walks the same steps as a live attempt and
+answers the result, per stage (`access`, `agent`, `relayAccepted`, `relayError`,
+`destIp`, `mtu`, `detail`). It never logs in to the device, so nothing crosses the
+relay beyond the handshake of 4C.7.
+
+Measured over HTTP from this box against the real account, one session:
+
+```
+POST /api/login                                       200 in 0.3 s
+GET  /api/stream?device=<sn>&channel=1&quality=hd      501 in 0.0014 s
+GET  /api/cloud-path?device=<sn>                       200 in 0.40 s, 0.38 s, 1.46 s
+   {"online":true,"access":"110.239.87.207:6510","agent":"162.128.64.191:6611",
+    "relayAccepted":true,"destIp":"103.85.122.66","mtu":"1400",...}
+```
+
+The three rounds were answered by three different agents (`162.128.64.191`,
+`162.128.64.50`, `162.128.66.64`), which is the per-session assignment of 4C.7
+showing up in the diagnostic.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -956,11 +977,24 @@ the capability row both report that reason instead of a value. PTZ is bound to t
 reported `blocked` per lens instead of hidden. DVRIP (`34567`) stays the
 fallback for movement and the only path for settings, snapshot and record.
 
-Two-way audio stays blocked with a recorded offer rather than a guess: the RTSP
-SDP carries `m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) but no backchannel,
-and the ONVIF device service exposes no audio output. DVRIP reports
-`SupportTwoWayVoiceTalk=true`, so the missing piece is a capture path in the
-server, not the device API.
+Two-way audio uses the DVRIP backchannel, not RTSP: the SDP carries
+`m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) with no backchannel and the ONVIF
+device service exposes no audio output, while the device reports
+`SupportTwoWayVoiceTalk=true`. The message ids come from the shipped SDK —
+`CProtocolNetIP::NewMediaControlPTLE` (0xf2816c) for the `OPTalk` body and the
+`1434` claim against `1430` start/stop, `CProtocolNetIP::NewMediaDataPTLE`
+(0xf29ee8) for the `1432` audio frames whose 8-byte header is
+`00 00 01 FA | 0E | 02 | length` followed by G.711 A-law, 320 samples (40 ms) per
+frame at 8 kHz. The browser captures through an AudioWorklet at 8 kHz and the
+server encodes A-law, so no capture plugin is needed. Measured 2026-10-27: claim
+`Ret 100` in 477 ms, 50 frames in 2.00 s and 0.079 ms mean write time to the
+device over the vendor relay. In the other direction the device streams its own
+audio back while the claim is open: a 90 s session left 743,328 bytes unread in
+the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
+build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
+report) instead of letting it fill the queue, but it does not play it. What is
+still unproven is acoustic: whether the camera speaker plays what it receives
+needs a person standing next to it.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
@@ -1237,6 +1271,109 @@ Three facts that matter for this project:
 Reaching the pinned host, and with it the minting request and the device list,
 needs a hooked or jailbroken client, or static work on the Mach-O, not another
 proxy export.
+
+## 10D. Device bind on the account envelope (`mdadd`, `mdrm`), and the QR payload codec
+
+Measured 2026-10-27, issue ZHA-4008, against the live account and cloud; the
+strings come from `libFunSDK.so` (arm64-v8a, the APK's own copy).
+
+### 10D.1 The bind call is `mdadd`, not `/createbind`
+
+The `XMAccount` module carries the whole device list surface next to
+`msdlistCode`: `mdadd`, `mdrm`, `delDevices`, `mdedit`, `mdeditPass`,
+`useredun`, `devicesTransOut/In/Info/Cancel` and `hasDevicesTrans`. `mdadd`
+builds `uuid=%s&username=%s&password=%s&userId=%s&nickname=%s&type=%s&ip=%s&port=%s`
+(0xf3e798) and posts it as `mdadd` on the same signed envelope as
+`loginExist`/`msdlistCode`; `mdrm` is `uuid=%s` (0xf3ebdc). The `/createbind`
+and `/listbind` strings sit in the RPS relay agent instead
+(`[rps agent]`, `tcp_proxy_agent_client.cpp`, `CDeviceAgent::ListBind`), which
+is the media tunnel, not the account.
+
+Wire shape, exercised from this box:
+
+    POST https://rs.xmeye.net/mdadd/v3/<7-digit counter><millis>/<sig>.rs
+    uuid: <app uuid>   appKey: <app key>   Authorization: <account access token>
+    body: HEX( AES-128-ECB-PKCS7( "uuid=…&username=…&password=…&userId=…&nickname=…&type=0&ip=0.0.0.0&port=34567", body_key(tsid, app secret) ) )
+    reply: {"code":2000,"msg":"SUCCESS","data":""}
+
+Replies seen, in order of the measurements:
+
+| Body | Vendor reply |
+|---|---|
+| `uuid=<serial>` only | `4105 DEV_USERNAME_FAIL` |
+| `uuid=<serial>&userId=<account id>` | `4105 DEV_USERNAME_FAIL` |
+| full body, real serial, real camera password | `4101 DEV_ALREADY` |
+| full body, real serial, wrong camera password | `4101 DEV_ALREADY` (the already-bound short circuit wins) |
+| full body, `uuid=no` | `4104 DEV_UUID_FAIL` |
+| full body, fictional `AASN000000000999` | `2000`, and `msdlistCode` then returns **two** devices |
+| `mdrm` `uuid=AASN000000000999` | `2000`, `msdlistCode` back to one device |
+
+Two consequences worth keeping: the cloud does **not** validate that a serial
+belongs to a real device on bind (`2000` for a made-up one), so a bind result is
+not a device check — `msdlistCode` is; and `4101` means "this account already
+holds that serial", which is why a wrong camera password on an already-bound
+camera still answers `4101`. The account was left exactly as it was found: the
+fictional device was removed again with `mdrm` and the list returned to one
+camera.
+
+### 10D.2 The QR payload codec
+
+`DevQrCodeDlg` is the generator: the owner path builds
+`{devType,userId,loginName,pwd,devId,shareTimes}` and calls
+`FunSDK.EncGeneralDevInfo(json)`, the other path calls
+`EncDevInfo(sn,user,pwd,devType)`; both end in `XEnCodeStr`. Scanning runs the
+inverse, `XDeCodeStr`, and splits the plain text on commas; the SDK's own
+`FUN_DecGeneralDevInfo` also accepts a plain `sn,user,pwd,type,time` string
+(it checks the character classes before decoding).
+
+`crates/core/src/cloud/bind.rs` implements both directions. The pipeline,
+read off `XEnCodeStr(char*, char const*, int)` at 0xc374a8 and its helpers:
+
+1. `offset = time() % 744` (the two-argument wrapper, 0xc3728c).
+2. Each byte becomes `%03d` of `byte + offset`, so the digits stay printable.
+3. Every digit is shifted by `digitsum(offset) % 10`.
+4. `%03d` of the offset is appended, unshifted.
+5. Digits are packed in pairs, `value = d0*10 + d1`, by `To62` (0xc36fec):
+   `0..25 → a..z`, `26..51 → A..Z`, `52..60 → 1..9`, and `≥61 → '0'` followed by
+   `To62(value-61)`.
+6. `DevInfoEncode` (0xc36bdc) shifts every character inside its own class —
+   digits `% 10`, lower and upper `% 26` — by `key[index % len(key)]` with the
+   key `DecInfoEncode`.
+7. A literal `z` closes the string.
+
+Vectors produced by the shipped library under the bionic harness (qemu-user,
+`re/qemu/harness_qr*.c`) and reproduced byte for byte:
+
+| Plain | Offset | Blob |
+|---|---|---|
+| `a` | 0 | `z1evz` |
+| `abc` | 0 | `z1e3Rh1Ugz` |
+| `abc` | 1 / 2 / 3 | `a1Zvbiiz` / `lkrBKaz` / `HFDMEbz` |
+| `abc` | 334 | `HlBMNGz` |
+| `7f92970ddf5282743hrc` | 0 | `vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz` |
+| `AASN000000000001,,,2,1793109504` | 312 | `8DIC0Ga40A1eX8C9dG2M9oV1B1yX9A0gH9L9pX1UAh3KBJ9KYI0CDw9A0KI9L9pv1VqV3Lbtz` |
+
+`EncDevInfo` replaces an `admin` login name with an empty field and appends
+`time(0)` as the fifth column, which is why the vendor blob for the real serial
+with a harness password decodes to `7f92970ddf5282743hrc,,TestPass1,0,1793109504`
+(`TestPass1` is the input in `re/qemu/harness_qr.c`, not the camera password).
+
+### 10D.3 Sign-out
+
+`IXMAccount::XM_Video_Logout_XMAccount` (0xf40808) is a cookie call:
+`POST /webservice/app/user/logOut` with `Host` from `MI_SERVER`
+(`rs.xmeye.net:443`), `Cookie: <the session that /webservice/app/user/logInByAccount
+set>`, `Connection: close`. That cookie belongs to the legacy portal login whose
+envelope is still unsolved here, so the call cannot be authenticated from a v3
+session. Measured from this box: `/webservice/app/user/logOut` answers
+`5005 PARAM_FAIL` on `rs.xmeye.net` — and so does the control path `/zzz`, so the
+gateway tells us nothing about the route. The v3 account service has no
+sign-out route at all: `logOut`, `logout`, `userLogout`, `signOut`, `quit`,
+`userexit` and the control `zzzNoSuchMethod` each answer the same Spring 404
+with the path echoed, while `mdadd` on the same shape answers a real code.
+`AccountUnBindingWX` is a WeChat unlink (`userunbindWx`), not a sign-out. What
+the client does instead: `POST /api/account/signout` clears the server session
+and the remembered token and records the vendor's raw reply in its answer.
 
 ## 11. Live passthrough transport (stream 2)
 
