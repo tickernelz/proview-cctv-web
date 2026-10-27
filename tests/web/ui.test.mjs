@@ -266,3 +266,93 @@ test('the pad starts and stops the device tour, and reports that the ack is not 
     await page.close();
   }
 });
+
+const pad = (value) => String(value).padStart(2, '0');
+const dayStamp = (ms) => {
+  const when = new Date(ms);
+  return when.getFullYear() + '-' + pad(when.getMonth() + 1) + '-' + pad(when.getDate()) +
+    ' ' + pad(when.getHours()) + ':' + pad(when.getMinutes()) + ':' + pad(when.getSeconds());
+};
+const PLAYBACK_DAY = (() => {
+  const first = new Date(2026, 9, 24, 0, 0, 0).getTime();
+  const step = 86400000 / 557;
+  return Array.from({ length: 557 }, (_, index) => {
+    const from = first + Math.round(index * step);
+    const until = index === 556 ? first + 86400000 : first + Math.round((index + 1) * step);
+    const begin = dayStamp(from);
+    const end = dayStamp(until);
+    const kind = index % 3 === 0 ? '[M]' : '[R]';
+    return {
+      name: '/idea0/2026-10-24/002/' + begin.slice(11) + '-' + end.slice(11) + kind + '[@18][0].h264',
+      begin,
+      end,
+      bytes: (until - from) * 470,
+      disk: null,
+    };
+  });
+})();
+const PLAYBACK_BODY = {
+  ok: true,
+  source: 'cloud',
+  device: DEVICES[0].id,
+  channel: 0,
+  begin: '2026-10-24 00:00:00',
+  end: '2026-10-24 23:59:59',
+  count: PLAYBACK_DAY.length,
+  bytes: PLAYBACK_DAY.reduce((total, file) => total + file.bytes, 0),
+  truncated: false,
+  cap: 2048,
+  elapsed_ms: 12,
+  files: PLAYBACK_DAY,
+};
+const PLAYBACK_FILES = {
+  patterns: [{ urlPattern: '*/api/playback/files*' }],
+  respond: () => PLAYBACK_BODY,
+};
+const clockAt = (fraction) => new Date(new Date(2026, 9, 24, 0, 0, 0).getTime() + fraction * 86400000).getTime();
+
+test('the playback overlay draws the whole day and plays the file under the pointer', async () => {
+  const page = await open({ intercept: PLAYBACK_FILES });
+  try {
+    await page.evaluate("document.getElementById('pb-open').click()");
+    await page.wait("!document.getElementById('pb').hidden", 'the playback overlay');
+    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-24'; day.dispatchEvent(new Event('change')); })()");
+    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the 557 file rows');
+    assert.equal(await page.evaluate("document.querySelectorAll('.pb-seg').length"), 557);
+    assert.match(await page.evaluate("document.getElementById('pb-summary').textContent"), /^557 files · /);
+
+    const box = await page.evaluate("(() => { const track = document.getElementById('pb-timeline').getBoundingClientRect(); return { left: track.left, top: track.top, width: track.width, height: track.height }; })()");
+    for (const fraction of [0.2, 0.63]) {
+      const hit = await page.evaluate(
+        "(() => {" +
+        " const box = document.getElementById('pb-timeline').getBoundingClientRect();" +
+        " const x = box.left + box.width * " + fraction + ";" +
+        " const y = box.top + box.height / 2;" +
+        " const node = document.elementFromPoint(x, y);" +
+        " node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));" +
+        " return node.id || node.className;" +
+        " })()",
+      );
+      assert.equal(hit, 'pb-timeline');
+      await page.wait("document.getElementById('pb-playing').textContent.indexOf(' \u2192 ') > 0", 'the playing label after a timeline click');
+      const label = await page.evaluate("document.getElementById('pb-playing').textContent");
+      const [begin, end] = label.split(' \u2192 ');
+      const at = clockAt(fraction);
+      assert.ok(Date.parse(begin.replace(' ', 'T')) <= at, 'the clip starts before the clicked time: ' + label);
+      assert.ok(Date.parse(end.replace(' ', 'T')) >= at, 'the clip ends after the clicked time: ' + label);
+    }
+
+    const before = await page.evaluate("document.getElementById('pb-day').value");
+    await page.evaluate("document.querySelector('#pb button[aria-label=\"Next day\"]').click()");
+    await page.wait("document.getElementById('pb-day').value === '2026-10-25'", 'the next day');
+    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the next day rows');
+    await page.evaluate("document.querySelector('#pb button[aria-label=\"Previous day\"]').click()");
+    await page.wait("document.getElementById('pb-day').value === '2026-10-24'", 'the day before');
+
+    await page.evaluate("(() => { const row = Array.from(document.querySelectorAll('.pb-row')).find((node) => node.textContent.indexOf('00:00:00') === 0); row.click(); })()");
+    await page.wait("/00:00:00 → /.test(document.getElementById('pb-playing').textContent)", 'the first clip');
+    assert.equal(await page.evaluate("document.getElementById('pb-day').value"), before);
+  } finally {
+    await page.close();
+  }
+});

@@ -8,15 +8,18 @@ use proview_core::cloud::MISSING_CLOUD_IDENTITY;
 use proview_core::config::Config;
 use proview_core::dvrip::playback::{
     access_unit, codec_of, is_video, shift, snap_rate, FrameRate, MediaReader, PlaybackFile,
-    RecordKind, Session, PLAYBACK_DATA,
+    RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
 use proview_core::media::Codec;
 use proview_core::provider::{p2p, rps, VendorSession};
 use proview_core::session::Store;
 use proview_core::source::{Fmp4Splitter, Piece};
-use rocket::http::{CookieJar, Status};
+use rocket::http::{ContentType, CookieJar, Status};
+use rocket::request::Request;
 use rocket::response::content::RawJavaScript;
+use rocket::response::stream::ReaderStream;
+use rocket::response::{self, Responder, Response};
 use rocket::serde::json::Json;
 use rocket::State;
 use rocket_ws as ws;
@@ -33,6 +36,8 @@ const MIN_WINDOW: u32 = 5;
 const MAX_WINDOW: u32 = 600;
 const DEFAULT_FPS: f64 = 12.0;
 const KEY_GRACE: usize = 240;
+const DOWNLOAD_GAP: Duration = Duration::from_secs(20);
+const DOWNLOAD_QUEUE: usize = 16;
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![files, script]
@@ -118,6 +123,130 @@ pub async fn files(
         elapsed_ms: started.elapsed().as_millis() as u64,
         files: found,
     }))
+}
+
+pub struct Download {
+    chunks: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    filename: String,
+    listed: u64,
+}
+
+impl<'r> Responder<'r, 'static> for Download {
+    fn respond_to(self, _request: &'r Request<'_>) -> response::Result<'static> {
+        let stream = futures_util::stream::unfold(self.chunks, |mut chunks| async move {
+            chunks.recv().await.map(|chunk| (chunk, chunks))
+        });
+        let mut response = Response::build();
+        response
+            .header(ContentType::Binary)
+            .raw_header(
+                "Content-Disposition",
+                format!("attachment; filename=\"{}\"", self.filename),
+            )
+            .raw_header("Cache-Control", "no-store");
+        if self.listed > 0 {
+            response.raw_header("X-File-Bytes", self.listed.to_string());
+        }
+        response
+            .streamed_body(ReaderStream::from(stream.map(std::io::Cursor::new)))
+            .ok()
+    }
+}
+
+#[get("/playback/download?<device>&<channel>&<name>&<begin>&<end>&<bytes>")]
+#[allow(clippy::too_many_arguments)]
+pub async fn download(
+    device: String,
+    channel: Option<u8>,
+    name: String,
+    begin: String,
+    end: String,
+    bytes: Option<u64>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Download, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    if !name.starts_with('/') || name.contains("..") {
+        return Err(fail(Status::BadRequest, "name must be a device file path"));
+    }
+    let channel = channel.unwrap_or(0);
+    let file = PlaybackFile {
+        name: name.clone(),
+        begin: begin.clone(),
+        end: end.clone(),
+        bytes: 0,
+        disk: None,
+    };
+    let mut session = open_tunnel(cfg, &vendor, &device)
+        .await
+        .map_err(|message| fail(Status::BadGateway, message))?;
+    session
+        .claim(&file, channel)
+        .await
+        .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
+    session
+        .download_start(&file, channel)
+        .await
+        .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
+    let (sender, chunks) = tokio::sync::mpsc::channel(DOWNLOAD_QUEUE);
+    tokio::spawn(async move {
+        let mut reader = MediaReader::new();
+        loop {
+            let frame = match session.frame(DOWNLOAD_GAP).await {
+                Ok(Some(frame)) => frame,
+                _ => break,
+            };
+            if frame.id != PLAYBACK_DATA && frame.id != DOWNLOAD_DATA {
+                continue;
+            }
+            reader.push(&frame.payload);
+            let mut open = true;
+            while let Some(record) = reader.next_record() {
+                if !is_video(&record) {
+                    continue;
+                }
+                if sender.send(record.bytes).await.is_err() {
+                    open = false;
+                    break;
+                }
+            }
+            if !open {
+                break;
+            }
+        }
+        let _ = session.download_stop(&file, channel).await;
+        let _ = session.logout().await;
+    });
+    Ok(Download {
+        chunks,
+        filename: download_name(&name),
+        listed: bytes.unwrap_or(0),
+    })
+}
+
+fn download_name(name: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let cleaned: String = base
+        .chars()
+        .map(|letter| {
+            if letter.is_ascii_alphanumeric() || matches!(letter, '.' | '_' | '-' | '@' | '[' | ']')
+            {
+                letter
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "clip.h264".to_string()
+    } else {
+        cleaned
+    }
 }
 
 async fn open_tunnel(

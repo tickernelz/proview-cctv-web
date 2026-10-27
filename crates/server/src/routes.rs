@@ -61,7 +61,8 @@ pub fn api() -> Vec<rocket::route::Route> {
         rtsp_probe,
         health,
         crate::stream::stats,
-        crate::routes::playback::files
+        crate::routes::playback::files,
+        crate::routes::playback::download
     ]
     .into_iter()
     .chain(control::routes())

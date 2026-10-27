@@ -16,6 +16,7 @@ pub const FILE_QUERY: u16 = 1440;
 pub const PLAYBACK_CLAIM: u16 = 1424;
 pub const PLAYBACK_CONTROL: u16 = 1420;
 pub const PLAYBACK_DATA: u16 = 0x058e;
+pub const DOWNLOAD_DATA: u16 = 0x0592;
 pub const PAGE_FILES: usize = 64;
 pub const MAX_FILES: usize = 2048;
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
