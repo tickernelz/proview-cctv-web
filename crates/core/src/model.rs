@@ -8,6 +8,7 @@ use crate::lens::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PtzSource {
+    Device,
     MeasuredDefault,
     Operator,
     Unknown,
@@ -45,6 +46,7 @@ pub struct LensView {
     pub crops_verified: bool,
     pub capabilities: LensCapabilities,
     pub ptz_source: PtzSource,
+    pub ptz_evidence: Option<String>,
 }
 
 pub struct LensViewRequest<'a> {
@@ -53,6 +55,13 @@ pub struct LensViewRequest<'a> {
     pub streams: Vec<LensStreamInfo>,
     pub capabilities: LensCapabilities,
     pub ptz: Option<u32>,
+    pub ptz_binding: Option<PtzBindingView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PtzBindingView {
+    pub lens: u32,
+    pub evidence: String,
 }
 
 fn primary_frame(streams: &[LensStreamInfo]) -> FrameSize {
@@ -81,13 +90,16 @@ fn measured_ptz_lens(count: u32) -> Option<u32> {
 impl LensView {
     pub fn build(request: LensViewRequest<'_>) -> Self {
         let layout = detect_layout(primary_frame(&request.streams), request.capabilities);
-        let ptz = request.ptz.or_else(|| measured_ptz_lens(layout.count));
-        let ptz_source = if request.ptz.is_some() {
-            PtzSource::Operator
-        } else if ptz.is_some() {
-            PtzSource::MeasuredDefault
-        } else {
-            PtzSource::Unknown
+        let fallback = measured_ptz_lens(layout.count);
+        let (ptz, ptz_source, ptz_evidence) = match (request.ptz, &request.ptz_binding, fallback) {
+            (Some(index), _, _) => (Some(index), PtzSource::Operator, None),
+            (None, Some(binding), _) => (
+                Some(binding.lens),
+                PtzSource::Device,
+                Some(binding.evidence.clone()),
+            ),
+            (None, None, Some(index)) => (Some(index), PtzSource::MeasuredDefault, None),
+            (None, None, None) => (None, PtzSource::Unknown, None),
         };
         let lenses = if layout.count == 0 {
             Vec::new()
@@ -117,6 +129,7 @@ impl LensView {
             crops_verified: layout.crops_verified(),
             capabilities: request.capabilities,
             ptz_source,
+            ptz_evidence,
         }
     }
 }
@@ -153,6 +166,7 @@ mod tests {
             streams: measured_streams(),
             capabilities: LensCapabilities::default(),
             ptz: None,
+            ptz_binding: None,
         });
         assert_eq!(view.lens_count, 2);
         assert_eq!(view.count_source, LensCountSource::Geometry);
@@ -173,6 +187,29 @@ mod tests {
         assert!(!view.lenses[0].ptz);
         assert!(view.lenses[1].ptz);
         assert_eq!(view.ptz_source, PtzSource::MeasuredDefault);
+        assert!(view.ptz_evidence.is_none());
+    }
+
+    #[test]
+    fn a_device_answer_replaces_the_measured_default() {
+        let view = LensView::build(LensViewRequest {
+            device_id: "fixture-dev-0001",
+            channel: 1,
+            streams: measured_streams(),
+            capabilities: LensCapabilities::default(),
+            ptz: None,
+            ptz_binding: Some(PtzBindingView {
+                lens: 1,
+                evidence: "Ptz.GunBallLocate[0].Enable=true, center (1735, 1028)".to_string(),
+            }),
+        });
+        assert_eq!(view.ptz_source, PtzSource::Device);
+        assert!(!view.lenses[0].ptz);
+        assert!(view.lenses[1].ptz);
+        assert!(view
+            .ptz_evidence
+            .expect("the device answer travels with the contract")
+            .contains("GunBallLocate"));
     }
 
     #[test]
@@ -183,10 +220,15 @@ mod tests {
             streams: measured_streams(),
             capabilities: LensCapabilities::default(),
             ptz: Some(0),
+            ptz_binding: Some(PtzBindingView {
+                lens: 1,
+                evidence: "Ptz.GunBallLocate[0].Enable=true".to_string(),
+            }),
         });
         assert_eq!(view.ptz_source, PtzSource::Operator);
         assert!(view.lenses[0].ptz);
         assert!(!view.lenses[1].ptz);
+        assert!(view.ptz_evidence.is_none());
     }
 
     #[test]
@@ -203,6 +245,7 @@ mod tests {
             }],
             capabilities: LensCapabilities::default(),
             ptz: None,
+            ptz_binding: None,
         });
         assert_eq!(view.lens_count, 0);
         assert_eq!(view.count_source, LensCountSource::Unknown);
@@ -225,6 +268,7 @@ mod tests {
             }],
             capabilities: LensCapabilities::default(),
             ptz: None,
+            ptz_binding: None,
         });
         assert_eq!(view.lens_count, 1);
         assert_eq!(view.lenses.len(), 1);
@@ -244,6 +288,7 @@ mod tests {
                 ..LensCapabilities::default()
             },
             ptz: None,
+            ptz_binding: None,
         });
         let value: Value = serde_json::to_value(&view).expect("serialises");
         assert_eq!(value["deviceId"], "fixture-dev-0001");
