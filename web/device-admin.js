@@ -189,9 +189,9 @@
           onclick: () => guard('saving', async () => {
             const uuid = currentUuid();
             if (!uuid) throw new Error('pick a camera first');
-            await call(API.group, { method: 'POST', body: JSON.stringify({ uuid, group: groupInput.value.trim() }) });
-            await call(API.favourite, { method: 'POST', body: JSON.stringify({ uuid, favourite: favouriteBox.checked }) });
-            return 'saved locally';
+            const groupReply = await call(API.group, { method: 'POST', body: JSON.stringify({ uuid, group: groupInput.value.trim() }) });
+            const favouriteReply = await call(API.favourite, { method: 'POST', body: JSON.stringify({ uuid, favourite: favouriteBox.checked }) });
+            return (favouriteReply && favouriteReply.message) || (groupReply && groupReply.message) || 'saved locally';
           }),
         }),
       ]),
@@ -257,22 +257,22 @@
         onclick: () => guard('changing', async () => {
           const uuid = currentUuid();
           if (!uuid) throw new Error('pick a camera first');
-          await call(API.cloudPassword, {
+          const reply = await call(API.cloudPassword, {
             method: 'POST',
             body: JSON.stringify({ uuid, password: cloudOld.value, newPassword: cloudNew.value }),
           });
           cloudOld.value = '';
           cloudNew.value = '';
-          return 'the cloud changed the device password';
+          return (reply && reply.message) || 'the cloud changed the device password';
         }),
       }),
       field('New over DVRIP', dvripNew),
       node('button', {
         type: 'button', class: 'btn btn-text', text: 'Change over DVRIP',
         onclick: () => guard('changing', async () => {
-          await call(API.devicePassword, { method: 'POST', body: JSON.stringify({ newPassword: dvripNew.value }) });
+          const reply = await call(API.devicePassword, { method: 'POST', body: JSON.stringify({ newPassword: dvripNew.value }) });
           dvripNew.value = '';
-          return 'the camera changed its login password';
+          return (reply && reply.message) || 'the camera changed its login password';
         }),
       }),
     ]),

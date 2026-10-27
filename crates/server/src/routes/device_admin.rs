@@ -1,4 +1,6 @@
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use proview_core::cloud::attributes::{AttributeClient, AttributeStore, DeviceAttributes};
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
@@ -12,6 +14,7 @@ use rocket::State;
 use serde::{Deserialize, Serialize};
 
 use super::{fail, session_id, Failure};
+use crate::settings::SettingsStore;
 
 pub const STORE_FILE: &str = "device-groups.json";
 
@@ -84,12 +87,76 @@ fn signed(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Signed, Failu
     })
 }
 
-fn clients(cfg: &Config) -> (AttributeClient, EnvelopeClient) {
-    let identity = Identity::resolve();
-    (
-        AttributeClient::with_base(identity.clone(), cfg.cloud_base.clone()),
-        EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
-    )
+struct CloudClients {
+    admin: AttributeClient,
+    cloud: EnvelopeClient,
+}
+
+fn clients(cfg: &Config) -> Arc<CloudClients> {
+    static POOL: OnceLock<Mutex<HashMap<String, Arc<CloudClients>>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = pool.lock().unwrap_or_else(|error| error.into_inner());
+    guard
+        .entry(cfg.cloud_base.clone())
+        .or_insert_with(|| {
+            let identity = Identity::resolve();
+            Arc::new(CloudClients {
+                admin: AttributeClient::with_base(identity.clone(), cfg.cloud_base.clone()),
+                cloud: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
+            })
+        })
+        .clone()
+}
+
+fn store_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+fn load_store() -> Result<AttributeStore, Failure> {
+    AttributeStore::load(&store_path()).map_err(|error| {
+        fail(
+            Status::InternalServerError,
+            format!("the group store cannot be read: {error}"),
+        )
+    })
+}
+
+fn save_store(saved: &AttributeStore) -> Result<(), Failure> {
+    saved.save(&store_path()).map_err(|error| {
+        fail(
+            Status::InternalServerError,
+            format!("could not persist: {error}"),
+        )
+    })
+}
+
+fn guard_session(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
+    let id = session_id(cookies)?;
+    store
+        .get(&id)
+        .map(|_| ())
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
+}
+
+fn live_device_password(cfg: &Config) -> String {
+    std::env::var("PROVIEW_DEVICE_PASS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| cfg.device_pass.clone())
+}
+
+fn persist_device_password(settings: &State<SettingsStore>, password: &str) -> Result<(), Failure> {
+    let mut incoming = BTreeMap::new();
+    incoming.insert("PROVIEW_DEVICE_PASS".to_string(), password.to_string());
+    settings.update(incoming).map(|_| ()).map_err(|error| {
+        fail(
+            Status::InternalServerError,
+            format!("the device accepted the new password but it could not be stored: {error}"),
+        )
+    })
 }
 
 fn cloud_session(signed: &Signed) -> CloudSession {
@@ -113,13 +180,14 @@ async fn attributes(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<AttributeBody>, Failure> {
     let signed = signed(store, cookies)?;
-    let (_, cloud) = clients(cfg);
+    let cloud = clients(cfg);
     let session = cloud_session(&signed);
     let devices = cloud
+        .cloud
         .device_list(&session.access_token)
         .await
         .map_err(cloud_failure)?;
-    let saved = AttributeStore::load(&store_path());
+    let saved = load_store()?;
     let rows: Vec<DeviceAttributes> = devices
         .iter()
         .map(|device| DeviceAttributes::of(device, &saved.get(&device.uuid)))
@@ -138,11 +206,13 @@ pub struct GroupsBody {
 }
 
 #[get("/cloud/device-groups")]
-fn groups() -> Json<GroupsBody> {
-    Json(GroupsBody {
+fn groups(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Json<GroupsBody>, Failure> {
+    guard_session(store, cookies)?;
+    let saved = load_store()?;
+    Ok(Json(GroupsBody {
         ok: true,
-        groups: AttributeStore::load(&store_path()).groups(),
-    })
+        groups: saved.groups(),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -169,14 +239,15 @@ async fn rename(
     if uuid.is_empty() {
         return Err(fail(Status::BadRequest, "uuid is required"));
     }
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .rename(&signed.token, uuid, &signed.account, body.nickname.trim())
         .await
         .map_err(cloud_failure)?;
     Ok(Json(StatusBody {
         ok: true,
-        message: format!("renamed {uuid} to {:?}", body.nickname.trim()),
+        message: format!("renamed {uuid} to {}", body.nickname.trim()),
     }))
 }
 
@@ -193,28 +264,20 @@ fn set_group(
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
-    let id = session_id(cookies)?;
-    store
-        .get(&id)
-        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?;
+    guard_session(store, cookies)?;
     let uuid = body.uuid.trim();
     if uuid.is_empty() {
         return Err(fail(Status::BadRequest, "uuid is required"));
     }
-    let path = store_path();
-    let mut saved = AttributeStore::load(&path);
+    let _writing = store_lock();
+    let mut saved = load_store()?;
     let mut organisation = saved.get(uuid);
     organisation.group = body.group.trim().to_string();
     saved.set(uuid, organisation);
-    saved.save(&path).map_err(|error| {
-        fail(
-            Status::InternalServerError,
-            format!("could not persist: {error}"),
-        )
-    })?;
+    save_store(&saved)?;
     Ok(Json(StatusBody {
         ok: true,
-        message: format!("group of {uuid} is now {:?}", body.group.trim()),
+        message: format!("group of {uuid} is now {}", body.group.trim()),
     }))
 }
 
@@ -230,25 +293,17 @@ fn set_favourite(
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
-    let id = session_id(cookies)?;
-    store
-        .get(&id)
-        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?;
+    guard_session(store, cookies)?;
     let uuid = body.uuid.trim();
     if uuid.is_empty() {
         return Err(fail(Status::BadRequest, "uuid is required"));
     }
-    let path = store_path();
-    let mut saved = AttributeStore::load(&path);
+    let _writing = store_lock();
+    let mut saved = load_store()?;
     let mut organisation = saved.get(uuid);
     organisation.favourite = body.favourite;
     saved.set(uuid, organisation);
-    saved.save(&path).map_err(|error| {
-        fail(
-            Status::InternalServerError,
-            format!("could not persist: {error}"),
-        )
-    })?;
+    save_store(&saved)?;
     Ok(Json(StatusBody {
         ok: true,
         message: format!("favourite of {uuid} is now {}", body.favourite),
@@ -273,8 +328,9 @@ async fn share(
     if body.uuids.is_empty() {
         return Err(fail(Status::BadRequest, "at least one uuid is required"));
     }
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     let reply = admin
+        .admin
         .share_out(&signed.token, &body.uuids, body.accept_id.trim())
         .await
         .map_err(cloud_failure)?;
@@ -298,8 +354,9 @@ async fn share_pending(
     if list.is_empty() {
         return Err(fail(Status::BadRequest, "at least one uuid is required"));
     }
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .share_pending(&signed.token, &list)
         .await
         .map(Json)
@@ -314,8 +371,9 @@ async fn share_info(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<serde_json::Value>, Failure> {
     let signed = signed(store, cookies)?;
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .share_info(&signed.token, key.trim())
         .await
         .map(Json)
@@ -337,8 +395,9 @@ async fn share_accept(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<serde_json::Value>, Failure> {
     let signed = signed(store, cookies)?;
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .share_accept(&signed.token, body.key.trim())
         .await
         .map(Json)
@@ -353,8 +412,9 @@ async fn share_cancel(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<serde_json::Value>, Failure> {
     let signed = signed(store, cookies)?;
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .share_cancel(&signed.token, body.key.trim(), &body.uuids)
         .await
         .map(Json)
@@ -373,6 +433,7 @@ pub struct CloudPasswordBody {
 async fn change_password(
     body: Json<CloudPasswordBody>,
     cfg: &State<Config>,
+    settings: &State<SettingsStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
@@ -381,14 +442,18 @@ async fn change_password(
     if uuid.is_empty() {
         return Err(fail(Status::BadRequest, "uuid is required"));
     }
-    let (admin, _) = clients(cfg);
+    let admin = clients(cfg);
     admin
+        .admin
         .change_login_password(&signed.token, uuid, &body.password, &body.new_password)
         .await
         .map_err(cloud_failure)?;
+    persist_device_password(settings, body.new_password.trim())?;
     Ok(Json(StatusBody {
         ok: true,
-        message: format!("the cloud changed the device password of {uuid}"),
+        message: format!(
+            "the cloud changed the device password of {uuid}; restart the app so every camera route uses the new one"
+        ),
     }))
 }
 
@@ -402,14 +467,13 @@ pub struct DevicePasswordBody {
 async fn change_device_password(
     body: Json<DevicePasswordBody>,
     cfg: &State<Config>,
+    settings: &State<SettingsStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
-    let id = session_id(cookies)?;
-    store
-        .get(&id)
-        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?;
-    if body.new_password.trim().is_empty() {
+    guard_session(store, cookies)?;
+    let next = body.new_password.trim();
+    if next.is_empty() {
         return Err(fail(Status::BadRequest, "the new password is empty"));
     }
     if cfg.device_host.is_none() {
@@ -418,7 +482,10 @@ async fn change_device_password(
             ControlError::NotConfigured("PROVIEW_DEVICE_HOST").to_string(),
         ));
     }
-    let controls = Controls::from_config(cfg);
+    let current = live_device_password(cfg);
+    let mut live = cfg.inner().clone();
+    live.device_pass = current.clone();
+    let controls = Controls::from_config(&live);
     let dvrip = controls
         .dvrip()
         .map_err(|error| fail(control_status(&error), error.to_string()))?;
@@ -428,9 +495,9 @@ async fn change_device_password(
         .map_err(|error| fail(control_status(&error), error.to_string()))?;
     let ret = proview_core::cloud::attributes::change_device_password(
         &mut session,
-        &cfg.device_user,
-        &cfg.device_pass,
-        body.new_password.trim(),
+        &live.device_user,
+        &current,
+        next,
     )
     .await
     .map_err(|error| {
@@ -439,8 +506,30 @@ async fn change_device_password(
             format!("the device refused the password change: {error}"),
         )
     })?;
+
+    let mut check = cfg.inner().clone();
+    check.device_pass = next.to_string();
+    let relogin = Controls::from_config(&check)
+        .dvrip()
+        .map_err(|error| fail(control_status(&error), error.to_string()))?
+        .session()
+        .await;
+    let relogin = match relogin {
+        Ok(_) => "a fresh login with the new password answered".to_string(),
+        Err(error) => {
+            return Err(fail(
+                Status::BadGateway,
+                format!(
+                    "the device reported success (ret {ret}) but a login with the new password failed: {error}; the stored password was left unchanged"
+                ),
+            ))
+        }
+    };
+    persist_device_password(settings, next)?;
     Ok(Json(StatusBody {
         ok: true,
-        message: format!("the device changed its login password (ret {ret})"),
+        message: format!(
+            "the device changed its login password (ret {ret}); {relogin}; restart the app so every camera route uses it"
+        ),
     }))
 }

@@ -57,14 +57,6 @@ impl AttributeClient {
         }
     }
 
-    pub fn base(&self) -> &str {
-        &self.base
-    }
-
-    pub fn identity(&self) -> &Identity {
-        &self.identity
-    }
-
     fn next(&self) -> super::envelope::Signed {
         let counter = next_counter(self.counter.fetch_add(1, Ordering::Relaxed));
         signed_request(&self.identity, counter, super::envelope::now_millis())
@@ -250,11 +242,17 @@ pub struct AttributeStore {
 }
 
 impl AttributeStore {
-    pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+    pub fn load(path: &Path) -> std::io::Result<Self> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} is not readable: {error}", path.display()),
+                )
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -263,7 +261,11 @@ impl AttributeStore {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let temp = path.with_extension("tmp");
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let temp = path.with_extension(format!("{}.{unique}.tmp", std::process::id()));
         let text = serde_json::to_string_pretty(self)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
         std::fs::write(&temp, text)?;
@@ -279,18 +281,6 @@ impl AttributeStore {
             self.devices.remove(uuid);
         } else {
             self.devices.insert(uuid.to_string(), organisation);
-        }
-    }
-
-    pub fn rename_group(&mut self, from: &str, to: &str) {
-        let from = from.trim();
-        if from.is_empty() || from == to.trim() {
-            return;
-        }
-        for organisation in self.devices.values_mut() {
-            if organisation.group == from {
-                organisation.group = to.trim().to_string();
-            }
         }
     }
 
@@ -392,7 +382,7 @@ mod tests {
             },
         );
         store.save(&path).unwrap();
-        let loaded = AttributeStore::load(&path);
+        let loaded = AttributeStore::load(&path).unwrap();
         assert_eq!(loaded.get("DEV1").group, "pintu");
         assert!(loaded.get("DEV1").favourite);
         assert_eq!(loaded.groups(), vec!["pintu".to_string()]);
@@ -415,28 +405,46 @@ mod tests {
     }
 
     #[test]
-    fn renaming_a_group_moves_every_member() {
+    fn a_missing_file_reads_as_empty() {
+        let path = std::env::temp_dir().join("pvw-attrs-missing/store.json");
+        let store = AttributeStore::load(&path).unwrap();
+        assert!(store.devices.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_file_is_an_error_not_an_empty_store() {
+        let dir = std::env::temp_dir().join(format!("pvw-attrs-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("device-groups.json");
+        std::fs::write(&path, "{\"devices\": {\"A\": {\"group\": \"pintu\"").unwrap();
+        let error =
+            AttributeStore::load(&path).expect_err("a truncated file must not read as empty");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let kept = std::fs::read_to_string(&path).unwrap();
+        assert!(kept.contains("pintu"), "the file is left untouched: {kept}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_save_never_leaves_a_temporary_file_behind() {
+        let dir = std::env::temp_dir().join(format!("pvw-attrs-temp-{}", std::process::id()));
+        let path = dir.join("device-groups.json");
         let mut store = AttributeStore::default();
-        for uuid in ["A", "B"] {
-            store.set(
-                uuid,
-                Organisation {
-                    group: "lama".to_string(),
-                    favourite: false,
-                },
-            );
-        }
         store.set(
-            "C",
+            "DEV1",
             Organisation {
-                group: "lain".to_string(),
+                group: "pintu".to_string(),
                 favourite: false,
             },
         );
-        store.rename_group("lama", "baru");
-        assert_eq!(store.get("A").group, "baru");
-        assert_eq!(store.get("B").group, "baru");
-        assert_eq!(store.get("C").group, "lain");
+        store.save(&path).unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
