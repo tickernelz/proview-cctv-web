@@ -86,6 +86,7 @@ fn control_failure(error: ControlError) -> Failure {
         ControlError::Unsupported { .. } => Status::NotImplemented,
         ControlError::NotConfigured(_) => Status::BadRequest,
         ControlError::Blocked { .. } => Status::Conflict,
+        ControlError::Timeout { .. } => Status::GatewayTimeout,
         ControlError::Device(_) => Status::BadGateway,
     };
     fail(status, error.to_string())
