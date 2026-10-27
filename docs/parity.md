@@ -15,20 +15,20 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Cloud account login | `com.xworld.activity.login.*`, `IXMAccount::AccountLogin`, `XM_Video_Login_XMAccount` | blocked | the vendor SDK harness (ZHA-3932) proves email + password → `accessToken`, the platform exchange and the signed `/v3/<tsid>/<sig>.rs` envelope; it needs `libFunSDK.so` + an aarch64 chroot and cannot ship, so the app has no login. The v2 portal envelope and password digest remain unsolved for our own client. See `protocol.md` 3A |
+| Cloud account login | `com.xworld.activity.login.*`, `IXMAccount::AccountLogin`, `XM_Video_Login_XMAccount` | done | the signed v3 envelope is implemented in `crates/core/src/cloud/envelope.rs`: email + password → `accessToken`, the platform exchange and the signed `/v3/<tsid>/<sig>.rs` request, exercised by `crates/core/tests/envelope.rs` and by `POST /api/login`, with no vendor binary at run time. The v2 portal envelope and password digest remain unsolved for our own client. See `protocol.md` 3A and 3B |
 | Session kept server side | design | done | private `pvw_session` cookie → in-memory vendor session; vendor token never reaches the browser |
 | Session expiry handling | design | partial | server expires and returns 401; UI shows the error but does not re-prompt silently |
-| Remember account | `SplashActivity`, `loginExist`, `savePwdToken` strings | blocked | needs the flow in the previous rows |
+| Remember account | `SplashActivity`, `loginExist`, `savePwdToken` strings | blocked | the vendor app remembers the account in its own token store (`savePwdToken`); this project has no remember-me flow, sign-in is per run |
 | Logout | `IXMAccount::AccountUnBindingWX`, `/webservice/app/user/logOut` | partial | local logout works; vendor-side logout call not wired |
-| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | the app fetches it from a certificate-pinned host (`pub-dscn.secu100.net`) and from `as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs`, whose path signature is per request; the SDK harness does read the list (`msdlistCode`, `InitDevInfo`) but only inside the vendor library. See `cloud-app-surface.md` and `protocol.md` 3A |
-| Device online status | `pub-status.secu100.net:7700-7706`, `IXMCloud::GetDevsStatus` | blocked | same cloud blocker |
+| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | done | `GET /api/devices` calls `msdlistCode` through the signed envelope and returns the account's devices (one device on the test account); the shared-device list on `as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs` is still unimplemented. See `cloud-app-surface.md` and `protocol.md` 3A |
+| Device online status | `pub-status.secu100.net:7700-7706`, `IXMCloud::GetDevsStatus` | blocked | needs the device-status path on `pub-status` (`7700-7706`), which is not mapped yet |
 | Device identity and capabilities by serial | iOS capture 2026-10-27: `POST https://caps.xmcsrv.net/api/asMsgQ` `{"method":"reqCaps","body":{"caps":[…],"sn":…}}` with no session | done | `GET /api/cloud/device-caps?sn=<serial>` over `cloud::app::CapsClient`: model, hardware id, firmware, `lastWanIp` and the capability block; empty serial 400, unknown serial 404. See `cloud-app-surface.md` |
 
 ## Application shell
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in every tag release, `v0.2.5` included (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
+| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in every tag release, `v0.2.6` included (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
 | Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; each tag release carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
 | Installer signing | — | blocked | no Apple Developer or Windows signing certificate (decision 2026-10-26); artefacts ship unsigned with `SHA256SUMS` |
 | Desktop app run on a real desktop | — | blocked | built and linked in CI, never launched on a graphical session; needs a person to click through |

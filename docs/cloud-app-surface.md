@@ -52,9 +52,10 @@ certificate pinning.
 That gap was closed a different way on 2026-10-27: the vendor's own
 `libFunSDK.so` was run out of tree and the login envelope fell out of it
 (email + password → `accessToken`, the platform exchange, and the signed
-`/v3/<tsid>/<sig>.rs` path with a 96-hex AES body). `protocol.md` section 3A
-records it. It is a reference, not a shipped client: the SDK cannot be
-redistributed and the harness takes ~65 s per login.
+`/v3/<tsid>/<sig>.rs` path with a 96-hex AES body). `protocol.md` sections 3A
+and 3B record the derivation, and `crates/core/src/cloud/envelope.rs` is the
+client this project ships: `POST /api/login` needs no vendor binary, chroot or
+emulator, and the account's device list follows on `GET /api/devices`.
 
 ## 3. Device list
 
@@ -139,21 +140,24 @@ while every other vendor host decrypted, i.e. pinning rather than a missing
 proxying rule. Reaching it needs a jailbroken/hooked client or static work on the
 Mach-O, not another proxy export.
 
-Proved *since*, by running the vendor SDK out of tree (`protocol.md` section 3A,
-ZHA-3932): email + password yields the `accessToken`, the platform exchange on
-`boss22-api.xmcsrv.net` answers `code 2000`, login mode returns `msdlistCode`, and
-the signed envelope is `POST /v3/<tsid>/<sig>.rs` with `tsid` = `0000003` + epoch
-ms, a 32-hex per-request `sig`, a 96-hex body (AES over 12 random + 4-byte
-timestamp + 12-char seed) and no `UniqueCode` header. Still out of reach without
-the vendor library: producing that `sig` ourselves, and the media path.
+Proved *since*, by running the vendor SDK out of tree (`protocol.md` section 3A)
+and then reimplementing the envelope in Rust (3B): email + password yields the
+`accessToken`, the platform exchange on `boss22-api.xmcsrv.net` answers
+`code 2000`, login mode returns `msdlistCode`, and the signed envelope is
+`POST /v3/<tsid>/<sig>.rs` with `tsid` = `0000003` + epoch ms, a 32-hex
+per-request `sig`, a 96-hex body (AES over 12 random + 4-byte timestamp +
+12-char seed) and no `UniqueCode` header. That `sig` is produced in
+`crates/core/src/cloud/envelope.rs` and checked against the captured rows, so
+`GET /api/devices` answers the account's real device list; the media path is
+still out of reach.
 
 ## 8. What this project can use now
 
 1. `GET /api/cloud/device-caps?sn=<serial>`, implemented in `cloud::app::CapsClient`
    and mounted in `crates/server/src/routes/cloud.rs`, backed by
    `caps.xmcsrv.net/api/asMsgQ`: model, firmware version, WAN address and capability
-   block for a device we already know, with no account session. This is the first
-   cloud call that ships without solving the login envelope. An empty serial answers
+   block for a device we already know, with no account session. This is the one
+   cloud call that needs no login. An empty serial answers
    `400`, and a serial the cloud does not know answers `404`: the vendor itself
    answers `ret 200` with blank `model` and `pid` for such a serial, so the route
    treats that as not found instead of passing blanks to the UI. `PROVIEW_CAPS_BASE`
@@ -161,7 +165,10 @@ the vendor library: producing that `sig` ourselves, and the media path.
 2. `appCaps` as a cheap reachability and feature-flag probe for the cloud hosts.
 3. The portal path of section 10 stays as it is: the app's login is a different
    mechanism and does not make the v2 portal captcha/login any more solved.
-4. The SDK harness of `protocol.md` section 3A is a reference only. It needs
-   `libFunSDK.so`, an aarch64 chroot and ~65 s per login; none of that can ship
-   in a public repository, so the app still has no cloud account login.
+4. The cloud account login is part of the app: `POST /api/login` runs the
+   signed v3 envelope from `crates/core/src/cloud/envelope.rs`, the device list
+   follows on `GET /api/devices`, and the only configuration is the app identity
+   (`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET`). The out-of-tree
+   emulator of `protocol.md` section 3A is how the envelope was learned; it is
+   not needed to log in.
 

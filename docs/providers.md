@@ -6,7 +6,7 @@ recordings and settings.
 
 | Provider | Default | Transport | What it can do today |
 |---|---|---|---|
-| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | the app's account login is proven in the vendor SDK (ZHA-3932, `protocol.md` 3A) but not integrated: it needs `libFunSDK.so` + an aarch64 chroot. The v2 portal login is implemented and answers; the white-label account rejects it. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md` |
+| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | account login and device list work through the signed v3 envelope in `crates/core/src/cloud/envelope.rs` (`POST /api/login`, `GET /api/devices`), with no vendor binary at run time. The v2 portal login is implemented and answers; the white-label account rejects it. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md`. Streaming, playback and PTZ over the cloud are still unimplemented |
 | `local` | opt-in | LAN: DVRIP 34567, RTSP 554, HTTP 80 | RTSP `DESCRIBE` with Digest works against a real IPC; DVRIP login returns `ret 203` |
 
 ## Selection rules
