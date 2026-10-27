@@ -1,8 +1,14 @@
 #[path = "routes/alarms.rs"]
 pub mod alarms;
 
+#[path = "routes/apmode.rs"]
+pub mod apmode;
+
 #[path = "routes/cloud.rs"]
 pub mod cloud;
+
+#[path = "routes/grid.rs"]
+pub mod grid;
 
 #[path = "routes/cloud_bind.rs"]
 pub mod cloud_bind;
@@ -29,7 +35,7 @@ pub mod audio;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, account_js, talk_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, account_js, talk_js, grid_js, style_css, tokens_css, font, media_clip]
         .into_iter()
         .chain(alarms::files())
         .collect()
@@ -51,7 +57,9 @@ pub fn api() -> Vec<rocket::route::Route> {
     .into_iter()
     .chain(control::routes())
     .chain(alarms::routes())
+    .chain(grid::routes())
     .chain(cloud_bind::api())
+    .chain(apmode::routes())
     .collect()
 }
 
@@ -70,6 +78,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/grid.js")]
+fn grid_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/grid.js"))
 }
 
 #[get("/account.js")]
@@ -169,6 +182,14 @@ fn status_for(err: &ProviderError) -> Status {
         ProviderError::Misconfigured(_) => Status::NotImplemented,
         _ => Status::BadGateway,
     }
+}
+
+pub(crate) fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
+    let id = session_id(cookies)?;
+    store
+        .get(&id)
+        .map(|_| ())
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
 }
 
 pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {

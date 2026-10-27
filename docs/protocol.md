@@ -809,6 +809,88 @@ The three rounds were answered by three different agents (`162.128.64.191`,
 `162.128.64.50`, `162.128.66.64`), which is the per-session assignment of 4C.7
 showing up in the diagnostic.
 
+### 4C.14 The media login is a token login, and the SDK log spells it out
+
+The SDK's own log carries the login it builds for the media channel
+(`ProtocolNetIP.cpp:1293` and the frame that follows it):
+
+```
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:zhafronadani@gm,PwdLen:13,
+             Token:o5rBSnodWCpN8VAa,Pid:,RandomStrLen:4/0, ...]
+{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"o5rBSnodWCpN8VAa",
+ "PassWord":"","CommunicateKey":"8291FD6A0A7EF5F78495CB0255F4E862A4382321D951D2257176E83E2573DE5F...",
+ ...}
+```
+
+Two things follow. The media channel does **not** use the account password: it
+logs in with `EncryptType "TOKEN"`, puts the 16-character token in `UserName`,
+sends an empty password, and passes an RSA `CommunicateKey`. And the device
+advertises exactly which algorithms it expects:
+
+```
+{"Bits":1024,
+ "DataEncryptionType":{"AES":true,"AESV2":true,"VEKEY1":true},
+ "EncryptAlgo":"RSA_V1.5",
+ "LoginEncryptionType":{"MD5":true,"NONE":true,"RSA":true,"T":...}}
+```
+
+So the earlier hunt for an AES key (4C.9-4C.12) was aimed one layer too low: the
+gate is the **token** (from the account's device token, the same kind of value
+`/deviceToken/get` already returns) plus an RSA-1.5 session key, not a password
+hash. That reframes the remaining work in 4C.11: build the token login and the
+`CommunicateKey`, then see whether media flows.
+
+The same log also shows the audio channel being negotiated as `service_type
+"RpsVoIP"` with its own `local_port`, which is the shape two-way audio will need.
+
+### 4C.15 The token login is accepted, and the session key is what is still missing
+
+Tried on the tunnel with the account's device token (the `deviceToken.AdminToken`
+value, 44 base64 characters) as `UserName`:
+
+```
+claim        -> {"Name":"OPMonitor","Ret":100}
+login TOKEN  -> {"Name":"OPMonitor","Ret":100,"SessionID":"0x00000250"}   accepted
+frames       -> none inside six seconds
+```
+
+So `EncryptType "TOKEN"` with an **empty** `CommunicateKey` is accepted by the
+device but buys no media. The SDK sends a non-empty `CommunicateKey` (hex, RSA
+`RSA_V1.5`, device advertises `Bits 1024`), which is the session key the media
+channel is encrypted with — and the one thing worth generating ourselves next,
+since a self-chosen AES key wrapped to the device key is a key we would know.
+
+The device public key is not in the caps payload `CapsClient` parses today
+(`grep PublicKey|Modulus|Bits` over the caps types: no hits), so the next
+measurement is to capture the key exchange or read it from the device's own
+system-info reply.
+
+`Connection::login_token` in `crates/core/src/dvrip/client.rs` reproduces the
+attempt, and `examples/rps_probe` drives it when `PROVIEW_DEVICE_TOKEN` is set.
+
+### 4C.16 The RSA call the SDK makes carries a 16-character session key
+
+Hooking `RSA_public_encrypt` in the harness (same inline-patch mechanism as
+`SSL_write`) shows three calls per live session:
+
+```
+flen=12  padding=1  <a password-shaped value, redacted>
+flen=8   padding=1  <8 random characters>
+flen=16  padding=1  iq5H3765j5t04mO6      (a second run: ke930p9mR1kxcL7Q)
+```
+
+The 16-byte one changes on every run and has exactly the shape of the
+`CommunicateKey` token `NewLoginPTL` reports (`o5rBSnodWCpN8VAa`): the client
+picks the session key itself and RSA-wraps it for the device. That is the piece
+this design was missing — the media session key is **ours to choose**, so once it
+crosses the wire we know it and can decrypt what the device sends.
+
+What is still not captured is the device public key the wrapper uses. The next
+step is a corrected dump in the same shim (`RSA_get0_key` + `BN_bn2hex` on the
+`RSA*` argument; the first attempt broke on an escaped newline in the C source
+and the run fell back to the previous binary), which turns this into a complete
+`CommunicateKey` construction in Rust.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
