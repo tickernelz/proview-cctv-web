@@ -685,7 +685,7 @@ async fn a_read_before_the_write_that_never_answers_stops_before_any_write() {
     assert!(
         error
             .to_string()
-            .contains("did not answer inside the write window"),
+            .contains("did not answer inside the settings window"),
         "{error}"
     );
     assert_eq!(
@@ -744,7 +744,7 @@ async fn a_state_read_after_a_write_that_timed_out_finishes_inside_the_window() 
         assert!(
             error
                 .to_string()
-                .contains("did not answer inside the write window"),
+                .contains("did not answer inside the settings window"),
             "{error}"
         );
     }

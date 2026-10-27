@@ -1,7 +1,8 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use proview_core::config::Config;
-use proview_core::device::{ControlError, Controls};
+use proview_core::device::{ControlError, Controls, SessionError};
 use proview_core::dvrip::control::RecordMode;
 use proview_core::dvrip::settings::{
     EncodePatch, NetworkPatch, OverwriteMode, SettingsError, Stream, WriteWindow,
@@ -28,6 +29,8 @@ pub fn routes() -> Vec<rocket::route::Route> {
 }
 
 const BACKUP_ENV: &str = "PROVIEW_SETTINGS_BACKUP_DIR";
+const WINDOW_ENV: &str = "PROVIEW_SETTINGS_WINDOW_MS";
+const DEFAULT_WINDOW: Duration = Duration::from_secs(20);
 
 fn backup_dir() -> PathBuf {
     let explicit = std::env::var(BACKUP_ENV)
@@ -42,6 +45,20 @@ fn backup_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     data.join("settings-backups")
+}
+
+fn settings_window() -> Duration {
+    match std::env::var(WINDOW_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => DEFAULT_WINDOW,
+    }
+}
+
+fn write_window() -> WriteWindow {
+    WriteWindow::with_timeout(backup_dir(), settings_window())
 }
 
 fn settings_failure(error: SettingsError) -> Failure {
@@ -82,10 +99,22 @@ fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failur
         .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
 }
 
-async fn session(cfg: &State<Config>) -> Result<proview_core::dvrip::client::Connection, Failure> {
+async fn session(
+    cfg: &State<Config>,
+    window: Duration,
+) -> Result<proview_core::dvrip::client::Connection, Failure> {
     let controls = Controls::from_config(cfg);
     let control = controls.dvrip().map_err(control_failure)?;
-    control.session().await.map_err(control_failure)
+    control
+        .session_within(window)
+        .await
+        .map_err(|error| match error {
+            SessionError::Timeout { address, .. } => settings_failure(SettingsError::Slow {
+                block: "login",
+                detail: format!("connect and login to {address} never answered"),
+            }),
+            SessionError::Failed(error) => control_failure(error),
+        })
 }
 
 #[derive(Serialize)]
@@ -102,9 +131,13 @@ async fn encode_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<EncodeBody>, Failure> {
     signed_in(store, cookies)?;
-    let mut connection = session(cfg).await?;
-    let encode = connection.encode_state().await.map_err(settings_failure)?;
-    let _ = connection.logout().await;
+    let window = settings_window();
+    let mut connection = session(cfg, window).await?;
+    let encode = connection
+        .encode_state_within(window)
+        .await
+        .map_err(settings_failure)?;
+    let _ = connection.logout_within(window).await;
     Ok(Json(EncodeBody {
         ok: true,
         backend: "dvrip",
@@ -149,8 +182,8 @@ async fn encode_write(
         gop: query.gop,
         resolution: query.resolution.clone(),
     };
-    let mut connection = session(cfg).await?;
-    let write = WriteWindow::new(backup_dir());
+    let write = write_window();
+    let mut connection = session(cfg, write.timeout).await?;
     let report = connection
         .write_encode(stream, &patch, &write)
         .await
@@ -190,9 +223,13 @@ async fn network_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<NetworkBody>, Failure> {
     signed_in(store, cookies)?;
-    let mut connection = session(cfg).await?;
-    let network = connection.network_state().await.map_err(settings_failure)?;
-    let _ = connection.logout().await;
+    let window = settings_window();
+    let mut connection = session(cfg, window).await?;
+    let network = connection
+        .network_state_within(window)
+        .await
+        .map_err(settings_failure)?;
+    let _ = connection.logout_within(window).await;
     Ok(Json(NetworkBody {
         ok: true,
         backend: "dvrip",
@@ -253,8 +290,8 @@ async fn network_write(
             "name dns and/or spare_dns; the address, dhcp, gateway and submask are refused because the revert travels over them",
         ));
     }
-    let mut connection = session(cfg).await?;
-    let write = WriteWindow::new(backup_dir());
+    let write = write_window();
+    let mut connection = session(cfg, write.timeout).await?;
     let reports = connection
         .write_network(&patch, &write)
         .await
@@ -296,9 +333,13 @@ async fn storage_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StorageBody>, Failure> {
     signed_in(store, cookies)?;
-    let mut connection = session(cfg).await?;
-    let storage = connection.storage_state().await.map_err(settings_failure)?;
-    let _ = connection.logout().await;
+    let window = settings_window();
+    let mut connection = session(cfg, window).await?;
+    let storage = connection
+        .storage_state_within(window)
+        .await
+        .map_err(settings_failure)?;
+    let _ = connection.logout_within(window).await;
     Ok(Json(StorageBody {
         ok: true,
         backend: "dvrip",
@@ -337,8 +378,8 @@ async fn storage_write(
     if overwrite.is_none() && record.is_none() {
         return Err(fail(Status::BadRequest, "name overwrite and/or record"));
     }
-    let mut connection = session(cfg).await?;
-    let write = WriteWindow::new(backup_dir());
+    let write = write_window();
+    let mut connection = session(cfg, write.timeout).await?;
     let mut reports = Vec::new();
     let mut errors = Vec::new();
     if let Some(mode) = overwrite {

@@ -97,7 +97,7 @@ impl std::fmt::Display for SettingsError {
                 write!(f, "could not write the pre-write copy at {path}: {detail}")
             }
             SettingsError::Slow { block, detail } => {
-                write!(f, "{block} did not answer inside the write window: {detail}")
+                write!(f, "{block} did not answer inside the settings window: {detail}")
             }
             SettingsError::WriteFailed {
                 block,
@@ -793,7 +793,7 @@ impl Connection {
                 self.discard_late_replies().await;
                 Err(SettingsError::Slow {
                     block: ENCODE_BLOCK,
-                    detail: "the read after the write never came".to_string(),
+                    detail: "the read never came".to_string(),
                 })
             }
         }
@@ -864,6 +864,22 @@ impl Connection {
             }),
             block: redact(&block),
         })
+    }
+
+    pub async fn network_state_within(
+        &mut self,
+        window: std::time::Duration,
+    ) -> Result<NetworkState, SettingsError> {
+        match tokio::time::timeout(window, self.network_state()).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.discard_late_replies().await;
+                Err(SettingsError::Slow {
+                    block: NETWORK_BLOCK,
+                    detail: "the read never came".to_string(),
+                })
+            }
+        }
     }
 
     pub async fn write_network(
@@ -968,7 +984,7 @@ impl Connection {
                 self.discard_late_replies().await;
                 Err(SettingsError::Slow {
                     block: STORAGE_BLOCK,
-                    detail: "the read after the write never came".to_string(),
+                    detail: "the read never came".to_string(),
                 })
             }
         }
