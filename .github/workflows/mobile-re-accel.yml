@@ -19,7 +19,9 @@ jobs:
         run: |
           set -euo pipefail
           SDKMANAGER=$(ls "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager | head -1)
+          set +o pipefail
           yes | "${SDKMANAGER}" --install "system-images;android-33;google_apis;arm64-v8a" > /dev/null
+          set -o pipefail
           echo no | "${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager" create avd --force -n probe --package "system-images;android-33;google_apis;arm64-v8a" --device pixel
 
       - name: Try -accel off
