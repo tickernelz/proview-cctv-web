@@ -255,6 +255,7 @@ mod tests {
             device_type: None,
             error: None,
             replies: Vec::new(),
+            servers: Vec::new(),
         };
         let mapped = device.to_provider(Some(&status));
         assert_eq!(mapped.id, "abc");

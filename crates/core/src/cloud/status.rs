@@ -386,4 +386,40 @@ mod tests {
         let offline = parse_status(OFFLINE).unwrap();
         assert!(!offline.is_online());
     }
+
+    fn endpoint(port: u16, host: &str, server_port: u16) -> StatusEndpoint {
+        StatusEndpoint {
+            port,
+            status: "Online".into(),
+            online: true,
+            server_ip: Some(host.into()),
+            server_port: Some(server_port),
+            wan_ip: None,
+        }
+    }
+
+    #[test]
+    fn picks_the_access_server_over_the_discovery_relay() {
+        let mut status = unchecked("none");
+        status.online = true;
+        status.servers = vec![
+            endpoint(7703, "110.239.85.50", DISCOVERY_RELAY_PORT),
+            endpoint(7705, "110.239.87.207", 6510),
+        ];
+        assert_eq!(
+            status.access_server(),
+            Some(("110.239.87.207".to_string(), 6510))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_discovery_cluster_when_it_is_all_there_is() {
+        let mut status = unchecked("none");
+        status.online = true;
+        status.servers = vec![endpoint(7703, "110.239.85.50", DISCOVERY_RELAY_PORT)];
+        assert_eq!(
+            status.access_server(),
+            Some(("110.239.85.50".to_string(), DISCOVERY_RELAY_PORT))
+        );
+    }
 }
