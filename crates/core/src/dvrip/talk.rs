@@ -172,7 +172,9 @@ impl TalkLink {
             .await
             .map_err(|_| TalkError::NoReply(wait))??;
         if read == 0 {
-            return Err(TalkError::NoReply(wait));
+            return Err(TalkError::Io(std::io::Error::from(
+                std::io::ErrorKind::UnexpectedEof,
+            )));
         }
         self.pending.extend_from_slice(&chunk[..read]);
         Ok(())
@@ -598,6 +600,67 @@ mod tests {
             }
         }
         assert_eq!(allowed, BURST_FRAMES as usize);
+    }
+
+    #[tokio::test]
+    async fn a_slow_reply_inside_the_deadline_is_still_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let _ = read_frame(&mut socket).await;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                1,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0x1" }),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
+        let started = Instant::now();
+        link.login("admin", "hunter").await.expect("slow login");
+        let spent = started.elapsed();
+        assert!(
+            spent >= Duration::from_millis(600),
+            "returned too early: {spent:?}"
+        );
+        assert!(spent < LOGIN_WAIT, "waited past the deadline: {spent:?}");
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_closes_is_reported_at_once_not_as_a_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let _ = read_frame(&mut socket).await;
+            drop(socket);
+        });
+
+        let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
+        let started = Instant::now();
+        let error = match link.login("admin", "hunter").await {
+            Ok(_) => panic!("a closed peer cannot answer a login"),
+            Err(error) => error,
+        };
+        let spent = started.elapsed();
+        assert!(
+            spent < Duration::from_millis(100),
+            "waited {spent:?} on a closed peer"
+        );
+        match error {
+            TalkError::Io(ref inner) => {
+                assert_eq!(inner.kind(), std::io::ErrorKind::UnexpectedEof)
+            }
+            other => panic!("expected a closed-connection error, got {other:?}"),
+        }
+        server.await.expect("server");
     }
 
     #[tokio::test]

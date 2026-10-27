@@ -59,7 +59,7 @@ struct Meter {
 
 const DIRECT_WAIT: Duration = Duration::from_secs(3);
 
-async fn relay_link(cfg: &Config, token: &str, device: Option<&str>) -> Result<TalkLink, String> {
+async fn relay_link(cfg: &Config, token: &str, device: &str) -> Result<TalkLink, String> {
     use proview_core::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
     use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
     use proview_core::provider::{p2p, rps};
@@ -73,20 +73,21 @@ async fn relay_link(cfg: &Config, token: &str, device: Option<&str>) -> Result<T
         .device_list(token)
         .await
         .map_err(|error| format!("device list failed: {error}"))?;
-    let found = match device {
-        Some(device) => devices
-            .iter()
-            .find(|entry| entry.uuid == device)
-            .ok_or_else(|| format!("device {device} is not on this account"))?,
-        None => devices.first().ok_or("the account lists no device")?,
-    };
+    let found = devices
+        .iter()
+        .find(|entry| entry.uuid == device)
+        .ok_or_else(|| format!("device {device} is not on this account"))?;
     let serial = found.uuid.clone();
     let rps_id = found
         .extra
         .get("rps")
         .and_then(|value| value.as_str())
+        .map(str::trim)
         .unwrap_or("")
         .to_string();
+    if rps_id.is_empty() {
+        return Err(format!("{serial} carries no relay id in the device list"));
+    }
     let status = StatusClient::new(STATUS_HOST)
         .query(&serial, &auth_code_of(found))
         .await
@@ -141,13 +142,16 @@ async fn open_link(
             Err(_) => direct_error = Some(format!("{address}: no answer in {DIRECT_WAIT:?}")),
         }
     }
-    let relay_reason = match token {
-        Some(token) => match relay_link(cfg, token, device).await {
+    let relay_reason = match (device, token) {
+        (None, _) => "vendor relay: no camera was named in the request".to_string(),
+        (Some(device), Some(token)) => match relay_link(cfg, token, device).await {
             Ok(link) => return Ok((link, "relay")),
             Err(error) => format!("vendor relay: {error}"),
         },
-        None => "vendor relay: the session carries no cloud token, sign in through the cloud"
-            .to_string(),
+        (Some(_), None) => {
+            "vendor relay: the session carries no cloud token, sign in through the cloud"
+                .to_string()
+        }
     };
     let direct_reason = match direct_error {
         Some(error) => format!("direct: {error}"),
@@ -171,18 +175,31 @@ async fn ws_talk(
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
     let token = vendor.token.clone();
-    let user = cfg.device_user.clone();
-    let password = cfg.device_pass.clone();
-    if password.trim().is_empty() {
-        return Err(fail(
-            Status::ServiceUnavailable,
-            "PROVIEW_DEVICE_PASS is empty, so the camera login would fail and the device locks the source IP after repeated attempts; set the camera password first",
-        ));
-    }
-    let (mut link, path) = open_link(cfg, token.as_deref(), device.as_deref()).await?;
+    let config = cfg.inner().clone();
+    let user = config.device_user.clone();
+    let password = config.device_pass.clone();
 
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
+            if password.trim().is_empty() {
+                let _ = stream
+                    .send(ws::Message::Text(json_error(
+                        "PROVIEW_DEVICE_PASS is empty, so the camera login would fail and the device locks the source IP after repeated attempts; set the camera password first",
+                    )))
+                    .await;
+                let _ = stream.send(ws::Message::Close(None)).await;
+                return Ok(());
+            }
+            let (mut link, path) = match open_link(&config, token.as_deref(), device.as_deref()).await {
+                Ok(pair) => pair,
+                Err((_, body)) => {
+                    let _ = stream
+                        .send(ws::Message::Text(json_error(&body.into_inner().message)))
+                        .await;
+                    let _ = stream.send(ws::Message::Close(None)).await;
+                    return Ok(());
+                }
+            };
             if let Err(error) = link.login(&user, &password).await {
                 let _ = stream
                     .send(ws::Message::Text(json_error(&format!(
@@ -348,7 +365,7 @@ mod tests {
         assert_eq!(failure.0, Status::BadGateway);
         let text = message(failure);
         assert!(text.contains("PROVIEW_DEVICE_HOST is not set"), "{text}");
-        assert!(text.contains("carries no cloud token"), "{text}");
+        assert!(text.contains("no camera was named"), "{text}");
     }
 
     #[tokio::test]

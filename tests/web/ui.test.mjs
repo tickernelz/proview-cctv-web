@@ -174,8 +174,8 @@ test('Talk says why it cannot open when the camera is not reachable', async () =
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait(
-      "document.getElementById('control-status').textContent.includes('did not open')",
-      'the server reason',
+      "document.getElementById('control-status').textContent.includes('PROVIEW_DEVICE_HOST')",
+      'the server reason to reach the page',
     );
     assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);
     assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
