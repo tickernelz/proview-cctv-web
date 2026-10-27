@@ -745,6 +745,29 @@ does publish (`_ZTVN7MNetSDK14CDataEncDecAESE` is present as a name string), the
 patch `EncData` the same way `SSL_write` was patched and log the key and the
 plaintext it is handed. That settles the derivation instead of guessing it.
 
+### 4C.11 A plaintext login on the media channel is accepted and still does not stream
+
+Three orderings were tried from this box with the camera unreachable on the LAN,
+all over the tunnel of 4C.7, and none produced a media frame:
+
+1. `OPMonitor` claim, then wait. Answer: `{"Name":"OPMonitor","Ret":100}`, and
+   nothing else inside six seconds.
+2. Claim, then a **plaintext** login on the same channel 99 (message id 1000, end
+   bit clear, body NUL-terminated, the same JSON the LAN path sends). Answer:
+   `{"Name":"OPMonitor","Ret":100,"SessionID":"0x00000100"}` — accepted, a new
+   session id handed back — and still no frame.
+3. Claim, login, then a second claim. Answer: `Ret 117` (device error), and the
+   following control read is refused with `Ret 103`.
+
+So the device treats the plaintext login as a session but only streams to a client
+that has done the encrypted login of 4C.9: the SDK's own capture shows ciphertext
+on every client frame after the claim and media arriving right behind its `1000`
+login. Claiming twice also poisons the channel, which is why the sequence has to be
+built once and in order.
+
+That makes the encrypted login the single gate for live video, and 4C.10 records
+what has already been ruled out about its key.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
