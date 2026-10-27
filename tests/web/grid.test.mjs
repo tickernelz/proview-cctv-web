@@ -109,3 +109,52 @@ test('the grid route refuses a layout it does not know and keeps the stored one'
     await page.close();
   }
 });
+
+test('three clicks on one tile toggle walk main, sub, main and the server follows every step', async () => {
+  const page = await openGrid();
+  const pick = "document.querySelector('.tile .tile-pick')";
+  const serverQuality = "fetch('/api/grid', { credentials: 'same-origin' }).then((response) => response.json()).then((spec) => spec.tiles[0].quality)";
+  const serverHolds = (quality) =>
+    "fetch('/api/grid', { credentials: 'same-origin' }).then((response) => response.json()).then((spec) => spec.tiles[0].quality === " +
+    JSON.stringify(quality) +
+    ")";
+  try {
+    if ((await page.evaluate(pick + '.textContent')) === 'SD') {
+      await page.evaluate(pick + '.click()');
+      await page.wait(serverHolds('main'), 'the tile back on the main stream');
+    }
+    const steps = [];
+    for (const expected of ['sub', 'main', 'sub']) {
+      await page.evaluate(pick + '.click()');
+      await page.wait(serverHolds(expected), 'the server to hold ' + expected);
+      steps.push({ label: await page.evaluate(pick + '.textContent'), server: await page.evaluate(serverQuality) });
+    }
+    assert.deepEqual(steps, [
+      { label: 'SD', server: 'sub' },
+      { label: 'HD', server: 'main' },
+      { label: 'SD', server: 'sub' },
+    ]);
+  } finally {
+    await page.close();
+  }
+});
+
+test('two layout clicks in one tick leave the server on the last one', async () => {
+  const page = await openGrid();
+  try {
+    await page.evaluate(
+      "document.querySelector('#grid-bar button[data-layout=\"1\"]').click(); document.querySelector('#grid-bar button[data-layout=\"3\"]').click();",
+    );
+    await page.wait(
+      "fetch('/api/grid', { credentials: 'same-origin' }).then((response) => response.json()).then((spec) => spec.layout === '3')",
+      'the server to hold layout 3',
+    );
+    assert.equal(await page.evaluate("document.querySelector('#grid-bar button[data-layout=\"3\"]').getAttribute('aria-pressed')"), 'true');
+    assert.equal(
+      await page.evaluate("getComputedStyle(document.getElementById('tiles')).gridTemplateColumns.split(' ').filter(Boolean).length"),
+      3,
+    );
+  } finally {
+    await page.close();
+  }
+});

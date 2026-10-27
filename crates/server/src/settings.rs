@@ -332,10 +332,12 @@ impl SettingsStore {
 
     pub fn set_grid_spec(&self, spec: &crate::routes::grid::GridSpec) -> Result<(), String> {
         let value = serde_json::to_value(spec).map_err(|error| format!("encode grid: {error}"))?;
-        let values = self.values.read().expect("settings lock").clone();
+        let values = self.values.read().expect("settings lock");
         let mut grid = self.grid.write().expect("grid lock");
         self.persist(&values, Some(&value))?;
         *grid = Some(value);
+        drop(grid);
+        drop(values);
         Ok(())
     }
 
@@ -444,8 +446,8 @@ impl SettingsStore {
                 _ => {}
             }
         }
-        let grid = self.grid.read().expect("grid lock").clone();
         let mut guard = self.values.write().expect("settings lock");
+        let grid = self.grid.read().expect("grid lock");
         let mut next = guard.clone();
         for (key, value) in incoming {
             if field_for(&key).is_none() {
@@ -464,6 +466,7 @@ impl SettingsStore {
         }
         self.persist(&next, grid.as_ref())?;
         *guard = next;
+        drop(grid);
         drop(guard);
         Ok(self.view())
     }
@@ -667,6 +670,40 @@ mod tests {
             .expect("ffmpeg field");
         assert!(!field.set);
         env::remove_var("PROVIEW_FFMPEG");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_grid_save_and_a_settings_save_do_not_collide() {
+        let dir = env::temp_dir().join(format!("proview-settings-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let store = std::sync::Arc::new(SettingsStore::load(Some(&dir)));
+        let mut workers = Vec::new();
+        for worker in 0..4 {
+            let store = store.clone();
+            workers.push(std::thread::spawn(move || {
+                for turn in 0..25 {
+                    let spec = crate::routes::grid::GridSpec {
+                        layout: "auto".to_string(),
+                        tiles: vec![crate::routes::grid::GridTile {
+                            device: format!("cam-{worker}-{turn}"),
+                            channel: 1,
+                            quality: "main".to_string(),
+                        }],
+                    };
+                    store.set_grid_spec(&spec).expect("grid save");
+                    store.update(BTreeMap::new()).expect("settings save");
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("worker");
+        }
+        let raw = fs::read_to_string(dir.join(FILE)).expect("settings file");
+        let file: SettingsFile = serde_json::from_str(&raw).expect("settings json");
+        assert!(file.grid.is_some(), "the grid stayed in the file");
+        assert_eq!(store.grid_spec().tiles.len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 }

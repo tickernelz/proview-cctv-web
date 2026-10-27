@@ -81,14 +81,6 @@ function gridReconcile(spec) {
   return { layout: spec.layout, tiles };
 }
 
-function gridSpecForAccount() {
-  const fresh = { layout: 'auto', tiles: [] };
-  if (gridView.spec) {
-    return gridReconcile(gridView.spec);
-  }
-  return gridReconcile(fresh);
-}
-
 async function gridReadSpec() {
   if (gridView.spec) {
     return gridView.spec;
@@ -125,11 +117,10 @@ async function gridSave() {
   gridView.saving = true;
   gridView.queued = false;
   try {
-    const saved = await api('/api/grid', {
+    await api('/api/grid', {
       method: 'POST',
       body: JSON.stringify({ layout: gridView.spec.layout, tiles: gridView.spec.tiles }),
     });
-    gridView.spec = gridSpecFrom(saved);
     gridView.error = '';
     gridView.savedAt = Date.now();
   } catch (error) {
@@ -175,6 +166,7 @@ function gridRenderBar() {
   const bar = gridBar();
   const layout = gridLayout(gridView.spec ? gridView.spec.layout : 'auto');
   for (const button of bar.querySelectorAll('button[data-layout]')) {
+    button.disabled = !gridView.spec;
     button.setAttribute('aria-pressed', String(button.dataset.layout === layout.value));
   }
   gridRenderNote();
@@ -288,16 +280,18 @@ async function gridPlayTile(tile, view) {
   }
 }
 
-function gridSetQuality(view, quality) {
-  if (!gridView.spec) {
+function gridEntry(key) {
+  return gridView.spec ? gridView.spec.tiles.find((tile) => gridTileKey(tile) === key) : null;
+}
+
+function gridToggleQuality(key) {
+  const entry = gridEntry(key);
+  if (!entry) {
     return;
   }
-  const entry = gridView.spec.tiles.find((tile) => gridTileKey(tile) === gridTileKey(view));
-  if (!entry || entry.quality === quality) {
-    return;
-  }
+  const quality = entry.quality === 'main' ? 'sub' : 'main';
   entry.quality = quality;
-  const tile = document.querySelector('.tile[data-key="' + gridTileKey(view) + '"]');
+  const tile = document.querySelector('.tile[data-key="' + key + '"]');
   if (tile) {
     const pick = tile.querySelector('.tile-pick');
     if (pick) {
@@ -311,7 +305,7 @@ function gridSetQuality(view, quality) {
 
 function gridSetLayout(value) {
   if (!gridView.spec) {
-    gridView.spec = gridSpecForAccount();
+    return;
   }
   gridView.spec.layout = gridLayout(value).value;
   gridApplyLayout();
@@ -347,7 +341,7 @@ function gridBuildTile(view, index) {
   fail.hidden = true;
   const retry = make('button', '', 'Try again');
   retry.type = 'button';
-  retry.addEventListener('click', () => gridPlayTile(tile, view));
+  retry.addEventListener('click', () => gridPlayTile(tile, gridEntry(gridTileKey(view)) || view));
   fail.append(make('strong'), make('span'), retry);
   well.append(video, prog, fail);
   const meta = make('div', 'tile-meta');
@@ -360,7 +354,7 @@ function gridBuildTile(view, index) {
     'aria-label',
     'This tile plays the ' + (view.quality === 'main' ? 'main stream' : 'sub stream') + '. Switch it.',
   );
-  pick.addEventListener('click', () => gridSetQuality(view, view.quality === 'main' ? 'sub' : 'main'));
+  pick.addEventListener('click', () => gridToggleQuality(gridTileKey(view)));
   meta.append(left, pick, make('span', 'right'));
   tile.append(open, well, meta);
   tile.dataset.index = String(index);
@@ -378,7 +372,7 @@ async function gridStart() {
   if (token !== gridView.token || !gridView.open) {
     return;
   }
-  gridView.spec = gridReconcile(gridSpecFrom(stored || gridSpecForAccount()));
+  gridView.spec = gridReconcile(gridView.spec || gridSpecFrom(stored));
   const tiles = el('tiles');
   tiles.replaceChildren();
   tiles.dataset.count = String(gridView.spec.tiles.length);
