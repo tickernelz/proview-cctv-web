@@ -137,6 +137,35 @@ impl From<crate::dvrip::client::DvrError> for ControlError {
     }
 }
 
+#[derive(Debug)]
+pub enum SessionError {
+    Timeout { address: String, window: Duration },
+    Failed(ControlError),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::Timeout { address, window } => write!(
+                f,
+                "connect and login to {address} did not answer inside {window:?}"
+            ),
+            SessionError::Failed(error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {}
+
+impl From<SessionError> for ControlError {
+    fn from(error: SessionError) -> Self {
+        match error {
+            SessionError::Failed(inner) => inner,
+            other => ControlError::Device(other.to_string()),
+        }
+    }
+}
+
 pub const TOP_LENS_BLOCKER: &str = "the PTZ motor drives the lower lens only; a move on the upper lens left it at (0,0) px while the lower lens shifted (ZHA-3907)";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -145,6 +174,8 @@ pub struct PtzBinding {
     pub source: PtzSource,
     pub evidence: String,
 }
+
+pub const SESSION_WINDOW: Duration = Duration::from_secs(10);
 
 const PTZ_BINDING_TTL: Duration = Duration::from_secs(600);
 const PTZ_BINDING_FAILURE_TTL: Duration = Duration::from_secs(60);
@@ -595,11 +626,33 @@ impl DvripControl {
         })
     }
 
-    pub async fn session(&self) -> Result<DvripConnection, ControlError> {
+    pub async fn session(&self) -> Result<DvripConnection, SessionError> {
+        self.session_within(SESSION_WINDOW).await
+    }
+
+    pub async fn session_within(&self, window: Duration) -> Result<DvripConnection, SessionError> {
+        match tokio::time::timeout(window, self.open_session()).await {
+            Ok(result) => result,
+            Err(_) => Err(SessionError::Timeout {
+                address: self.address.clone(),
+                window,
+            }),
+        }
+    }
+
+    async fn open_session(&self) -> Result<DvripConnection, SessionError> {
         let mut connection = DvripConnection::connect(&self.address)
             .await
-            .map_err(|error| ControlError::Device(format!("connect {}: {error}", self.address)))?;
-        connection.login(&self.user, &self.password).await?;
+            .map_err(|error| {
+                SessionError::Failed(ControlError::Device(format!(
+                    "connect {}: {error}",
+                    self.address
+                )))
+            })?;
+        connection
+            .login(&self.user, &self.password)
+            .await
+            .map_err(|error| SessionError::Failed(ControlError::from(error)))?;
         Ok(connection)
     }
 }
@@ -1009,6 +1062,50 @@ mod tests {
             DvripControl::new(&config),
             Err(ControlError::NotConfigured("PROVIEW_DEVICE_HOST"))
         ));
+    }
+
+    async fn silent_device() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let _held = listener.accept().await;
+            std::future::pending::<()>().await;
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn a_device_that_never_answers_the_login_times_the_session_out() {
+        let address = silent_device().await;
+        let config = test_config(None, Some(&address));
+        let control = DvripControl::new(&config).unwrap();
+        let started = Instant::now();
+        let outcome = control.session_within(Duration::from_millis(150)).await;
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(outcome, Err(SessionError::Timeout { .. })),
+            "{:?}",
+            outcome.err()
+        );
+        assert!(
+            elapsed >= Duration::from_millis(150) && elapsed < Duration::from_secs(2),
+            "{elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_device_that_opens_the_session_returns_it_inside_the_window() {
+        let (address, _server) = crate::dvrip::fake::serve(vec![crate::dvrip::fake::json_reply(
+            json!({ "Ret": 100, "SessionID": "0x11223344" }),
+        )])
+        .await;
+        let config = test_config(None, Some(&address));
+        let control = DvripControl::new(&config).unwrap();
+        let connection = control
+            .session_within(Duration::from_secs(2))
+            .await
+            .expect("the login was answered");
+        assert_eq!(connection.session(), 0x1122_3344);
     }
 
     #[tokio::test]

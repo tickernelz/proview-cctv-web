@@ -165,6 +165,7 @@ unattended installs and wins over the file until the key is cleared in the view.
 | `PROVIEW_FIXTURE_DIR` | Sample data folder | `fixtures` | directory the fixture provider reads |
 | `PROVIEW_PROFILE` | Credential profile | `default` | keychain profile name for the desktop |
 | `PROVIEW_DATA_DIR` | Data folder | platform default | where `settings.json` and `mode.json` live |
+| `PROVIEW_SETTINGS_WINDOW_MS` | Settings window | `20000` | how long one settings read or write waits for the camera, milliseconds |
 | `ROCKET_SECRET_KEY` | Sign-in cookie secret | generated | signs the session cookie; set it for a server so sessions survive restarts |
 
 Nothing here is a vendor secret. The extracted application credentials from the
