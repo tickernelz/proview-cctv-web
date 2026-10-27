@@ -20,6 +20,8 @@ pub enum ProviderError {
     NotImplemented(&'static str),
     #[error("upstream error: {0}")]
     Upstream(String),
+    #[error("{0}")]
+    Misconfigured(String),
     #[error("device id unknown: {0}")]
     UnknownDevice(String),
     #[error(transparent)]

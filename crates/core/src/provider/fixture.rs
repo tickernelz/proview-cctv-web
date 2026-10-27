@@ -19,7 +19,12 @@ impl Fixture {
 
     fn load_devices(&self) -> Result<Vec<Device>, ProviderError> {
         let path = self.dir.join("devices.json");
-        let raw = std::fs::read_to_string(path)?;
+        let raw = std::fs::read_to_string(&path).map_err(|error| {
+            ProviderError::Misconfigured(format!(
+                "fixture data is missing at {} ({error}); set PROVIEW_FIXTURE_DIR to a directory with devices.json, or use the cloud provider",
+                path.display()
+            ))
+        })?;
         serde_json::from_str(&raw).map_err(|e| ProviderError::Upstream(e.to_string()))
     }
 }
@@ -43,7 +48,12 @@ impl Provider for Fixture {
 
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
         let path = self.dir.join("account.json");
-        let raw = std::fs::read_to_string(path)?;
+        let raw = std::fs::read_to_string(&path).map_err(|error| {
+            ProviderError::Misconfigured(format!(
+                "fixture account is missing at {} ({error}); set PROVIEW_FIXTURE_DIR to a directory with account.json, or use the cloud provider",
+                path.display()
+            ))
+        })?;
         let expected: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| ProviderError::Upstream(e.to_string()))?;
         let want_user = expected

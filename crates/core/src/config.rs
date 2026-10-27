@@ -23,14 +23,22 @@ fn default_fixture_dir() -> String {
     if std::path::Path::new("fixtures").is_dir() {
         return "fixtures".to_string();
     }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let beside = dir.join("fixtures");
+            if beside.is_dir() {
+                return beside.display().to_string();
+            }
+        }
+    }
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string()
 }
 
 impl Config {
     pub fn from_env() -> Self {
         let provider = match env::var("PROVIEW_PROVIDER").as_deref() {
-            Ok("proview") => ProviderKind::Proview,
-            _ => ProviderKind::Fixture,
+            Ok("fixture") => ProviderKind::Fixture,
+            _ => ProviderKind::Proview,
         };
         Self {
             provider,
