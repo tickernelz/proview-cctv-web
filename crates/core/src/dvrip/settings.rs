@@ -783,6 +783,22 @@ impl Connection {
         })
     }
 
+    pub async fn encode_state_within(
+        &mut self,
+        window: std::time::Duration,
+    ) -> Result<EncodeState, SettingsError> {
+        match tokio::time::timeout(window, self.encode_state()).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.discard_late_replies().await;
+                Err(SettingsError::Slow {
+                    block: ENCODE_BLOCK,
+                    detail: "the read after the write never came".to_string(),
+                })
+            }
+        }
+    }
+
     pub async fn write_encode(
         &mut self,
         stream: Stream,
@@ -932,15 +948,30 @@ impl Connection {
             .await
             .ok()
             .and_then(|value| {
-                at(&value, "0.RecordMode")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                let (entry, _) = first_entry(&value);
+                text(entry, "RecordMode")
             });
         Ok(StorageState {
             partitions,
             overwrite,
             record_mode,
         })
+    }
+
+    pub async fn storage_state_within(
+        &mut self,
+        window: std::time::Duration,
+    ) -> Result<StorageState, SettingsError> {
+        match tokio::time::timeout(window, self.storage_state()).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.discard_late_replies().await;
+                Err(SettingsError::Slow {
+                    block: STORAGE_BLOCK,
+                    detail: "the read after the write never came".to_string(),
+                })
+            }
+        }
     }
 
     pub async fn write_overwrite(

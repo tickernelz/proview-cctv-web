@@ -16,6 +16,7 @@ enum Behaviour {
     SilentApplyFirst,
     SilentAbility,
     SilentFirstGet,
+    SilentGets,
     Drift,
 }
 
@@ -121,6 +122,11 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                     {
                         continue;
                     }
+                    if fake.behaviour == Behaviour::SilentGets
+                        && header.id == proview_core::dvrip::msg::CONFIG_GET
+                    {
+                        continue;
+                    }
                     if fake.behaviour == Behaviour::SilentFirstGet
                         && header.id == proview_core::dvrip::msg::CONFIG_GET
                     {
@@ -197,12 +203,14 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
 }
 
 fn backups() -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "zha4013-settings-{}",
+        "zha4013-settings-{}-{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -684,6 +692,70 @@ async fn a_read_before_the_write_that_never_answers_stops_before_any_write() {
         fake.writes.lock().unwrap().len(),
         0,
         "nothing is written without the copy"
+    );
+    assert!(
+        std::fs::read_dir(&dir).unwrap().next().is_none(),
+        "no copy is saved without the block it copies"
+    );
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_state_read_after_a_write_that_timed_out_finishes_inside_the_window() {
+    let fake = Fake::new(Behaviour::SilentGets);
+    fake.seed(
+        "General.General",
+        json!([{ "OverWrite": "OverWrite", "MachineName": "cam" }]),
+    );
+    fake.seed("Record", json!([{ "RecordMode": "ConfigRecord" }]));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let window = short_window(&dir);
+    let wait = std::time::Duration::from_millis(300);
+    let (overwrite, record, network, state) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let overwrite = connection
+                .write_overwrite(proview_core::dvrip::settings::OverwriteMode::Stop, &window)
+                .await;
+            let record = connection
+                .write_record_mode(proview_core::dvrip::control::RecordMode::Manual, &window)
+                .await;
+            let network = connection
+                .write_network(
+                    &NetworkPatch {
+                        dns: Some("1.1.1.1".to_string()),
+                        ..NetworkPatch::default()
+                    },
+                    &window,
+                )
+                .await;
+            let state = connection.storage_state_within(wait).await;
+            (overwrite, record, network, state)
+        })
+        .await
+        .expect("the handler sequence must not hang");
+    for error in [
+        overwrite.unwrap_err(),
+        record.unwrap_err(),
+        network.unwrap_err(),
+        state.unwrap_err(),
+    ] {
+        assert!(
+            error
+                .to_string()
+                .contains("did not answer inside the write window"),
+            "{error}"
+        );
+    }
+    assert_eq!(
+        fake.writes.lock().unwrap().len(),
+        0,
+        "nothing is written when the copy cannot be read"
+    );
+    assert!(
+        std::fs::read_dir(&dir).unwrap().next().is_none(),
+        "no copy is saved for a write that never starts"
     );
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
