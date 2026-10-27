@@ -18,6 +18,30 @@ pub fn sofia_hash(input: &str) -> String {
     hash
 }
 
+use rsa::pkcs1v15::Pkcs1v15Encrypt;
+use rsa::{BigUint, RsaPublicKey};
+
+pub fn communicate_key(
+    modulus_hex: &str,
+    exponent_hex: &str,
+    session: &str,
+) -> Result<String, String> {
+    let modulus = BigUint::parse_bytes(modulus_hex.trim().as_bytes(), 16)
+        .ok_or_else(|| "the device modulus is not hex".to_string())?;
+    let exponent = BigUint::parse_bytes(exponent_hex.trim().as_bytes(), 16)
+        .ok_or_else(|| "the device exponent is not hex".to_string())?;
+    let key = RsaPublicKey::new(modulus, exponent)
+        .map_err(|error| format!("the device key does not parse: {error}"))?;
+    let sealed = key
+        .encrypt(&mut rand::thread_rng(), Pkcs1v15Encrypt, session.as_bytes())
+        .map_err(|error| format!("the session key does not seal: {error}"))?;
+    let mut out = String::with_capacity(sealed.len() * 2);
+    for byte in sealed {
+        out.push_str(&format!("{byte:02X}"));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +74,17 @@ mod tests {
             .collect();
         assert_eq!(sofia_hash("admin"), expected);
         assert_ne!(sofia_hash("admin"), md5_hex("admin")[..8].to_string());
+    }
+    #[test]
+    fn the_communicate_key_is_one_rsa_block_of_hex() {
+        let modulus = "b4a1c0d54f0f0b1e4a2f6d3c9e8b7a6918273645f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f";
+        let sealed = communicate_key(modulus, "010001", "iq5H3765j5t04mO6").expect("sealed");
+        assert_eq!(sealed.len(), modulus.len(), "one block, one modulus wide");
+        assert!(sealed.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn a_broken_modulus_is_refused() {
+        assert!(communicate_key("not-hex", "010001", "abcdefghijklmnop").is_err());
     }
 }

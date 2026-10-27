@@ -13,6 +13,9 @@ pub mod grid;
 #[path = "routes/cloud_bind.rs"]
 pub mod cloud_bind;
 
+#[path = "routes/playback.rs"]
+pub mod playback;
+
 use std::time::Duration;
 
 use proview_core::config::Config;
@@ -34,11 +37,26 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 
+#[path = "routes/recordings.rs"]
+pub mod recordings;
+
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, account_js, talk_js, grid_js, style_css, tokens_css, font, media_clip]
-        .into_iter()
-        .chain(alarms::files())
-        .collect()
+    routes![
+        index,
+        app_js,
+        account_js,
+        talk_js,
+        grid_js,
+        recordings_js,
+        style_css,
+        tokens_css,
+        font,
+        media_clip,
+        crate::routes::playback::script
+    ]
+    .into_iter()
+    .chain(alarms::files())
+    .collect()
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -52,11 +70,13 @@ pub fn api() -> Vec<rocket::route::Route> {
         probe_device,
         rtsp_probe,
         health,
-        crate::stream::stats
+        crate::stream::stats,
+        crate::routes::playback::files
     ]
     .into_iter()
     .chain(control::routes())
     .chain(alarms::routes())
+    .chain(recordings::routes())
     .chain(grid::routes())
     .chain(cloud_bind::api())
     .chain(apmode::routes())
@@ -64,7 +84,7 @@ pub fn api() -> Vec<rocket::route::Route> {
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
-    routes![ws_live]
+    routes![ws_live, crate::routes::playback::watch]
         .into_iter()
         .chain(audio::routes())
         .collect()
@@ -93,6 +113,11 @@ fn account_js() -> RawJavaScript<&'static str> {
 #[get("/talk.js")]
 fn talk_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/talk.js"))
+}
+
+#[get("/recordings.js")]
+fn recordings_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/recordings.js"))
 }
 
 #[get("/tokens.css")]
