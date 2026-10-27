@@ -150,10 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "PassWord": "",
                 "CommunicateKey": sealed,
             });
-            match connection
-                .send_encrypted(&cipher, 99, 0x03e8, &body)
-                .await
-            {
+            match connection.send_encrypted(&cipher, 99, 0x03e8, &body).await {
                 Ok(()) => eprintln!("enclogin sent"),
                 Err(error) => eprintln!("enclogin failed: {error:?}"),
             }
