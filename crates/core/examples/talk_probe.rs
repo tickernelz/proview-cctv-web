@@ -261,6 +261,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("claim      {} ms", stats.claim_ms);
     println!(
+        "inbound    {} frames / {} bytes",
+        stats.inbound_frames, stats.inbound_bytes
+    );
+    println!(
         "write      mean {:.3} ms max {:.3} ms",
         write_total.as_secs_f64() * 1000.0 / stats.frames as f64,
         write_max.as_secs_f64() * 1000.0

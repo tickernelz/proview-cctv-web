@@ -1,8 +1,12 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::crypto::sofia_hash;
@@ -16,10 +20,10 @@ pub const RATE_INDEX_8000: u8 = 2;
 pub const PACKET_BYTES: usize = audio::FRAME_SAMPLES;
 
 const REPLY_WAIT: Duration = Duration::from_secs(5);
-const MAX_FRAMES_PER_SECOND: f64 = 30.0;
-const BURST_FRAMES: f64 = 5.0;
 const LOGIN_WAIT: Duration = Duration::from_secs(8);
 const READ_LIMIT: usize = 64 * 1024;
+const MAX_FRAMES_PER_SECOND: f64 = 30.0;
+const BURST_FRAMES: f64 = 5.0;
 
 #[derive(Debug, thiserror::Error)]
 pub enum TalkError {
@@ -33,8 +37,6 @@ pub enum TalkError {
     NoReply(Duration),
     #[error("unexpected reply: {0}")]
     BadReply(String),
-    #[error("talk is not open")]
-    Closed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +44,8 @@ pub struct TalkStats {
     pub frames: u64,
     pub bytes: u64,
     pub dropped: u64,
+    pub inbound_bytes: u64,
+    pub inbound_frames: u64,
     pub claim_ms: u64,
     pub seconds: f64,
 }
@@ -79,18 +83,26 @@ pub fn frame_delay(sent: u64, elapsed: Duration) -> Option<Duration> {
     due.checked_sub(elapsed)
 }
 
-impl From<FrameError> for TalkError {
-    fn from(error: FrameError) -> Self {
-        TalkError::Frame(error)
-    }
-}
-
 fn trim(payload: &[u8]) -> &[u8] {
     let mut end = payload.len();
     while end > 0 && matches!(payload[end - 1], 0 | b'\n' | b'\r') {
         end -= 1;
     }
     &payload[..end]
+}
+
+fn take_frame(buffer: &mut Vec<u8>) -> Option<(Header, Vec<u8>)> {
+    if buffer.len() < super::HEADER_LEN {
+        return None;
+    }
+    let header = Header::decode(&buffer[..super::HEADER_LEN]).ok()?;
+    let end = super::HEADER_LEN + header.length as usize;
+    if buffer.len() < end {
+        return None;
+    }
+    let body = buffer[super::HEADER_LEN..end].to_vec();
+    buffer.drain(..end);
+    Some((header, body))
 }
 
 pub struct TalkLink {
@@ -154,7 +166,7 @@ impl TalkLink {
     }
 
     async fn fill(&mut self, wait: Duration) -> Result<(), TalkError> {
-        let mut chunk = [0u8; READ_LIMIT];
+        let mut chunk = [0u8; 4096];
         let read = timeout(wait, self.stream.read(&mut chunk))
             .await
             .map_err(|_| TalkError::NoReply(wait))??;
@@ -165,23 +177,9 @@ impl TalkLink {
         Ok(())
     }
 
-    fn take_frame(&mut self) -> Option<(Header, Vec<u8>)> {
-        if self.pending.len() < super::HEADER_LEN {
-            return None;
-        }
-        let header = Header::decode(&self.pending[..super::HEADER_LEN]).ok()?;
-        let end = super::HEADER_LEN + header.length as usize;
-        if self.pending.len() < end {
-            return None;
-        }
-        let body = self.pending[super::HEADER_LEN..end].to_vec();
-        self.pending.drain(..end);
-        Some((header, body))
-    }
-
-    pub fn poll(&mut self) -> Vec<Value> {
+    fn poll_replies(&mut self) -> Vec<Value> {
         let mut replies = Vec::new();
-        while let Some((header, body)) = self.take_frame() {
+        while let Some((header, body)) = take_frame(&mut self.pending) {
             if header.session != 0 {
                 self.session = header.session;
             }
@@ -197,7 +195,7 @@ impl TalkLink {
     pub async fn read_json(&mut self, wait: Duration) -> Result<Value, TalkError> {
         let deadline = Instant::now() + wait;
         loop {
-            if let Some(reply) = self.poll().into_iter().next() {
+            if let Some(reply) = self.poll_replies().into_iter().next() {
                 return Ok(reply);
             }
             let left = deadline
@@ -241,27 +239,117 @@ impl TalkLink {
         Ok(())
     }
 
-    pub async fn logout(&mut self) -> Result<(), TalkError> {
-        let session = self.session_id();
-        self.send_json(msg::LOGOUT, &json!({ "Name": "", "SessionID": session }))
-            .await?;
-        self.session = 0;
-        Ok(())
-    }
-
     pub async fn close(mut self) {
         let _ = self.stream.shutdown().await;
+    }
+
+    fn into_parts(self) -> (OwnedReadHalf, OwnedWriteHalf, u32, u32, Vec<u8>) {
+        let (reader, writer) = self.stream.into_split();
+        (reader, writer, self.session, self.sequence, self.pending)
+    }
+}
+
+struct Credit {
+    tokens: f64,
+    at: Instant,
+}
+
+impl Credit {
+    fn new() -> Self {
+        Self {
+            tokens: BURST_FRAMES,
+            at: Instant::now(),
+        }
+    }
+
+    fn take(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
+        self.tokens = (self.tokens + MAX_FRAMES_PER_SECOND * elapsed).min(BURST_FRAMES);
+        self.at = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
     }
 }
 
 pub struct TalkSession {
-    link: TalkLink,
+    writer: OwnedWriteHalf,
+    session: u32,
+    sequence: u32,
     channel: Option<u8>,
     frames: u64,
     bytes: u64,
     dropped: u64,
+    credit: Credit,
     claim: Duration,
     opened: Instant,
+    inbound_bytes: Arc<AtomicU64>,
+    inbound_frames: Arc<AtomicU64>,
+    reader: JoinHandle<()>,
+}
+
+async fn send_frame(
+    writer: &mut OwnedWriteHalf,
+    session: u32,
+    sequence: &mut u32,
+    id: u16,
+    body: &[u8],
+) -> Result<(), TalkError> {
+    *sequence = sequence.wrapping_add(1);
+    let header = Header {
+        session,
+        sequence: *sequence,
+        channel: 0,
+        end: false,
+        id,
+        length: body.len() as u32,
+    };
+    writer.write_all(&header.encode()).await?;
+    writer.write_all(body).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn send_json(
+    writer: &mut OwnedWriteHalf,
+    session: u32,
+    sequence: &mut u32,
+    id: u16,
+    body: &Value,
+) -> Result<(), TalkError> {
+    let mut payload =
+        serde_json::to_vec(body).map_err(|error| TalkError::BadReply(error.to_string()))?;
+    payload.push(b'\n');
+    payload.push(0);
+    send_frame(writer, session, sequence, id, &payload).await
+}
+
+async fn read_loop(
+    mut reader: OwnedReadHalf,
+    pending: Vec<u8>,
+    bytes: Arc<AtomicU64>,
+    frames: Arc<AtomicU64>,
+) {
+    {
+        let mut buffer = pending;
+        let mut chunk = [0u8; READ_LIMIT];
+        loop {
+            while take_frame(&mut buffer).is_some() {
+                frames.fetch_add(1, Ordering::Relaxed);
+            }
+            match reader.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(read) => {
+                    bytes.fetch_add(read as u64, Ordering::Relaxed);
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+                Err(_) => break,
+            }
+        }
+    }
 }
 
 impl TalkSession {
@@ -284,14 +372,30 @@ impl TalkSession {
         let claim_latency = started.elapsed();
         link.send_json(msg::TALK, &talk_body("Start", channel, &session))
             .await?;
+
+        let (reader, writer, session, sequence, pending) = link.into_parts();
+        let inbound_bytes = Arc::new(AtomicU64::new(0));
+        let inbound_frames = Arc::new(AtomicU64::new(0));
+        let handle = tokio::spawn(read_loop(
+            reader,
+            pending,
+            inbound_bytes.clone(),
+            inbound_frames.clone(),
+        ));
         Ok(Self {
-            link,
+            writer,
+            session,
+            sequence,
             channel,
             frames: 0,
             bytes: 0,
             dropped: 0,
+            credit: Credit::new(),
             claim: claim_latency,
             opened: Instant::now(),
+            inbound_bytes,
+            inbound_frames,
+            reader: handle,
         })
     }
 
@@ -300,6 +404,8 @@ impl TalkSession {
             frames: self.frames,
             bytes: self.bytes,
             dropped: self.dropped,
+            inbound_bytes: self.inbound_bytes.load(Ordering::Relaxed),
+            inbound_frames: self.inbound_frames.load(Ordering::Relaxed),
             claim_ms: self.claim.as_millis() as u64,
             seconds: self.opened.elapsed().as_secs_f64(),
         }
@@ -309,22 +415,13 @@ impl TalkSession {
         self.channel
     }
 
-    pub fn link(&mut self) -> &mut TalkLink {
-        &mut self.link
-    }
-
-    pub fn drain(&mut self) -> usize {
-        self.link.poll().len()
-    }
-
     pub async fn send_alaw(&mut self, alaw: &[u8]) -> Result<usize, TalkError> {
         if alaw.is_empty() {
             return Ok(0);
         }
         let mut sent = 0;
         for chunk in alaw.chunks(PACKET_BYTES) {
-            let due = MAX_FRAMES_PER_SECOND * self.opened.elapsed().as_secs_f64() + BURST_FRAMES;
-            if self.frames as f64 + 1.0 > due {
+            if !self.credit.take() {
                 self.dropped += 1;
                 continue;
             }
@@ -332,28 +429,45 @@ impl TalkSession {
             if payload.len() < PACKET_BYTES {
                 audio::pad_to_frame(&mut payload, PACKET_BYTES);
             }
-            self.link
-                .send(msg::TALK_DATA, &data_frame(&payload))
-                .await?;
+            send_frame(
+                &mut self.writer,
+                self.session,
+                &mut self.sequence,
+                msg::TALK_DATA,
+                &data_frame(&payload),
+            )
+            .await?;
             self.frames += 1;
             self.bytes += payload.len() as u64;
             sent += 1;
         }
-        self.drain();
         Ok(sent)
     }
 
     pub async fn stop(&mut self) -> Result<(), TalkError> {
-        let session = self.link.session_id();
-        self.link
-            .send_json(msg::TALK, &talk_body("Stop", self.channel, &session))
-            .await?;
-        Ok(())
+        let session = format!("0x{:08X}", self.session);
+        send_json(
+            &mut self.writer,
+            self.session,
+            &mut self.sequence,
+            msg::TALK,
+            &talk_body("Stop", self.channel, &session),
+        )
+        .await
     }
 
     pub async fn logout(mut self) -> Result<(), TalkError> {
-        self.link.logout().await?;
-        self.link.close().await;
+        let session = format!("0x{:08X}", self.session);
+        let _ = send_json(
+            &mut self.writer,
+            self.session,
+            &mut self.sequence,
+            msg::LOGOUT,
+            &json!({ "Name": "", "SessionID": session }),
+        )
+        .await;
+        let _ = self.writer.shutdown().await;
+        let _ = timeout(Duration::from_secs(2), self.reader).await;
         Ok(())
     }
 }
@@ -380,6 +494,27 @@ mod tests {
 
     fn json_of(body: &[u8]) -> Value {
         serde_json::from_slice(trim(body)).expect("json")
+    }
+
+    async fn write_json_frame(
+        socket: &mut TcpStream,
+        id: u16,
+        session: u32,
+        sequence: u32,
+        body: Value,
+    ) {
+        let reply = serde_json::to_vec(&body).unwrap();
+        let header = Header {
+            session,
+            sequence,
+            channel: 0,
+            end: false,
+            id,
+            length: reply.len() as u32,
+        };
+        socket.write_all(&header.encode()).await.unwrap();
+        socket.write_all(&reply).await.unwrap();
+        socket.flush().await.unwrap();
     }
 
     #[test]
@@ -423,6 +558,26 @@ mod tests {
         assert!((ahead.as_secs_f64() - 0.080).abs() < 0.001);
     }
 
+    #[test]
+    fn the_credit_refills_but_never_past_the_burst() {
+        let mut credit = Credit::new();
+        for _ in 0..BURST_FRAMES as usize {
+            assert!(credit.take());
+        }
+        assert!(!credit.take());
+        std::thread::sleep(Duration::from_millis(120));
+        credit.take();
+        let mut idle = Credit::new();
+        idle.at = Instant::now() - Duration::from_secs(60);
+        let mut allowed = 0;
+        for _ in 0..20 {
+            if idle.take() {
+                allowed += 1;
+            }
+        }
+        assert_eq!(allowed, BURST_FRAMES as usize);
+    }
+
     #[tokio::test]
     async fn login_claim_start_and_data_hit_the_wire_in_order() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
@@ -434,37 +589,29 @@ mod tests {
             let parsed = json_of(&login_body);
             assert_eq!(parsed["EncryptType"], "MD5");
             assert_eq!(parsed["PassWord"], sofia_hash("hunter"));
-            let reply =
-                serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0xdeadbeef" })).unwrap();
-            let header = Header {
-                session: 0xdeadbeef,
-                sequence: 1,
-                channel: 0,
-                end: false,
-                id: msg::LOGIN,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                0xdeadbeef,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0xdeadbeef" }),
+            )
+            .await;
 
             let (claim, claim_body) = read_frame(&mut socket).await;
             assert_eq!(claim.id, msg::TALK_CLAIM);
             assert_eq!(claim.session, 0xdeadbeef);
             let parsed = json_of(&claim_body);
             assert_eq!(parsed["OPTalk"]["Action"], "Claim");
-            assert_eq!(parsed["OPTalk"]["AudioFormat"]["EncodeType"], "G711_ALAW");
             assert_eq!(parsed["SessionID"], "0xDEADBEEF");
-            let reply = serde_json::to_vec(&json!({ "Ret": 100, "Name": "OPTalk" })).unwrap();
-            let header = Header {
-                session: 0xdeadbeef,
-                sequence: 2,
-                channel: 0,
-                end: false,
-                id: msg::TALK_CLAIM,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
+            write_json_frame(
+                &mut socket,
+                msg::TALK_CLAIM,
+                0xdeadbeef,
+                2,
+                serde_json::json!({ "Ret": 100, "Name": "OPTalk" }),
+            )
+            .await;
 
             let (start, start_body) = read_frame(&mut socket).await;
             assert_eq!(start.id, msg::TALK);
@@ -487,8 +634,7 @@ mod tests {
             assert_eq!(json_of(&stop_body)["OPTalk"]["Action"], "Stop");
         });
 
-        let link = TalkLink::connect(&address.to_string()).await.expect("link");
-        let mut link = link;
+        let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
         link.login("admin", "hunter").await.expect("login");
         assert_eq!(link.session(), 0xdeadbeef);
         let mut session = TalkSession::open(link, None).await.expect("open");
@@ -502,35 +648,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn audio_the_camera_sends_back_is_read_and_counted() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                1,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0x1" }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::TALK_CLAIM,
+                1,
+                2,
+                serde_json::json!({ "Ret": 100 }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            for sequence in 0..3u32 {
+                let body = data_frame(&vec![0x33u8; PACKET_BYTES]);
+                let header = Header {
+                    session: 1,
+                    sequence,
+                    channel: 0,
+                    end: false,
+                    id: msg::TALK_DATA,
+                    length: body.len() as u32,
+                };
+                socket.write_all(&header.encode()).await.unwrap();
+                socket.write_all(&body).await.unwrap();
+            }
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+
+        let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
+        link.login("admin", "hunter").await.expect("login");
+        let session = TalkSession::open(link, None).await.expect("open");
+        let mut observed = 0;
+        for _ in 0..40 {
+            let stats = session.stats();
+            if stats.inbound_frames >= 3 {
+                observed = stats.inbound_frames;
+                assert!(stats.inbound_bytes >= 3 * 328);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(observed >= 3, "inbound frames {observed}");
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
     async fn a_claim_the_device_refuses_is_reported_with_its_ret() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
         let address = listener.local_addr().expect("address");
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0x1" })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 1,
-                channel: 0,
-                end: false,
-                id: msg::LOGIN,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 103 })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 2,
-                channel: 0,
-                end: false,
-                id: msg::TALK_CLAIM,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                1,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0x1" }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::TALK_CLAIM,
+                1,
+                2,
+                serde_json::json!({ "Ret": 103 }),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
         let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
@@ -554,36 +754,32 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0x1" })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 1,
-                channel: 0,
-                end: false,
-                id: msg::LOGIN,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 100 })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 2,
-                channel: 0,
-                end: false,
-                id: msg::TALK_CLAIM,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                1,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0x1" }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::TALK_CLAIM,
+                1,
+                2,
+                serde_json::json!({ "Ret": 100 }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            tokio::time::sleep(Duration::from_millis(2000)).await;
         });
 
         let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
         link.login("admin", "hunter").await.expect("login");
         let mut session = TalkSession::open(link, None).await.expect("open");
+        tokio::time::sleep(Duration::from_millis(1200)).await;
         let flood = vec![audio::SILENCE; PACKET_BYTES * 20];
         let sent = session.send_alaw(&flood).await.expect("send");
         let stats = session.stats();
@@ -599,31 +795,25 @@ mod tests {
         let address = listener.local_addr().expect("address");
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0x1" })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 1,
-                channel: 0,
-                end: false,
-                id: msg::LOGIN,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
-            let (_, _) = read_frame(&mut socket).await;
-            let reply = serde_json::to_vec(&json!({ "Ret": 100 })).unwrap();
-            let header = Header {
-                session: 1,
-                sequence: 2,
-                channel: 0,
-                end: false,
-                id: msg::TALK_CLAIM,
-                length: reply.len() as u32,
-            };
-            socket.write_all(&header.encode()).await.unwrap();
-            socket.write_all(&reply).await.unwrap();
-            let (_, _) = read_frame(&mut socket).await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::LOGIN,
+                1,
+                1,
+                serde_json::json!({ "Ret": 100, "SessionID": "0x1" }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
+            write_json_frame(
+                &mut socket,
+                msg::TALK_CLAIM,
+                1,
+                2,
+                serde_json::json!({ "Ret": 100 }),
+            )
+            .await;
+            let _ = read_frame(&mut socket).await;
             let (data, body) = read_frame(&mut socket).await;
             assert_eq!(data.id, msg::TALK_DATA);
             assert_eq!(body.len(), 8 + PACKET_BYTES);

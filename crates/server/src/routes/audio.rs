@@ -10,7 +10,7 @@ use rocket::State;
 use rocket_ws as ws;
 use serde::{Deserialize, Serialize};
 
-use super::{fail, session_id, Failure};
+use super::{fail, restore, session_id, Failure};
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![ws_talk]
@@ -38,7 +38,8 @@ pub struct TalkReport {
     pub claim_ms: u64,
     pub write_ms_mean: f64,
     pub write_ms_max: f64,
-    pub input_rate: u32,
+    pub inbound_bytes: u64,
+    pub inbound_frames: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,23 +68,19 @@ fn address(cfg: &Config) -> Result<String, Failure> {
         })
 }
 
-#[get("/ws/talk?<channel>&<rate>")]
+#[get("/ws/talk?<channel>")]
 fn ws_talk(
     ws: ws::WebSocket,
     channel: Option<u8>,
-    rate: Option<u32>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<ws::Channel<'static>, Failure> {
     let id = session_id(cookies)?;
-    store
-        .get(&id)
-        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?;
+    restore(store, &id)?;
     let address = address(cfg)?;
     let user = cfg.device_user.clone();
     let password = cfg.device_pass.clone();
-    let input_rate = rate.unwrap_or(audio::SAMPLE_RATE).clamp(8000, 96000);
 
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
@@ -147,8 +144,7 @@ fn ws_talk(
                 match message {
                     Ok(ws::Message::Binary(payload)) => {
                         let samples = audio::from_pcm16le(&payload);
-                        let resampled = audio::downsample(&samples, input_rate, audio::SAMPLE_RATE);
-                        let alaw = audio::encode(&resampled);
+                        let alaw = audio::encode(&samples);
                         let started = Instant::now();
                         match talk.send_alaw(&alaw).await {
                             Ok(0) => {}
@@ -170,7 +166,7 @@ fn ws_talk(
                         }
                         if last_report.elapsed() >= Duration::from_millis(1000) {
                             last_report = Instant::now();
-                            let report = report(&talk, &meter, input_rate);
+                            let report = report(&talk, &meter);
                             if stream
                                 .send(ws::Message::Text(
                                     serde_json::to_string(&report).unwrap_or_default(),
@@ -195,7 +191,7 @@ fn ws_talk(
                 }
             }
 
-            let final_report = report(&talk, &meter, input_rate);
+            let final_report = report(&talk, &meter);
             let _ = stream
                 .send(ws::Message::Text(
                     serde_json::to_string(&final_report).unwrap_or_default(),
@@ -209,7 +205,7 @@ fn ws_talk(
     }))
 }
 
-fn report(talk: &TalkSession, meter: &Meter, input_rate: u32) -> TalkReport {
+fn report(talk: &TalkSession, meter: &Meter) -> TalkReport {
     let stats = talk.stats();
     let mean = if meter.chunks == 0 {
         0.0
@@ -231,7 +227,8 @@ fn report(talk: &TalkSession, meter: &Meter, input_rate: u32) -> TalkReport {
         claim_ms: stats.claim_ms,
         write_ms_mean: mean,
         write_ms_max: meter.write_max.as_secs_f64() * 1000.0,
-        input_rate,
+        inbound_bytes: stats.inbound_bytes,
+        inbound_frames: stats.inbound_frames,
     }
 }
 

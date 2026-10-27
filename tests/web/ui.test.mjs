@@ -149,11 +149,13 @@ test('holding T carries the microphone to the camera speaker', async () => {
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait("document.getElementById('talk').classList.contains('talk-on')", 'talk to start');
+    assert.match(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone is open/);
     await page.wait("Number(document.getElementById('level').dataset.level) > 0", 'the microphone level to move');
     await page.wait("window.proviewTalk.state().chunks >= 25", 'a second of microphone audio to go up', 15000);
     await page.key('t', 'up');
     await page.wait("!document.getElementById('talk').classList.contains('talk-on')", 'talk to stop');
     assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
+    assert.doesNotMatch(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone/);
     const frames = device.frames();
     assert.ok(frames.length > 15, 'frames reached the camera: ' + frames.length);
     assert.equal(frames[0].id, 1432);

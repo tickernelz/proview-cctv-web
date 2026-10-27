@@ -967,8 +967,13 @@ device service exposes no audio output, while the device reports
 frame at 8 kHz. The browser captures through an AudioWorklet at 8 kHz and the
 server encodes A-law, so no capture plugin is needed. Measured 2026-10-27: claim
 `Ret 100` in 477 ms, 50 frames in 2.00 s and 0.079 ms mean write time to the
-device over the vendor relay. What is still unproven is acoustic: whether the
-camera speaker plays what it receives needs a person standing next to it.
+device over the vendor relay. In the other direction the device streams its own
+audio back while the claim is open: a 90 s session left 743,328 bytes unread in
+the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
+build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
+report) instead of letting it fill the queue, but it does not play it. What is
+still unproven is acoustic: whether the camera speaker plays what it receives
+needs a person standing next to it.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second

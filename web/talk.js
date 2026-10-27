@@ -62,8 +62,7 @@ function talkCaption() {
 
 function talkSocketUrl() {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const channel = (typeof state !== 'undefined' && state.channel) || 1;
-  return scheme + '//' + location.host + '/ws/talk?channel=' + encodeURIComponent(channel) + '&rate=' + TALK_RATE;
+  return scheme + '//' + location.host + '/ws/talk';
 }
 
 function toPcm16(samples) {
@@ -102,30 +101,6 @@ function pushChunk(samples) {
   uplink.chunks += 1;
   uplink.bytes += pcm.byteLength;
   paintLevel(samples);
-}
-
-function startScriptTap() {
-  const context = uplink.context;
-  const source = context.createMediaStreamSource(uplink.stream);
-  const node = context.createScriptProcessor(TALK_FRAME, 1, 1);
-  let buffer = new Float32Array(TALK_FRAME);
-  let filled = 0;
-  node.onaudioprocess = (event) => {
-    const input = event.inputBuffer.getChannelData(0);
-    for (let index = 0; index < input.length; index += 1) {
-      buffer[filled] = input[index];
-      filled += 1;
-      if (filled === buffer.length) {
-        pushChunk(buffer);
-        buffer = new Float32Array(TALK_FRAME);
-        filled = 0;
-      }
-    }
-  };
-  source.connect(node);
-  node.connect(context.destination);
-  uplink.source = source;
-  uplink.node = node;
 }
 
 async function startWorkletTap() {
@@ -253,11 +228,10 @@ async function startTalk() {
       return;
     }
     uplink.stream = stream;
-    if (context.audioWorklet && typeof AudioWorkletNode === 'function') {
-      await startWorkletTap();
-    } else {
-      startScriptTap();
+    if (!context.audioWorklet || typeof AudioWorkletNode !== 'function') {
+      throw new Error('this browser has no AudioWorklet, so the microphone cannot be sampled at 8 kHz');
     }
+    await startWorkletTap();
     talkMessage('talk open on channel ' + (ready.channel === null ? 'device' : ready.channel) + ' \u00b7 claim ' + ready.claim_ms + ' ms');
   } catch (error) {
     stopTalk();
@@ -334,8 +308,6 @@ function stopTalk() {
   talkCaption();
 }
 
-window.startTalk = startTalk;
-window.stopTalk = stopTalk;
 window.proviewTalk = {
   start: startTalk,
   stop: stopTalk,
