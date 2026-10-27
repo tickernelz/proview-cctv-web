@@ -38,18 +38,34 @@ async function waitFor(check, timeout = 15000, what = 'condition') {
   throw new Error('timed out waiting for ' + what + (last instanceof Error ? ': ' + last.message : ''));
 }
 
-function ended(child) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve();
+function signalGroup(child, signal) {
+  try {
+    process.kill(-child.pid, signal);
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error;
   }
-  return new Promise((done) => {
-    const force = setTimeout(() => child.kill('SIGKILL'), 5000);
-    child.once('exit', () => {
-      clearTimeout(force);
-      done();
+}
+
+async function ended(child) {
+  if (child.exitCode === null && child.signalCode === null) {
+    await new Promise((done) => {
+      const force = setTimeout(() => signalGroup(child, 'SIGKILL'), 5000);
+      child.once('exit', () => {
+        clearTimeout(force);
+        done();
+      });
+      signalGroup(child, 'SIGTERM');
     });
-    child.kill('SIGTERM');
-  });
+  }
+  signalGroup(child, 'SIGKILL');
+  await waitFor(() => {
+    try {
+      process.kill(-child.pid, 0);
+      return false;
+    } catch (error) {
+      return error.code === 'ESRCH';
+    }
+  }, 10000, 'every process of ' + child.spawnfile + ' to exit');
 }
 
 export const DUAL_LENS_CLIP = join(ROOT, 'fixtures', 'dual-lens', 'dual-lens-stacked-640x720.h264');
@@ -79,6 +95,7 @@ export async function startServer(devices, { clips = {}, env = {} } = {}) {
       ...env,
     },
     stdio: ['ignore', 'ignore', 'pipe'],
+    detached: true,
   });
   let log = '';
   child.stderr.on('data', (chunk) => {
@@ -111,7 +128,7 @@ export async function startBrowser(extraArgs = []) {
       '--autoplay-policy=no-user-gesture-required',
       ...extraArgs,
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] },
+    { stdio: ['ignore', 'ignore', 'pipe'], detached: true },
   );
   let output = '';
   const url = await new Promise((done, fail) => {
