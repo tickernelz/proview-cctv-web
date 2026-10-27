@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpStream as StdTcpStream;
+use std::net::{TcpStream as StdTcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
@@ -40,7 +40,7 @@ pub fn session_id() -> String {
     random_lower(SESSION_ID_LEN)
 }
 
-fn random_lower(len: usize) -> String {
+pub(crate) fn random_lower(len: usize) -> String {
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut rng = rand::thread_rng();
     (0..len)
@@ -63,8 +63,10 @@ impl AccessClient {
     ) -> Result<AgentServer, RpsError> {
         let target = host.to_string();
         let body = request.to_string();
-        let reply = tokio::task::spawn_blocking(move || post(&target, port, &body))
+        let exchange = tokio::task::spawn_blocking(move || post(&target, port, &body));
+        let reply = timeout(ASSIGN_TIMEOUT + Duration::from_secs(1), exchange)
             .await
+            .map_err(|_| RpsError::Timeout(ASSIGN_TIMEOUT))?
             .map_err(|error| RpsError::Unreachable(error.to_string()))??;
         Ok(p2p::parse_agent_body(reply.as_bytes())?)
     }
@@ -82,7 +84,12 @@ fn post(host: &str, port: u16, body: &str) -> Result<String, RpsError> {
     builder.set_verify(SslVerifyMode::NONE);
     let connector = builder.build();
 
-    let stream = StdTcpStream::connect((host, port))
+    let address = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| RpsError::Unreachable(error.to_string()))?
+        .next()
+        .ok_or_else(|| RpsError::Unreachable(format!("{host}:{port} does not resolve")))?;
+    let stream = StdTcpStream::connect_timeout(&address, ASSIGN_TIMEOUT)
         .map_err(|error| RpsError::Unreachable(error.to_string()))?;
     stream.set_read_timeout(Some(ASSIGN_TIMEOUT)).ok();
     stream.set_write_timeout(Some(ASSIGN_TIMEOUT)).ok();
@@ -129,6 +136,12 @@ impl Tunnel {
 }
 
 pub async fn open(agent: &AgentServer, frame: &[u8]) -> Result<Tunnel, RpsError> {
+    timeout(TUNNEL_TIMEOUT, open_inner(agent, frame))
+        .await
+        .map_err(|_| RpsError::Timeout(TUNNEL_TIMEOUT))?
+}
+
+async fn open_inner(agent: &AgentServer, frame: &[u8]) -> Result<Tunnel, RpsError> {
     let mut stream = timeout(
         TUNNEL_TIMEOUT,
         TcpStream::connect((agent.host.as_str(), agent.port)),

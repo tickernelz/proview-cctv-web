@@ -101,6 +101,7 @@ pub fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Clone)]
 pub struct StatusClient {
     host: String,
     ports: Vec<u16>,
@@ -121,15 +122,6 @@ impl StatusClient {
         }
     }
 
-    pub fn with_ports(mut self, ports: Vec<u16>) -> Self {
-        self.ports = ports;
-        self
-    }
-
-    pub fn host(&self) -> &str {
-        &self.host
-    }
-
     pub async fn query(&self, serial: &str, auth_code: &str) -> CloudResult<DeviceOnline> {
         let serial = serial.trim();
         if serial.is_empty() {
@@ -145,123 +137,161 @@ impl StatusClient {
                 "Body": [{ "SerialNumber": serial, "AuthCode": auth_code }],
             }
         });
-        let mut pending = Vec::with_capacity(self.ports.len());
+        let mut pending = tokio::task::JoinSet::new();
         for port in self.ports.clone() {
             let http = self.http.clone();
             let host = self.host.clone();
-            let body = body.clone();
-            pending.push(tokio::spawn(async move {
+            let body = body.to_string();
+            pending.spawn(async move {
                 let url = format!("http://{host}:{port}{STATUS_PATH}");
                 let reply = http
                     .post(url)
                     .header("Accept", "*/*")
                     .header("Content-Type", "application/json")
-                    .body(body.to_string())
+                    .body(body)
                     .send()
                     .await;
                 match reply {
                     Ok(response) => match response.text().await {
-                        Ok(text) => (port, Ok(text)),
-                        Err(error) => (port, Err(error.to_string())),
+                        Ok(text) => PortOutcome {
+                            port,
+                            reply: Ok(text),
+                        },
+                        Err(error) => PortOutcome {
+                            port,
+                            reply: Err(error.to_string()),
+                        },
                     },
-                    Err(error) => (port, Err(error.to_string())),
+                    Err(error) => PortOutcome {
+                        port,
+                        reply: Err(error.to_string()),
+                    },
                 }
-            }));
+            });
         }
 
-        let mut replies = Vec::with_capacity(pending.len());
-        let mut servers = Vec::with_capacity(pending.len());
-        let mut best: Option<(u16, StatusEntry)> = None;
-        let mut first_status: Option<(u16, StatusEntry)> = None;
-        for handle in pending {
-            let (port, outcome) = match handle.await {
-                Ok(value) => value,
-                Err(error) => {
+        let mut outcomes = Vec::with_capacity(self.ports.len());
+        while let Some(joined) = pending.join_next().await {
+            match joined {
+                Ok(outcome) => outcomes.push(outcome),
+                Err(error) => outcomes.push(PortOutcome {
+                    port: 0,
+                    reply: Err(error.to_string()),
+                }),
+            }
+            if carries_access_server(&outcomes) {
+                pending.abort_all();
+                break;
+            }
+        }
+        fold_outcomes(outcomes)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PortOutcome {
+    pub port: u16,
+    pub reply: Result<String, String>,
+}
+
+pub fn carries_access_server(outcomes: &[PortOutcome]) -> bool {
+    outcomes.iter().any(|outcome| match &outcome.reply {
+        Ok(text) => parse_status(text)
+            .map(|entry| {
+                entry.is_online()
+                    && entry
+                        .server_port
+                        .is_some_and(|port| port != DISCOVERY_RELAY_PORT)
+            })
+            .unwrap_or(false),
+        Err(_) => false,
+    })
+}
+
+pub fn fold_outcomes(outcomes: Vec<PortOutcome>) -> CloudResult<DeviceOnline> {
+    let mut replies = Vec::with_capacity(outcomes.len());
+    let mut servers = Vec::with_capacity(outcomes.len());
+    let mut best: Option<(u16, StatusEntry)> = None;
+    let mut first_status: Option<(u16, StatusEntry)> = None;
+    for outcome in outcomes {
+        let port = outcome.port;
+        match outcome.reply {
+            Ok(text) => match parse_status(&text) {
+                Some(entry) => {
                     replies.push(PortReply {
-                        port: 0,
-                        status: None,
-                        error: Some(error.to_string()),
+                        port,
+                        status: Some(entry.status.clone()),
+                        error: None,
                     });
-                    continue;
+                    servers.push(StatusEndpoint {
+                        port,
+                        online: entry.is_online(),
+                        status: entry.status.clone(),
+                        server_ip: entry.server_ip.clone(),
+                        server_port: entry.server_port,
+                        wan_ip: entry.wan_ip.clone(),
+                    });
+                    if entry.is_online() && best.is_none() {
+                        best = Some((port, entry));
+                    } else if first_status.is_none() {
+                        first_status = Some((port, entry));
+                    }
                 }
-            };
-            match outcome {
-                Ok(text) => match parse_status(&text) {
-                    Some(entry) => {
-                        replies.push(PortReply {
-                            port,
-                            status: Some(entry.status.clone()),
-                            error: None,
-                        });
-                        servers.push(StatusEndpoint {
-                            port,
-                            online: entry.is_online(),
-                            status: entry.status.clone(),
-                            server_ip: entry.server_ip.clone(),
-                            server_port: entry.server_port,
-                            wan_ip: entry.wan_ip.clone(),
-                        });
-                        if entry.is_online() && best.is_none() {
-                            best = Some((port, entry));
-                        } else if first_status.is_none() {
-                            first_status = Some((port, entry));
-                        }
-                    }
-                    None => {
-                        let error =
-                            parse_error(&text).unwrap_or_else(|| "unreadable reply".to_string());
-                        replies.push(PortReply {
-                            port,
-                            status: None,
-                            error: Some(error),
-                        });
-                    }
-                },
-                Err(error) => {
+                None => {
+                    let error =
+                        parse_error(&text).unwrap_or_else(|| "unreadable reply".to_string());
                     replies.push(PortReply {
                         port,
                         status: None,
                         error: Some(error),
                     });
                 }
-            }
+            },
+            Err(error) => replies.push(PortReply {
+                port,
+                status: None,
+                error: Some(error),
+            }),
         }
-        replies.sort_by_key(|reply| reply.port);
-
-        let chosen = best.or(first_status).ok_or_else(|| {
-            let detail = replies
-                .iter()
-                .filter_map(|reply| reply.error.as_deref())
-                .next()
-                .unwrap_or("no status port answered");
-            CloudError::Unreachable(format!("cloud status: {detail}"))
-        })?;
-        let (port, entry) = chosen;
-        Ok(DeviceOnline {
-            online: entry.is_online(),
-            status: entry.status.clone(),
-            checked_at: now_millis(),
-            port,
-            wan_ip: entry.wan_ip,
-            server_ip: entry.server_ip,
-            server_port: entry.server_port,
-            device_type: entry.device_type,
-            error: None,
-            replies,
-            servers,
-        })
     }
+    replies.sort_by_key(|reply| reply.port);
+    servers.sort_by_key(|entry| entry.port);
+
+    let (port, entry) = best.or(first_status).ok_or_else(|| {
+        let detail = replies
+            .iter()
+            .filter_map(|reply| reply.error.as_deref())
+            .next()
+            .unwrap_or("no status port answered");
+        CloudError::Unreachable(format!("cloud status: {detail}"))
+    })?;
+    Ok(DeviceOnline {
+        online: entry.is_online(),
+        status: entry.status.clone(),
+        checked_at: now_millis(),
+        port,
+        wan_ip: entry.wan_ip,
+        server_ip: entry.server_ip,
+        server_port: entry.server_port,
+        device_type: entry.device_type,
+        error: None,
+        replies,
+        servers,
+    })
 }
 
 impl DeviceOnline {
     pub fn access_server(&self) -> Option<(String, u16)> {
-        let candidates = self.servers.iter().filter(|entry| entry.online);
-        let preferred = candidates
-            .clone()
+        self.servers
+            .iter()
+            .filter(|entry| entry.online)
             .find(|entry| entry.server_port != Some(DISCOVERY_RELAY_PORT))
-            .or_else(|| candidates.clone().next())?;
-        let host = preferred.server_ip.clone()?;
-        Some((host, preferred.server_port.unwrap_or(DEFAULT_ACCESS_PORT)))
+            .and_then(|entry| {
+                entry
+                    .server_ip
+                    .clone()
+                    .map(|host| (host, entry.server_port.unwrap_or(DEFAULT_ACCESS_PORT)))
+            })
     }
 }
 
@@ -288,7 +318,9 @@ where
 {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(match value {
-        Some(serde_json::Value::Number(number)) => number.as_u64().map(|raw| raw as u16),
+        Some(serde_json::Value::Number(number)) => {
+            number.as_u64().and_then(|raw| u16::try_from(raw).ok())
+        }
         Some(serde_json::Value::String(text)) => text.trim().parse::<u16>().ok(),
         _ => None,
     })
@@ -412,14 +444,66 @@ mod tests {
         );
     }
 
+    fn outcome(port: u16, reply: &str) -> PortOutcome {
+        PortOutcome {
+            port,
+            reply: Ok(reply.to_string()),
+        }
+    }
+
     #[test]
-    fn falls_back_to_the_discovery_cluster_when_it_is_all_there_is() {
+    fn folds_five_offline_ports_and_both_online_clusters() {
+        let outcomes = vec![
+            outcome(7700, OFFLINE),
+            outcome(7701, OFFLINE),
+            outcome(7702, OFFLINE),
+            outcome(7703, ONLINE),
+            outcome(7704, OFFLINE),
+            outcome(7705, ONLINE_CAMERA),
+            outcome(7706, OFFLINE),
+        ];
+        let folded = fold_outcomes(outcomes).expect("fold");
+        assert!(folded.online);
+        assert_eq!(
+            folded.access_server(),
+            Some(("110.239.87.207".to_string(), 6510))
+        );
+        assert_eq!(folded.servers.len(), 7);
+    }
+
+    #[test]
+    fn folds_all_offline_ports_as_offline() {
+        let outcomes = (7700u16..7707).map(|port| outcome(port, OFFLINE)).collect();
+        let folded = fold_outcomes(outcomes).expect("fold");
+        assert!(!folded.online);
+        assert!(folded.access_server().is_none());
+    }
+
+    #[test]
+    fn folds_all_refused_ports_as_unreachable_with_the_vendor_message() {
+        let outcomes = (7700u16..7707).map(|port| outcome(port, REFUSED)).collect();
+        match fold_outcomes(outcomes) {
+            Err(CloudError::Unreachable(detail)) => {
+                assert_eq!(detail, "cloud status: all dev ac is invalid (400)");
+            }
+            other => panic!("unexpected fold result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn keeps_waiting_until_a_cluster_carries_the_access_server() {
+        let discovery_only = vec![outcome(7703, ONLINE)];
+        assert!(!carries_access_server(&discovery_only));
+        let mut with_camera = discovery_only;
+        with_camera.push(outcome(7705, ONLINE_CAMERA));
+        assert!(carries_access_server(&with_camera));
+    }
+
+    #[test]
+    fn reports_no_access_server_when_only_the_discovery_relay_answered() {
         let mut status = unchecked("none");
         status.online = true;
         status.servers = vec![endpoint(7703, "110.239.85.50", DISCOVERY_RELAY_PORT)];
-        assert_eq!(
-            status.access_server(),
-            Some(("110.239.85.50".to_string(), DISCOVERY_RELAY_PORT))
-        );
+        assert_eq!(status.access_server(), None);
     }
 }

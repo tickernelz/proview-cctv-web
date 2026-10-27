@@ -90,6 +90,49 @@ fn monitor_random() -> String {
         .collect()
 }
 
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn claim_monitor_frames_the_message_like_the_capture() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let accepted = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut header = [0u8; super::super::HEADER_LEN];
+            socket.read_exact(&mut header).await.expect("header");
+            let decoded = Header::decode(&header).expect("header decodes");
+            let mut body = vec![0u8; decoded.length as usize];
+            socket.read_exact(&mut body).await.expect("body");
+            (decoded, body)
+        });
+
+        let stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        let mut connection = Connection::from_stream(stream);
+        connection
+            .claim_monitor(0, "Main")
+            .await
+            .expect("claim sends");
+
+        let (header, body) = accepted.await.expect("reader");
+        assert_eq!(header.id, super::super::msg::MONITOR);
+        assert_eq!(header.channel, super::super::msg::MONITOR_CHANNEL);
+        assert!(!header.end, "the claim keeps the end bit clear");
+        assert_eq!(body.last(), Some(&0), "the claim body ends with a NUL");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body[..body.len() - 1]).expect("claim json");
+        assert_eq!(parsed["Name"], "OPMonitor");
+        assert_eq!(parsed["OPMonitor"]["Action"], "Claim");
+        assert_eq!(parsed["OPMonitor"]["Parameter"]["TransMode"], "TCP");
+        assert_eq!(parsed["SessionID"], format!("0x{:08x}", header.session));
+    }
+}
+
 pub struct Connection {
     stream: TcpStream,
     session: u32,

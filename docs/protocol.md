@@ -633,6 +633,29 @@ and the 136-byte frame that reached `162.128.66.103:6611` decoded to
 `crates/core/src/provider/p2p.rs` now builds both frames and parses the reply;
 four tests pin them to those captured strings.
 
+### 4C.7.1 What the access hop exposes, and why verification is off
+
+The access server presents a self-signed certificate (`O=Internet Widgits Pty Ltd`,
+RSA-1024, SHA-1, TLS 1.3) and OpenSSL refuses it with `Verify return code: 66
+(EE certificate key too weak)`, before any policy of ours runs. `provider/rps.rs`
+therefore posts with `SslVerifyMode::NONE`, scoped to that one private helper:
+one host, one port, one request per session.
+
+Turning verification off here adds no capability to an on-path attacker. The
+host it dials comes from the status reply fetched over plain HTTP
+(`crates/core/src/cloud/status.rs`), so an attacker who can rewrite that reply
+already picks the destination. What actually crosses the hop is `Authcode`
+(the device `rps` id), `ClientToken`, `SerialNumber` and `SessionId` — the same
+four values the 6611 handshake then sends as plain base64.
+
+The exposure worth naming is different: DVRIP inside the relay is plaintext, and
+the credentials `examples/rps_probe` sends are the LAN ones (Sofia hash), which
+are as good as the password itself, while the vendor SDK sends an AES login
+instead (4C.9 `AESEncrypt:1`). **Boundary for the next change:** `stream()` must
+not put a plaintext Sofia login on the relay; if the AES login cannot be
+reproduced, that is a design decision to take with the board rather than a
+default.
+
 ### 4C.8 DVRIP over the tunnel: login works, the media channel wants the encrypted exchange
 
 Over the tunnel opened in 4C.7, plain DVRIP behaves as it does on the LAN up to
@@ -681,12 +704,12 @@ is ciphertext, and the device's `1001` answer is plaintext. The SDK logs the
 parameters it uses (`ProtocolNetIP.cpp:1293`):
 
 ```
-NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:1,User:csfy,PwdLen:6,
-             Token:F0+7ghjHWzNsktOE,Pid:,RandomStrLen:4/0,
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:1,User:<device user>,PwdLen:<n>,
+             Token:<16 chars, the same in every run>,Pid:,RandomStrLen:4/0,
              PwdAppendRandomStr:0,TokenAppendRandomStr:0]
 ```
 
-That `Token` is **identical in all thirteen harness runs** recorded in `sdk.log`,
+That token is **identical in all thirteen harness runs** recorded in `sdk.log`,
 hours apart and on different relays, so it is stable material rather than
 something the claim reply hands out. Direct tries with it as an AES-128 key, with
 `md5`/SHA derivations of it, and with the account `AdminToken` (and XOR
@@ -724,14 +747,17 @@ plaintext it is handed. That settles the derivation instead of guessing it.
 
 ### 4C.4 What that means for the implementation
 
-1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
-2. `tcp <relay>:6611` → base64 `<rps>:<client>:<serial>:<token>` → base64 JSON
-   with `ErrorNum 200` and `MTU`.
-3. DVRIP over the tunnel: login with the device credentials, then the live
-   request the SDK sends (`OPMonitor` claim plus media play), and the frames
-   arrive in the same envelope the LAN path already parses.
-4. The `rps` id and the device credentials come from `msdlistCode`, so no new
-   account call is needed.
+1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
+   is the RPS access server (`110.239.87.207:6510` on the test camera). The UDP
+   8765 discovery list is **not** part of this path — the agent is assigned per
+   session, not looked up (4C.6).
+2. `POST /` on that host with the `AgentProtocol` request of 4C.7, `ServiceType
+   RpsAV`, and read `AgentServerIp`/`AgentServerPort` from the answer.
+3. `tcp <agent>:6611` → base64 `<rps>:<client token>:<serial>:<RpsAV SessionId>`
+   plus `XXEE` → base64 JSON with `ErrorNum 200` and `MTU`.
+4. DVRIP over the tunnel: login with the device credentials and the `OPMonitor`
+   claim (4C.8). The `rps` id comes from `msdlistCode`, so no new account call is
+   needed; the media frames themselves still need the encrypted login of 4C.9.
 
 ## 5. Open items
 

@@ -73,16 +73,30 @@ impl Provider for CloudProvider {
     async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
         let token = self.token(session)?;
         let devices = self.client.device_list(token).await.map_err(map_cloud)?;
-        let mut out = Vec::with_capacity(devices.len());
-        for device in &devices {
+        let mut pending = tokio::task::JoinSet::new();
+        for (index, device) in devices.iter().enumerate() {
+            let status = self.status.clone();
+            let serial = device.uuid.clone();
             let code = device.auth_code();
-            let state = match self.status.query(&device.uuid, &code).await {
-                Ok(value) => value,
-                Err(error) => status::unchecked(error.to_string()),
-            };
-            out.push(device.to_provider(Some(&state)));
+            pending.spawn(async move {
+                let state = status.query(&serial, &code).await;
+                (index, state)
+            });
         }
-        Ok(out)
+        let mut states = vec![None; devices.len()];
+        while let Some(joined) = pending.join_next().await {
+            if let Ok((index, state)) = joined {
+                states[index] = Some(match state {
+                    Ok(value) => value,
+                    Err(error) => status::unchecked(error.to_string()),
+                });
+            }
+        }
+        Ok(devices
+            .iter()
+            .enumerate()
+            .map(|(index, device)| device.to_provider(states[index].as_ref()))
+            .collect())
     }
 
     async fn stream(

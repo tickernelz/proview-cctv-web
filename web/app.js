@@ -547,7 +547,7 @@ function deviceStatus(device) {
     return { known: false, online: false, detail: '' };
   }
   const status = String(device.online_status || '').toLowerCase();
-  const known = Boolean(status) && status !== 'unknown';
+  const known = status ? status !== 'unknown' : Boolean(device.online !== undefined);
   return { known, online: Boolean(device.online), detail: device.online_detail || '' };
 }
 
