@@ -1,3 +1,6 @@
+#[path = "routes/apmode.rs"]
+pub mod apmode;
+
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 pub mod device_admin;
@@ -57,6 +60,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(control::routes())
     .chain(cloud_bind::api())
     .chain(device_admin::routes())
+    .chain(apmode::routes())
     .collect()
 }
 
@@ -179,6 +183,14 @@ fn status_for(err: &ProviderError) -> Status {
         ProviderError::Misconfigured(_) => Status::NotImplemented,
         _ => Status::BadGateway,
     }
+}
+
+pub(crate) fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
+    let id = session_id(cookies)?;
+    store
+        .get(&id)
+        .map(|_| ())
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
 }
 
 pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {

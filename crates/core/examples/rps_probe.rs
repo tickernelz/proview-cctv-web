@@ -64,7 +64,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("access   {access_host}:{access_port}");
 
     let session = rps::session_id();
-    let token = rps::client_token();
+    let token = match env("PROVIEW_CLIENT_TOKEN") {
+        value if value.is_empty() => rps::client_token(),
+        value => value,
+    };
+    eprintln!("token    {} (persistent={})", token, env("PROVIEW_CLIENT_TOKEN").len() > 0);
     let body = p2p::agent_request(
         &rps_id,
         &token,
