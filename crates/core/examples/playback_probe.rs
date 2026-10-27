@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let frames_wanted: usize = env("PROVIEW_FRAMES").parse().unwrap_or(48);
     let whole = !env("PROVIEW_WHOLE").is_empty();
+    let download = !env("PROVIEW_DOWNLOAD").is_empty();
     let pick = env("PROVIEW_PICK");
     let seek: u32 = env("PROVIEW_SEEK").parse().unwrap_or(0);
     if account.is_empty() || password.is_empty() || serial.is_empty() {
@@ -146,8 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         started.elapsed().as_secs_f64()
     );
     let started = Instant::now();
-    connection.start(&file, 0).await?;
-    eprintln!("start    sent in {:.2}s", started.elapsed().as_secs_f64());
+    if download {
+        connection.download_start(&file, 0).await?;
+        eprintln!("download sent in {:.2}s", started.elapsed().as_secs_f64());
+    } else {
+        connection.start(&file, 0).await?;
+        eprintln!("start    sent in {:.2}s", started.elapsed().as_secs_f64());
+    }
 
     let mut reader = MediaReader::new();
     let mut rate = FrameRate::default();
@@ -160,9 +166,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = 0usize;
     let started = Instant::now();
     let mut first_byte = None;
+    let mut last_frame = 0.0f64;
+    let limit: f64 = env("PROVIEW_LIMIT").parse().unwrap_or(0.0);
     while frames < frames_wanted || whole {
+        if limit > 0.0 && started.elapsed().as_secs_f64() > limit {
+            eprintln!(
+                "limit    stopping after {:.2}s",
+                started.elapsed().as_secs_f64()
+            );
+            break;
+        }
         match connection.frame(Duration::from_secs(8)).await? {
             Some(media) => {
+                last_frame = started.elapsed().as_secs_f64();
                 if first_byte.is_none() {
                     first_byte = Some(started.elapsed());
                     eprintln!(
@@ -228,9 +244,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!(
-        "stream   chunks={frames} bytes={bytes} first_frame={:?} elapsed={:.2}s",
+        "stream   chunks={frames} bytes={bytes} first_frame={:?} last_frame={last_frame:.2}s elapsed={:.2}s",
         first_byte,
         started.elapsed().as_secs_f64()
+    );
+    let throughput = if last_frame > 0.0 {
+        file.bytes as f64 / last_frame
+    } else {
+        0.0
+    };
+    eprintln!(
+        "wire     bytes={bytes} listed={} match={} rate={throughput:.0}B/s",
+        file.bytes,
+        bytes == file.bytes as usize
     );
     eprintln!("kinds    {kinds:?}");
     eprintln!(
@@ -261,6 +287,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(0)
         );
     }
-    let _ = connection.stop(&file, 0).await;
+    if download {
+        let _ = connection.download_stop(&file, 0).await;
+    } else {
+        let _ = connection.stop(&file, 0).await;
+    }
+    let _ = connection.logout().await;
     Ok(())
 }
