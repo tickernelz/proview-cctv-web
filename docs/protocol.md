@@ -815,7 +815,7 @@ The SDK's own log carries the login it builds for the media channel
 (`ProtocolNetIP.cpp:1293` and the frame that follows it):
 
 ```
-NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:zhafronadani@gm,PwdLen:13,
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:<account email>,PwdLen:<n>,
              Token:o5rBSnodWCpN8VAa,Pid:,RandomStrLen:4/0, ...]
 {"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"o5rBSnodWCpN8VAa",
  "PassWord":"","CommunicateKey":"8291FD6A0A7EF5F78495CB0255F4E862A4382321D951D2257176E83E2573DE5F...",
@@ -868,7 +868,52 @@ system-info reply.
 `Connection::login_token` in `crates/core/src/dvrip/client.rs` reproduces the
 attempt, and `examples/rps_probe` drives it when `PROVIEW_DEVICE_TOKEN` is set.
 
-### 4C.16 The media channel cipher, recovered and proven on a live session
+### 4C.16 The RSA call the SDK makes carries a 16-character session key
+
+Hooking `RSA_public_encrypt` in the harness (same inline-patch mechanism as
+`SSL_write`) shows three calls per live session:
+
+```
+flen=12  padding=1  <a password-shaped value, redacted>
+flen=8   padding=1  <8 random characters>
+flen=16  padding=1  iq5H3765j5t04mO6      (a second run: ke930p9mR1kxcL7Q)
+```
+
+The 16-byte one changes on every run and has exactly the shape of the
+`CommunicateKey` token `NewLoginPTL` reports (`o5rBSnodWCpN8VAa`): the client
+picks the session key itself and RSA-wraps it for the device. That is the piece
+this design was missing — the media session key is **ours to choose**, so once it
+crosses the wire we know it and can decrypt what the device sends.
+
+What is still not captured is the device public key the wrapper uses. The next
+step is a corrected dump in the same shim (`RSA_get0_key` + `BN_bn2hex` on the
+`RSA*` argument; the first attempt broke on an escaped newline in the C source
+and the run fell back to the previous binary), which turns this into a complete
+`CommunicateKey` construction in Rust.
+
+### 4C.17 The device public key is captured, so the session key is constructible
+
+The corrected shim (`RSA_get0_key` + `BN_bn2hex` on the `RSA*` argument of
+`RSA_public_encrypt`) now prints the key the SDK wraps its session key to:
+
+```
+[rsa] public_encrypt flen=16 padding=1 key=68763265375543773975507336397431
+[rsa] modulus=<256 hex chars, 1024-bit>
+[rsa] exponent=010001
+```
+
+The same modulus came back for all three encryptions in the session, and the
+16-byte plaintext is the client-chosen session token again (`hv2e7UCw9uPs69t1`
+in this run). Stored outside the repository at
+`~/re/proview-cctv/captures/device-pubkey.txt` rather than inlined here, because
+the value identifies this specific device.
+
+That closes the last unknown input for `CommunicateKey`: generate 16 characters,
+RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
+`CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
+ours on both ends.
+
+### 4C.18 The media channel cipher, recovered and proven on a live session
 
 4C.10 and 4C.12 left the cipher open because they looked for it through OpenSSL's
 entry points and through the AES vtable; both are the wrong handle. The cipher is
@@ -971,8 +1016,9 @@ inner start code turns the 1075 `fd` bodies into 1077 slice NAL units whose head
 the pair `02 01`. The codec is *not* proven. The header reads as HEVC
 (`nal_unit_type` 1 = TRAIL_R, `nuh_layer_id` 0, `nuh_temporal_id_plus1` 1), and the
 slice header then decodes as `first_slice_segment_in_pic_flag` 1 with `pps_id` 0 in
-1075 of 1075; `ffmpeg -f hevc` accepts the split and stops only at `PPS id out of
-range: 0`. The H.264 reading needs one byte dropped and leaves `nal_ref_idc` 0 on
+1075 of 1075; `ffmpeg -f hevc` accepts the split and stops on the missing-PPS
+errors: one run of the same `fd` stream gives 1755 `PPS id out of range`, 1202
+`Skipping invalid undecodable NALU: 1` and 18 `Failed to parse header of NALU`. The H.264 reading needs one byte dropped and leaves `nal_ref_idc` 0 on
 every P-slice, and section 8 records that this camera's main stream is H.265
 (2304×2592, 25 fps declared), so HEVC is the honest label and "H.264" is not used here.
 
@@ -1003,28 +1049,6 @@ hit even with the right key. The lever remains `OPMonitor Start`'s
 `"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
 64-character key the device acknowledges in `1411` before the first `1412`.
 
-### 4C.17 The device public key is captured, so the session key is constructible
-
-The corrected shim (`RSA_get0_key` + `BN_bn2hex` on the `RSA*` argument of
-`RSA_public_encrypt`) now prints the key the SDK wraps its session key to:
-
-```
-[rsa] public_encrypt flen=16 padding=1 key=68763265375543773975507336397431
-[rsa] modulus=<256 hex chars, 1024-bit>
-[rsa] exponent=010001
-```
-
-The same modulus came back for all three encryptions in the session, and the
-16-byte plaintext is the client-chosen session token again (`hv2e7UCw9uPs69t1`
-in this run). Stored outside the repository at
-`~/re/proview-cctv/captures/device-pubkey.txt` rather than inlined here, because
-the value identifies this specific device.
-
-That closes the last unknown input for `CommunicateKey`: generate 16 characters,
-RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
-`CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
-ours on both ends.
-
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -1049,7 +1073,7 @@ ours on both ends.
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
-5. The P2P media channel cipher is answered in 4C.16 for the control frames
+5. The P2P media channel cipher is answered in 4C.18 for the control frames
    (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
    1000). The video bodies arrive partly in plaintext slice NALs (codec unproven,
    consistent with HEVC) with no keyframe and no parameter sets; those live in the
