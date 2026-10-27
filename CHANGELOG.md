@@ -9,13 +9,15 @@ stability before 1.0.
 
 ### Added
 
-- Cloud live path. Between the app and the camera's DVRIP there is now the
-  vendor relay: the status cluster names the access server, an `AgentProtocol`
-  request buys a media agent for the session, the base64 handshake is answered
-  with `ErrorNum 200`, and DVRIP rides that tunnel up to the `OPMonitor` claim.
-  Measured from a machine with no route to the camera. The picture itself still
-  waits on the vendor's encrypted media login; `docs/protocol.md` 4C.6-4C.12
-  records exactly what is proven and what is not.
+- Cloud live path, in the crate but not in the shipped binary. The vendor
+  relay is implemented and exercised by `examples/rps_probe`: the status cluster
+  names the access server, an `AgentProtocol` request buys a media agent for the
+  session, the base64 handshake is answered with `ErrorNum 200`, and DVRIP rides
+  that tunnel up to the `OPMonitor` claim, measured from a machine with no route
+  to the camera. Nothing calls it yet: `CloudProvider::stream()` still answers
+  `NotImplemented`, so the linker drops it and `strings` finds no trace of it in
+  the 0.3.2 binaries. It ships when the encrypted media login does;
+  `docs/protocol.md` 4C.6-4C.12 records exactly what is proven and what is not.
 
 - Cloud device status. `GET /api/devices` now reads `pub-status.secu100.net`
   `/v1/status/third` across all seven clusters and answers `online`,
