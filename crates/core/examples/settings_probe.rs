@@ -1,7 +1,5 @@
 use std::error::Error;
 use std::path::PathBuf;
-
-type BoxError = Box<dyn Error + Send + Sync>;
 use std::time::{Duration, Instant};
 
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
@@ -9,8 +7,11 @@ use proview_core::cloud::status::{auth_code_of, StatusClient};
 use proview_core::dvrip::client::Connection;
 use proview_core::dvrip::settings::{EncodePatch, EncodeState, Stream};
 use proview_core::provider::{p2p, rps};
+use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+
+type BoxError = Box<dyn Error + Send + Sync>;
 
 fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_default().trim().to_string()
@@ -225,7 +226,37 @@ async fn main() -> Result<(), BoxError> {
                 });
             }
         }
-        other => return Err(format!("unknown mode {other}: read, write, negate or bridge").into()),
+        "cloudkeys" => {
+            let client = {
+                let identity = Identity::resolve();
+                if !identity.is_complete() {
+                    return Err(proview_core::cloud::MISSING_CLOUD_IDENTITY.into());
+                }
+                EnvelopeClient::new(identity)
+            };
+            let tokens = client
+                .login_envelope(&env("PROVIEW_EMAIL"), &env("PROVIEW_PASSWORD"))
+                .await?;
+            let devices = client.device_list(&tokens.access).await?;
+            for device in &devices {
+                println!("device {} name={}", device.uuid, device.display_name());
+                let mut keys: Vec<&String> = device.extra.keys().collect();
+                keys.sort();
+                for key in keys {
+                    let value = &device.extra[key];
+                    let shape = match value {
+                        Value::String(text) => format!("string {} chars", text.len()),
+                        Value::Number(number) => format!("number {number}"),
+                        Value::Bool(flag) => format!("bool {flag}"),
+                        Value::Null => "null".to_string(),
+                        Value::Array(items) => format!("array {} items", items.len()),
+                        Value::Object(map) => format!("object {} keys", map.len()),
+                    };
+                    println!("  {key}: {shape}");
+                }
+            }
+        }
+        other => return Err(format!("unknown mode {other}: read, cloudkeys, write, negate or bridge").into()),
     }
     Ok(())
 }
