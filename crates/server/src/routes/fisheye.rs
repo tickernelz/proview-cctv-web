@@ -71,12 +71,20 @@ pub struct CodeTableEntry {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MountEntry {
+    pub name: &'static str,
+    pub code: u8,
+    pub pitch_deg: f32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelResponse {
     pub library: &'static str,
     pub library_sha256: &'static str,
     pub projection: &'static str,
     pub functions: Vec<ProvenanceEntry>,
-    pub mount_types: Vec<CodeTableEntry>,
+    pub mount_types: Vec<MountEntry>,
     pub lens_types: Vec<CodeTableEntry>,
     pub fixture: Calibration,
     pub projected: FixtureCalibration,
@@ -140,16 +148,17 @@ fn model() -> Json<ModelResponse> {
     })
 }
 
-fn mount_table() -> Vec<CodeTableEntry> {
+fn mount_table() -> Vec<MountEntry> {
     (0..=2u8)
         .filter_map(|code| {
-            MountType::from_code(code).map(|mount| CodeTableEntry {
+            MountType::from_code(code).map(|mount| MountEntry {
                 name: match mount {
                     MountType::Ceiling => "ceiling",
                     MountType::Table => "table",
                     MountType::Wall => "wall",
                 },
                 code: mount.code(),
+                pitch_deg: mount.pitch_deg(),
             })
         })
         .collect()
@@ -216,6 +225,7 @@ fn project_fixture() -> FixtureCalibration {
 #[derive(FromForm, Clone)]
 pub struct MapQuery {
     mode: Option<String>,
+    mount: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
     radius: Option<f32>,
@@ -274,8 +284,19 @@ fn build_map_for(lens: &Lens, query: &MapQuery, limit: u32) -> Result<Map, Failu
             format!("map above {limit} pixels"),
         ));
     }
+    let mount = match query.mount.as_deref().unwrap_or("ceiling") {
+        "ceiling" => MountType::Ceiling,
+        "table" => MountType::Table,
+        "wall" => MountType::Wall,
+        other => {
+            return Err(fail(
+                Status::BadRequest,
+                format!("unknown mount {other}, expected ceiling, table or wall"),
+            ))
+        }
+    };
     match query.mode.as_deref().unwrap_or("equirect") {
-        "equirect" => Ok(Map::equirect(lens, width, height)),
+        "equirect" => Ok(Map::equirect_mounted(lens, width, height, mount)),
         "ptz" => Ok(Map::ptz(lens, width, height, &build_view(query))),
         other => Err(fail(
             Status::BadRequest,

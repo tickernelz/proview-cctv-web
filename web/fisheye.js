@@ -25,6 +25,7 @@
     'uniform float u_pan;',
     'uniform float u_tilt;',
     'uniform float u_camZ;',
+    'uniform float u_mountPitch;',
     'uniform int u_lutCount;',
     'uniform float u_lut[65];',
     'const float PI = 3.141592653589793;',
@@ -44,6 +45,11 @@
     '  float scale = u_camZ - z;',
     '  return normalize(vec3(scale * point.x, scale * point.y, -z));',
     '}',
+    'vec3 pitchDir(vec3 value) {',
+    '  float c = cos(u_mountPitch);',
+    '  float s = sin(u_mountPitch);',
+    '  return vec3(value.x, value.y * c - value.z * s, value.y * s + value.z * c);',
+    '}',
     'vec3 equirectRay(vec2 uv) {',
     '  float bearing = (0.25 - uv.x) * TAU;',
     '  float elevation = (0.5 - uv.y) * PI;',
@@ -52,7 +58,7 @@
     'void main() {',
     '  vec3 direction;',
     '  if (u_mode == 0) {',
-    '    direction = equirectRay(v_uv);',
+    '    direction = pitchDir(equirectRay(v_uv));',
     '  } else {',
     '    vec2 point = vec2((v_uv.x * 2.0 - 1.0) * u_halfExtent * u_aspect, (0.5 - v_uv.y) * 2.0 * u_halfExtent);',
     '    direction = rotateView(viewRay(point));',
@@ -139,6 +145,7 @@
       this.tilt = 0;
       this.fov = radians(90);
       this.camZ = 0;
+      this.mountPitch = 0;
       this.lut = null;
       this.uniforms = {};
       for (const name of [
@@ -153,6 +160,7 @@
         'u_pan',
         'u_tilt',
         'u_camZ',
+        'u_mountPitch',
         'u_lutCount',
         'u_lut',
       ]) {
@@ -194,6 +202,12 @@
       return out;
     }
 
+    setMount(name) {
+      const pitches = { ceiling: 0, table: 180, wall: 90 };
+      const pitch = pitches[String(name).toLowerCase()];
+      this.mountPitch = ((pitch === undefined ? 0 : pitch) * Math.PI) / 180;
+    }
+
     uploadFrame(source) {
       const gl = this.gl;
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -227,6 +241,7 @@
       gl.uniform1f(uniforms.u_pan, this.pan);
       gl.uniform1f(uniforms.u_tilt, this.tilt);
       gl.uniform1f(uniforms.u_camZ, this.camZ);
+      gl.uniform1f(uniforms.u_mountPitch, this.mountPitch);
       const lut = new Float32Array(65);
       if (this.lut) {
         for (let index = 0; index < Math.min(65, this.lut.length); index += 1) {
@@ -242,6 +257,34 @@
     }
   }
 
+  function overlayCanvas(video) {
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+    const parent = video.parentElement;
+    if (parent) {
+      if (window.getComputedStyle(parent).position === 'static') {
+        parent.style.position = 'relative';
+      }
+      parent.appendChild(canvas);
+    }
+    return canvas;
+  }
+
+  function lensFromVideo(video) {
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    const radius = Math.min(width, height) * 0.469;
+    return {
+      imageWidth: width,
+      imageHeight: height,
+      centerX: width / 2,
+      centerY: height / 2,
+      radius,
+      maxThetaDeg: 90,
+    };
+  }
+
   const MODEL = {
     library: 'libfisheye.so',
     projection: 'equidistant sphere with the vendor bearing/elevation equirect convention',
@@ -255,14 +298,96 @@
     ],
   };
 
+  function attachLive(options) {
+    const settings = options || {};
+    const video = settings.video || document.getElementById('video');
+    if (!video) {
+      return null;
+    }
+    const canvas = settings.canvas || overlayCanvas(video);
+    const dewarp = new FisheyeDewarp(canvas);
+    dewarp.setMount(settings.mount || 'ceiling');
+    dewarp.setView(settings.view || { mode: 'equirect' });
+    dewarp.setLens(settings.lens || lensFromVideo(video));
+    let running = true;
+    const tick = () => {
+      if (!running) {
+        return;
+      }
+      const current = document.getElementById(video.id) || video;
+      if (!canvas.isConnected && current.parentElement) {
+        if (window.getComputedStyle(current.parentElement).position === 'static') {
+          current.parentElement.style.position = 'relative';
+        }
+        current.parentElement.appendChild(canvas);
+      }
+      const width = canvas.clientWidth || canvas.width;
+      const height = canvas.clientHeight || canvas.height;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      if (current.readyState >= 2 && current.videoWidth > 0) {
+        if (dewarp.imageWidth !== current.videoWidth) {
+          const lens = lensFromVideo(current);
+          dewarp.setLens(lens);
+          if (!settings.lens) {
+            dewarp.setMount(settings.mount || 'ceiling');
+            dewarp.setView(settings.view || { mode: 'equirect' });
+          }
+        }
+        dewarp.uploadFrame(current);
+        dewarp.render();
+      }
+      window.requestAnimationFrame(tick);
+    };
+    window.requestAnimationFrame(tick);
+    return {
+      dewarp,
+      canvas,
+      stop() {
+        running = false;
+        if (canvas.parentElement) {
+          canvas.parentElement.removeChild(canvas);
+        }
+      },
+    };
+  }
+
+  function autoAttach() {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get('fisheye');
+    if (!mode) {
+      return null;
+    }
+    window.ProviewFisheyeLive = attachLive({
+      mount: params.get('mount') || 'ceiling',
+      view: {
+        mode: mode === 'ptz' ? 'ptz' : 'equirect',
+        panDeg: Number(params.get('pan') || 0),
+        tiltDeg: Number(params.get('tilt') || 0),
+        fovDeg: Number(params.get('fov') || 90),
+      },
+    });
+    return window.ProviewFisheyeLive;
+  }
+
   window.ProviewFisheye = {
     create(canvas) {
       return new FisheyeDewarp(canvas);
     },
+    attachLive,
+    autoAttach,
     supported() {
       const probe = document.createElement('canvas');
       return typeof probe.getContext === 'function' && probe.getContext('webgl2') !== null;
     },
     model: MODEL,
   };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', autoAttach);
+  } else {
+    autoAttach();
+  }
 })();

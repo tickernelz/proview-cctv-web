@@ -41,6 +41,14 @@ impl MountType {
             Self::Wall => MOUNT_WALL,
         }
     }
+
+    pub fn pitch_deg(self) -> f32 {
+        match self {
+            Self::Ceiling => 0.0,
+            Self::Table => 180.0,
+            Self::Wall => 90.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,6 +277,15 @@ impl Direction {
         }
     }
 
+    pub fn pitched(&self, pitch_deg: f32) -> Self {
+        let (sin_pitch, cos_pitch) = pitch_deg.to_radians().sin_cos();
+        Self {
+            x: self.x,
+            y: self.y * cos_pitch - self.z * sin_pitch,
+            z: self.y * sin_pitch + self.z * cos_pitch,
+        }
+    }
+
     pub fn rotated(&self, pan_deg: f32, tilt_deg: f32) -> Self {
         let (sin_pan, cos_pan) = pan_deg.to_radians().sin_cos();
         let (sin_tilt, cos_tilt) = tilt_deg.to_radians().sin_cos();
@@ -424,6 +441,24 @@ impl Map {
                     lens.pixel(direction)
                         .filter(|(px, py)| lens.inside(*px, *py)),
                 );
+            }
+        }
+        Self {
+            width,
+            height,
+            sources,
+        }
+    }
+
+    pub fn equirect_mounted(lens: &Lens, width: u32, height: u32, mount: MountType) -> Self {
+        let pitch = mount.pitch_deg();
+        let mut sources = Vec::with_capacity(width as usize * height as usize);
+        for row in 0..height {
+            let v = (row as f32 + 0.5) / height as f32;
+            for column in 0..width {
+                let u = (column as f32 + 0.5) / width as f32;
+                let direction = Direction::from_equirect(u, v).pitched(pitch);
+                sources.push(lens.pixel(direction).filter(|(px, py)| lens.inside(*px, *py)));
             }
         }
         Self {
@@ -796,6 +831,38 @@ mod tests {
         assert!(
             worst_elevation < 1.0,
             "worst elevation error {worst_elevation}"
+        );
+    }
+
+    #[test]
+    fn mount_pitch_moves_the_covered_hemisphere() {
+        let lens = lens();
+        let ceiling = Map::equirect(&lens, 360, 180);
+        let mounted = Map::equirect_mounted(&lens, 360, 180, MountType::Ceiling);
+        assert_eq!(ceiling.sources, mounted.sources);
+
+        let table = Map::equirect_mounted(&lens, 360, 180, MountType::Table);
+        let ceiling_valid = ceiling.valid_count() as i64;
+        let table_valid = table.valid_count() as i64;
+        assert!(
+            (ceiling_valid - table_valid).abs() <= 16,
+            "ceiling {ceiling_valid} table {table_valid}"
+        );
+        assert!(ceiling.source(180, 90).is_some(), "ceiling centre valid");
+        assert!(table.source(180, 90).is_none(), "table centre must miss");
+        for row in 0..180 {
+            for column in 0..360 {
+                let below = ceiling.source(column, row).is_some();
+                let above = table.source(column, 179 - row).is_some();
+                assert_eq!(below, above, "row {row} column {column}");
+            }
+        }
+
+        let wall = Map::equirect_mounted(&lens, 360, 180, MountType::Wall);
+        let wall_valid = wall.valid_count() as i64;
+        assert!(
+            (wall_valid - ceiling_valid).abs() <= 16,
+            "ceiling {ceiling_valid} wall {wall_valid}"
         );
     }
 

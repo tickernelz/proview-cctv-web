@@ -120,7 +120,12 @@ fn model_names_the_recovered_functions() {
     assert_eq!(body["projected"]["centerX"], 256.0);
     assert_eq!(body["projected"]["maxThetaDeg"], 90.0);
     assert_eq!(body["lensTypes"].as_array().unwrap().len(), 8);
-    assert_eq!(body["mountTypes"].as_array().unwrap().len(), 3);
+    let mounts = body["mountTypes"].as_array().unwrap();
+    assert_eq!(mounts.len(), 3);
+    assert_eq!(mounts[0]["name"], "ceiling");
+    assert_eq!(mounts[0]["pitchDeg"], 0.0);
+    assert_eq!(mounts[1]["pitchDeg"], 180.0);
+    assert_eq!(mounts[2]["pitchDeg"], 90.0);
     let functions: Vec<&str> = body["functions"]
         .as_array()
         .unwrap()
@@ -160,6 +165,50 @@ fn ptz_map_keeps_every_centre_pixel() {
     let body: serde_json::Value = serde_json::from_str(&response.into_string().unwrap()).unwrap();
     let valid = body["valid"].as_u64().unwrap();
     assert_eq!(valid, 320 * 180);
+}
+
+#[test]
+fn mount_rotates_the_covered_hemisphere() {
+    let client = client();
+    sign_in(&client);
+    let ceiling: serde_json::Value = serde_json::from_str(
+        &client
+            .get("/api/fisheye/map?mode=equirect&width=64&height=32&mount=ceiling")
+            .dispatch()
+            .into_string()
+            .unwrap(),
+    )
+    .unwrap();
+    let table: serde_json::Value = serde_json::from_str(
+        &client
+            .get("/api/fisheye/map?mode=equirect&width=64&height=32&mount=table")
+            .dispatch()
+            .into_string()
+            .unwrap(),
+    )
+    .unwrap();
+    let wall: serde_json::Value = serde_json::from_str(
+        &client
+            .get("/api/fisheye/map?mode=equirect&width=64&height=32&mount=wall")
+            .dispatch()
+            .into_string()
+            .unwrap(),
+    )
+    .unwrap();
+    let ceiling_sources = ceiling["sources"].as_array().unwrap();
+    let table_sources = table["sources"].as_array().unwrap();
+    let wall_sources = wall["sources"].as_array().unwrap();
+    assert_ne!(ceiling_sources, table_sources);
+    assert_ne!(ceiling_sources, wall_sources);
+    assert_ne!(table_sources, wall_sources);
+    let ceiling_centre = &ceiling_sources[16 * 64 + 32];
+    assert_ne!(ceiling_centre[0], -1.0);
+    let table_centre = &table_sources[16 * 64 + 32];
+    assert_eq!(table_centre[0], -1.0);
+    let unknown = client
+        .get("/api/fisheye/map?mode=equirect&width=64&height=32&mount=floor")
+        .dispatch();
+    assert_eq!(unknown.status(), Status::BadRequest);
 }
 
 #[test]

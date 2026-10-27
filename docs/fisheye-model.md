@@ -150,9 +150,25 @@ from the pan (offset 84), tilt (92) and roll (100) floats, stored at offsets 848
 | `Calibration::lens`, `LensType`, `MountType` | `SDK_FishEyeFrameSW`, `FISHEYE_LENS_TYPE_E`, `FISHEYE_APP_TYPE_E` |
 | `RgbFrame::warp` | the GL draw with a source map, bilinear instead of the GPU sampler |
 
-`web/fisheye.js` carries the same math into WebGL2 so a live `<video>` frame can be
-dewarped at frame rate in the browser, and `crates/server/src/routes/fisheye.rs` exposes
-the model document, a source map and a fixture render. Two limits are deliberate and
+### Mount type
+
+The vendor exposes `SetInfo_UpsideDown` (a boolean flip of the map) and the three-axis
+`SetInfo_RotateThetaX/Y/Z`, and the SDK mount code (ceiling 0, table 1, wall 2) is what
+selects the combination. Our map applies that as a pitch of the sphere before projection:
+ceiling 0 degrees, table 180, wall 90 (`MountType::pitch_deg`, `Map::equirect_mounted`,
+`u_mountPitch` in the shader). Which exact vendor rotation each mount code maps to is
+inference, because the option page carries only the code, but the two knobs it drives are
+named in the disassembly and the effect is visible: with `mount=table` the pano centre
+stops sampling the lens centre and the covered half moves to the other side.
+
+### Live frame
+
+`web/fisheye.js` carries the same math into WebGL2. `attachLive` wraps the application's
+own `<video id="video">` element in an overlay canvas and dewarpes every animation frame.
+It is opt-in through the URL (`?fisheye=equirect|ptz`, plus `mount`, `pan`, `tilt`, `fov`)
+and publishes itself as `window.ProviewFisheyeLive`, so it changes nothing until asked.
+`crates/server/src/routes/fisheye.rs` exposes the model document, a source map and a
+fixture render. Two limits are deliberate and
 recorded in the parity row: nothing in `web/app.js` calls the renderer yet, so no live
 frame reaches either path, and `MountType` is decoded but does not rotate the map, so
 ceiling, table and wall mount produce the same panorama.
@@ -175,6 +191,8 @@ the route test in `crates/server/tests/fisheye.rs`:
 | Dewarp request 720x360 through the route, release build | 13.10 ms, median of 3, 777654 B BMP |
 | Dewarp request 2048x2048 at the 4194304 px cap, release build | 202.63 ms, median of 3, 12582966 B BMP |
 | Source map request 256x128 JSON, release build | 4.00 ms, median of 3, 547444 B |
+| Live overlay on the app's own video element, headless Chromium | 172848 of 345142 px painted (50.08%, the covered hemisphere) at 554x623 |
+| Mount coverage, 360x180 map | ceiling 32400 px, table 32404, wall 32404; the table map trades the centre pixel for its mirror |
 
 The bearing and ring residuals are one equirect column and one row: 720 columns over 360
 degrees is 0.5 deg, 360 rows over 180 degrees is 0.5 deg, and both land on 0.25 deg, i.e.
