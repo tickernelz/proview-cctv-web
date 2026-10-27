@@ -113,12 +113,14 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                     )
                     .await;
                 }
-                _ => write_frame(
-                    &mut socket,
-                    &header,
-                    &json!({ "Ret": 100, "SessionID": "0x00000000" }),
-                )
-                .await,
+                _ => {
+                    write_frame(
+                        &mut socket,
+                        &header,
+                        &json!({ "Ret": 100, "SessionID": "0x00000000" }),
+                    )
+                    .await
+                }
             }
         }
     });
@@ -204,8 +206,12 @@ async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
     assert_eq!(fps.before, json!(12));
     assert_eq!(fps.requested, json!(15));
     assert_eq!(fps.after, json!(15));
-    assert_eq!(connection.encode_state().await.unwrap().main.bitrate, Some(2048));
-    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&report.backup).unwrap()).unwrap();
+    assert_eq!(
+        connection.encode_state().await.unwrap().main.bitrate,
+        Some(2048)
+    );
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(&report.backup).unwrap()).unwrap();
     assert_eq!(saved["block"], "Simplify.Encode");
     assert_eq!(saved["value"]["MainFormat"]["Video"]["FPS"], json!(12));
     assert_eq!(fake.replies(), 1);
@@ -271,7 +277,8 @@ async fn a_network_write_touches_only_the_named_field_and_never_echoes_credentia
     assert_eq!(written["GateWay"], json!("192.168.0.2"));
     assert_eq!(reports[0].written["Password"], json!("<redacted>"));
     assert_eq!(reports[0].written["UserName"], json!("<redacted>"));
-    let saved: Value = serde_json::from_str(&std::fs::read_to_string(&reports[0].backup).unwrap()).unwrap();
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(&reports[0].backup).unwrap()).unwrap();
     assert_eq!(saved["value"]["GateWay"], json!("192.168.0.1"));
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
@@ -295,7 +302,10 @@ async fn storage_reads_the_card_the_overwrite_rule_and_the_record_mode() {
             }]
         }),
     );
-    fake.seed("General.General", json!({ "OverWrite": "OverWrite", "MachineName": "cam" }));
+    fake.seed(
+        "General.General",
+        json!({ "OverWrite": "OverWrite", "MachineName": "cam" }),
+    );
     fake.seed("Record", json!([{ "RecordMode": "ConfigRecord" }]));
     let (mut connection, handle) = device(fake.clone()).await;
     let state = connection.storage_state().await.unwrap();
@@ -323,7 +333,15 @@ async fn a_record_mode_write_lands_on_the_first_record_entry() {
     assert!(!report.reverted);
     assert_eq!(report.fields[0].field, "0.RecordMode");
     assert_eq!(report.fields[0].after, json!("ManualRecord"));
-    assert_eq!(connection.storage_state().await.unwrap().record_mode.as_deref(), Some("ManualRecord"));
+    assert_eq!(
+        connection
+            .storage_state()
+            .await
+            .unwrap()
+            .record_mode
+            .as_deref(),
+        Some("ManualRecord")
+    );
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }

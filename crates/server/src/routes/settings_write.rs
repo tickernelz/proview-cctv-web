@@ -31,7 +31,9 @@ pub fn routes() -> Vec<rocket::route::Route> {
 const BACKUP_ENV: &str = "PROVIEW_SETTINGS_BACKUP_DIR";
 
 fn backup_dir() -> PathBuf {
-    let explicit = std::env::var(BACKUP_ENV).ok().filter(|value| !value.trim().is_empty());
+    let explicit = std::env::var(BACKUP_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
     if let Some(dir) = explicit {
         return PathBuf::from(dir);
     }
@@ -79,9 +81,7 @@ fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failur
         .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
 }
 
-async fn session(
-    cfg: &State<Config>,
-) -> Result<proview_core::dvrip::client::Connection, Failure> {
+async fn session(cfg: &State<Config>) -> Result<proview_core::dvrip::client::Connection, Failure> {
     let controls = Controls::from_config(cfg);
     let control = controls.dvrip().map_err(control_failure)?;
     control.session().await.map_err(control_failure)
@@ -102,10 +102,7 @@ async fn encode_read(
 ) -> Result<Json<EncodeBody>, Failure> {
     signed_in(store, cookies)?;
     let mut connection = session(cfg).await?;
-    let encode = connection
-        .encode_state()
-        .await
-        .map_err(settings_failure)?;
+    let encode = connection.encode_state().await.map_err(settings_failure)?;
     let _ = connection.logout().await;
     Ok(Json(EncodeBody {
         ok: true,
@@ -167,7 +164,11 @@ async fn encode_write(
         encode,
         storage: None,
     };
-    let status = if reverted { Status::Conflict } else { Status::Ok };
+    let status = if reverted {
+        Status::Conflict
+    } else {
+        Status::Ok
+    };
     Ok((status, Json(body)))
 }
 
@@ -186,10 +187,7 @@ async fn network_read(
 ) -> Result<Json<NetworkBody>, Failure> {
     signed_in(store, cookies)?;
     let mut connection = session(cfg).await?;
-    let network = connection
-        .network_state()
-        .await
-        .map_err(settings_failure)?;
+    let network = connection.network_state().await.map_err(settings_failure)?;
     let _ = connection.logout().await;
     Ok(Json(NetworkBody {
         ok: true,
@@ -244,7 +242,11 @@ async fn network_write(
         .map_err(settings_failure)?;
     let _ = connection.logout().await;
     let reverted = reports.iter().any(|report| report.reverted);
-    let status = if reverted { Status::Conflict } else { Status::Ok };
+    let status = if reverted {
+        Status::Conflict
+    } else {
+        Status::Ok
+    };
     Ok((
         status,
         Json(WriteBody {
@@ -274,10 +276,7 @@ async fn storage_read(
 ) -> Result<Json<StorageBody>, Failure> {
     signed_in(store, cookies)?;
     let mut connection = session(cfg).await?;
-    let storage = connection
-        .storage_state()
-        .await
-        .map_err(settings_failure)?;
+    let storage = connection.storage_state().await.map_err(settings_failure)?;
     let _ = connection.logout().await;
     Ok(Json(StorageBody {
         ok: true,
@@ -315,10 +314,7 @@ async fn storage_write(
         None => None,
     };
     if overwrite.is_none() && record.is_none() {
-        return Err(fail(
-            Status::BadRequest,
-            "name overwrite and/or record",
-        ));
+        return Err(fail(Status::BadRequest, "name overwrite and/or record"));
     }
     let mut connection = session(cfg).await?;
     let mut reports = Vec::new();
@@ -341,7 +337,11 @@ async fn storage_write(
     let storage = connection.storage_state().await.ok();
     let _ = connection.logout().await;
     let reverted = reports.iter().any(|report| report.reverted);
-    let status = if reverted { Status::Conflict } else { Status::Ok };
+    let status = if reverted {
+        Status::Conflict
+    } else {
+        Status::Ok
+    };
     Ok((
         status,
         Json(WriteBody {

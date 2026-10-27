@@ -276,7 +276,7 @@ impl Stream {
         match raw.trim().to_ascii_lowercase().as_str() {
             "main" | "hd" | "primary" => Some(Stream::Main),
             "extra" | "sub" | "sd" | "secondary" => Some(Stream::Extra),
-            _ => return None,
+            _ => None,
         }
     }
 
@@ -308,7 +308,9 @@ pub struct VideoFormat {
 
 impl VideoFormat {
     fn read(block: &Value, format: &str) -> Self {
-        let video = at(block, &format!("{format}.Video")).cloned().unwrap_or(Value::Null);
+        let video = at(block, &format!("{format}.Video"))
+            .cloned()
+            .unwrap_or(Value::Null);
         Self {
             resolution: text(&video, "Resolution"),
             compression: text(&video, "Compression"),
@@ -377,7 +379,8 @@ impl EncodePatch {
         }
         if let Some(resolution) = self.resolution.as_deref() {
             let trimmed = resolution.trim();
-            if trimmed.is_empty() || trimmed.len() > 32 || trimmed.chars().any(char::is_whitespace) {
+            if trimmed.is_empty() || trimmed.len() > 32 || trimmed.chars().any(char::is_whitespace)
+            {
                 return Err(SettingsError::Invalid {
                     field: "resolution",
                     detail: format!("{resolution:?} is not a device resolution token"),
@@ -648,7 +651,10 @@ impl Connection {
                 desired["SpareAddress"] = json!(address.trim());
                 fields.push("SpareAddress".to_string());
             }
-            reports.push(self.write_setting(DNS_BLOCK, desired, &fields, backup_dir).await?);
+            reports.push(
+                self.write_setting(DNS_BLOCK, desired, &fields, backup_dir)
+                    .await?,
+            );
         }
         if patch.gateway.is_some() || patch.submask.is_some() {
             let before = self.setting_block(NETWORK_BLOCK).await?;
@@ -709,7 +715,11 @@ impl Connection {
             .setting_block(RECORD_BLOCK)
             .await
             .ok()
-            .and_then(|value| at(&value, "0.RecordMode").and_then(Value::as_str).map(str::to_string));
+            .and_then(|value| {
+                at(&value, "0.RecordMode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
         Ok(StorageState {
             partitions,
             overwrite,
@@ -725,8 +735,13 @@ impl Connection {
         let before = self.setting_block(GENERAL_BLOCK).await?;
         let mut desired = before.clone();
         desired["OverWrite"] = json!(mode.wire());
-        self.write_setting(GENERAL_BLOCK, desired, &["OverWrite".to_string()], backup_dir)
-            .await
+        self.write_setting(
+            GENERAL_BLOCK,
+            desired,
+            &["OverWrite".to_string()],
+            backup_dir,
+        )
+        .await
     }
 
     pub async fn write_record_mode(
@@ -737,14 +752,20 @@ impl Connection {
         let before = self.setting_block(RECORD_BLOCK).await?;
         let mut desired = before.clone();
         {
-            let entry = slot(&mut desired, "0.RecordMode").ok_or_else(|| SettingsError::Missing {
-                block: RECORD_BLOCK,
-                path: "0.RecordMode".to_string(),
-            })?;
+            let entry =
+                slot(&mut desired, "0.RecordMode").ok_or_else(|| SettingsError::Missing {
+                    block: RECORD_BLOCK,
+                    path: "0.RecordMode".to_string(),
+                })?;
             *entry = json!(mode.wire());
         }
-        self.write_setting(RECORD_BLOCK, desired, &["0.RecordMode".to_string()], backup_dir)
-            .await
+        self.write_setting(
+            RECORD_BLOCK,
+            desired,
+            &["0.RecordMode".to_string()],
+            backup_dir,
+        )
+        .await
     }
 }
 
@@ -851,7 +872,10 @@ mod tests {
             fps: Some(0),
             ..EncodePatch::default()
         };
-        assert!(matches!(patch.validate(), Err(SettingsError::Invalid { field: "fps", .. })));
+        assert!(matches!(
+            patch.validate(),
+            Err(SettingsError::Invalid { field: "fps", .. })
+        ));
         let patch = EncodePatch {
             bitrate: Some(999_999),
             ..EncodePatch::default()
@@ -864,13 +888,25 @@ mod tests {
             })
         ));
         let empty = EncodePatch::default().validate();
-        assert!(matches!(empty, Err(SettingsError::Invalid { field: "encode", .. })));
+        assert!(matches!(
+            empty,
+            Err(SettingsError::Invalid {
+                field: "encode",
+                ..
+            })
+        ));
     }
 
     #[test]
     fn modes_parse_from_the_words_the_route_accepts() {
-        assert_eq!(OverwriteMode::parse("overwrite"), Some(OverwriteMode::Overwrite));
-        assert_eq!(OverwriteMode::parse("stop_record"), Some(OverwriteMode::Stop));
+        assert_eq!(
+            OverwriteMode::parse("overwrite"),
+            Some(OverwriteMode::Overwrite)
+        );
+        assert_eq!(
+            OverwriteMode::parse("stop_record"),
+            Some(OverwriteMode::Stop)
+        );
         assert_eq!(OverwriteMode::parse("sometimes"), None);
         assert_eq!(Stream::parse("sub"), Some(Stream::Extra));
         assert_eq!(Stream::parse("main"), Some(Stream::Main));

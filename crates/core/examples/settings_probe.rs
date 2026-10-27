@@ -118,12 +118,17 @@ fn stream() -> Stream {
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let mode = std::env::args().nth(1).unwrap_or_else(|| "read".to_string());
+    let mode = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "read".to_string());
     match mode.as_str() {
         "read" => {
             let started = Instant::now();
             let (mut connection, serial, agent) = connection().await?;
-            eprintln!("login {:.2}s serial={serial} agent={agent}", started.elapsed().as_secs_f64());
+            eprintln!(
+                "login {:.2}s serial={serial} agent={agent}",
+                started.elapsed().as_secs_f64()
+            );
             let started = Instant::now();
             let state = connection.encode_state().await?;
             eprintln!("encode {:.2}s", started.elapsed().as_secs_f64());
