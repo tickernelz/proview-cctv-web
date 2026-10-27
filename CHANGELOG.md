@@ -17,25 +17,30 @@ the surface the app itself uses (`com.lib.sdk.bean.tour.OPPTZControlBean`).
 Measured through the cloud relay: with two presets in the line the lower lens
 moved 73.10 and 70.77 mean-luma points between stops while the upper lens stayed
 at 0.15-1.07, and `StopTour` dropped it to 0.97-1.57. Every `OPPTZControl` answers
-`Ret 100` before it moves, so the route returns the device configuration as state
-and says so in `note`; `docs/protocol.md` 9A carries the numbers.
+`Ret 100` before it moves, so the listing carries the device configuration and a
+separate note on every action says the ack is not motion; start and stop answer
+409 when the device holds no such line or the line has no points, and `TourTimes`
+is fixed at 1 as the app sends it. `docs/protocol.md` 9A carries the numbers.
 
 ### Changed
 
-- `/api/lens` reads the motorised lens from the device (`Ptz.GunBallLocate`,
-taken once and cached for a minute) and reports `ptzSource: "device"` with a
-`ptzEvidence` string that quotes the block, instead of the measured default it
-used to guess. The measured default stays only as the fallback when the device
-does not answer.
+- `/api/lens` reads the motorised lens from the device (`Ptz.GunBallLocate`) and
+reports `ptzSource: "device"` with a `ptzEvidence` string that quotes the block
+and names the host it came from, instead of the measured default it used to
+guess. The read never blocks the live stream: the route answers from a cache and
+refreshes in the background with one bounded probe (6 s) at a time, keeping a
+device answer for 10 minutes and a failure or timeout for 1 minute. The measured
+default stays only as the fallback when the cache holds nothing.
 - `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
 `ptz_lens_has_no_motor`, the device own locate block in the message, and a
 pointer to `lens=bottom`, so the refusal carries evidence instead of a bare
 conflict.
 - The PTZ capability report names the tour row `ptz patrol` (it was
 `ptz patrol over dvrip`, which no client matched) and adds `ptz move` on the
-lower lens, `ptz move` blocked on the upper lens with the device reason, and a
-`ptz locate` row. The pad gained a Tour control that starts and stops the device
-tour and says the ack is not motion.
+lower lens gated on the device answering (`SupportPTZDirectionControl` or
+`Ptz.GunBallLocate`), `ptz move` blocked on the upper lens with the device
+reason, and a `ptz locate` row. The pad gained a Tour control that starts and
+stops the first tour line that has points and says the ack is not motion.
 
 ## 0.3.2 — 2026-10-27
 

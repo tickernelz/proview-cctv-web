@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use proview_core::config::Config;
-use proview_core::device::{ptz_binding, Lens};
+use proview_core::device::{cached_ptz_binding, refresh_ptz_binding, Lens};
 use proview_core::lens::{frame_size_from_sps, FrameSize, FrameSizeSource, LensCapabilities};
 use proview_core::media::nal::split_annexb;
 use proview_core::model::{LensStreamInfo, LensView, LensViewRequest, PtzBindingView};
@@ -196,7 +196,8 @@ async fn lens_view(
     }
     let capabilities =
         LensCapabilities::from_flag_list(&std::env::var(CAPABILITIES_ENV).unwrap_or_default());
-    let binding = ptz_binding(config).await.map(|binding| PtzBindingView {
+    refresh_ptz_binding(config);
+    let binding = cached_ptz_binding(config).map(|binding| PtzBindingView {
         lens: match binding.lens {
             Lens::Top => 0,
             _ => 1,

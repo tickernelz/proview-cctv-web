@@ -1296,12 +1296,12 @@ async function toggleTour() {
       return;
     }
     const tour = await api('/api/device/controls/tour');
-    const line = (tour.lines || [])[0];
+    const line = (tour.lines || []).find((entry) => (entry.points || []).length > 0);
     if (!line) {
-      setControlStatus('No tour line on this camera: ' + (tour.note || 'add presets to a tour first'));
+      setControlStatus('No tour line with points on this camera: ' + (tour.note || 'add presets to a tour first'));
       return;
     }
-    const started = await api('/api/device/controls/tour/start?tour=' + enc(line.id) + '&times=1', { method: 'POST' });
+    const started = await api('/api/device/controls/tour/start?tour=' + enc(line.id), { method: 'POST' });
     state.tour = line.id;
     button.setAttribute('aria-pressed', 'true');
     const stops = line.points.length === 1 ? '1 stop' : line.points.length + ' stops';

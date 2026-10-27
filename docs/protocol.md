@@ -1083,6 +1083,25 @@ sensor is the lower half. `Uart.PTZControlCmd[0]` additionally carries
 `ptzSource: "device"` with this block as `ptzEvidence` instead of the measured
 default it used to guess.
 
+### 9A.5 How the route reads the binding without stalling the picture
+
+`/api/lens` sits on the path that starts the live stream (`web/app.js` awaits it
+before it asks for the stream), so it never waits on the camera: it answers from
+the cache, falls back to the measured default when the cache holds nothing, and
+asks for a refresh in the background. One refresh is one DVRIP session bounded
+by `tokio::time::timeout` at 10 s. The budget covers the measured path with
+headroom: 1.0 s for the whole probe through a local relay bridge, and 3.2 s for
+the direct chain (0.28 s envelope login, 1.02 s tunnel, 1.87 s DVRIP login).
+While the probe runs the route keeps answering in 1.3-2.3 ms with the measured
+default, then replies `device` once the answer lands.
+
+Every outcome is stored, not just success: a device answer lives 10 minutes
+(`GunBallLocate` is static configuration), a failure or a timeout lives 1
+minute so a camera that comes back is picked up without a restart. One probe is
+in flight at a time, so a burst of requests cannot multiply sessions; before
+this, a silent peer held the request for as long as the socket lived and a dead
+device was dialled again on every call.
+
 ## 10. Cloud account: the v2 portal, as implemented here
 
 `crates/core/src/cloud/` implements the account cloud of the vendor's own

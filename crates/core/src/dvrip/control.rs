@@ -81,6 +81,7 @@ pub struct DeviceCapabilities {
     pub talk: Capability,
     pub ptz_tour: Capability,
     pub ptz_locate: Capability,
+    pub ptz_direction: Capability,
     pub tour_lines: Vec<TourLine>,
 }
 
@@ -536,6 +537,11 @@ impl Connection {
                 &tour_lines,
             ),
             ptz_locate: locate_capability(locate),
+            ptz_direction: flag_capability(
+                &abilities,
+                &["OtherFunction", "SupportPTZDirectionControl"],
+                "no PTZ direction control reported",
+            ),
             tour_lines,
         })
     }
@@ -634,14 +640,10 @@ impl Connection {
         self.ptz_control(direction.wire(), 0, parameter).await
     }
 
-    pub async fn tour_lines(&mut self) -> Result<Vec<TourLine>, DvrError> {
+    pub async fn tour_listing(&mut self) -> Result<(Vec<TourLine>, Vec<PresetEntry>), DvrError> {
         let reply = self.config_get("Uart").await?;
-        Ok(tour_lines_of(reply.get("Uart").unwrap_or(&Value::Null)))
-    }
-
-    pub async fn presets(&mut self) -> Result<Vec<PresetEntry>, DvrError> {
-        let reply = self.config_get("Uart").await?;
-        Ok(presets_of(reply.get("Uart").unwrap_or(&Value::Null)))
+        let block = reply.get("Uart").unwrap_or(&Value::Null);
+        Ok((tour_lines_of(block), presets_of(block)))
     }
 
     pub async fn ptz_locate(&mut self) -> Result<Option<PtzLocate>, DvrError> {
@@ -675,13 +677,8 @@ impl Connection {
             .map(|_| ())
     }
 
-    pub async fn start_tour(
-        &mut self,
-        channel: usize,
-        tour: i64,
-        times: i64,
-    ) -> Result<(), DvrError> {
-        let parameter = json!({ "Step": 3, "Tour": tour, "TourTimes": times.max(1) });
+    pub async fn start_tour(&mut self, channel: usize, tour: i64) -> Result<(), DvrError> {
+        let parameter = json!({ "Step": 3, "Tour": tour, "TourTimes": 1 });
         self.ptz_control("StartTour", channel, parameter)
             .await
             .map(|_| ())
@@ -716,6 +713,7 @@ impl Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dvrip::fake::{connect, json_reply, serve};
 
     #[test]
     fn modes_use_the_wire_strings_the_device_reports() {
@@ -863,6 +861,45 @@ mod tests {
         assert!(locate_of(&json!({ "GunBallLocate": null })).is_none());
         assert!(locate_of(&json!({})).is_none());
         assert!(!locate_capability(None).supported);
+    }
+
+    #[tokio::test]
+    async fn the_tour_wire_carries_the_preset_index_and_one_tour_time() {
+        let (address, handle) = serve(vec![
+            json_reply(json!({ "Ret": 100 })),
+            json_reply(json!({ "Ret": 100 })),
+        ])
+        .await;
+        let mut connection = connect(&address).await;
+        connection
+            .add_tour_point(0, 3, 2, 1)
+            .await
+            .expect("AddTour is acked");
+        connection
+            .start_tour(0, 3)
+            .await
+            .expect("StartTour is acked");
+        let sent = handle.await.expect("the fake device answers both frames");
+        assert_eq!(sent.len(), 2);
+
+        let add: Value = serde_json::from_str(sent[0].trim_end_matches(['\0', '\n']).trim())
+            .expect("AddTour json");
+        assert_eq!(add["OPPTZControl"]["Command"], "AddTour");
+        let parameter = &add["OPPTZControl"]["Parameter"];
+        assert_eq!(parameter["Preset"], 2);
+        assert_eq!(parameter["PresetIndex"], 1);
+        assert_eq!(parameter["Tour"], 3);
+        assert_eq!(parameter["Step"], 3);
+        assert_eq!(parameter["TourTimes"], 1);
+        assert_eq!(parameter["Channel"], 0);
+
+        let start: Value = serde_json::from_str(sent[1].trim_end_matches(['\0', '\n']).trim())
+            .expect("StartTour json");
+        assert_eq!(start["OPPTZControl"]["Command"], "StartTour");
+        let parameter = &start["OPPTZControl"]["Parameter"];
+        assert_eq!(parameter["Tour"], 3);
+        assert_eq!(parameter["TourTimes"], 1);
+        assert!(parameter.get("Preset").is_none());
     }
 
     #[test]

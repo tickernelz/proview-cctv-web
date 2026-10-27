@@ -179,7 +179,8 @@ async fn ptz_move(
     if let Err(error) = outcome {
         return Err(match error {
             ControlError::Blocked { operation, reason } if lens == Lens::Top => {
-                let evidence = match proview_core::device::ptz_binding(cfg).await {
+                proview_core::device::refresh_ptz_binding(cfg);
+                let evidence = match proview_core::device::cached_ptz_binding(cfg) {
                     Some(binding) => format!("{reason}; {}", binding.evidence),
                     None => reason.to_string(),
                 };
@@ -433,7 +434,9 @@ pub struct TourStateBody {
     pub note: String,
 }
 
-const TOUR_NOTE: &str = "the device answers every OPPTZControl with Ret 100 before it moves, so this listing is the device's own configuration and the frames are the only proof of motion";
+const TOUR_LISTING_NOTE: &str = "this listing is the device's own configuration; the device answers every OPPTZControl with Ret 100 before it moves, so only the frames prove motion";
+
+const TOUR_ACTION_NOTE: &str = "Ret 100 is the device's ack, sent before the motor moves; only frames prove motion, and GET /api/device/controls/tour shows what the device stored";
 
 #[get("/device/controls/tour")]
 async fn tour_state(
@@ -451,7 +454,7 @@ async fn tour_state(
         lines: state.lines,
         presets: state.presets,
         locate: state.locate,
-        note: TOUR_NOTE.to_string(),
+        note: TOUR_LISTING_NOTE.to_string(),
     }))
 }
 
@@ -461,38 +464,33 @@ pub struct TourActionBody {
     pub backend: String,
     pub action: String,
     pub tour: i64,
-    pub times: i64,
+    pub index: Option<i64>,
     pub note: String,
 }
 
-fn tour_action_body(action: &str, tour: i64, times: i64) -> TourActionBody {
+fn tour_action_body(action: &str, tour: i64, index: Option<i64>) -> TourActionBody {
     TourActionBody {
         ok: true,
         backend: Backend::Dvrip.as_str().to_string(),
         action: action.to_string(),
         tour,
-        times,
-        note: TOUR_NOTE.to_string(),
+        index,
+        note: TOUR_ACTION_NOTE.to_string(),
     }
 }
 
-#[post("/device/controls/tour/start?<tour>&<times>")]
+#[post("/device/controls/tour/start?<tour>")]
 async fn tour_start(
     tour: i64,
-    times: Option<i64>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourActionBody>, Failure> {
     signed_in(store, cookies)?;
-    let times = times.unwrap_or(1).clamp(1, 3600);
     let controls = controls(cfg);
     let control = controls.dvrip().map_err(control_failure)?;
-    control
-        .start_tour(tour, times)
-        .await
-        .map_err(control_failure)?;
-    Ok(Json(tour_action_body("start", tour, times)))
+    control.start_tour(tour).await.map_err(control_failure)?;
+    Ok(Json(tour_action_body("start", tour, None)))
 }
 
 #[post("/device/controls/tour/stop?<tour>")]
@@ -506,7 +504,7 @@ async fn tour_stop(
     let controls = controls(cfg);
     let control = controls.dvrip().map_err(control_failure)?;
     control.stop_tour(tour).await.map_err(control_failure)?;
-    Ok(Json(tour_action_body("stop", tour, 0)))
+    Ok(Json(tour_action_body("stop", tour, None)))
 }
 
 #[post("/device/controls/tour/add?<tour>&<preset>&<index>")]
@@ -532,7 +530,7 @@ async fn tour_add(
         .add_tour_point(tour, preset, index)
         .await
         .map_err(control_failure)?;
-    Ok(Json(tour_action_body("add", tour, index)))
+    Ok(Json(tour_action_body("add", tour, Some(index))))
 }
 
 #[post("/device/controls/tour/clear?<tour>")]
@@ -546,7 +544,7 @@ async fn tour_clear(
     let controls = controls(cfg);
     let control = controls.dvrip().map_err(control_failure)?;
     control.clear_tour(tour).await.map_err(control_failure)?;
-    Ok(Json(tour_action_body("clear", tour, 0)))
+    Ok(Json(tour_action_body("clear", tour, None)))
 }
 
 #[get("/device/controls/settings")]
