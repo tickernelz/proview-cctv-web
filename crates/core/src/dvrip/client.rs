@@ -1,4 +1,3 @@
-use rand::Rng;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -83,11 +82,7 @@ pub struct LoginOk {
 }
 
 fn monitor_random() -> String {
-    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    let mut rng = rand::thread_rng();
-    (0..4)
-        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
-        .collect()
+    crate::provider::rps::random_lower(4)
 }
 
 #[cfg(test)]
