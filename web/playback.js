@@ -91,8 +91,10 @@
     if (state.status.openMs !== undefined) parts.push('tunnel ' + (state.status.openMs / 1000).toFixed(2) + 's');
     if (state.status.primeMs !== undefined) parts.push('prime ' + (state.status.primeMs / 1000).toFixed(2) + 's');
     if (state.status.fps) {
-      const settled = state.status.fpsSettled === false ? ' (not settled)' : '';
-      parts.push(state.status.fps + ' fps' + settled);
+      const source = state.status.fpsSource && state.status.fpsSource !== 'settled'
+        ? ' (' + state.status.fpsSource + ')'
+        : '';
+      parts.push(state.status.fps + ' fps' + source);
     }
     if (state.status.codec) parts.push(state.status.codec);
     if (state.frameAt !== null) {

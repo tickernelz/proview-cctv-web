@@ -7,8 +7,8 @@ use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
 use proview_core::cloud::MISSING_CLOUD_IDENTITY;
 use proview_core::config::Config;
 use proview_core::dvrip::playback::{
-    access_unit, codec_of, is_video, shift, FrameRate, MediaReader, PlaybackFile, RecordKind,
-    Session, PLAYBACK_DATA,
+    access_unit, codec_of, is_video, shift, snap_rate, FrameRate, MediaReader, PlaybackFile,
+    RecordKind, Session, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
 use proview_core::media::Codec;
@@ -26,11 +26,12 @@ use tokio::process::Command;
 
 use crate::routes::{fail, restore, session_id, Failure};
 
-const RANGE_WAIT: Duration = Duration::from_secs(8);
+const PRIME_READ: Duration = Duration::from_secs(3);
 const PRIME_WAIT: Duration = Duration::from_secs(8);
 const DEFAULT_WINDOW: u32 = 60;
 const MIN_WINDOW: u32 = 5;
 const MAX_WINDOW: u32 = 600;
+const DEFAULT_FPS: f64 = 12.0;
 const KEY_GRACE: usize = 240;
 
 pub fn routes() -> Vec<rocket::route::Route> {
@@ -198,6 +199,26 @@ struct WatchQuery {
     end: String,
     start: Option<u32>,
     window: Option<u32>,
+}
+
+type RateCache = std::sync::Mutex<std::collections::HashMap<String, f64>>;
+
+fn known_rates() -> &'static RateCache {
+    static RATES: std::sync::OnceLock<RateCache> = std::sync::OnceLock::new();
+    RATES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn known_rate(device: &str) -> Option<f64> {
+    known_rates()
+        .lock()
+        .ok()
+        .and_then(|rates| rates.get(device).copied())
+}
+
+fn remember_rate(device: &str, fps: f64) {
+    if let Ok(mut rates) = known_rates().lock() {
+        rates.insert(device.to_string(), fps);
+    }
 }
 
 fn demuxer(codec: Codec) -> &'static str {
@@ -374,27 +395,26 @@ pub fn watch(
             let mut video = 0usize;
             let mut codec = None;
             let mut first_key = Instant::now();
-            let mut priming = true;
-            while priming {
-                let record = match session.frame(RANGE_WAIT).await {
+            loop {
+                if rate.settled() || video >= KEY_GRACE || first_key.elapsed() > PRIME_WAIT {
+                    break;
+                }
+                let record = match session.frame(PRIME_READ).await {
                     Ok(Some(record)) => record,
                     Ok(None) => {
-                        let _ = stream
-                            .send(text_frame(serde_json::json!({
-                                "type": "error",
-                                "message": "the device sent no media inside the wait window",
-                            })))
-                            .await;
-                        return Ok(());
+                        break;
                     }
                     Err(error) => {
-                        let _ = stream
-                            .send(text_frame(serde_json::json!({
-                                "type": "error",
-                                "message": error.to_string(),
-                            })))
-                            .await;
-                        return Ok(());
+                        if key_frames == 0 {
+                            let _ = stream
+                                .send(text_frame(serde_json::json!({
+                                    "type": "error",
+                                    "message": error.to_string(),
+                                })))
+                                .await;
+                            return Ok(());
+                        }
+                        break;
                     }
                 };
                 if record.id != PLAYBACK_DATA {
@@ -416,12 +436,6 @@ pub fn watch(
                         pending.push(bytes);
                     }
                 }
-                if rate.settled() && key_frames >= 3 {
-                    priming = false;
-                }
-                if video >= KEY_GRACE || first_key.elapsed() > PRIME_WAIT {
-                    priming = false;
-                }
             }
 
             let codec = match codec {
@@ -441,7 +455,17 @@ pub fn watch(
                     return Ok(());
                 }
             };
-            let fps = rate.settled().then_some(rate.per_second);
+            let remembered = known_rate(&params.device);
+            let (fps, fps_source) = if rate.settled() {
+                remember_rate(&params.device, rate.per_second);
+                (Some(rate.per_second), "settled")
+            } else if let Some(known) = remembered {
+                (Some(known), "remembered")
+            } else if rate.keys() >= 3 {
+                (rate.estimate().map(snap_rate), "estimate")
+            } else {
+                (Some(DEFAULT_FPS), "default")
+            };
             let mut child = match ffmpeg(codec, fps).spawn() {
                 Ok(child) => child,
                 Err(error) => {
@@ -485,6 +509,8 @@ pub fn watch(
                     "codec": demuxer(codec),
                     "fps": fps.map(|value| (value * 1000.0).round() / 1000.0),
                     "fpsSettled": rate.settled(),
+                    "fpsSource": fps_source,
+                    "fpsMeasured": rate.estimate().map(|value| (value * 1000.0).round() / 1000.0),
                     "keySpan": rate.span_seconds(),
                     "primedFrames": video,
                     "primedKeys": key_frames,

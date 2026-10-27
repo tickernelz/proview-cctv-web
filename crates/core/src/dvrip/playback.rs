@@ -713,12 +713,14 @@ pub fn stamp_seconds(raw: u32) -> Option<i64> {
     )
 }
 
-const STANDARD_RATES: [f64; 11] = [1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0];
+const STANDARD_RATES: [f64; 12] = [
+    1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 12.0, 12.5, 15.0, 20.0, 25.0, 30.0,
+];
 const SETTLE_KEYS: usize = 4;
 const SETTLE_SPAN: i64 = 9;
 const SNAP_TOLERANCE: f64 = 0.15;
 
-fn snap_rate(measured: f64) -> f64 {
+pub fn snap_rate(measured: f64) -> f64 {
     let nearest = STANDARD_RATES.iter().copied().min_by(|left, right| {
         (measured - left)
             .abs()
@@ -737,6 +739,7 @@ pub struct FrameRate {
     keys: usize,
     first: Option<i64>,
     span: i64,
+    measured: Option<f64>,
     settled: bool,
 }
 
@@ -748,6 +751,7 @@ impl Default for FrameRate {
             keys: 0,
             first: None,
             span: 0,
+            measured: None,
             settled: false,
         }
     }
@@ -770,6 +774,10 @@ impl FrameRate {
         self.frames
     }
 
+    pub fn estimate(&self) -> Option<f64> {
+        self.measured
+    }
+
     pub fn observe(&mut self, record: &Record) {
         if !is_video(record) {
             return;
@@ -789,6 +797,12 @@ impl FrameRate {
                 self.frames += 1;
                 self.keys += 1;
                 let span = seconds - first;
+                if span >= 2 {
+                    let measured = (self.frames.saturating_sub(1)) as f64 / span as f64;
+                    if (1.0..=60.0).contains(&measured) {
+                        self.measured = Some(measured);
+                    }
+                }
                 if self.keys >= SETTLE_KEYS && span >= SETTLE_SPAN {
                     let measured = (self.frames.saturating_sub(1)) as f64 / span as f64;
                     if (1.0..=60.0).contains(&measured) {
@@ -974,10 +988,10 @@ mod tests {
     #[test]
     fn the_frame_rate_ignores_the_second_that_the_packed_stamp_rounds() {
         let mut rate = FrameRate::default();
-        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 0)), 36);
-        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 3)), 36);
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 0)), 35);
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 3)), 35);
         assert!(!rate.settled());
-        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 6)), 36);
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 6)), 35);
         assert!(!rate.settled());
         feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 9)), 0);
         assert!(rate.settled());
@@ -1007,11 +1021,32 @@ mod tests {
     }
 
     #[test]
+    fn the_rate_snapping_prefers_the_nearest_standard_rate() {
+        assert_eq!(snap_rate(12.475), 12.5);
+        assert_eq!(snap_rate(12.0), 12.0);
+        assert_eq!(snap_rate(11.4), 12.0);
+        assert_eq!(snap_rate(24.9), 25.0);
+        assert_eq!(snap_rate(9.1), 10.0);
+        assert_eq!(snap_rate(40.0), 40.0);
+    }
+
+    #[test]
+    fn an_unsettled_rate_still_reports_its_measurement() {
+        let mut rate = FrameRate::default();
+        feed(&mut rate, Some(packed(2026, 10, 24, 10, 34, 0)), 35);
+        assert_eq!(rate.estimate(), None);
+        feed(&mut rate, Some(packed(2026, 10, 24, 10, 34, 3)), 35);
+        assert!(!rate.settled());
+        let measured = rate.estimate().expect("estimate after two keys");
+        assert!((measured - 12.0).abs() < 0.001, "{measured}");
+    }
+
+    #[test]
     fn the_frame_rate_survives_a_minute_and_an_hour_boundary() {
         let mut minute = FrameRate::default();
-        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 54)), 36);
-        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 57)), 36);
-        feed(&mut minute, Some(packed(2026, 10, 24, 20, 56, 0)), 36);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 54)), 35);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 57)), 35);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 56, 0)), 35);
         feed(&mut minute, Some(packed(2026, 10, 24, 20, 56, 3)), 0);
         assert!(
             (minute.per_second - 12.0).abs() < 0.001,
@@ -1020,9 +1055,9 @@ mod tests {
         );
 
         let mut hour = FrameRate::default();
-        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 54)), 36);
-        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 57)), 36);
-        feed(&mut hour, Some(packed(2026, 10, 24, 21, 0, 0)), 36);
+        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 54)), 35);
+        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 57)), 35);
+        feed(&mut hour, Some(packed(2026, 10, 24, 21, 0, 0)), 35);
         feed(&mut hour, Some(packed(2026, 10, 24, 21, 0, 3)), 0);
         assert!(
             (hour.per_second - 12.0).abs() < 0.001,
