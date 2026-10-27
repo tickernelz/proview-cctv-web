@@ -150,12 +150,13 @@ async fn encode_write(
         resolution: query.resolution.clone(),
     };
     let mut connection = session(cfg).await?;
+    let write = WriteWindow::new(backup_dir());
     let report = connection
-        .write_encode(stream, &patch, &WriteWindow::new(backup_dir()))
+        .write_encode(stream, &patch, &write)
         .await
         .map_err(settings_failure)?;
-    let encode = connection.encode_state().await.ok();
-    let _ = connection.logout().await;
+    let encode = connection.encode_state_within(write.timeout).await.ok();
+    let _ = connection.logout_within(write.timeout).await;
     let reverted = report.reverted;
     let body = WriteBody {
         ok: !reverted,
@@ -253,11 +254,12 @@ async fn network_write(
         ));
     }
     let mut connection = session(cfg).await?;
+    let write = WriteWindow::new(backup_dir());
     let reports = connection
-        .write_network(&patch, &WriteWindow::new(backup_dir()))
+        .write_network(&patch, &write)
         .await
         .map_err(settings_failure)?;
-    let _ = connection.logout().await;
+    let _ = connection.logout_within(write.timeout).await;
     let reverted = reports.iter().any(|report| report.reverted);
     let errors = Vec::new();
     let status = if reverted {
@@ -336,28 +338,28 @@ async fn storage_write(
         return Err(fail(Status::BadRequest, "name overwrite and/or record"));
     }
     let mut connection = session(cfg).await?;
+    let write = WriteWindow::new(backup_dir());
     let mut reports = Vec::new();
     let mut errors = Vec::new();
     if let Some(mode) = overwrite {
-        match connection
-            .write_overwrite(mode, &WriteWindow::new(backup_dir()))
-            .await
-        {
+        match connection.write_overwrite(mode, &write).await {
             Ok(report) => reports.push(report),
             Err(error) => errors.push(error.to_string()),
         }
     }
     if let Some(mode) = record {
-        match connection
-            .write_record_mode(mode, &WriteWindow::new(backup_dir()))
-            .await
-        {
+        match connection.write_record_mode(mode, &write).await {
             Ok(report) => reports.push(report),
             Err(error) => errors.push(error.to_string()),
         }
     }
-    let storage = connection.storage_state().await.ok();
-    let _ = connection.logout().await;
+    let storage = if errors.is_empty() {
+        let storage = connection.storage_state_within(write.timeout).await.ok();
+        let _ = connection.logout_within(write.timeout).await;
+        storage
+    } else {
+        None
+    };
     let reverted = reports.iter().any(|report| report.reverted);
     let status = if errors.is_empty() && !reverted {
         Status::Ok

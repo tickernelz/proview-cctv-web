@@ -441,6 +441,16 @@ impl Connection {
         require_ok(&reply).map(|_| ())
     }
 
+    pub async fn logout_within(&mut self, window: std::time::Duration) -> Result<(), DvrError> {
+        match tokio::time::timeout(window, self.logout()).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.session = 0;
+                Err(DvrError::NoReply)
+            }
+        }
+    }
+
     pub async fn snapshot(&mut self, channel: u8) -> Result<Vec<u8>, DvrError> {
         let session = format!("0x{:08X}", self.session);
         self.send_json(
