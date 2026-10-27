@@ -341,6 +341,19 @@ impl Connection {
         parse_json(&reply)
     }
 
+    pub async fn send_plain(
+        &mut self,
+        channel: u8,
+        id: u16,
+        body: &serde_json::Value,
+    ) -> Result<(), DvrError> {
+        let mut payload =
+            serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        payload.push(0);
+        self.send_frame_on(channel, false, id, &payload).await?;
+        Ok(())
+    }
+
     pub async fn send_encrypted(
         &mut self,
         cipher: &crate::media::dhav::MediaCipher,

@@ -139,6 +139,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => String::new(),
         };
         eprintln!("communicate key {} hex chars", sealed.len());
+        if std::env::var("PROVIEW_PLAIN_QUERY").is_ok() {
+            let session_text = format!("0x{:08x}", connection.session());
+            let body = serde_json::json!({ "Name": "SystemInfo", "SessionID": session_text });
+            match connection.send_plain(0, 0x03fc, &body).await {
+                Ok(()) => eprintln!("plainq   sent"),
+                Err(error) => eprintln!("plainq failed: {error:?}"),
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(5), connection.recv()).await {
+                Ok(Ok((h, p))) => eprintln!("plainq reply id=0x{:04x} {}", h.id, String::from_utf8_lossy(&p[..p.len().min(80)])),
+                other => eprintln!("plainq reply: {other:?}"),
+            }
+            let start = serde_json::json!({
+                "Name": "OPMonitor",
+                "OPMonitor": {
+                    "Action": "Start",
+                    "Parameter": {
+                        "Channel": 0,
+                        "CombinMode": "NONE",
+                        "StreamType": "Main",
+                        "TransMode": "TCP",
+                        "VEKEY1": rps::random_lower(60),
+                    },
+                },
+                "SessionID": format!("0x{:08x}", connection.session()),
+            });
+            match connection.send_plain(0, 0x0582, &start).await {
+                Ok(()) => eprintln!("plainstart sent"),
+                Err(error) => eprintln!("plainstart failed: {error:?}"),
+            }
+        }
         let encrypted_login = std::env::var("PROVIEW_ENCRYPTED_LOGIN").is_ok();
         if encrypted_login {
             let cipher = proview_core::media::dhav::MediaCipher::from_text(&session_key)
