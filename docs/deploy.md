@@ -70,7 +70,10 @@ workflow reads it from the repository secrets `PROVIEW_APP_UUID`,
 `cloud-identity.env` file next to the workspace and sets
 `PROVIEW_REQUIRE_CLOUD_IDENTITY=1`; `crates/core/build.rs` bakes the three
 values into the binary as constants, logs one line that the identity is present
-(never the values), and fails the build when any of them is missing. The file is
+(never the values), and fails the build when any of them is missing. Before
+packaging, every job also greps the built binary for the three values, so a
+target that somehow skipped the injection fails the release instead of shipping
+without an identity. The file is
 gitignored, exists only on the runner, and the release jobs keep the target
 directory out of the Actions cache so the values are not cached either.
 

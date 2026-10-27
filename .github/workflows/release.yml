@@ -92,6 +92,18 @@ jobs:
           rustup target add ${{ matrix.target }} || true
           cargo build --release -p proview-server --target ${{ matrix.target }}
 
+
+      - name: Check the server binary carries the identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bin="target/${target}/release/proview-server"
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${bin}.exe"; fi
+          matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l)
+          echo "CLOUD IDENTITY: ${bin} carries ${matches} of 3 values"
+          if [ "${matches}" -ne 3 ]; then exit 1; fi
+
       - name: Package archive
         shell: bash
         run: |
@@ -242,6 +254,19 @@ jobs:
           }
           Write-Host "SIGNING: signed $signed installer(s)"
           if ($signed -eq 0) { exit 1 }
+
+
+      - name: Check the desktop binary carries the identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          bins=$(find target -type f \( -name proview-desktop -o -name proview-desktop.exe \) -path '*/release/*' | head -5)
+          if [ -z "${bins}" ]; then echo "CLOUD IDENTITY: no desktop binary found"; exit 1; fi
+          for bin in ${bins}; do
+            matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l)
+            echo "CLOUD IDENTITY: ${bin} carries ${matches} of 3 values"
+            if [ "${matches}" -ne 3 ]; then exit 1; fi
+          done
 
       - name: Collect bundles
         shell: bash
