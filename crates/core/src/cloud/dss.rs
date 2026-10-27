@@ -328,17 +328,11 @@ fn stamp_seconds(text: &str) -> Option<i64> {
     Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
 }
 
-fn envelope_client() -> Option<&'static super::envelope::EnvelopeClient> {
-    static CLIENT: std::sync::OnceLock<Option<super::envelope::EnvelopeClient>> =
-        std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            let identity = Identity::resolve();
-            identity
-                .is_complete()
-                .then(|| super::envelope::EnvelopeClient::new(identity))
-        })
-        .as_ref()
+pub fn envelope_client() -> Option<super::envelope::EnvelopeClient> {
+    let identity = Identity::resolve();
+    identity
+        .is_complete()
+        .then(|| super::envelope::EnvelopeClient::new(identity))
 }
 
 pub async fn cloud_recordings(

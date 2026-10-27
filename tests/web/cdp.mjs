@@ -105,6 +105,7 @@ export async function startServer(devices, { clips = {}, env = {} } = {}) {
   await waitFor(async () => (await fetch(base + '/api/health')).ok, 30000, 'the server at ' + base + '\n' + log);
   return {
     base,
+    dataDir: data,
     async stop() {
       await ended(child);
       rmSync(dir, { recursive: true, force: true, maxRetries: 5 });

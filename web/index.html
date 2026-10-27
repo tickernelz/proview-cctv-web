@@ -137,7 +137,7 @@
           <button class="pk home" type="button" data-act="home" data-requires="device" aria-label="Stop"><svg class="i i-16" aria-hidden="true"><use href="#i-stop"></use></svg></button>
           <button class="pk right" type="button" data-act="right" data-requires="device" aria-label="Pan right"><svg class="i" aria-hidden="true"><use href="#i-chevron-right"></use></svg></button>
           <button class="pk down" type="button" data-act="down" data-requires="device" aria-label="Tilt down"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-          <div class="pad-note"><span id="preset-label">Presets</span><span id="presets" class="presets"></span><span id="control-status" role="status"></span></div>
+          <div class="pad-note"><span id="preset-label">Presets</span><span id="presets" class="presets"></span><button class="btn btn-text" id="tour" type="button" data-act="cruise" data-requires="device" aria-pressed="false">Tour</button><span id="control-status" role="status"></span></div>
         </div>
         <div class="fs-line" id="fs-line" hidden><span id="fs-name"></span><span id="fs-time"></span></div>
       </div>
@@ -285,6 +285,7 @@
 <script src="/app.js"></script>
 <script src="/account.js"></script>
 <script src="/talk.js"></script>
+<script src="/grid.js"></script>
 <script src="/recordings.js" defer></script>
 </body>
 </html>
