@@ -95,6 +95,12 @@ pub struct Device {
     pub online: bool,
     pub channels: u32,
     pub lan_host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_checked_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

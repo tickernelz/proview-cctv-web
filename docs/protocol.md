@@ -307,6 +307,83 @@ Three are present in the SDK. In order of implementation cost:
    top. This is the expensive one; nothing here should be attempted before
    1 and 2 are exhausted.
 
+## 4A. Cloud device status (pub-status, `/v1/status/third`)
+
+`IXMCloud::GetDevsStatus` (`libFunSDK.so` @ `0xf54a24`) builds a JSON
+envelope and POSTs it to the status cluster; the URL template is
+`%s://%s:%d/%s` (strings `0x4efa47`/`0x58f47f` for the scheme, `0x58f4d7`
+for the template) with the path `v1/status/third` (`0x4ae3e8`), and the
+message types are `MSG_STATUS_MULTIQUERY_REQ` (`0x5028e6`) and
+`MSG_STATUS_LOCALQUERY_REQ` (`0x49d43f`). The object keys read from the code
+are `StatusProtocol` (`0x4946a8`), `Header` (`0x5871e0`), `Body`
+(`0x519d7e`), and per entry `SerialNumber` (`0x5094ed`), `AuthCode`
+(`0x575917`) and `Manufacturer` (`0x59199a`).
+
+Request, as sent by `crates/core/src/cloud/status.rs`:
+
+```
+POST http://pub-status.secu100.net:<7700-7706>/v1/status/third
+Content-Type: application/json
+
+{"StatusProtocol":{
+  "Header":{"Version":"1.0","CSeq":"1","MessageType":"MSG_STATUS_MULTIQUERY_REQ"},
+  "Body":[{"SerialNumber":"<serial>","AuthCode":"<device code>"}]}}
+```
+
+Reply, measured on 2026-10-27 09:35 UTC for `7f92970ddf5282743hrc`:
+
+```
+{"StatusProtocol":{
+  "Body":[{"WanIP":"103.85.122.66","SerialNumber":"7f92970ddf5282743hrc",
+           "ServerPort":"8765","Status":"Online","ServerIP":"110.239.85.50","NatType":"0"}],
+  "Header":{"ErrorNum":"200","ErrorString":"Success OK","Version":"1.0","CSeq":"1",
+            "MessageType":"MSG_STATUS_MULTIQUERY_RSP"}}}
+```
+
+`ServerPort` arrives as a string on 7703 and on 7705; the parser accepts both
+shapes. Port 7705 also carries `DeviceType`, `DevicePort` and `KcpEnable`.
+
+### 4A.1 The ports are separate clusters, and that is the whole bug
+
+Measured in one run, same serial, same request:
+
+| port | answer | payload |
+|---|---|---|
+| 7700 | Offline | — |
+| 7701 | Offline | — |
+| 7702 | Offline | — |
+| 7703 | **Online** | `WanIP 103.85.122.66`, `ServerIP 110.239.85.50:8765`, `NatType 0` |
+| 7704 | Offline (3.0 s) | — |
+| 7705 | **Online** | `WanIP 103.85.122.66`, `ServerIP 110.239.87.207:6510`, `DeviceType Camera` |
+| 7706 | Offline | — |
+
+`WanIP` equals `lastWanIp` from the session-free caps call for the same
+serial, which is an independent confirmation that the online rows describe
+this device. A reader that asks a single cluster therefore reports "offline"
+for a camera that is online, which is exactly what the desktop app showed.
+The implementation queries every port concurrently and treats the device as
+online if any cluster says `Online`.
+
+### 4A.2 What `AuthCode` is worth
+
+The account device list (`msdlistCode`) carries per-device `css`, `dss`,
+`tps`, `rps`, `p2P` and `pms` ids; `status.rs` sends the `css` id as
+`AuthCode`. Measured bounds on 7703: any non-empty code is answered with the
+device's real status, and an unknown serial, or a serial this cluster does not
+know, is refused with `ErrorNum 400 "all dev ac is invalid"`. So the serial and
+the cluster carry the identity, and the code is not a secret that gates the
+answer. The refusal is still used as a signal: when no port returns a
+`Status` the app reports "cloud status unknown" with the vendor's reason
+instead of claiming offline.
+
+### 4A.3 What the app exposes
+
+`GET /api/devices` answers `online`, `online_status` (the vendor string),
+`online_checked_at` (epoch ms) and `online_detail` (cluster port, WAN IP and
+relay endpoint, or the reason the status could not be read). The live screen
+blocks on a known offline status only; an unknown status lets the stream be
+attempted and shows the stream's own error.
+
 ## 5. Open items
 
 1. ~~The CSS request envelope for account login~~ — answered for the SDK path in

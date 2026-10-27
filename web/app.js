@@ -542,6 +542,23 @@ function lensMeta() {
   return state.lens ? 'single lens' : '';
 }
 
+function deviceStatus(device) {
+  if (!device) {
+    return { known: false, online: false, detail: '' };
+  }
+  const status = String(device.online_status || '').toLowerCase();
+  const known = Boolean(status) && status !== 'unknown';
+  return { known, online: Boolean(device.online), detail: device.online_detail || '' };
+}
+
+function statusLine(device) {
+  const status = deviceStatus(device);
+  if (status.detail) {
+    return status.detail;
+  }
+  return status.known ? (status.online ? 'cloud status online' : 'cloud status offline') : 'cloud status not read';
+}
+
 function renderSwitcher() {
   const camera = currentCamera();
   const switcher = el('switcher');
@@ -550,8 +567,9 @@ function renderSwitcher() {
   switcher.disabled = !several;
   el('switcher-name').textContent = camera ? camera.name : 'No camera';
   const online = Boolean(camera && camera.device.online);
-  el('switcher-dot').classList.toggle('off', !online);
-  el('switcher-dot').setAttribute('aria-label', online ? 'Online' : 'Offline');
+  const status = camera ? deviceStatus(camera.device) : { known: false, online: false };
+  el('switcher-dot').classList.toggle('off', Boolean(camera) && status.known && !status.online);
+  el('switcher-dot').setAttribute('aria-label', statusLine(camera ? camera.device : null));
   el('switcher-meta').textContent = camera
     ? ['channel ' + camera.channel, lensMeta()].filter(Boolean).join(' · ')
     : 'nothing selected';
@@ -578,7 +596,7 @@ function renderCameraMenu() {
     const col = make('span', 'col');
     col.append(
       make('span', 'name', camera.name),
-      make('span', 'sub', camera.device.online ? ['channel ' + camera.channel, camera.device.model].filter(Boolean).join(' · ') : 'offline'),
+      make('span', 'sub', camera.device.online ? ['channel ' + camera.channel, camera.device.model].filter(Boolean).join(' · ') : statusLine(camera.device)),
     );
     row.append(dot, col, make('span', 'meta', index < 9 ? String(index + 1) : ''));
     row.addEventListener('click', () => {
@@ -669,9 +687,13 @@ function renderBanner() {
     title = 'This computer lost its network at ' + hms(state.networkLostAt) + '.';
     text = 'What you see below is the last frame the app received.';
     action = () => requestStream();
-  } else if (state.view === 'live' && camera && !camera.device.online) {
-    title = camera.name + ' is offline in the camera list.';
-    text = 'Refresh the list once it answers again.';
+  } else if (state.view === 'live' && camera && deviceStatus(camera.device).known && !camera.device.online) {
+    title = camera.name + ' is offline according to the cloud.';
+    text = statusLine(camera.device) + '. Refresh the list once it answers again.';
+    action = () => loadDevices();
+  } else if (state.view === 'live' && camera && !deviceStatus(camera.device).known) {
+    title = 'The cloud status of ' + camera.name + ' could not be read.';
+    text = statusLine(camera.device) + '. The stream is still attempted, and its own error is shown below.';
     action = () => loadDevices();
   } else if (state.bannerError) {
     title = state.bannerError;
@@ -715,7 +737,7 @@ function setStage(name, detail = {}) {
     text = detail.text || 'The stream stopped.';
   } else if (name === 'offline') {
     title = 'Camera offline';
-    text = 'The camera list reports it offline. The picture comes back after it answers and the list is refreshed.';
+    text = camera ? statusLine(camera.device) + '. The picture comes back after it answers and the list is refreshed.' : 'The cloud reports it offline.';
   }
   el('well-msg').hidden = !title;
   el('well-title').textContent = title;
@@ -1715,7 +1737,7 @@ async function selectDevice(deviceId, options = {}) {
   if (state.view === 'grid') {
     renderTileSelection();
   }
-  if (!device.online) {
+  if (deviceStatus(device).known && !device.online) {
     stopStagePlayer();
     state.lens = null;
     renderLensPicker();
@@ -1735,7 +1757,7 @@ async function selectDevice(deviceId, options = {}) {
 
 async function requestStream() {
   const camera = currentCamera();
-  if (!camera || !camera.device.online || !state.signedIn) {
+  if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
     return;
   }
   const player = stagePlayer();
@@ -2037,7 +2059,7 @@ function setTile(tile, name, detail) {
   if (!fail.hidden) {
     fail.querySelector('strong').textContent = name === 'offline' ? 'Offline' : 'No picture';
     fail.querySelector('span').textContent =
-      name === 'offline' ? 'The camera list reports it offline.' : detail || 'The stream stopped.';
+      name === 'offline' ? statusLine(camera ? camera.device : null) + '.' : detail || 'The stream stopped.';
     fail.querySelector('button').hidden = name !== 'error';
   }
   renderGridCount();
@@ -2049,7 +2071,7 @@ async function playTile(tile, camera, token) {
   if (previous) {
     previous.destroy();
   }
-  if (!camera.device.online) {
+  if (deviceStatus(camera.device).known && !camera.device.online) {
     setTile(tile, 'offline');
     return;
   }
@@ -2148,7 +2170,7 @@ function setView(name, options = {}) {
   stopGrid();
   if (any && (changed || !state.players.get('stage')) && !options.keepStream) {
     const camera = currentCamera();
-    if (camera && camera.device.online) {
+    if (camera && (!deviceStatus(camera.device).known || camera.device.online)) {
       requestStream();
     } else if (camera) {
       setStage('offline');

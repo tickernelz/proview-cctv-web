@@ -3,6 +3,7 @@ pub mod client;
 pub mod digest;
 pub mod envelope;
 pub mod session;
+pub mod status;
 pub mod types;
 
 pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTED_CAPS};

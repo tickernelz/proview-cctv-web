@@ -102,7 +102,10 @@ impl CloudDevice {
         self.channel.or(self.channel_num).unwrap_or(1).max(1)
     }
 
-    pub fn to_provider(&self, online: bool) -> crate::provider::Device {
+    pub fn to_provider(
+        &self,
+        status: Option<&super::status::DeviceOnline>,
+    ) -> crate::provider::Device {
         crate::provider::Device {
             id: self.uuid.clone(),
             name: self.display_name().to_string(),
@@ -111,10 +114,17 @@ impl CloudDevice {
                 .clone()
                 .or_else(|| self.code.clone())
                 .unwrap_or_else(|| "xm-cloud".to_string()),
-            online,
+            online: status.map(|value| value.online).unwrap_or(false),
             channels: self.channel_count(),
             lan_host: None,
+            online_checked_at: status.map(|value| value.checked_at),
+            online_status: status.map(|value| value.status.clone()),
+            online_detail: status.map(|value| value.summary()),
         }
+    }
+
+    pub fn auth_code(&self) -> String {
+        super::status::auth_code_of(self)
     }
 }
 
@@ -234,7 +244,19 @@ mod tests {
             channel: Some(2),
             ..CloudDevice::default()
         };
-        let mapped = device.to_provider(true);
+        let status = crate::cloud::status::DeviceOnline {
+            online: true,
+            status: "Online".into(),
+            checked_at: 1,
+            port: 7703,
+            wan_ip: None,
+            server_ip: None,
+            server_port: None,
+            device_type: None,
+            error: None,
+            replies: Vec::new(),
+        };
+        let mapped = device.to_provider(Some(&status));
         assert_eq!(mapped.id, "abc");
         assert_eq!(mapped.name, "Front door");
         assert_eq!(mapped.model, "XM-01");

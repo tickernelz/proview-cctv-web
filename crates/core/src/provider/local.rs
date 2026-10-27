@@ -87,6 +87,9 @@ impl Provider for LocalProvider {
             online: true,
             channels: 1,
             lan_host: Some(format!("{}:{}", self.target.host, self.target.port)),
+            online_checked_at: None,
+            online_status: Some("local target".to_string()),
+            online_detail: Some("checked over the local network, not the cloud".to_string()),
         }])
     }
 

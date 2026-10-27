@@ -3,11 +3,13 @@ use super::{
     StreamTicket, VendorSession,
 };
 use crate::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
+use crate::cloud::status::{self, StatusClient, STATUS_HOST};
 use crate::cloud::CloudError;
 use crate::config::Config;
 
 pub struct CloudProvider {
     client: EnvelopeClient,
+    status: StatusClient,
     device_user: String,
     device_pass: String,
 }
@@ -20,6 +22,7 @@ impl CloudProvider {
     pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
         Self {
             client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
+            status: StatusClient::new(STATUS_HOST),
             device_user: cfg.device_user.clone(),
             device_pass: cfg.device_pass.clone(),
         }
@@ -70,10 +73,16 @@ impl Provider for CloudProvider {
     async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
         let token = self.token(session)?;
         let devices = self.client.device_list(token).await.map_err(map_cloud)?;
-        Ok(devices
-            .iter()
-            .map(|device| device.to_provider(false))
-            .collect())
+        let mut out = Vec::with_capacity(devices.len());
+        for device in &devices {
+            let code = device.auth_code();
+            let state = match self.status.query(&device.uuid, &code).await {
+                Ok(value) => value,
+                Err(error) => status::unchecked(error.to_string()),
+            };
+            out.push(device.to_provider(Some(&state)));
+        }
+        Ok(out)
     }
 
     async fn stream(

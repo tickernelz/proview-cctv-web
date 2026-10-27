@@ -191,8 +191,24 @@ impl CloudClient {
         Ok(devices
             .iter()
             .map(|device| {
-                let is_online = online.get(device.uuid.as_str()).copied().unwrap_or(false);
-                device.to_provider(is_online)
+                let state = online.get(device.uuid.as_str()).copied().unwrap_or(false);
+                let status = super::status::DeviceOnline {
+                    online: state,
+                    status: if state {
+                        "Online".to_string()
+                    } else {
+                        "Offline".to_string()
+                    },
+                    checked_at: super::status::now_millis(),
+                    port: 0,
+                    wan_ip: None,
+                    server_ip: None,
+                    server_port: None,
+                    device_type: None,
+                    error: None,
+                    replies: Vec::new(),
+                };
+                device.to_provider(Some(&status))
             })
             .collect())
     }

@@ -5,6 +5,16 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## 0.3.2 — unreleased
+
+### Added
+
+- Cloud device status. `GET /api/devices` now reads `pub-status.secu100.net`
+  `/v1/status/third` across all seven clusters and answers `online`,
+  `online_status`, `online_checked_at` and `online_detail` instead of a
+  hard-coded false. The live screen blocks only on a known offline status and
+  prints the vendor's reason when the status cannot be read.
+
 ## 0.3.1 — 2026-10-27
 
 ### Changed
