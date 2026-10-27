@@ -25,10 +25,11 @@ enum Answer {
     SlowStartAck,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PtzFrame {
     preset: i64,
     step: u8,
+    command: String,
     at: Instant,
 }
 
@@ -82,10 +83,12 @@ fn ptz_frame_of(body: &[u8]) -> Option<PtzFrame> {
         end -= 1;
     }
     let value = serde_json::from_slice::<Value>(&body[..end]).ok()?;
-    let parameter = value.get("OPPTZControl")?.get("Parameter")?;
+    let control = value.get("OPPTZControl")?;
+    let parameter = control.get("Parameter")?;
     Some(PtzFrame {
         preset: parameter.get("Preset")?.as_i64()?,
         step: parameter.get("Step")?.as_u64()? as u8,
+        command: control.get("Command")?.as_str()?.to_string(),
         at: Instant::now(),
     })
 }
@@ -102,7 +105,7 @@ async fn wait_for_frame(
             .unwrap()
             .iter()
             .find(|frame| frame.preset == preset)
-            .copied();
+            .cloned();
         if let Some(frame) = found {
             return frame;
         }
@@ -303,12 +306,21 @@ async fn a_ptz_move_whose_start_ack_outlives_the_window_still_stops_the_motor() 
         .unwrap()
         .iter()
         .find(|frame| frame.preset == PTZ_START)
-        .copied()
+        .cloned()
         .expect("the start frame reached the camera");
     let stop = wait_for_frame(&frames, PTZ_STOP, Duration::from_secs(3)).await;
     assert_eq!(
         stop.step, start.step,
         "the stop has to repeat the step the start used"
+    );
+    assert_eq!(
+        stop.command, start.command,
+        "the stop has to repeat the direction the start used"
+    );
+    assert!(
+        answered - started < Duration::from_millis(600),
+        "the timeout path paid for a logout: the 504 took {:?}",
+        answered - started
     );
     println!(
         "start ack delayed {ACK_DELAY:?}, 504 after {:?}, stop frame {:?} after the 504 and {:?} after the start",
