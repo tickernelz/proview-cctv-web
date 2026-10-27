@@ -868,6 +868,51 @@ system-info reply.
 `Connection::login_token` in `crates/core/src/dvrip/client.rs` reproduces the
 attempt, and `examples/rps_probe` drives it when `PROVIEW_DEVICE_TOKEN` is set.
 
+### 4C.16 The RSA call the SDK makes carries a 16-character session key
+
+Hooking `RSA_public_encrypt` in the harness (same inline-patch mechanism as
+`SSL_write`) shows three calls per live session:
+
+```
+flen=12  padding=1  <a password-shaped value, redacted>
+flen=8   padding=1  <8 random characters>
+flen=16  padding=1  iq5H3765j5t04mO6      (a second run: ke930p9mR1kxcL7Q)
+```
+
+The 16-byte one changes on every run and has exactly the shape of the
+`CommunicateKey` token `NewLoginPTL` reports (`o5rBSnodWCpN8VAa`): the client
+picks the session key itself and RSA-wraps it for the device. That is the piece
+this design was missing — the media session key is **ours to choose**, so once it
+crosses the wire we know it and can decrypt what the device sends.
+
+What is still not captured is the device public key the wrapper uses. The next
+step is a corrected dump in the same shim (`RSA_get0_key` + `BN_bn2hex` on the
+`RSA*` argument; the first attempt broke on an escaped newline in the C source
+and the run fell back to the previous binary), which turns this into a complete
+`CommunicateKey` construction in Rust.
+
+### 4C.17 The device public key is captured, so the session key is constructible
+
+The corrected shim (`RSA_get0_key` + `BN_bn2hex` on the `RSA*` argument of
+`RSA_public_encrypt`) now prints the key the SDK wraps its session key to:
+
+```
+[rsa] public_encrypt flen=16 padding=1 key=68763265375543773975507336397431
+[rsa] modulus=<256 hex chars, 1024-bit>
+[rsa] exponent=010001
+```
+
+The same modulus came back for all three encryptions in the session, and the
+16-byte plaintext is the client-chosen session token again (`hv2e7UCw9uPs69t1`
+in this run). Stored outside the repository at
+`~/re/proview-cctv/captures/device-pubkey.txt` rather than inlined here, because
+the value identifies this specific device.
+
+That closes the last unknown input for `CommunicateKey`: generate 16 characters,
+RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
+`CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
+ours on both ends.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

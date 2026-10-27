@@ -4,6 +4,9 @@ pub mod apmode;
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
+#[path = "routes/grid.rs"]
+pub mod grid;
+
 #[path = "routes/cloud_bind.rs"]
 pub mod cloud_bind;
 
@@ -29,7 +32,7 @@ pub mod audio;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, account_js, talk_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, account_js, talk_js, grid_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -47,6 +50,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(grid::routes())
     .chain(cloud_bind::api())
     .chain(apmode::routes())
     .collect()
@@ -67,6 +71,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/grid.js")]
+fn grid_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/grid.js"))
 }
 
 #[get("/account.js")]
