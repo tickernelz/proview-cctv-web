@@ -83,6 +83,17 @@ pub fn read_reply(text: &str) -> CloudResult<DssToken> {
     })
 }
 
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
+            .build()
+            .expect("cloud http client")
+    })
+}
+
 fn percent_decode(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -133,15 +144,10 @@ impl DssClient {
     }
 
     pub fn with_base(identity: Identity, base: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
-            .build()
-            .unwrap_or_default();
         Self {
             identity,
             base: base.into().trim_end_matches('/').to_string(),
-            http,
+            http: http_client().clone(),
         }
     }
 
@@ -193,7 +199,8 @@ pub struct CloudRecording {
     pub end: String,
     pub duration_secs: u32,
     pub size_bytes: Option<u64>,
-    pub path: String,
+    pub index_file: String,
+    pub storage_bucket: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -226,51 +233,57 @@ pub fn query_body(request: &RecordingQuery<'_>, auth: &str) -> String {
 pub fn read_recordings(text: &str) -> CloudResult<RecordingPage> {
     let root: serde_json::Value = serde_json::from_str(text)
         .map_err(|error| CloudError::Malformed(format!("{error}: {text}")))?;
-    let code = root
-        .get("code")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
+    let code = reply_code(&root);
     if code != "200" {
         return Err(CloudError::Rejected(format!(
             "cloud storage answered code {code}: {text}"
         )));
     }
-    let body = root
-        .get("AlarmCenter")
-        .and_then(|value| value.get("Body"))
-        .cloned()
-        .unwrap_or_else(|| root.clone());
+    let body = match root.get("AlarmCenter").and_then(|value| value.get("Body")) {
+        Some(body) => body,
+        None => &root,
+    };
     let mut recordings = Vec::new();
-    for key in ["VideoArray", "TimeAxis", "Clips"] {
+    for key in ["VideoArray", "TimeAxis"] {
         if let Some(items) = body.get(key).and_then(|value| value.as_array()) {
             recordings.extend(items.iter().filter_map(item_of));
         }
     }
     recordings.sort_by(|left, right| left.start.cmp(&right.start));
-    let notice = recordings.is_empty().then(|| {
-        "the cloud answered the query with no clips; an account without an active cloud plan answers exactly this"
-            .to_string()
-    });
+    let notice = recordings
+        .is_empty()
+        .then(|| "the cloud returned no clips for that day".to_string());
     Ok(RecordingPage { recordings, notice })
 }
 
 fn item_of(item: &serde_json::Value) -> Option<CloudRecording> {
-    let start = text_field(item, &["BeginTime", "StartTime", "start"])?;
-    let end = text_field(item, &["EndTime", "StopTime", "end"]).unwrap_or_default();
-    let size = item
-        .get("FileLength")
-        .or_else(|| item.get("size"))
-        .and_then(|value| value.as_u64());
-    let path = text_field(item, &["FilePath", "path"]).unwrap_or_default();
+    let start = text_field(item, &["StartTime"])?;
+    let end = text_field(item, &["StopTime"]).unwrap_or_default();
     let duration_secs = duration_between(&start, &end).unwrap_or_default();
     Some(CloudRecording {
         start,
         end,
         duration_secs,
-        size_bytes: size,
-        path,
+        size_bytes: size_of(item.get("VideoSize")),
+        index_file: text_field(item, &["IndexFile"]).unwrap_or_default(),
+        storage_bucket: text_field(item, &["StorageBucket"]).unwrap_or_default(),
     })
+}
+
+fn size_of(value: Option<&serde_json::Value>) -> Option<u64> {
+    match value? {
+        serde_json::Value::String(text) => text.trim().parse().ok(),
+        serde_json::Value::Number(number) => number.as_u64(),
+        _ => None,
+    }
+}
+
+fn reply_code(root: &serde_json::Value) -> String {
+    match root.get("code") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn text_field(item: &serde_json::Value, keys: &[&str]) -> Option<String> {
@@ -314,16 +327,31 @@ pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<Record
     }
     let client = super::envelope::EnvelopeClient::new(identity);
     let devices = client.device_list(request.access).await?;
-    let device = devices
-        .iter()
-        .find(|device| device.uuid == request.sn)
-        .or_else(|| devices.first())
-        .ok_or_else(|| CloudError::Rejected("the account has no device to query".to_string()))?;
+    let wanted = request.sn.trim();
+    let device = if wanted.is_empty() {
+        devices
+            .first()
+            .ok_or_else(|| CloudError::Rejected("the account has no device to query".to_string()))?
+    } else {
+        devices
+            .iter()
+            .find(|device| device.uuid == wanted)
+            .ok_or_else(|| {
+                CloudError::Rejected(format!("device {wanted} is not on this account"))
+            })?
+    };
     let auth = device
         .extra
         .get("pms")
         .and_then(|value| value.as_str())
-        .unwrap_or_default()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CloudError::Rejected(format!(
+                "device {} has no pms auth code on this account",
+                device.uuid
+            ))
+        })?
         .to_string();
     let sn = if request.sn.trim().is_empty() {
         device.uuid.clone()
@@ -338,12 +366,7 @@ pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<Record
         day: request.day,
     };
     let body = query_body(&resolved, &auth);
-    let http = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(std::time::Duration::from_secs(TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| CloudError::Unreachable(error.to_string()))?;
-    let response = http
+    let response = http_client()
         .post(format!("{PMS_BASE}/v2"))
         .header("Content-Type", "application/json")
         .body(body)
@@ -447,16 +470,27 @@ mod tests {
     #[test]
     fn clip_array_maps_to_recordings() {
         let text = r#"{"code":"200","AlarmCenter":{"Body":{"VideoArray":[
-            {"BeginTime":"2026-10-27 21:20:00","EndTime":"2026-10-27 21:24:30","FileLength":7340032,"FilePath":"/cloud/a.mp4"},
-            {"BeginTime":"2026-10-27 08:00:00","EndTime":"2026-10-27 08:01:00","FileLength":1048576,"FilePath":"/cloud/b.mp4"}
+            {"StartTime":"2026-10-27 21:20:00","StopTime":"2026-10-27 21:24:30","VideoSize":"7340032","IndexFile":"/cloud/a.mp4","StorageBucket":"obs-xm"},
+            {"StartTime":"2026-10-27 08:00:00","StopTime":"2026-10-27 08:01:00","VideoSize":1048576,"IndexFile":"/cloud/b.mp4"}
         ]}}}"#;
         let page = read_recordings(text).unwrap();
         assert_eq!(page.recordings.len(), 2);
         assert_eq!(page.recordings[0].start, "2026-10-27 08:00:00");
         assert_eq!(page.recordings[0].duration_secs, 60);
+        assert_eq!(page.recordings[0].size_bytes, Some(1_048_576));
+        assert_eq!(page.recordings[0].index_file, "/cloud/b.mp4");
+        assert!(page.recordings[0].storage_bucket.is_empty());
         assert_eq!(page.recordings[1].duration_secs, 270);
         assert_eq!(page.recordings[1].size_bytes, Some(7_340_032));
+        assert_eq!(page.recordings[1].index_file, "/cloud/a.mp4");
+        assert_eq!(page.recordings[1].storage_bucket, "obs-xm");
         assert!(page.notice.is_none());
+    }
+
+    #[test]
+    fn numeric_reply_code_is_accepted() {
+        let page = read_recordings(r#"{"msg":"video_query","code":200}"#).unwrap();
+        assert!(page.recordings.is_empty());
     }
 
     #[test]
