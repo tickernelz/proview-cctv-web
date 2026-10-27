@@ -144,6 +144,7 @@ pub struct DeviceSettings {
 #[derive(Debug, Clone)]
 pub struct VendorSession {
     pub account: String,
+    pub token: Option<String>,
 }
 
 #[async_trait::async_trait]

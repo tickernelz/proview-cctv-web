@@ -68,6 +68,7 @@ impl Provider for LocalProvider {
         match rtsp::describe(&target.host, target.port, "/", user, pass).await {
             Ok(_) => Ok(VendorSession {
                 account: "local".to_string(),
+                token: None,
             }),
             Err(RtspError::Unauthorized) => Err(ProviderError::BadCredentials),
             Err(RtspError::Io(error)) => Err(ProviderError::Unreachable(format!(

@@ -14,6 +14,8 @@ use super::types::{
 pub enum CloudError {
     #[error("{0}")]
     Rejected(String),
+    #[error("email or password is wrong")]
+    Credentials,
     #[error("session expired; sign in again")]
     Expired,
     #[error("cloud is not reachable: {0}")]

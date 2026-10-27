@@ -67,6 +67,7 @@ impl Provider for Fixture {
         if constant_time_eq(user, want_user) && constant_time_eq(pass, want_pass) {
             Ok(VendorSession {
                 account: user.to_string(),
+                token: None,
             })
         } else {
             Err(ProviderError::BadCredentials)
