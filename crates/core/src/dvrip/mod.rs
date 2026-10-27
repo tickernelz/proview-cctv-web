@@ -1,7 +1,10 @@
 pub mod client;
 pub mod control;
 pub mod crypto;
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod frame;
+pub mod playback;
 pub mod talk;
 
 pub const MAGIC: u8 = 0xff;

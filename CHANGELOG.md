@@ -43,6 +43,46 @@ stability before 1.0.
   fictional one answers `2000` and appears in `GET /api/devices`, `mdrm`
   removes it, `uuid=no` answers `4104` (`docs/protocol.md` 10D).
 
+- PTZ tours over DVRIP. `GET /api/device/controls/tour` reports the device own
+tour lines (`Uart.PTZTour`), the presets it can cycle (`Uart.PTZPreset`) and the
+gun/ball locate block, and `POST /api/device/controls/tour/{start,stop,add,clear}`
+drives `OPPTZControl` `StartTour`, `StopTour`, `AddTour` and `ClearTour`, which is
+the surface the app itself uses (`com.lib.sdk.bean.tour.OPPTZControlBean`).
+Measured through the cloud relay: with two presets in the line the lower lens
+moved 73.10 and 70.77 mean-luma points between stops while the upper lens stayed
+at 0.15-1.07, and `StopTour` dropped it to 0.97-1.57. Every `OPPTZControl` answers
+`Ret 100` before it moves, so the listing carries the device configuration and a
+separate note on every action says the ack is not motion; start and stop answer
+409 when the device holds no such line or the line has no points, and `TourTimes`
+is fixed at 1 as the app sends it. `docs/protocol.md` 9A carries the numbers.
+
+### Changed
+
+- `/api/lens` reads the motorised lens from the device (`Ptz.GunBallLocate`) and
+reports `ptzSource: "device"` with a `ptzEvidence` string that quotes the block
+and names the host it came from, instead of the measured default it used to
+guess. The read never blocks the live stream: the route answers from a cache and
+refreshes in the background with one bounded probe (10 s) at a time, keeping a
+device answer for 10 minutes and a failure or timeout for 1 minute. The measured
+default stays only as the fallback when the cache holds nothing.
+- `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
+`ptz_lens_has_no_motor`, the device own locate block in the message, and a
+pointer to `lens=bottom`, so the refusal carries evidence instead of a bare
+conflict.
+- The PTZ capability report names the tour row `ptz patrol` (it was
+`ptz patrol over dvrip`, which no client matched) and adds `ptz move` on the
+lower lens gated on the device answering (`SupportPTZDirectionControl` or
+`Ptz.GunBallLocate`), `ptz move` blocked on the upper lens with the device
+reason, and a `ptz locate` row. The pad gained a Tour control that starts and
+stops the first tour line that has points and says the ack is not motion.
+
+### Fixed
+
+- The live view toolbar fits phone widths: it wraps to a second row, and at
+  640 px and below its buttons show icons only (the label stays the accessible
+  name) with the separators hidden. At 360-480 px Talk's label covered Sound,
+  and Quality and Full screen sat off-screen.
+
 ## 0.3.3 — 2026-10-27
 
 ### Added
