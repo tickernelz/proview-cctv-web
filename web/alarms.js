@@ -51,7 +51,7 @@
   sheet.innerHTML = [
     '<div class="alarm-head"><h2>Alarm messages</h2><span class="grow"></span><button type="button" data-close aria-label="Close">Close</button></div>',
     '<form class="alarm-bar" data-connect hidden><input type="email" name="email" placeholder="Phone account email" autocomplete="username" required><input type="password" name="password" placeholder="Password" autocomplete="current-password" required><button type="submit">Connect</button></form>',
-    '<div class="alarm-bar" data-bar><select data-device aria-label="Camera"></select><span data-window></span></div>',
+    '<div class="alarm-bar" data-bar><select data-device aria-label="Camera"></select><select data-hours aria-label="Window"><option value="24">24 h</option><option value="168">7 days</option></select><span data-window></span></div>',
     '<div class="alarm-list" data-list role="list"></div>',
     '<div class="alarm-foot"><span data-status>not polled yet</span><span class="grow"></span><button type="button" data-alerts>Notify me</button></div>',
   ].join('');
@@ -63,6 +63,7 @@
   const status = sheet.querySelector('[data-status]');
   const devicePick = sheet.querySelector('[data-device]');
   const bar = sheet.querySelector('[data-bar]');
+  const hoursPick = sheet.querySelector('[data-hours]');
   const connect = sheet.querySelector('[data-connect]');
   const windowLabel = sheet.querySelector('[data-window]');
   const alertBtn = sheet.querySelector('[data-alerts]');
@@ -223,6 +224,10 @@
 
   bell.addEventListener('click', () => (sheet.hidden ? open() : close()));
   sheet.querySelector('[data-close]').addEventListener('click', close);
+  hoursPick.addEventListener('change', () => {
+    STATE.hours = Number(hoursPick.value) || 24;
+    poll();
+  });
   devicePick.addEventListener('change', () => {
     STATE.serial = devicePick.value;
     STATE.entries = new Map();
