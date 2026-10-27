@@ -313,6 +313,17 @@
           </fieldset>
         </div>
 
+        <div class="settings-group" role="group" aria-labelledby="set-config">
+          <h2 id="set-config">Configuration</h2>
+          <p class="field-note">Every server setting in one place. Values are written to <code>settings.json</code> in the app data folder and applied immediately; an environment variable that is already set wins until it is cleared here. Secrets are never shown back.</p>
+          <div id="settings-fields"></div>
+          <div class="panel-actions">
+            <button id="settings-save" class="primary" type="button">Save configuration</button>
+            <button id="settings-reload" class="secondary" type="button">Reload</button>
+          </div>
+          <p id="settings-status" class="field-note compact" role="status">Not loaded yet.</p>
+        </div>
+
         <div class="settings-group" role="group" aria-labelledby="set-server">
           <h2 id="set-server">Server</h2>
           <p class="field-note">Facts read from this server right now; nothing is cached.</p>

@@ -91,6 +91,7 @@ fn status_for(err: &ProviderError) -> Status {
         ProviderError::BadCredentials => Status::Unauthorized,
         ProviderError::UnknownDevice(_) => Status::NotFound,
         ProviderError::NotImplemented(_) => Status::NotImplemented,
+        ProviderError::Misconfigured(_) => Status::NotImplemented,
         _ => Status::BadGateway,
     }
 }

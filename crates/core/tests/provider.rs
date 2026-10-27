@@ -22,6 +22,23 @@ fn fixture_config() -> Config {
     config(ProviderKind::Fixture, None)
 }
 
+#[tokio::test]
+async fn a_missing_fixture_directory_says_where_it_looked() {
+    let mut cfg = fixture_config();
+    cfg.fixture_dir = "/nonexistent-fixture-directory".to_string();
+    let provider = provider::fixture::Fixture::new(&cfg);
+    let error = provider
+        .login("someone", "secret")
+        .await
+        .expect_err("no fixture account");
+    let message = error.to_string();
+    assert!(
+        message.contains("/nonexistent-fixture-directory/account.json"),
+        "{message}"
+    );
+    assert!(matches!(error, ProviderError::Misconfigured(_)));
+}
+
 fn cloud_config(device_rtsp: Option<&str>) -> Config {
     config(ProviderKind::Proview, device_rtsp)
 }

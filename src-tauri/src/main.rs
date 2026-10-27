@@ -6,8 +6,29 @@ use proview_core::config::Config;
 use proview_server::ServeOptions;
 use rand::RngCore;
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tracing_subscriber::prelude::*;
 
 use crate::keychain::{Credentials, OsKeychain, SecretStore};
+
+fn init_log(dir: Option<&std::path::Path>) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let stderr = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+    let registry = tracing_subscriber::registry().with(filter).with(stderr);
+    match dir {
+        Some(dir) => {
+            let _ = std::fs::create_dir_all(dir);
+            let appender = tracing_appender::rolling::never(dir, "desktop.log");
+            let file = tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(appender);
+            let _ = registry.with(file).try_init();
+        }
+        None => {
+            let _ = registry.try_init();
+        }
+    }
+}
 
 fn local_secret() -> String {
     let mut bytes = [0u8; 32];
@@ -101,18 +122,10 @@ fn main() {
         return;
     }
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     if let Some(code) = credential_command() {
         std::process::exit(code);
     }
 
-    let config = config_from_keychain();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -122,13 +135,19 @@ fn main() {
     tauri::Builder::default()
         .setup(move |app| {
             let data_dir = app.path().app_data_dir().ok();
+            init_log(data_dir.as_deref());
+            tracing::info!(data = ?data_dir, version = env!("CARGO_PKG_VERSION"), "starting");
+            let settings = proview_server::settings::SettingsStore::load(data_dir.as_deref());
+            settings.apply_env();
+            let config = config_from_keychain();
             let options = ServeOptions {
                 address: "127.0.0.1".to_string(),
                 port: 0,
                 secret_key: Some(local_secret()),
                 data_dir,
             };
-            let server = handle.block_on(proview_server::serve_with(options, config.clone()))?;
+            let server =
+                handle.block_on(proview_server::serve_with_state(options, config, settings))?;
             let url: tauri::Url = format!("http://{}/", server.address).parse()?;
             tracing::info!(%url, "serving the local session");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
