@@ -147,7 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("the session key is not sixteen bytes")?;
         let vekey1 = rps::random_lower(60);
         let session_text = format!("0x{:08x}", connection.session());
-        for (id, name) in [(0x03fcu16, "SystemInfo"), (0x0550, "SystemFunction"), (0x0412, "fVideo.AudioSupportType")] {
+        for (id, name) in [
+            (0x03fcu16, "SystemInfo"),
+            (0x0550, "SystemFunction"),
+            (0x0412, "fVideo.AudioSupportType"),
+        ] {
             let body = serde_json::json!({ "Name": name, "SessionID": session_text });
             match connection.send_encrypted(&cipher, id, &body).await {
                 Ok(()) => eprintln!("query    sent {}", name),
