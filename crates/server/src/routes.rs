@@ -3,6 +3,10 @@ pub mod apmode;
 
 #[path = "routes/cloud.rs"]
 pub mod cloud;
+pub mod device_admin;
+
+#[path = "routes/fisheye.rs"]
+pub mod fisheye;
 
 #[path = "routes/grid.rs"]
 pub mod grid;
@@ -34,13 +38,19 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 
+#[path = "routes/recordings.rs"]
+pub mod recordings;
+
 pub fn files() -> Vec<rocket::route::Route> {
     routes![
         index,
         app_js,
+        fisheye_js,
         account_js,
         talk_js,
         grid_js,
+        recordings_js,
+        device_admin_js,
         style_css,
         tokens_css,
         font,
@@ -65,8 +75,11 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(fisheye::api())
+    .chain(recordings::routes())
     .chain(grid::routes())
     .chain(cloud_bind::api())
+    .chain(device_admin::routes())
     .chain(apmode::routes())
     .collect()
 }
@@ -88,6 +101,11 @@ fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
 }
 
+#[get("/fisheye.js")]
+fn fisheye_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/fisheye.js"))
+}
+
 #[get("/grid.js")]
 fn grid_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/grid.js"))
@@ -101,6 +119,16 @@ fn account_js() -> RawJavaScript<&'static str> {
 #[get("/talk.js")]
 fn talk_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/talk.js"))
+}
+
+#[get("/recordings.js")]
+fn recordings_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/recordings.js"))
+}
+
+#[get("/device-admin.js")]
+fn device_admin_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/device-admin.js"))
 }
 
 #[get("/tokens.css")]
