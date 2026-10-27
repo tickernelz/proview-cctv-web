@@ -35,7 +35,7 @@ pub struct PlanBody {
     pub record_bytes: usize,
     pub words: usize,
     pub symbols_per_round: usize,
-    pub trailers_per_round: usize,
+    pub datagrams_per_round: usize,
     pub datagram_bytes_per_round: usize,
     pub trailer_bytes: usize,
     pub symbol_gap_ms: u64,
@@ -198,7 +198,7 @@ fn plan(
         record_bytes: plan.record.len(),
         words: symbols,
         symbols_per_round: symbols,
-        trailers_per_round: trailers,
+        datagrams_per_round: symbols + 1,
         datagram_bytes_per_round: datagram_bytes,
         trailer_bytes: apmode::TRAILER_BYTES,
         symbol_gap_ms: apmode::SYMBOL_GAP.as_millis() as u64,
@@ -417,17 +417,17 @@ fn transmit(
                 state.bytes += datagram.len() as u64;
             }
             std::thread::sleep(timing.symbol);
-            if last_trailer.elapsed() >= timing.trailer_gap {
-                if let Some(trailer) = apmode::trailer(payload) {
-                    socket.send_to(trailer, target)?;
-                    let mut state = progress
-                        .lock()
-                        .map_err(|_| std::io::Error::other("progress lock"))?;
-                    state.datagrams += 1;
-                    state.bytes += trailer.len() as u64;
-                }
-                last_trailer = Instant::now();
+        }
+        if last_trailer.elapsed() >= timing.trailer_gap {
+            if let Some(trailer) = apmode::trailer(payload) {
+                socket.send_to(trailer, target)?;
+                let mut state = progress
+                    .lock()
+                    .map_err(|_| std::io::Error::other("progress lock"))?;
+                state.datagrams += 1;
+                state.bytes += trailer.len() as u64;
             }
+            last_trailer = Instant::now();
         }
         {
             let mut state = progress
@@ -587,18 +587,16 @@ mod tests {
         while let Ok((size, _)) = receiver.recv_from(&mut buffer) {
             seen.push((size, buffer[..size.min(16)].to_vec()));
         }
-        assert_eq!(seen.len(), lengths.len() * 2);
-        for (index, (size, head)) in seen.iter().enumerate() {
-            if index % 2 == 0 {
-                assert_eq!(*size, lengths[index / 2]);
-                assert_eq!(&head[..10], &[apmode::PAYLOAD_FILL; 10]);
-            } else {
-                assert_eq!(*size, apmode::TRAILER_BYTES);
-            }
+        assert_eq!(seen.len(), lengths.len() + 1);
+        let (last, rest) = seen.split_last().unwrap();
+        for (index, (size, head)) in rest.iter().enumerate() {
+            assert_eq!(*size, lengths[index]);
+            assert_eq!(&head[..10], &[apmode::PAYLOAD_FILL; 10]);
         }
+        assert_eq!(last.0, apmode::TRAILER_BYTES);
         let progress = state.lock().unwrap();
         assert_eq!(progress.rounds, 1);
-        assert_eq!(progress.datagrams as usize, lengths.len() * 2);
+        assert_eq!(progress.datagrams as usize, lengths.len() + 1);
     }
 
     #[test]

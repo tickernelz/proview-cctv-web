@@ -195,12 +195,12 @@ socket(AF_INET, SOCK_DGRAM, 0)                       0xf6af54
 setsockopt(SOL_SOCKET=1, SO_BROADCAST=6, 1, 4)       0xf6af7c
 sin_family = AF_INET, sin_port = 0x411f (8001)       0xf6af3c, 0xf6af40
 sin_addr   = 0xffffffff, written once                0xf6af4c
-per round, per word i:
+per round, per word i (loop 0xf6b0e0 with the counter at [sp+0x40]):
     sendto(sock, payload, words[i], 0, &broadcast, 16)   0xf6b178
     usleep(20000)                                        0xf6b18c
-    if 51 ms passed since the last 500-byte send:
+after the last symbol of the round (0xf6b1a8, reached only when the counter passes the word count):
+    if 51 ms passed since the last 500-byte send (0xf6b1cc, subs #0x33):
         sendto(sock, payload, 500, 0, &broadcast, 16)     0xf6b228
-per round:
     usleep(5000)                                          0xf6b26c
 ```
 
@@ -255,10 +255,9 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
 3. Run the server, sign in, and ask for the plan:
    `POST /api/apmode/plan {"ssid":"<home>","password":"<key>"}`. It answers the
    record size, the symbol count and the per-round totals. Expected for a
-   7-character SSID and a 10-character key: 24-byte record, 70 symbols, and
-   `trailers_per_round 27` (70 symbols at 20 ms is 1.40 s, and a 500-byte
-   datagram goes out whenever 51 ms have passed), so about 97 datagrams and
-   roughly 12 kB per round.
+   7-character SSID and a 10-character key: 24-byte record, 70 symbols and
+   `datagrams_per_round 71` — the 70 symbols plus one 500-byte trailer that the
+   sender emits after the last symbol of every round.
 4. `POST /api/apmode/provision {"ssid":"<home>","password":"<key>","mode":"dvrip"}`.
    Expected: `ret 100` from message 1040, `read_back true` when the camera
    echoes the SSID, and `elapsed_ms` inside the budget that is actually
@@ -270,7 +269,7 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
    own access point**, which is what step 2 sets up.
 5. If the DVRIP path is refused, run `"mode":"broadcast"` and poll
    `GET /api/apmode/provision`: about 1.41 s per round (70 symbols at 20 ms plus
-   the 5 ms round gap), roughly 27 five-hundred-byte datagrams per round. Stop it
+   the 5 ms round gap and one 500-byte trailer after the last symbol). Stop it
    with `DELETE /api/apmode/provision`. Watch the camera's LED: a successful
    receive usually stops the AP broadcast.
 6. Bring the laptop back to the home network. The camera should join it within a
