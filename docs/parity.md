@@ -28,7 +28,7 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in every tag release, `v0.3.3` included (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
+| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in every tag release, `v0.3.4` included (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
 | Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; each tag release carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
 | Installer signing | — | blocked | no Apple Developer or Windows signing certificate (decision 2026-10-26); artefacts ship unsigned with `SHA256SUMS`. Outside the program, decided 2026-10-26: signing needs an Apple Developer ID and a Windows code-signing certificate, and every tag release ships its 22 assets unsigned next to `SHA256SUMS`, so the absence is visible at download rather than silent. |
 | Desktop app run on a real desktop | — | partial | Linux: launched under Xvfb on WebKitGTK 2.54 for v0.3.0, signed in with keyboard and pointer input, UI rendered in both themes; live H.264 needs the GStreamer H.264 decoder there (`webview-matrix.md`). Windows and macOS windows not launched yet. Outside the program: this workstation has no graphical desktop at all, so the gap is a boundary of the box rather than of the build; the Linux window above stays the only one exercised, and lifting it needs a machine with a display server for Windows, macOS or both. |

@@ -5,9 +5,61 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## 0.3.4 — unreleased
+## 0.3.4 — 2026-10-28
 
 ### Added
+
+- Device settings write with backup and revert. `GET`/`PUT
+  /api/device/settings/{encode,network,storage}` write the encoder, network
+  and storage blocks over DVRIP, and the `Device settings` page drives them.
+  Each write copies the block to `config-backup-<block>-<ms>.json` (0600 in
+  a 0700 directory) first, writes, reads back inside a 20 s window it
+  carries itself, and restores the copy on a mismatch or a failed write; a
+  restore the device does not take is reported as a failed revert instead of
+  a clean one. Exercised on the camera over the relay: 10 fps / 1024 kbps
+  written and read back with both fields matching, then 12 / 1536 restored
+  with FPS, BitRate, GOP and Resolution matching. Network writes stay on
+  DNS: address, DHCP, gateway and submask answer 409 because the read-back
+  and the revert both travel over that path.
+
+- Alarm message centre. `/api/cloud/alarms` speaks the recovered
+  `AlarmCenter` envelope against `access-alc.secu100.net:6602`,
+  `/api/cloud/alarms/picture` signs an object through the CssCenter hop, and
+  `web/alarms.js` lists time, event and channel, draws the picture, and
+  raises one browser notification per new alarm id once the user presses
+  Notify me.
+
+- Cloud recordings. `GET /api/recordings?device=&channel=&day=` carries the
+  DSS token and the PMS `video_query` call, and the panel maps `StartTime`,
+  `StopTime`, `VideoSize`, `IndexFile` and `StorageBucket` from the vendor
+  bean. An account without a cloud plan gets the vendor acknowledgement with
+  no clips and the page renders its notice.
+
+- Playback. `GET /api/playback/files` lists a device's recordings over the
+  cloud tunnel, `GET /api/playback/download` streams one, and
+  `web/playback.js` draws the day timeline; a 60 s window was collected as
+  84.36 MB in 107 s through the fMP4 splitter, with ffmpeg stopped by
+  closing the socket.
+
+- One live tile per device with a layout the browser keeps (`GET /api/grid`,
+  `web/grid.js`).
+
+- Fisheye dewarp from the recovered lens model: `/api/fisheye/model`,
+  `/api/fisheye/map` and `/api/fisheye/dewarp`, driven by `web/fisheye.js`.
+
+- Talk over the vendor relay when the LAN is out of reach (`GET
+  /api/ws/talk`), two audio streams with a configurable buffer.
+
+- AP-mode provisioning: `POST /api/apmode/plan` and `/api/apmode/provision`
+  send the DVRIP `NetWork.Wifi` write and the app's own UDP fallback sender
+  to a camera that is still on its own access point.
+
+- Device attributes on the account: `GET /api/cloud/device-attributes`,
+  `/api/cloud/device-caps` and `/api/cloud/device-groups`, plus rename,
+  group, favourite, share and password on the cloud envelope.
+
+- The token login now travels encrypted on the monitor channel, with the
+  media bring-up the SDK itself uses.
 
 - Media channel cipher. `crates/core/src/media/dhav.rs` speaks the envelope the
   vendor SDK and the camera use on msgid 1000: AES-128-CBC with a 16-byte zero
