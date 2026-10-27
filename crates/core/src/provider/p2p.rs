@@ -3,7 +3,6 @@ use base64::Engine;
 use serde::Deserialize;
 
 pub const HANDSHAKE_TRAILER: &[u8; 4] = b"XXEE";
-pub const RELAY_PORT: u16 = 6611;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WireError {
