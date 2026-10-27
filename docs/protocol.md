@@ -455,6 +455,84 @@ session) reference only `http://xmsecu.com:8080/ocx/New_Active.exe` and
 HTTP proxy to the camera's embedded web server, not a video relay, so it cannot
 stream to a browser and is not a fourth media path.
 
+## 4C. The P2P wire, as the phone and the SDK actually speak it (2026-10-27)
+
+Captured from the owner's phone with PCAPdroid while the real app played live,
+and cross-checked with a host capture of the SDK harness in the qemu chroot.
+Two captures, two independent clients, same shape.
+
+### 4C.1 Relay discovery is one UDP exchange on 8765
+
+The client sends a 4-byte frame to a relay on UDP `8765`:
+
+```
+12 20 f0 05
+```
+
+and gets back a list:
+
+```
+12 20 f1 05 | 03 00 00 00 | "159.138.100.133\0" 55 00 00 00
+                          | "159.138.101.123\0" 45 00 00 00
+                          | "110.239.71.224\0"  00 00 00 00
+```
+
+`0x1220` is the magic, `0xf005` asks for the relay set, `0xf105` answers with a
+count and one NUL-terminated IPv4 per entry plus a trailing u32. The same
+exchange appears in the SDK harness capture from this box, so the sequence is
+not phone-specific.
+
+### 4C.2 The relay tunnel is TCP 6611 with a base64 handshake
+
+The phone's live video is one TCP flow: **9.5 MB downstream in 17 s to
+`162.128.66.154:6611`** (~4.5 Mbit/s), no TLS. The first client payload is
+base64 text:
+
+```
+aaaaaaaa-1a1b397d2:c_6kjkfw65cvzl39rjrno8yc0j:7f92970ddf5282743hrc:cy7cimmp5
+```
+
+i.e. `<rps id>:<client session id>:<device serial>:<client token>`, where the
+first field is the `rps` value the account device list already carries. The
+relay answers base64 JSON plus a 4-byte trailer:
+
+```
+{"ErrorNum":"200","DestIP":"103.85.122.66","MTU":"1400"}XXEE
+```
+
+`DestIP` is the device's WAN address, the same `103.85.122.66` the status
+clusters and the caps call report.
+
+### 4C.3 Inside the tunnel it is plain DVRIP
+
+After the handshake the flow carries DVRIP frames, starting with
+`ff 01 00 00` and the usual session/sequence/channel/type/length fields. Two
+examples from the capture, payload text included:
+
+```
+ff010000 9f860100 10000000 6300 85000000
+  {"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Parameter":{"Channel":0,...
+ff010000 2f000000 18000000 0000 e903 80000000
+  { "AliveInterval" : 30, "ChannelNum" : 1, "DeviceType " : "IPC", "ExtraChannel" : 0
+```
+
+`OPMonitor` is the SDK's device-monitor claim and the second frame is the
+device's own configuration answer, both familiar shapes from the DVRIP work in
+`crates/core/src/dvrip`. That is the opening for this project: the media
+channel is DVRIP over the relay tunnel, so the existing DVRIP client can carry
+live once the relay handshake and the framing differences are implemented.
+
+### 4C.4 What that means for the implementation
+
+1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
+2. `tcp <relay>:6611` → base64 `<rps>:<client>:<serial>:<token>` → base64 JSON
+   with `ErrorNum 200` and `MTU`.
+3. DVRIP over the tunnel: login with the device credentials, then the live
+   request the SDK sends (`OPMonitor` claim plus media play), and the frames
+   arrive in the same envelope the LAN path already parses.
+4. The `rps` id and the device credentials come from `msdlistCode`, so no new
+   account call is needed.
+
 ## 5. Open items
 
 1. ~~The CSS request envelope for account login~~ — answered for the SDK path in
