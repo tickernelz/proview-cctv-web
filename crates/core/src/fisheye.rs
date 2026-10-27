@@ -83,10 +83,6 @@ impl LensType {
             Self::SinglePip => LENS_SINGLE_PIP,
         }
     }
-
-    pub fn declares_dewarp(self) -> bool {
-        !matches!(self, Self::SinglePip)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -102,27 +98,14 @@ pub struct Calibration {
     pub view_mode: u8,
 }
 
-impl Calibration {
-    pub fn lens(&self) -> Option<Lens> {
-        if self.radius <= 0 || self.image_width <= 0 || self.image_height <= 0 {
-            return None;
-        }
-        let center_x = self.image_width as f32 / 2.0 + self.center_offset_x as f32;
-        let center_y = self.image_height as f32 / 2.0 + self.center_offset_y as f32;
-        Lens::new(
-            self.image_width as u32,
-            self.image_height as u32,
-            center_x,
-            center_y,
-            self.radius as f32,
-        )
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
     Equidistant { max_theta_deg: f32 },
-    Table { radii: Vec<f64>, step_deg: f64 },
+    Table {
+        radii: Vec<f64>,
+        start_deg: f64,
+        step_deg: f64,
+    },
 }
 
 impl Curve {
@@ -137,14 +120,15 @@ impl Curve {
         if samples.len() < 2 {
             return None;
         }
-        let step_deg = samples[1].0 - samples[0].0;
-        if step_deg.is_nan() || step_deg <= 0.0 {
+        let start_deg = samples[0].0;
+        let step_deg = samples[1].0 - start_deg;
+        if !start_deg.is_finite() || step_deg.is_nan() || step_deg <= 0.0 {
             return None;
         }
         let mut radii = Vec::with_capacity(samples.len());
         for (index, (angle, radius)) in samples.iter().enumerate() {
             if index > 0 {
-                let expected = samples[0].0 + step_deg * index as f64;
+                let expected = start_deg + step_deg * index as f64;
                 if (*angle - expected).abs() > step_deg * 1.0e-6 {
                     return None;
                 }
@@ -154,29 +138,38 @@ impl Curve {
             }
             radii.push(*radius);
         }
-        Some(Self::Table { radii, step_deg })
+        Some(Self::Table {
+            radii,
+            start_deg,
+            step_deg,
+        })
     }
 
     pub fn max_theta(&self) -> f32 {
         match self {
             Self::Equidistant { max_theta_deg } => max_theta_deg.to_radians(),
-            Self::Table { radii, step_deg } => {
-                ((radii.len() - 1) as f64 * step_deg).to_radians() as f32
-            }
+            Self::Table {
+                radii, start_deg, step_deg,
+            } => (start_deg + (radii.len() - 1) as f64 * step_deg).to_radians() as f32,
         }
     }
 
     fn theta_of_radius(&self, radius_px: f32, scale: f32) -> f32 {
         match self {
             Self::Equidistant { .. } => radius_px / scale,
-            Self::Table { radii, step_deg } => {
+            Self::Table {
+                radii,
+                start_deg,
+                step_deg,
+            } => {
                 if !radius_px.is_finite() || radius_px <= 0.0 {
-                    return 0.0;
+                    return start_deg.to_radians() as f32;
                 }
                 let target = radius_px as f64;
                 let last = radii[radii.len() - 1];
                 if target >= last {
-                    return ((radii.len() - 1) as f64 * step_deg).to_radians() as f32;
+                    return ((start_deg + (radii.len() - 1) as f64 * step_deg).to_radians())
+                        as f32;
                 }
                 let upper = radii.partition_point(|entry| *entry <= target);
                 let index = upper.saturating_sub(1).min(radii.len() - 2);
@@ -187,7 +180,7 @@ impl Curve {
                 } else {
                     0.0
                 };
-                ((index as f64 + frac) * step_deg).to_radians() as f32
+                ((start_deg + (index as f64 + frac) * step_deg).to_radians()) as f32
             }
         }
     }
@@ -195,11 +188,19 @@ impl Curve {
     fn radius_of_theta(&self, theta: f32, scale: f32) -> f32 {
         match self {
             Self::Equidistant { .. } => theta * scale,
-            Self::Table { radii, step_deg } => {
+            Self::Table {
+                radii,
+                start_deg,
+                step_deg,
+            } => {
                 if !theta.is_finite() || theta <= 0.0 {
-                    return 0.0;
+                    return radii[0] as f32;
                 }
-                let steps = theta as f64 * 180.0 / (PI as f64 * step_deg);
+                let degrees = theta as f64 * 180.0 / PI as f64;
+                if degrees <= *start_deg {
+                    return radii[0] as f32;
+                }
+                let steps = (degrees - start_deg) / step_deg;
                 let index = steps.floor() as usize;
                 if index + 1 >= radii.len() {
                     return radii[radii.len() - 1] as f32;
@@ -249,26 +250,16 @@ impl Direction {
             .to_degrees()
     }
 
-    pub fn from_yaw_pitch_deg(yaw_deg: f32, pitch_deg: f32) -> Self {
-        let (sin_yaw, cos_yaw) = yaw_deg.to_radians().sin_cos();
-        let (sin_pitch, cos_pitch) = pitch_deg.to_radians().sin_cos();
-        Self {
-            x: cos_pitch * sin_yaw,
-            y: sin_pitch,
-            z: cos_pitch * cos_yaw,
-        }
-    }
-
     pub fn equirect(&self) -> (f32, f32) {
         let bearing = self.y.atan2(self.x);
         let elevation = self.z.atan2((self.x * self.x + self.y * self.y).sqrt());
-        let u = bearing / TAU + 0.5;
-        (u - u.floor(), 0.5 - elevation / PI)
+        let u = 0.25 - bearing / TAU;
+        (u - u.floor(), 0.5 + elevation / PI)
     }
 
     pub fn from_equirect(u: f32, v: f32) -> Self {
-        let bearing = (u - 0.5) * TAU;
-        let elevation = (0.5 - v) * PI;
+        let bearing = TAU * (0.25 - u);
+        let elevation = (v - 0.5) * PI;
         let (sin_bearing, cos_bearing) = bearing.sin_cos();
         let (sin_elevation, cos_elevation) = elevation.sin_cos();
         Self {
@@ -343,7 +334,7 @@ impl Lens {
     }
 
     pub fn inside(&self, px: f32, py: f32) -> bool {
-        px >= 0.0 && py >= 0.0 && px <= self.width as f32 - 1.0 && py <= self.height as f32 - 1.0
+        px >= 0.0 && py >= 0.0 && px <= self.width as f32 && py <= self.height as f32
     }
 
     pub fn direction(&self, px: f32, py: f32) -> Direction {
@@ -518,8 +509,8 @@ impl RgbFrame {
     pub fn sample(&self, x: f32, y: f32) -> [u8; 3] {
         let max_x = self.width as f32 - 1.0;
         let max_y = self.height as f32 - 1.0;
-        let fx = x.clamp(0.0, max_x);
-        let fy = y.clamp(0.0, max_y);
+        let fx = (x.clamp(0.0, self.width as f32) - 0.5).clamp(0.0, max_x);
+        let fy = (y.clamp(0.0, self.height as f32) - 0.5).clamp(0.0, max_y);
         let x0 = fx.floor() as u32;
         let y0 = fy.floor() as u32;
         let x1 = (x0 + 1).min(self.width - 1);
@@ -701,7 +692,7 @@ mod tests {
                 let px = lens.center_x + radius * bearing.to_radians().cos();
                 let py = lens.center_y + radius * bearing.to_radians().sin();
                 let (u, _) = lens.direction(px, py).equirect();
-                let measured = (u - 0.5) * 360.0;
+                let measured = (0.25 - u) * 360.0;
                 let mut delta = (measured - bearing).abs() % 360.0;
                 if delta > 180.0 {
                     delta = 360.0 - delta;
@@ -768,7 +759,7 @@ mod tests {
         for index in 0..12 {
             let reference = spoke_color(index);
             let mut columns = Vec::new();
-            for row in 40..165 {
+            for row in 198..315 {
                 for column in 0..720 {
                     if close(pano.pixel(column, row), reference, 8) {
                         columns.push(column as f32);
@@ -776,8 +767,8 @@ mod tests {
                 }
             }
             assert!(columns.len() > 60, "spoke {index} pixels {}", columns.len());
-            let measured = (median(&mut columns) + 0.5) / 720.0 * 360.0 - 180.0;
-            let expected = index as f32 * 30.0;
+            let measured = (0.25 - (median(&mut columns) + 0.5) / 720.0) * 360.0;
+            let expected = 15.0 + index as f32 * 30.0;
             let mut delta = (measured - expected).abs() % 360.0;
             if delta > 180.0 {
                 delta = 360.0 - delta;
@@ -798,7 +789,7 @@ mod tests {
                 }
             }
             assert!(rows.len() > 60, "ring {index} pixels {}", rows.len());
-            let elevation = (0.5 - (median(&mut rows) + 0.5) / 360.0) * 180.0;
+            let elevation = ((median(&mut rows) + 0.5) / 360.0 - 0.5) * 180.0;
             let expected = 90.0 - (index as f32 + 1.0) * 15.0;
             worst_elevation = worst_elevation.max((elevation - expected).abs());
         }
@@ -806,6 +797,45 @@ mod tests {
             worst_elevation < 1.0,
             "worst elevation error {worst_elevation}"
         );
+    }
+
+    #[test]
+    fn equirect_matches_the_vendor_orientation() {
+        let lens = lens();
+        let mut measured = Vec::new();
+        for bearing_deg in [-30.0f32, 30.0] {
+            let bearing = bearing_deg.to_radians();
+            let radius = 240.0 * 30.0 / 90.0;
+            let px = lens.center_x + radius * bearing.cos();
+            let py = lens.center_y + radius * bearing.sin();
+            let (u, v) = lens.direction(px, py).equirect();
+            measured.push(u);
+            assert!((u - (0.25 - bearing_deg / 360.0)).abs() < 1.0e-4, "u {u}");
+            assert!((v - (0.5 + 60.0 / 180.0)).abs() < 1.0e-4, "v {v}");
+        }
+        assert!(measured[0] > measured[1], "handedness flipped: {measured:?}");
+    }
+
+    #[test]
+    fn equirect_places_markers_on_the_columns_their_bearing_implies() {
+        let lens = lens();
+        let map = Map::equirect(&lens, 720, 360);
+        for bearing_deg in [-90.0f32, -30.0, 0.0, 30.0, 90.0] {
+            let bearing = bearing_deg.to_radians();
+            let radius = 240.0 * 45.0 / 90.0;
+            let px = lens.center_x + radius * bearing.cos();
+            let py = lens.center_y + radius * bearing.sin();
+            let (u, v) = lens.direction(px, py).equirect();
+            let column = (u * 720.0) as i64;
+            let row = (v * 360.0) as i64;
+            assert!((0..720).contains(&column), "column {column}");
+            assert!((180..360).contains(&row), "row {row}");
+            let (source_x, source_y) = map.source(column as u32, row as u32).expect("valid");
+            let direction = lens.direction(source_x, source_y);
+            let (back_u, back_v) = direction.equirect();
+            assert!((back_u - u).abs() < 2.0 / 720.0, "u {u} {back_u}");
+            assert!((back_v - v).abs() < 2.0 / 360.0, "v {v} {back_v}");
+        }
     }
 
     #[test]

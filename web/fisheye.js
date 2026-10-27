@@ -45,8 +45,8 @@
     '  return normalize(vec3(scale * point.x, scale * point.y, -z));',
     '}',
     'vec3 equirectRay(vec2 uv) {',
-    '  float bearing = (uv.x - 0.5) * TAU;',
-    '  float elevation = (uv.y - 0.5) * PI;',
+    '  float bearing = (0.25 - uv.x) * TAU;',
+    '  float elevation = (0.5 - uv.y) * PI;',
     '  return vec3(cos(elevation) * cos(bearing), cos(elevation) * sin(bearing), sin(elevation));',
     '}',
     'void main() {',
@@ -133,6 +133,7 @@
       this.imageWidth = 512;
       this.imageHeight = 512;
       this.maxTheta = Math.PI / 2;
+      this.scale = this.radius / this.maxTheta;
       this.mode = 0;
       this.pan = 0;
       this.tilt = 0;
@@ -166,7 +167,7 @@
       if (options.centerY !== undefined) this.centerY = options.centerY;
       if (options.radius !== undefined) this.radius = options.radius;
       if (options.maxThetaDeg !== undefined) this.maxTheta = radians(options.maxThetaDeg);
-      this.lut = Array.isArray(options.lut) && options.lut.length >= 2 ? options.lut.slice(0, 65) : null;
+      this.lut = FisheyeDewarp.resampleLut(options.lut);
       this.scale = this.radius / this.maxTheta;
     }
 
@@ -176,6 +177,21 @@
       if (options.tiltDeg !== undefined) this.tilt = radians(options.tiltDeg);
       if (options.fovDeg !== undefined) this.fov = radians(Math.min(179, Math.max(1, options.fovDeg)));
       if (options.camZ !== undefined) this.camZ = options.camZ;
+    }
+
+    static resampleLut(values) {
+      if (!Array.isArray(values) || values.length < 2) {
+        return null;
+      }
+      const width = 65;
+      const out = new Array(width);
+      for (let slot = 0; slot < width; slot += 1) {
+        const position = (slot / (width - 1)) * (values.length - 1);
+        const index = Math.min(values.length - 2, Math.floor(position));
+        const fraction = Math.min(1, position - index);
+        out[slot] = values[index] + (values[index + 1] - values[index]) * fraction;
+      }
+      return out;
     }
 
     uploadFrame(source) {
@@ -223,13 +239,6 @@
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       return true;
-    }
-
-    readPixel(column, row) {
-      const gl = this.gl;
-      const pixel = new Uint8Array(4);
-      gl.readPixels(column, row, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-      return [pixel[0], pixel[1], pixel[2], pixel[3]];
     }
   }
 

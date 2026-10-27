@@ -26,7 +26,7 @@ which dispatches on that mask.
 
 ## 2. Calibration the camera supplies
 
-`SDK_FishEyeFrameSW` (smali `com/lib/sdk/struct`), 12 bytes:
+`SDK_FishEyeFrameSW` (smali `com/lib/sdk/struct`), 14 bytes (offsets 0..13):
 
 | Offset | Field | Type |
 |---|---|---|
@@ -91,8 +91,20 @@ so the vendor quantises that calibration to milliradians.
 The panorama builder and the shader share one convention: the image plane is the horizon
 and the lens axis is the pole.
 
-    bearing   = atan2(y, x)                        -> u = bearing / 2pi  (mod 1)
+    bearing   = atan2(y, x)                        -> u = mod((pi/2 - bearing) / 2pi, 1)
     elevation = atan2(z, hypot(x, y))              -> v = elevation / pi + 0.5
+
+The code writes the same thing as `u = 0.25 - bearing / 2pi`; the offset is arbitrary
+because the panorama has no seam marker, the sign is not. `v` grows with elevation, so
+the covered hemisphere of a 180 degree lens is the lower half of the pano, and the
+handedness is the vendor's: a marker at image bearing +30 degrees lands at u = 0.1667 and
+one at -30 degrees at u = 0.3333. `equirect_matches_the_vendor_orientation` and
+`equirect_places_markers_on_the_columns_their_bearing_implies` pin that, because the
+symmetric fixture alone cannot see a mirror.
+
+Source coordinates use the pixel-area convention: column `c` covers `[c, c+1)`, so the
+geometric centre of a 512 px frame is 256.0 and `RgbFrame::sample` subtracts 0.5 before
+interpolating. `fixtures/fisheye/make.py` and `web/fisheye.js` use the same centre.
 
 `FisheyeGL_BuildFullPanoMap` (0xa2c8) sizes the pano from the output height and the field
 of view (`width = height * aspect / 360`, constant `0x43b40000` = 360.0), and
@@ -135,11 +147,15 @@ from the pan (offset 84), tilt (92) and roll (100) floats, stored at offsets 848
 | `View::ray` | shader `Transform`, with `z` flipped so the optical axis is +Z |
 | `View::rotated` | `u_mat` pan then tilt |
 | `Map::equirect`, `Map::ptz` | `BuildFullPanoMap`, `Fisheye_PanTiltToInVPicturePoint` (0x6278) |
+| `Calibration::lens`, `LensType`, `MountType` | `SDK_FishEyeFrameSW`, `FISHEYE_LENS_TYPE_E`, `FISHEYE_APP_TYPE_E` |
 | `RgbFrame::warp` | the GL draw with a source map, bilinear instead of the GPU sampler |
 
-`web/fisheye.js` carries the same math into WebGL2 so a live `<video>` frame is dewarped at
-frame rate in the browser, and `crates/server/src/routes/fisheye.rs` exposes the model
-document, a source map and a fixture render.
+`web/fisheye.js` carries the same math into WebGL2 so a live `<video>` frame can be
+dewarped at frame rate in the browser, and `crates/server/src/routes/fisheye.rs` exposes
+the model document, a source map and a fixture render. Two limits are deliberate and
+recorded in the parity row: nothing in `web/app.js` calls the renderer yet, so no live
+frame reaches either path, and `MountType` is decoded but does not rotate the map, so
+ceiling, table and wall mount produce the same panorama.
 
 ## 6. Measured on the fixture
 
@@ -150,14 +166,21 @@ the route test in `crates/server/tests/fisheye.rs`:
 
 | Check | Result |
 |---|---|
-| Worst spoke bearing error, dewarped to 720x360 equirect | 0.75 deg (1.5 px) |
+| Worst spoke bearing error, dewarped to 720x360 equirect | 0.25 deg (0.5 px) |
 | Worst ring elevation error | 0.25 deg (0.5 px) |
 | Pixel to direction to pixel round trip, 360 bearings x 47 radii | 9.2e-5 px |
 | Radial table interpolation, 91 samples, 900 angles | 1.1e-5 deg |
 | Valid pixels, 720x360 equirect of a 90 degree lens | 129600 of 259200, the covered hemisphere |
 | Valid pixels, 640x360 ptz at 90 degree fov, pan 30 | 227520 of 230400 (98.75%) |
-| Warp of one 512x512 frame to 720x360, debug build | 25.51 ms, median of 5 |
+| Dewarp request 720x360 through the route, release build | 13.10 ms, median of 3, 777654 B BMP |
+| Dewarp request 2048x2048 at the 4194304 px cap, release build | 202.63 ms, median of 3, 12582966 B BMP |
+| Source map request 256x128 JSON, release build | 4.00 ms, median of 3, 547444 B |
 
-The bearing residual is set by the fixture raster (a 2.2 px spoke sampled at 512 px) and the
-equirect column width of 0.5 deg; it is not a model error, which the round trip and the
-table check pin below 1e-4.
+The bearing and ring residuals are one equirect column and one row: 720 columns over 360
+degrees is 0.5 deg, 360 rows over 180 degrees is 0.5 deg, and both land on 0.25 deg, i.e.
+half a texel. They are rasterisation, not model error, which the round trip (9.2e-5 px) and
+the table check (1.1e-5 deg) pin four orders of magnitude lower.
+
+The release numbers come from the built binary serving the embedded fixture with no
+`fixtures/fisheye` directory on disk, which is also the smoke test for the release
+artifact: the request still returns 200 and a full BMP.

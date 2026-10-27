@@ -11,7 +11,7 @@ RADIUS = 240.0
 MAX_THETA_DEG = 90.0
 SUPERSAMPLE = 4
 
-SPOKE_BEARINGS = [index * 30.0 for index in range(12)]
+SPOKE_BEARINGS = [15.0 + index * 30.0 for index in range(12)]
 CIRCLE_THETAS = [15.0, 30.0, 45.0, 60.0, 75.0, 90.0]
 CIRCLE_GRAYS = [96, 112, 128, 144, 160, 255]
 BACKGROUND = (8, 10, 16)

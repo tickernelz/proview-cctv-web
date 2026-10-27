@@ -183,7 +183,7 @@ fn dewarp_returns_a_bitmap_with_the_fixture_spokes_on_their_columns() {
     for index in 0..12usize {
         let reference = spoke_color(index);
         let mut columns = Vec::new();
-        for row in 40..165 {
+        for row in 198..315 {
             for column in 0..720 {
                 let pixel = bitmap.pixel(column, row);
                 if (pixel[0] as i32 - reference[0] as i32).abs() <= 8
@@ -196,8 +196,8 @@ fn dewarp_returns_a_bitmap_with_the_fixture_spokes_on_their_columns() {
         }
         assert!(columns.len() > 60, "spoke {index} pixels {}", columns.len());
         columns.sort_by(|left, right| left.partial_cmp(right).unwrap());
-        let measured = (columns[columns.len() / 2] + 0.5) / 720.0 * 360.0 - 180.0;
-        let expected = index as f32 * 30.0;
+        let measured = (0.25 - (columns[columns.len() / 2] + 0.5) / 720.0) * 360.0;
+        let expected = 15.0 + index as f32 * 30.0;
         let mut delta = (measured - expected).abs() % 360.0;
         if delta > 180.0 {
             delta = 360.0 - delta;

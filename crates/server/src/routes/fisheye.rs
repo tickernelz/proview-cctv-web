@@ -5,12 +5,11 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
 
+use std::sync::OnceLock;
+
 use proview_core::session::Store;
 
-const FIXTURE_PATH: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../fixtures/fisheye/fisheye-grid-512.ppm"
-);
+const FIXTURE_BYTES: &[u8] = include_bytes!("../../../../fixtures/fisheye/fisheye-grid-512.ppm");
 const FIXTURE_WIDTH: u32 = 512;
 const FIXTURE_HEIGHT: u32 = 512;
 const FIXTURE_CENTER: f32 = 256.0;
@@ -189,18 +188,21 @@ fn fixture_calibration() -> Calibration {
     }
 }
 
+fn fixture_lens() -> Lens {
+    Lens {
+        width: FIXTURE_WIDTH,
+        height: FIXTURE_HEIGHT,
+        center_x: FIXTURE_CENTER,
+        center_y: FIXTURE_CENTER,
+        radius: FIXTURE_RADIUS,
+        curve: Curve::Equidistant {
+            max_theta_deg: 90.0,
+        },
+    }
+}
+
 fn project_fixture() -> FixtureCalibration {
-    let calibration = fixture_calibration();
-    let lens = calibration.lens().unwrap_or_else(|| {
-        Lens::new(
-            FIXTURE_WIDTH,
-            FIXTURE_HEIGHT,
-            FIXTURE_CENTER,
-            FIXTURE_CENTER,
-            FIXTURE_RADIUS,
-        )
-        .expect("fixture lens")
-    });
+    let lens = fixture_lens();
     FixtureCalibration {
         image_width: lens.width,
         image_height: lens.height,
@@ -211,7 +213,7 @@ fn project_fixture() -> FixtureCalibration {
     }
 }
 
-#[derive(FromForm)]
+#[derive(FromForm, Clone)]
 pub struct MapQuery {
     mode: Option<String>,
     width: Option<u32>,
@@ -263,7 +265,7 @@ fn build_view(query: &MapQuery) -> View {
     }
 }
 
-fn build_map(lens: &Lens, query: &MapQuery, limit: u32) -> Result<Map, Failure> {
+fn build_map_for(lens: &Lens, query: &MapQuery, limit: u32) -> Result<Map, Failure> {
     let width = query.width.unwrap_or(640).clamp(1, 4096);
     let height = query.height.unwrap_or(320).clamp(1, 4096);
     if width * height > limit {
@@ -283,14 +285,13 @@ fn build_map(lens: &Lens, query: &MapQuery, limit: u32) -> Result<Map, Failure> 
 }
 
 #[get("/fisheye/map?<query..>")]
-fn map(
+async fn map(
     query: MapQuery,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<MapResponse>, Failure> {
     signed_in(store, cookies)?;
-    let lens = build_lens(&query)?;
-    let map = build_map(&lens, &query, MAX_MAP_PIXELS)?;
+    let map = build_map(&query, MAX_MAP_PIXELS).await?;
     let valid = map.valid_count();
     let sources = map
         .sources
@@ -309,28 +310,41 @@ fn map(
 }
 
 #[get("/fisheye/dewarp?<query..>")]
-fn dewarp(
+async fn dewarp(
     query: MapQuery,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<(ContentType, Vec<u8>), Failure> {
     signed_in(store, cookies)?;
-    let lens = build_lens(&query)?;
-    let map = build_map(&lens, &query, MAX_RENDER_PIXELS)?;
-    let frame = fixture_frame()?;
-    let warped = frame.warp(&map);
-    Ok((ContentType::new("image", "bmp"), encode_bmp(&warped)))
+    let render = rocket::tokio::task::spawn_blocking(move || {
+        let map = build_map_blocking(&query, MAX_RENDER_PIXELS)?;
+        let frame = fixture_frame()?;
+        let warped = frame.warp(&map);
+        Ok::<_, Failure>(encode_bmp(&warped))
+    })
+    .await
+    .map_err(|error| fail(Status::InternalServerError, error.to_string()))??;
+    Ok((ContentType::new("image", "bmp"), render))
 }
 
-fn fixture_frame() -> Result<RgbFrame, Failure> {
-    let bytes = std::fs::read(FIXTURE_PATH).map_err(|error| {
-        fail(
-            Status::InternalServerError,
-            format!("fixture unreadable: {error}"),
-        )
-    })?;
-    RgbFrame::from_ppm(&bytes)
-        .ok_or_else(|| fail(Status::InternalServerError, "fixture is not a binary PPM"))
+async fn build_map(query: &MapQuery, limit: u32) -> Result<Map, Failure> {
+    let query = query.clone();
+    rocket::tokio::task::spawn_blocking(move || build_map_blocking(&query, limit))
+        .await
+        .map_err(|error| fail(Status::InternalServerError, error.to_string()))?
+}
+
+fn build_map_blocking(query: &MapQuery, limit: u32) -> Result<Map, Failure> {
+    let lens = build_lens(query)?;
+    build_map_for(&lens, query, limit)
+}
+
+fn fixture_frame() -> Result<&'static RgbFrame, Failure> {
+    static FRAME: OnceLock<Option<RgbFrame>> = OnceLock::new();
+    FRAME
+        .get_or_init(|| RgbFrame::from_ppm(FIXTURE_BYTES))
+        .as_ref()
+        .ok_or_else(|| fail(Status::InternalServerError, "embedded fixture is not a binary PPM"))
 }
 
 fn encode_bmp(frame: &RgbFrame) -> Vec<u8> {
