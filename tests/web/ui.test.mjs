@@ -197,3 +197,114 @@ test('Talk stays disabled with the server reason when two-way audio is not repor
     await page.close();
   }
 });
+
+const tourCalls = [];
+const TOUR_CAPS = {
+  patterns: [{ urlPattern: '*/api/device/controls*' }],
+  respond: (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/api/device/controls') {
+      return {
+        onvif: false,
+        dvrip: true,
+        capabilities: [
+          { feature: 'ptz move', lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'DirectionRight on PTZ channel 0 shifted the lower lens' },
+          { feature: 'ptz patrol', lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'Uart.PTZTour holds 1 line(s) with 2 point(s) in total' },
+        ],
+      };
+    }
+    if (parsed.pathname === '/api/device/controls/presets') {
+      return [];
+    }
+    if (parsed.pathname === '/api/device/controls/tour') {
+      return {
+        ok: true,
+        backend: 'dvrip',
+        lines: [
+          {
+            channel: 0,
+            id: 1,
+            name: '',
+            points: [
+              { preset: 1, seconds: 3 },
+              { preset: 2, seconds: 3 },
+            ],
+          },
+        ],
+        presets: [
+          { channel: 0, id: 1, name: 'biasa' },
+          { channel: 0, id: 2, name: 'biasabaru' },
+        ],
+        locate: null,
+        note: 'the device answers every OPPTZControl with Ret 100 before it moves',
+      };
+    }
+    if (parsed.pathname === '/api/device/controls/tour/start' || parsed.pathname === '/api/device/controls/tour/stop') {
+      tourCalls.push(parsed.pathname + parsed.search);
+      const action = parsed.pathname.endsWith('start') ? 'start' : 'stop';
+      return { ok: true, backend: 'dvrip', action, tour: 1, times: 1, note: 'the device answers every OPPTZControl with Ret 100 before it moves' };
+    }
+    return {};
+  },
+};
+
+test('the pad starts and stops the device tour, and reports that the ack is not motion', async () => {
+  tourCalls.length = 0;
+  const page = await open({ intercept: TOUR_CAPS });
+  try {
+    await page.evaluate("document.getElementById('move').click()");
+    await page.wait("!document.getElementById('pad').hidden", 'the pad to open');
+    await page.evaluate("document.getElementById('tour').click()");
+    await page.wait("/Tour 1 running over 2 stops/.test(document.getElementById('control-status').textContent)", 'the tour to start');
+    assert.equal(await page.evaluate("document.getElementById('tour').getAttribute('aria-pressed')"), 'true');
+    assert.match(await page.evaluate("document.getElementById('control-status').textContent"), /watch the picture/);
+    await page.evaluate("document.getElementById('tour').click()");
+    await page.wait("/Stopped tour 1/.test(document.getElementById('control-status').textContent)", 'the tour to stop');
+    assert.equal(await page.evaluate("document.getElementById('tour').getAttribute('aria-pressed')"), 'false');
+    assert.deepEqual(tourCalls, ['/api/device/controls/tour/start?tour=1', '/api/device/controls/tour/stop?tour=1']);
+  } finally {
+    await page.close();
+  }
+});
+const TOOLBAR_HITS = `(() => {
+  const misses = [];
+  for (const button of document.querySelectorAll('#controls button')) {
+    if (!button.getClientRects().length) continue;
+    const box = button.getBoundingClientRect();
+    const name = button.id || button.textContent.trim();
+    if (box.left < 0 || box.top < 0 || box.right > innerWidth || box.bottom > innerHeight) {
+      misses.push(name + ' outside the viewport at ' + [box.left, box.top, box.right, box.bottom].map(Math.round).join(','));
+      continue;
+    }
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    if (hit?.closest('button') !== button) misses.push(name + ' centre hits ' + (hit?.closest('button')?.id || hit?.tagName));
+  }
+  return misses;
+})()`;
+const EXTRA_BUTTON = `(() => {
+  const extra = document.getElementById('record').cloneNode(true);
+  extra.id = 'extra-ctl';
+  extra.querySelector('span').textContent = 'Cloud';
+  const controls = document.getElementById('controls');
+  controls.insertBefore(extra, controls.querySelector('.spacer'));
+})()`;
+
+for (const touch of [false, true]) {
+  test('every live control is on screen and takes its own tap at phone widths' + (touch ? ' with touch-sized targets' : ''), async () => {
+    for (const width of [360, 390, 480, 600, 700]) {
+      const page = await open({ width, height: 844 });
+      try {
+        await page.wait("!document.getElementById('lens-pick').hidden", 'the lens picker of the dual-lens clip');
+        if (touch) {
+          await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+          await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'pointer', value: 'coarse' }] });
+        }
+        assert.deepEqual(await page.evaluate(TOOLBAR_HITS), [], 'at ' + width + ' px');
+        await page.evaluate(EXTRA_BUTTON);
+        assert.deepEqual(await page.evaluate(TOOLBAR_HITS), [], 'at ' + width + ' px with one more control');
+      } finally {
+        await page.close();
+      }
+    }
+  });
+}
