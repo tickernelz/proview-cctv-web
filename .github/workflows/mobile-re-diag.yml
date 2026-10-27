@@ -1,0 +1,98 @@
+name: mobile-re-diag
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: runner arch and arm64 image availability
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Facts
+        run: |
+          set -x
+          uname -m
+          sw_vers
+          sysctl -n machdep.cpu.brand_string
+          sysctl -n hw.memsize hw.ncpu
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}"
+          "${ANDROID_HOME}/emulator/emulator" -version | head -3
+          SDKMANAGER=$(ls "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager | head -1)
+          echo "sdkmanager=${SDKMANAGER}"
+          "${SDKMANAGER}" --list 2>/dev/null | grep -E "system-images;android-3[0-5];(google_apis|aosp_atd|google_atd|default);(arm64-v8a|x86_64)" | sort -u | head -60
+
+  boot:
+    name: boot ${{ matrix.id }}
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: a33-google-pixel6-swift, api: 33, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+          - { id: a33-google-pixel6-novulkan, api: 33, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -feature -Vulkan" }
+          - { id: a33-google-noprofile-4096, api: 33, target: google_apis, profile: default, ram: 4096, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+          - { id: a33-google-gpu-host, api: 33, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu host" }
+          - { id: a34-google-pixel6-swift, api: 34, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+          - { id: a35-google-pixel6-swift, api: 35, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+          - { id: a33-aosp-atd, api: 33, target: aosp_atd, profile: default, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+          - { id: a30-google-pixel6-swift, api: 30, target: google_apis, profile: pixel_6, ram: 2048, opts: "-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect" }
+    steps:
+      - name: Facts
+        run: |
+          uname -m
+          sw_vers -productVersion
+          sysctl -n machdep.cpu.brand_string
+          echo "api=${{ matrix.api }} target=${{ matrix.target }} profile=${{ matrix.profile }} ram=${{ matrix.ram }}"
+          echo "opts=${{ matrix.opts }}"
+
+      - name: Start the adb watch
+        run: |
+          mkdir -p diag
+          nohup sh -c 'for i in $(seq 1 80); do printf "== %s\n" "$(date -u +%H:%M:%S)"; adb devices -l 2>&1; pgrep -fl qemu-system 2>&1 | head -3; sleep 15; done' > "${RUNNER_TEMP}/adbwatch.log" 2>&1 &
+          sleep 1
+          echo started
+
+      - name: Boot the emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: arm64-v8a
+          profile: ${{ matrix.profile == 'default' && '' || matrix.profile }}
+          ram-size: ${{ matrix.ram }}
+          disable-animations: false
+          emulator-boot-timeout: 600
+          force-avd-creation: true
+          emulator-options: ${{ matrix.opts }}
+          script: |
+            set -euo pipefail
+            adb devices -l
+            echo "abi=$(adb shell getprop ro.product.cpu.abi)"
+            echo "sdk=$(adb shell getprop ro.build.version.sdk)"
+            echo "boot=$(adb shell getprop sys.boot_completed)"
+
+      - name: Collect
+        if: always()
+        timeout-minutes: 3
+        run: |
+          mkdir -p diag
+          cp "${RUNNER_TEMP}/adbwatch.log" diag/ 2>/dev/null || true
+          ( adb devices -l; adb shell getprop 2>/dev/null | head -50 ) > diag/adb-after.txt 2>&1 &
+          PID=$!
+          ( sleep 40; kill -9 $PID 2>/dev/null || true ) &
+          wait $PID 2>/dev/null || true
+          cp "${ANDROID_AVD_HOME:-$HOME/.android/avd}"/*.avd/config.ini "diag/avd-config.ini" 2>/dev/null || true
+          ls -l diag
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diag-${{ matrix.id }}
+          path: diag/*
+          if-no-files-found: warn
