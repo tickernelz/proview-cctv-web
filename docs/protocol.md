@@ -110,30 +110,183 @@ Cost: about 65 s per login on this workstation (qemu, no KVM for this guest).
 The signed request shape, read from the SDK and from the harness traffic:
 
 ```
-POST https://<host>/v3/<tsid>/<sig>.rs
+POST https://<host>/<endpoint>/v3/<tsid>/<sig>.rs
 Accept: */*
 Accept-Charset: utf-8
 Accept-Encoding: gzip
 Content-Type: application/x-www-form-urlencoded
 Content-Length: 96
 
-body: 96 lowercase hex characters
+body: 96 uppercase hex characters
 ```
 
-- `tsid` is 20 digits: the literal `0000003` followed by epoch milliseconds
-  (observed `0000003179372026023`).
+- `tsid` is 20 digits: a 7-digit per-process request counter followed by
+  epoch milliseconds (observed `0000003179372026023`). Section 3B derives both
+  halves and the counter's wrap.
 - `sig` is 32 hex characters derived per request, so a captured path cannot be
-  replayed. The mix of path, timestamp and key material that produces it was not
-  reimplemented outside the SDK; only its shape is known.
-- The 96 hex characters are the API-encrypted form of 28 bytes: 12 random bytes,
-  a 4-byte timestamp and a 12-character seed. The key stays inside the SDK.
+  replayed. Section 3B gives the derivation, checked against captured rows.
+- The 96 hex characters are AES-128-ECB over the form body
+  `account=<account>&pass=<url-encoded password>`, in uppercase hex, under a
+  16-character key derived from the request timestamp and the app secret
+  (section 3B). An earlier revision of this record read them as opaque key
+  material; that was wrong and was corrected on 2026-10-27.
 - This path carries **no** `UniqueCode` header. The `91000 Need UniqueCode`
   refusal belongs to requests that arrive unsigned.
 
 Not in this repository: the SDK, the chroot, and the application key material the
-harness passes in. None of it is redistributable, and the server in this
-repository has no login integration — the harness proves the envelope, it does
-not ship a client.
+harness passes in. None of it is redistributable. The harness proved the
+envelope; section 3B derives it and `crates/core` now carries the client, which
+takes the key material from `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and
+`PROVIEW_APP_SECRET` at run time.
+
+## 3B. The envelope algorithm, derived from the binary (2026-10-27)
+
+Section 3A proved the shape of the signed request. This section gives the
+algorithm behind it, read out of `libFunSDK.so` and then checked two ways: it
+reproduces every one of the 27 `IXMEncrypt::GetEncryptStr[...]` rows in the
+harness `sdk.log`, and a Rust implementation of it logs in from this box with
+no vendor binary in the loop (see 3B.6).
+
+### 3B.1 Per-request timestamp and counter
+
+`GetEncTimMillis` (`0xf505ec`) keeps one process-wide counter, increments it per
+call, and formats
+
+```
+tsid = sprintf("%07d%lld", counter, epoch_millis)
+```
+
+which is why every captured path carries a 7-digit prefix that walks 1, 2, 3, 4
+across successive calls and then a 13-digit millisecond value. When the counter
+reaches `10000000` (0x989680) it wraps to 1. That bound is built from two
+instructions, `mov w9, #0x9680` then `movk w9, #0x98, lsl #16`
+(`0xf50630`-`0xf50634`); reading only the `movz` half gives 38528 and misses
+the point by two orders of magnitude. The counter is part of the signed
+material, not a nonce the server stores: a client may start anywhere.
+
+### 3B.2 The signed string and the signature
+
+`IXMEncrypt::SetParmeValue` (`0xf50b40`, reached only from
+`FUN_XMCloundPlatformInit` at `0xbe3f80`) stores the three platform strings the
+app hands in: `uuid`, `appKey`, `appSecret`, plus the scramble parameter `k`
+(the app passes 4). `IXMEncrypt::GetEncryptStr` (`0xf50c38`) then, for every
+request:
+
+1. refreshes the timestamp field with 3B.1 and builds
+
+   ```
+   S = uuid + appKey + appSecret + tsid
+   ```
+
+   with one `sprintf("%s%s%s%s", ...)`; an `LD_PRELOAD` shim over
+   `__vsnprintf_chk` showed that call joining exactly those four pieces, 108
+   characters long for the real app constants.
+
+2. mirrors `S` in place with the conditional swap that gives the algorithm its
+   only unusual step. With `L = len(S)` and `i` from 0 to `L-1`:
+
+   ```
+   if k != 0 and (i % k) > ((L - i) % k):
+       swap(S[i], S[L-1-i])
+   else:
+       S[i] = S[L-1-i]
+   ```
+
+   Note the `else`: it is not a no-op, it copies the mirror byte forward, which
+   is why the result is not simply the reversal of `S`. `k = 4` in this build.
+
+3. hashes the plain prefix and the reversed mirrored suffix with MD5 and prints
+   lowercase hex (`OS::ToMD5` at `0xed990c`, `%02x` per byte):
+
+   ```
+   sig = md5_hex(S + reverse(mirror(S)))
+   ```
+
+### 3B.3 The body key
+
+`XMAccountAPI::KeyFilter` (`0xf4fb4c`) builds the 16-character AES key from the
+timestamp and the app secret:
+
+```
+key16 = first16( tsid[len(tsid)/2:] + appSecret )
+```
+
+When that is shorter than 16 characters it is padded on the right with the
+decimal digits `0`, `1`, `2`, ... - visible in captures where the app secret
+was still empty at that point, and the row read `3070132241012345`.
+
+`XMAccountAPI::AesEncrypt` (`0xf5007c`) is AES-128-ECB with PKCS7 padding and
+uppercase hex output; the key is the 16 ASCII bytes above, not a binary digest.
+
+### 3B.4 The request and the reply
+
+```
+POST https://rs.xmeye.net/<endpoint>/v3/<tsid>/<sig>.rs
+Accept: text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2
+Accept-Charset: utf-8
+Content-Type: application/x-www-form-urlencoded
+uuid: <app uuid>
+appKey: <app key>
+Authorization: <access token>            (device list and refresh only)
+
+body: hex(AES-128-ECB-PKCS7("account=<account>&pass=<encoded password>", key16))
+```
+
+- Only the password is URL-encoded. `EncodeURL` (`0xad052c`) keeps
+  `0-9A-Za-z / . ! - _ * ( )` and writes everything else as `%XX`; the account
+  goes into the form raw, which is why an address with `@` appears verbatim.
+- Endpoints seen: `loginExist` for email + password, `login` when the caller
+  also supplies a second credential, `msdlistCode` for the account device list,
+  `refreshToken` for the token refresh.
+- A successful reply is hex AES under the same `key16`: `loginExist` gives
+  `{"code":2000,"data":{"accessToken":...,"refreshToken":...}}`, `msdlistCode`
+  gives `{"code":2000,"data":{"mine":[{"uuid":...,"nickname":...}]}}`, and
+  `refreshToken` gives a fresh `accessToken`. Refusals arrive as plain JSON:
+  `5004 SIGNATURE_ERROR`, `5005 PARAM_FAIL`, `-83000 username or password
+  error`, `-91000 need UniqueCode`.
+- The access token is a JWT, HS256, carrying `exp`, `iat`, `account` and
+  `appKey`; the client reads `exp` from the payload instead of storing a TTL.
+
+### 3B.5 The device token
+
+The device token is not part of the signed envelope. `POST
+https://boss22-api.xmcsrv.net/account/userToken/login` with
+`{request:{authorization, appKey, appScheme:"icsee.boss.jftech.com", appVer:"1.0.2"}}`
+answers `code 2000` with a platform `accessToken` and an RSA-1024 `publicKey`
+(base64 DER). A sealed call then sends `Key: base64(RSA-PKCS1v1.5(publicKey,
+base64(session16)))` and `{"req": base64(AES-128-ECB-PKCS7(json, session16))}`;
+`/deviceToken/get` needs `deviceId` in that JSON or the server answers
+`-91002 deviceId must not be blank`, which is also the proof that the seal
+itself was accepted.
+
+### 3B.6 Evidence
+
+Where each claim comes from, so it can be re-checked:
+
+| Claim | Artifact |
+|---|---|
+| `S = uuid + appKey + appSecret + tsid` | `LD_PRELOAD` shim over `__vsnprintf_chk` dumping the `%s%s%s%s` result, 2026-10-27 |
+| `tsid = %07d%lld`, wrap 10000000 | `GetEncTimMillis` `0xf505ec`, bound `0x989680` from `movz`+`movk` at `0xf50630`; paths `0000003...`, `0000004...` in one process |
+| mirror + MD5 order | `GetEncryptStr` `0xf50ec0`-`0xf51234`; 27 of 27 `sdk.log` rows reproduced |
+| `key16` rule | `KeyFilter` `0xf4fb4c`; a row with an empty secret reads `3070132241012345` (ten timestamp digits then the digit padding), a row with the secret set keeps its first six characters after those digits |
+| body plaintext | the captured 96-hex login body decrypts to `account=...&pass=...` under that key |
+| device list | captured `msdlistCode` reply decrypts to `{"code":2000,"data":{"mine":[..."7f92970ddf5282743hrc"...]}}` |
+
+Implementation: `crates/core/src/cloud/envelope.rs` (`scramble`, `signature`,
+`body_key`, `seal`, `open`, `signed_request`, `EnvelopeClient`), wired into
+`provider/cloud.rs`. Fixtures in `fixtures/cloud-envelope.json` use a demo
+identity; the app key material itself is supplied through
+`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET` and is not in the
+repository.
+
+Live run from this box, `cargo run -p proview-core --example envelope_login`,
+three consecutive runs on 2026-10-27: login 0.24-0.33 s, device token
+0.20-0.39 s, device list 0.06-0.07 s, refresh 0.13 s, one device returned each
+time (`uuid 7f92970ddf5282743hrc`, a nickname, an owner account and one
+channel). The qemu harness of section 3A needs about 65 s for the same three
+steps.
+
+
 
 ## 4. Media paths
 

@@ -1,0 +1,87 @@
+{
+  "note": "Envelope vectors for the signed v3 path. Inputs are a demo identity; outputs were produced by the reference implementation that reproduces 27 of 27 GetEncryptStr rows captured from libFunSDK.so on 2026-10-27 (ZHA-3940). No account, password or vendor key material is stored here.",
+  "scramble_k": 4,
+  "scramble": [
+    {
+      "input": "",
+      "output": ""
+    },
+    {
+      "input": "ab",
+      "output": "bb"
+    },
+    {
+      "input": "abcd",
+      "output": "dccd"
+    },
+    {
+      "input": "0123456789abcdef",
+      "output": "fedcba9889abcdef"
+    }
+  ],
+  "vectors": [
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "00112233445566778899aabbccddeeff",
+      "app_secret": "fedcba98765432100123456789abcdef",
+      "tsid": "00000011793074428159",
+      "sig": "d54ca75890f2d7de09f135622e8ea6ca",
+      "key": "3074428159fedcba"
+    },
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "00112233445566778899aabbccddeeff",
+      "app_secret": "fedcba98765432100123456789abcdef",
+      "tsid": "00000021793074428312",
+      "sig": "5aaf1035f7c27c5a1e42a5ebb297f37a",
+      "key": "3074428312fedcba"
+    },
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "00112233445566778899aabbccddeeff",
+      "app_secret": "fedcba98765432100123456789abcdef",
+      "tsid": "00000031793074428379",
+      "sig": "8815595297b9c20e63812428430b34e6",
+      "key": "3074428379fedcba"
+    },
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "00112233445566778899aabbccddeeff",
+      "app_secret": "fedcba98765432100123456789abcdef",
+      "tsid": "00000121793075000001",
+      "sig": "3b42372dec08a5bb006c8257ae727bbc",
+      "key": "3075000001fedcba"
+    },
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "00112233445566778899aabbccddeeff",
+      "app_secret": "fedcba98765432100123456789abcdef",
+      "tsid": "00000331793999999999",
+      "sig": "14eb8f69cd84fce718f1407e7f251065",
+      "key": "3999999999fedcba"
+    }
+  ],
+  "uninitialised": [
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "",
+      "app_secret": "",
+      "tsid": "00000011793074428159",
+      "sig": "bb2fa75ce0258218752a69c06edb53de",
+      "key": "3074428159012345"
+    },
+    {
+      "uuid": "0f1e2d3c4b5a69788796a5b4",
+      "app_key": "",
+      "app_secret": "",
+      "tsid": "00000021793074428312",
+      "sig": "a259ffa6f3b5dfae12b9bbf4a521d3c7",
+      "key": "3074428312012345"
+    }
+  ],
+  "body": {
+    "key": "3074428159fedcba",
+    "plaintext": "account=demo@example.com&pass=demo-pass",
+    "ciphertext": "C6F5C1A1ECBEC59A777956057E410F42290FCFC2932FEBA93A84DF8D806D0C40A5529D56FE6FCD538B30F30EFF986686"
+  }
+}

@@ -70,8 +70,9 @@ value says which screen owns it.
 |---|---|---|
 | Cloud | `PROVIEW_PROVIDER` | `proview`, `local` or `fixture` |
 | Cloud | `PROVIEW_MODE` | default mode for a session that has not chosen one |
-| Cloud | `PROVIEW_CLOUD_BASE` | host for the app cloud API |
+| Cloud | `PROVIEW_CLOUD_BASE` | host for the signed cloud login envelope (default `https://rs.xmeye.net`) |
 | Cloud | `PROVIEW_PORTAL_BASE` | host for the portal account login |
+| Cloud | `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`, `PROVIEW_APP_SECRET` | the app's platform identity for the signed envelope; not shipped with the app |
 | Cloud | `PROVIEW_CAPS_BASE` | host for device capabilities by serial |
 | Cloud | `PROVIEW_CLOUD_SESSION_TTL` | seconds a cloud session is kept |
 | Local network | `PROVIEW_DEVICE_HOST` | DVRIP `host:port` |

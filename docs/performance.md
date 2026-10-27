@@ -1,5 +1,11 @@
 # Performance
 
+> Cloud login, 2026-10-27: the Rust envelope path needs 0.30-0.39 s for the
+> product path (sign-in, then the device list), against 65 s for the qemu SDK
+> harness. The per-step split, including the example's extra device-token and
+> refresh calls at 0.63-0.94 s, is in section "Cloud account login".
+
+
 Rule for this repository: a number that was not measured is not a number. Every
 change that touches the frame path records before/after here, produced by a
 script under `tools/` so anyone can repeat it.
@@ -198,3 +204,52 @@ behind a blob URL. Before: zero frames, every run. After: 111–240 ms to the
 first painted frame on a warm source. Framing is now chosen by transport —
 init and fragments raw for MSE, `0x01`-prefixed hvcC plus `0x02`/`0x03` access
 units for WebCodecs.
+
+## Cloud account login, Rust envelope (measured 2026-10-27)
+
+Driver: `cargo build -p proview-core --example envelope_login` and then
+`./target/debug/examples/envelope_login` on this workstation (WSL2, Ryzen
+class). Debug build for the table below, plus two `--release` runs of the same
+example for contrast: 0.67 s and 0.83 s end to end, i.e. inside the debug
+range, because the cost is network bound. Three consecutive debug runs,
+2026-10-27, one account, one device. Tokens are printed truncated; nothing in
+the run depends on them being logged.
+
+| Step | Run 1 | Run 2 | Run 3 |
+|---|---|---|---|
+| `loginExist` (email + password -> accessToken, refreshToken) | 0.33 s | 0.25 s | 0.24 s |
+| platform exchange + sealed `/deviceToken/get` | 0.39 s | 0.21 s | 0.20 s |
+| `msdlistCode` device list (1 device) | 0.06 s | 0.07 s | 0.06 s |
+| `refreshToken` | 0.13 s | 0.13 s | 0.13 s |
+| product path: `loginExist` then `msdlistCode` (what `CloudProvider` does) | 0.39 s | 0.32 s | 0.30 s |
+| example end to end (all four steps above) | 0.94 s | 0.66 s | 0.64 s |
+| `re/sdk_login.sh`, the same login + device list through qemu | 65 s (measured once, 2026-10-27 03:45Z, notes 12 section 10) | | |
+
+The in-process product path is 0.30-0.39 s against 65 s for the qemu harness,
+about 170x on the same box and the same account; the 65 s was recorded once by
+that harness run, so it is a reference point, not a distribution. Reading the
+split:
+
+1. The protocol is cheap: each signed call costs 60-400 ms, which is round
+trip plus AES/MD5 over a ~110-character string. Nothing in the envelope needs
+more than a millisecond of CPU.
+2. The harness spends its 65 s on the emulation, not on the protocol: a
+chrooted aarch64 rootfs under qemu-user, an SDK init chain (`SetApplication`,
+`Init`, `SysInitNet`, `XmCloudPlatformInit`, `LogInit`) and a second `run_mode`
+for the device list. Any comparison that quotes 65 s is comparing process
+start-up, not the login.
+3. The device token step is the slowest of the three because it performs two
+HTTP calls (platform exchange, then the sealed call) and, per run, an RSA-1024
+PKCS1v1.5 encryption plus one AES block chain on the client.
+4. `refreshToken` returning `same=false` in two of three runs and `same=true`
+in one shows the endpoint really issues a new token; the `true` case is a
+refresh inside the same second as the login, i.e. the server returns the token
+it already minted.
+
+Reproduce:
+
+```
+PROVIEW_EMAIL=... PROVIEW_PASSWORD=... \
+PROVIEW_APP_UUID=... PROVIEW_APP_KEY=... PROVIEW_APP_SECRET=... \
+cargo run -p proview-core --example envelope_login
+```

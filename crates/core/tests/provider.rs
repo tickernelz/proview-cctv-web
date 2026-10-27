@@ -23,6 +23,24 @@ fn fixture_config() -> Config {
 }
 
 #[tokio::test]
+async fn a_cloud_login_without_platform_keys_is_a_configuration_error() {
+    let cfg = config(ProviderKind::Proview, None);
+    let provider = provider::cloud::CloudProvider::with_identity(
+        &cfg,
+        proview_core::cloud::Identity::default(),
+    );
+    let error = provider
+        .login("someone", "secret")
+        .await
+        .expect_err("no platform keys");
+    assert!(
+        matches!(error, ProviderError::Misconfigured(_)),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("PROVIEW_APP_KEY"), "{error}");
+}
+
+#[tokio::test]
 async fn a_missing_fixture_directory_says_where_it_looked() {
     let mut cfg = fixture_config();
     cfg.fixture_dir = "/nonexistent-fixture-directory".to_string();

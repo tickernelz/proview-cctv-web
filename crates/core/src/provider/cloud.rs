@@ -2,31 +2,47 @@ use super::{
     Alarm, Device, DeviceSettings, Provider, ProviderError, ProviderSource, Recording, StreamKind,
     StreamTicket, VendorSession,
 };
+use crate::cloud::envelope::{EnvelopeClient, Identity};
+use crate::cloud::CloudError;
 use crate::config::Config;
 
-const LOGIN_PATH: &str = "/webservice/app/user/logInByAccount";
-
 pub struct CloudProvider {
-    base: String,
+    client: EnvelopeClient,
     device_user: String,
     device_pass: String,
-    http: reqwest::Client,
 }
 
 impl CloudProvider {
     pub fn new(cfg: &Config) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent("proview-cctv-web/0.1")
-            .cookie_store(true)
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("http client");
+        Self::with_identity(cfg, Identity::from_env())
+    }
+
+    pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
         Self {
-            base: cfg.cloud_base.clone(),
+            client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             device_user: cfg.device_user.clone(),
             device_pass: cfg.device_pass.clone(),
-            http,
         }
+    }
+
+    fn token<'a>(&self, session: &'a VendorSession) -> Result<&'a str, ProviderError> {
+        session.token.as_deref().ok_or_else(|| {
+            ProviderError::Misconfigured(
+                "the session carries no cloud token; sign in again".to_string(),
+            )
+        })
+    }
+}
+
+const MISSING_PLATFORM_KEYS: &str = "the cloud account login needs the app uuid, app key and app secret; set PROVIEW_APP_UUID, PROVIEW_APP_KEY and PROVIEW_APP_SECRET under Settings, Configuration, Cloud";
+
+fn map_cloud(error: CloudError) -> ProviderError {
+    match error {
+        CloudError::Credentials => ProviderError::BadCredentials,
+        CloudError::Rejected(message) => ProviderError::Upstream(message),
+        CloudError::Expired => ProviderError::Expired,
+        CloudError::Unreachable(message) => ProviderError::Unreachable(message),
+        CloudError::Malformed(message) => ProviderError::Upstream(message),
     }
 }
 
@@ -37,50 +53,29 @@ impl Provider for CloudProvider {
     }
 
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
-        let url = format!("{}{}", self.base, LOGIN_PATH);
-        let response = self
-            .http
-            .post(&url)
-            .form(&[
-                ("username", user),
-                ("password", pass),
-                ("time", &now_millis().to_string()),
-                ("token", ""),
-            ])
-            .send()
-            .await
-            .map_err(|e| ProviderError::Unreachable(e.to_string()))?;
-
-        let status = response.status();
-        let cookie_present = response
-            .headers()
-            .get_all(reqwest::header::SET_COOKIE)
-            .iter()
-            .any(|v| v.to_str().map(|s| !s.is_empty()).unwrap_or(false));
-
-        if status.as_u16() == 404 || status.is_server_error() {
-            return Err(ProviderError::Misconfigured(format!(
-                "the vendor cloud login is not solved yet: {} answered HTTP {} for the account login; use the This network tab with a camera on this network, or set the cloud address under Settings, Configuration, Cloud",
-                self.base, status
-            )));
-        }
-        if !status.is_success() {
-            return Err(ProviderError::Upstream(format!("login HTTP {status}")));
-        }
-        if !cookie_present {
-            return Err(ProviderError::NotImplemented(
-                "account login envelope (CssCenter JSON) is not solved yet; vendor returned no session cookie",
+        if !self.client.identity().is_complete() {
+            return Err(ProviderError::Misconfigured(
+                MISSING_PLATFORM_KEYS.to_string(),
             ));
         }
+        let tokens = self
+            .client
+            .login_envelope(user, pass)
+            .await
+            .map_err(map_cloud)?;
         Ok(VendorSession {
             account: user.to_string(),
+            token: Some(tokens.access),
         })
     }
 
-    async fn devices(&self, _session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
-        Err(ProviderError::NotImplemented(
-            "device list call (XmCloud/GetDevsCfgInfo) is mapped but its envelope is unverified",
-        ))
+    async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
+        let token = self.token(session)?;
+        let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        Ok(devices
+            .iter()
+            .map(|device| device.to_provider(false))
+            .collect())
     }
 
     async fn stream(
@@ -136,11 +131,4 @@ impl Provider for CloudProvider {
             "cloud device settings need the CSS config envelope, which is not solved yet",
         ))
     }
-}
-
-fn now_millis() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
 }

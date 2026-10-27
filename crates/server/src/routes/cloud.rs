@@ -68,6 +68,7 @@ fn cloud_failure(error: &CloudError) -> Failure {
 fn status_for(error: &CloudError) -> Status {
     match error {
         CloudError::Rejected(_) => Status::BadRequest,
+        CloudError::Credentials => Status::Unauthorized,
         CloudError::Expired => Status::Unauthorized,
         CloudError::Unreachable(_) => Status::ServiceUnavailable,
         CloudError::Malformed(_) => Status::BadGateway,
