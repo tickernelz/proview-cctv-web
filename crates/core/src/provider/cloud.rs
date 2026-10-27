@@ -60,7 +60,7 @@ impl Provider for CloudProvider {
 
         if status.as_u16() == 404 || status.is_server_error() {
             return Err(ProviderError::Misconfigured(format!(
-                "the vendor cloud login is not solved yet: {} answered HTTP {} for the account login; use the LAN tab with a camera on this network, or point PROVIEW_CLOUD_BASE at a host that serves it",
+                "the vendor cloud login is not solved yet: {} answered HTTP {} for the account login; use the This network tab with a camera on this network, or set the cloud address under Settings, Configuration, Cloud",
                 self.base, status
             )));
         }

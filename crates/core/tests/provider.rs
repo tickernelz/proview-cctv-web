@@ -72,8 +72,8 @@ fn local_mode_without_a_host_plans_the_cloud_fallback() {
     assert_eq!(notice.from, Mode::Local);
     assert_eq!(notice.to, ProviderSource::Fixture);
     assert!(
-        notice.message.contains("PROVIEW_DEVICE_RTSP"),
-        "{}",
+        !notice.message.is_empty() && !notice.message.contains("PROVIEW_"),
+        "the fallback notice explains the fix without a raw key: {}",
         notice.message
     );
 }

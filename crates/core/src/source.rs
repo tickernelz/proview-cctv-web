@@ -65,7 +65,7 @@ impl std::fmt::Display for SourceError {
             SourceError::NoVideoTrack => write!(f, "sdp has no video track"),
             SourceError::FfmpegMissing => write!(
                 f,
-                "ffmpeg is not installed; set PROVIEW_FFMPEG or install ffmpeg for HEVC cameras"
+                "ffmpeg is not installed; add its path under Settings, Configuration, Streaming, or install ffmpeg for HEVC cameras"
             ),
             SourceError::PassthroughNeedsHevc(codec) => write!(
                 f,

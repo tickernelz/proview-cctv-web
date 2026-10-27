@@ -21,7 +21,7 @@ impl Fixture {
         let path = self.dir.join("devices.json");
         let raw = std::fs::read_to_string(&path).map_err(|error| {
             ProviderError::Misconfigured(format!(
-                "fixture data is missing at {} ({error}); set PROVIEW_FIXTURE_DIR to a directory with devices.json, or use the cloud provider",
+                "sample data is missing at {} ({error}); point the sample data folder under Settings, Configuration, Advanced at a directory with devices.json, or use the vendor cloud",
                 path.display()
             ))
         })?;
@@ -50,7 +50,7 @@ impl Provider for Fixture {
         let path = self.dir.join("account.json");
         let raw = std::fs::read_to_string(&path).map_err(|error| {
             ProviderError::Misconfigured(format!(
-                "fixture account is missing at {} ({error}); set PROVIEW_FIXTURE_DIR to a directory with account.json, or use the cloud provider",
+                "sample account is missing at {} ({error}); point the sample data folder under Settings, Configuration, Advanced at a directory with account.json, or use the vendor cloud",
                 path.display()
             ))
         })?;
