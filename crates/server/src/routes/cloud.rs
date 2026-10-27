@@ -1,8 +1,10 @@
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use proview_core::cloud::{
     new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudProfile,
-    CloudSessions, REQUESTED_CAPS,
+    CloudSessions, EnvelopeClient, Identity, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -16,6 +18,8 @@ pub struct CloudState {
     client: CloudClient,
     caps: CapsClient,
     sessions: CloudSessions,
+    envelope: EnvelopeClient,
+    mobile: Mutex<HashMap<String, String>>,
 }
 
 impl CloudState {
@@ -28,11 +32,33 @@ impl CloudState {
             client: CloudClient::from_env(),
             caps: CapsClient::from_env(),
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
+            envelope: EnvelopeClient::new(Identity::resolve()),
+            mobile: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn portal(&self) -> &str {
         self.client.base()
+    }
+
+    pub(crate) fn envelope(&self) -> &EnvelopeClient {
+        &self.envelope
+    }
+
+    pub(crate) fn mobile_token(&self, id: &str) -> Option<String> {
+        self.mobile.lock().ok()?.get(id).cloned()
+    }
+
+    pub(crate) fn keep_mobile(&self, id: &str, token: String) {
+        if let Ok(mut map) = self.mobile.lock() {
+            map.insert(id.to_string(), token);
+        }
+    }
+
+    pub(crate) fn forget_mobile(&self, id: &str) {
+        if let Ok(mut map) = self.mobile.lock() {
+            map.remove(id);
+        }
     }
 }
 
@@ -50,7 +76,7 @@ pub struct StatusBody {
 
 type Failure = (Status, Json<StatusBody>);
 
-fn fail(status: Status, message: impl Into<String>) -> Failure {
+pub(crate) fn fail(status: Status, message: impl Into<String>) -> Failure {
     (
         status,
         Json(StatusBody {
@@ -60,12 +86,12 @@ fn fail(status: Status, message: impl Into<String>) -> Failure {
     )
 }
 
-fn cloud_failure(error: &CloudError) -> Failure {
+pub(crate) fn cloud_failure(error: &CloudError) -> Failure {
     tracing::warn!(%error, "cloud call failed");
     fail(status_for(error), error.to_string())
 }
 
-fn status_for(error: &CloudError) -> Status {
+pub(crate) fn status_for(error: &CloudError) -> Status {
     match error {
         CloudError::Rejected(_) => Status::BadRequest,
         CloudError::Credentials => Status::Unauthorized,
@@ -75,14 +101,14 @@ fn status_for(error: &CloudError) -> Status {
     }
 }
 
-fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
+pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
     cookies
         .get_private(COOKIE)
         .map(|cookie| cookie.value().to_string())
         .ok_or_else(|| fail(Status::Unauthorized, "not signed in to the cloud"))
 }
 
-fn restore(
+pub(crate) fn restore(
     state: &CloudState,
     cookies: &CookieJar<'_>,
 ) -> Result<proview_core::cloud::CloudSession, Failure> {
@@ -145,6 +171,12 @@ async fn login(
         .map_err(|error| cloud_failure(&error))?;
     let id = new_session_id();
     state.sessions.put(id.clone(), session);
+    match state.envelope.login_envelope(email, &body.password).await {
+        Ok(tokens) => state.keep_mobile(&id, tokens.access),
+        Err(error) => {
+            tracing::warn!(%error, "the mobile cloud identity is unavailable; alarms stay off")
+        }
+    }
     cookies.add_private(
         Cookie::build((COOKIE, id))
             .http_only(true)
@@ -161,6 +193,7 @@ async fn login(
 fn logout(state: &State<CloudState>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
     if let Some(cookie) = cookies.get_private(COOKIE) {
         state.sessions.remove(cookie.value());
+        state.forget_mobile(cookie.value());
         cookies.remove_private(cookie);
     }
     Json(StatusBody {

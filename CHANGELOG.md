@@ -5,6 +5,22 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- Alarm message centre. `GET /api/cloud/alarms` reads the vendor alarm centre
+  (`access-alc.secu100.net:6602`) with the envelope recovered from
+  `libFunSDK.so` (`AlarmCenter/Header/*`, `MSG_ALARM_QUERY_REQ` and
+  `MSG_ALARM_QUERY_BY_TIME_REQ`), and `web/alarms.js` lists the results with
+  time, event and channel, polls on an interval and raises a browser
+  notification for alarm ids it has not seen before. Live: 39 alarms for one
+  local day, route latency 104 ms.
+
+- `POST /api/cloud/alarms/session` connects the phone account to the alarm
+  centre without the portal captcha, and `POST /api/cloud/alarms/signout`
+  drops it.
+
 ## 0.3.2 — 2026-10-27
 
 ### Added

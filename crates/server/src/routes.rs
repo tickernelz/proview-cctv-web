@@ -1,3 +1,6 @@
+#[path = "routes/alarms.rs"]
+pub mod alarms;
+
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
@@ -21,6 +24,9 @@ pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, app_js, style_css, tokens_css, font, media_clip]
+        .into_iter()
+        .chain(alarms::files())
+        .collect()
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -37,6 +43,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(alarms::routes())
     .collect()
 }
 

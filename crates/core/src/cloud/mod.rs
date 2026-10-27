@@ -1,3 +1,4 @@
+pub mod alarm;
 pub mod app;
 pub mod client;
 pub mod digest;
@@ -6,6 +7,7 @@ pub mod session;
 pub mod status;
 pub mod types;
 
+pub use alarm::{AlarmClient, AlarmEntry, AlarmPage, AlarmPicture, AlarmQuery};
 pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTED_CAPS};
 pub use client::{CloudClient, CloudError, CloudResult};
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
