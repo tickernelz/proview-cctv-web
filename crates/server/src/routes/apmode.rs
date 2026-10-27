@@ -4,15 +4,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use proview_core::apmode::{self, Credentials};
-use proview_core::dvrip::client::{require_ok, Connection};
-use proview_core::dvrip::msg;
+use proview_core::dvrip::client::Connection;
 use proview_core::session::Store;
 use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
 use rocket::tokio::time::timeout as deadline;
 use rocket::State;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
 use super::{fail, signed_in, Failure};
 
@@ -33,7 +31,6 @@ pub struct ProvisionBody {
 pub struct PlanBody {
     pub ok: bool,
     pub record_bytes: usize,
-    pub words: usize,
     pub symbols_per_round: usize,
     pub datagrams_per_round: usize,
     pub datagram_bytes_per_round: usize,
@@ -184,19 +181,11 @@ fn plan(
         .plan(apmode::CONFIG_TARGET)
         .map_err(|error| fail(Status::BadRequest, error.to_string()))?;
     let symbols = plan.words.len();
-    let symbol_gap_ms = apmode::SYMBOL_GAP.as_millis() as usize;
-    let trailer_gap_ms = apmode::TRAILER_GAP_MS as usize;
-    let trailers = symbols * symbol_gap_ms / trailer_gap_ms;
-    let datagram_bytes: usize = plan
-        .words
-        .iter()
-        .map(|word| usize::from(*word))
-        .sum::<usize>()
-        + trailers * apmode::TRAILER_BYTES;
+    let symbol_bytes: usize = plan.words.iter().map(|word| usize::from(*word)).sum();
+    let datagram_bytes = symbol_bytes + apmode::TRAILER_BYTES;
     Ok(Json(PlanBody {
         ok: true,
         record_bytes: plan.record.len(),
-        words: symbols,
         symbols_per_round: symbols,
         datagrams_per_round: symbols + 1,
         datagram_bytes_per_round: datagram_bytes,
@@ -500,15 +489,12 @@ async fn apply_dvrip(
         _ => None,
     };
     let wifi = apmode::wifi_config(existing.as_ref(), creds);
-    let mut body = serde_json::Map::new();
-    body.insert("Name".to_string(), json!(apmode::CONFIG_NAME));
-    body.insert(
-        "SessionID".to_string(),
-        json!(format!("0x{:08X}", connection.session())),
-    );
-    body.insert(apmode::CONFIG_NAME.to_string(), wifi);
-    let body = Value::Object(body);
-    match deadline(request_timeout, connection.request(msg::CONFIG_SET, body)).await {
+    match deadline(
+        request_timeout,
+        connection.config_set(apmode::CONFIG_NAME, wifi),
+    )
+    .await
+    {
         Err(_) => {
             report.error = Some(format!(
                 "set timed out after {} ms",
@@ -522,14 +508,7 @@ async fn apply_dvrip(
             report.elapsed_ms = started.elapsed().as_millis();
             return report;
         }
-        Ok(Ok(reply)) => match require_ok(&reply) {
-            Ok(ret) => report.ret = Some(ret),
-            Err(error) => {
-                report.error = Some(format!("set: {error}"));
-                report.elapsed_ms = started.elapsed().as_millis();
-                return report;
-            }
-        },
+        Ok(Ok(ret)) => report.ret = Some(ret),
     }
     report.read_back =
         match deadline(request_timeout, connection.config_get(apmode::CONFIG_NAME)).await {

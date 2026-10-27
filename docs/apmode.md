@@ -89,14 +89,24 @@ and from the strings at `0x4b5780` `EncrypType`, `0x4bdafc` `KeyType`,
 | `Enable` | take the wireless interface up |
 | `SSID` | home network name |
 | `Keys` | passphrase, clear text on this transport |
-| `EncrypType` | `WPA2` when the passphrase is non-empty, `OPEN` otherwise |
-| `Auth` | `AES` when the passphrase is non-empty, `NONE` otherwise |
+| `Auth` | `WPA2` when the passphrase is non-empty, `OPEN` otherwise |
+| `EncrypType` | `AES` when the passphrase is non-empty, `NONE` otherwise |
 | `NetType`, `Channel`, `HostIP`, `Submask`, `GateWay`, `KeyType` | kept from the read |
 
-The `WPA2`/`OPEN` and `AES`/`NONE` pair comes from `CConfigAPDev::OnMsg`:
-`0xb298b0` writes `WPA2` (`0x5097e2`) and `AES` (`0x5097e7`) into the two
-string members when the stored passphrase length is at least one, and
-`0xb298e4` writes `OPEN` (`0x4e7c24`) and `NONE` (`0x4d70e9`) when it is zero.
+Which member takes which value is read from the object's own constructor,
+not from the order of the string table: `CConfigAPDev` builds
+`JsonObj::NetWork_Wifi` at `this+0x2d0` (`0xb26e64`, `bl 0xb271ac`), and that
+constructor names member `+0x40` `Auth` (`0xb271ec`, string `0x56d880`) and
+member `+0x108` `EncrypType` (`0xb2723c`, string `0x4b5780`). `OnMsg` then writes
+`this+0x310` (= `0x2d0+0x40`) and `this+0x3d8` (= `0x2d0+0x108`):
+
+| passphrase | `Auth` (`+0x310`) | `EncrypType` (`+0x3d8`) |
+|---|---|---|
+| at least one character | `WPA2` (`0xb298ac`, string `0x5097e2`) | `AES` (`0xb298c0`, string `0x5097e7`) |
+| empty | `OPEN` (`0xb298d8`, string `0x4e7c24`) | `NONE` (`0xb298ec`, string `0x4d70e9`) |
+
+The camera measured in 3.1 agrees: `EncrypType "AES+TKIP"` is the cipher name and
+`Auth "WPA2PSK"` the authentication mode.
 
 Login detail: on a factory-reset camera the SDK logs in with `admin` and an
 empty password (`SearchDevApActivity.V8`, `com.basic.b.n(st_5_loginPsw, "")`).
@@ -119,10 +129,12 @@ The camera on the owner's LAN, firmware `V5.01.R02.G51A07F3.10010.346732.S.ONVIF
 
 Two consequences the code follows: the read is parsed from the flat
 `NetWork.Wifi` key first (nested accepted as a fallback), and a write keeps the
-`EncrypType`/`Auth` names the firmware already has. The vendor's `WPA2`/`AES`
-and `OPEN`/`NONE` strings are used only when the field is absent, because a
-camera that says `AES+TKIP`/`WPA2PSK` would otherwise be rewritten into terms
-its firmware does not use.
+`EncrypType`/`Auth` names the firmware already has **only while the request
+stays in the same class**. An empty passphrase writes `Auth "OPEN"` and
+`EncrypType "NONE"`, a secured request against an open block writes
+`Auth "WPA2"` and `EncrypType "AES"`, and a camera that already says
+`AES+TKIP`/`WPA2PSK` keeps those names because rewriting them would move it to
+terms its firmware does not use.
 
 The run took a backup of the read reply first, replayed it unchanged, compared
 the read-back, and would have written the backup again on any mismatch. It did
