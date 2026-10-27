@@ -18,7 +18,6 @@ use proview_core::source::{Fmp4Splitter, Piece};
 use rocket::http::{ContentType, CookieJar, Status};
 use rocket::request::Request;
 use rocket::response::content::RawJavaScript;
-use rocket::response::stream::ReaderStream;
 use rocket::response::{self, Responder, Response};
 use rocket::serde::json::Json;
 use rocket::State;
@@ -37,7 +36,7 @@ const MAX_WINDOW: u32 = 600;
 const DEFAULT_FPS: f64 = 12.0;
 const KEY_GRACE: usize = 240;
 const DOWNLOAD_GAP: Duration = Duration::from_secs(20);
-const DOWNLOAD_QUEUE: usize = 16;
+const DOWNLOAD_LIMIT: u64 = 512 * 1024 * 1024;
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![files, script]
@@ -126,31 +125,70 @@ pub async fn files(
 }
 
 pub struct Download {
-    chunks: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    bytes: Vec<u8>,
     filename: String,
-    listed: u64,
 }
 
 impl<'r> Responder<'r, 'static> for Download {
     fn respond_to(self, _request: &'r Request<'_>) -> response::Result<'static> {
-        let stream = futures_util::stream::unfold(self.chunks, |mut chunks| async move {
-            chunks.recv().await.map(|chunk| (chunk, chunks))
-        });
-        let mut response = Response::build();
-        response
+        Response::build()
             .header(ContentType::Binary)
             .raw_header(
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", self.filename),
             )
-            .raw_header("Cache-Control", "no-store");
-        if self.listed > 0 {
-            response.raw_header("X-File-Bytes", self.listed.to_string());
-        }
-        response
-            .streamed_body(ReaderStream::from(stream.map(std::io::Cursor::new)))
+            .raw_header("Cache-Control", "no-store")
+            .sized_body(self.bytes.len(), std::io::Cursor::new(self.bytes))
             .ok()
     }
+}
+
+fn short_fall(wire: u64, listed: u64) -> Option<String> {
+    if wire >= listed {
+        None
+    } else {
+        Some(format!("the device sent {wire} of {listed} bytes"))
+    }
+}
+
+async fn collect(session: &mut Session, listed: u64) -> Result<Vec<u8>, String> {
+    let mut reader = MediaReader::new();
+    let mut payload: Vec<u8> = Vec::new();
+    let mut wire = 0u64;
+    loop {
+        while let Some(record) = reader.next_record() {
+            if !is_video(&record) {
+                continue;
+            }
+            if payload.len() as u64 + record.bytes.len() as u64 > DOWNLOAD_LIMIT {
+                return Err(format!(
+                    "the file is larger than the {DOWNLOAD_LIMIT} bytes this server holds"
+                ));
+            }
+            payload.extend_from_slice(&record.bytes);
+        }
+        if short_fall(wire, listed).is_none() {
+            break;
+        }
+        match session.frame(DOWNLOAD_GAP).await {
+            Ok(Some(frame)) => {
+                if frame.id != PLAYBACK_DATA && frame.id != DOWNLOAD_DATA {
+                    continue;
+                }
+                wire += frame.payload.len() as u64;
+                reader.push(&frame.payload);
+            }
+            Ok(None) => {
+                return Err(short_fall(wire, listed).unwrap_or_else(|| "the device stopped".into()))
+            }
+            Err(error) => {
+                return Err(format!(
+                    "the tunnel broke after {wire} of {listed} bytes: {error}"
+                ))
+            }
+        }
+    }
+    Ok(payload)
 }
 
 #[get("/playback/download?<device>&<channel>&<name>&<begin>&<end>&<bytes>")]
@@ -174,6 +212,14 @@ pub async fn download(
     if !name.starts_with('/') || name.contains("..") {
         return Err(fail(Status::BadRequest, "name must be a device file path"));
     }
+    let listed = bytes
+        .filter(|value| *value > 0 && *value <= DOWNLOAD_LIMIT)
+        .ok_or_else(|| {
+            fail(
+                Status::BadRequest,
+                format!("bytes is required: FileLength x 1024, at most {DOWNLOAD_LIMIT}"),
+            )
+        })?;
     let channel = channel.unwrap_or(0);
     let file = PlaybackFile {
         name: name.clone(),
@@ -193,39 +239,13 @@ pub async fn download(
         .download_start(&file, channel)
         .await
         .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
-    let (sender, chunks) = tokio::sync::mpsc::channel(DOWNLOAD_QUEUE);
-    tokio::spawn(async move {
-        let mut reader = MediaReader::new();
-        loop {
-            let frame = match session.frame(DOWNLOAD_GAP).await {
-                Ok(Some(frame)) => frame,
-                _ => break,
-            };
-            if frame.id != PLAYBACK_DATA && frame.id != DOWNLOAD_DATA {
-                continue;
-            }
-            reader.push(&frame.payload);
-            let mut open = true;
-            while let Some(record) = reader.next_record() {
-                if !is_video(&record) {
-                    continue;
-                }
-                if sender.send(record.bytes).await.is_err() {
-                    open = false;
-                    break;
-                }
-            }
-            if !open {
-                break;
-            }
-        }
-        let _ = session.download_stop(&file, channel).await;
-        let _ = session.logout().await;
-    });
+    let collected = collect(&mut session, listed).await;
+    let _ = session.download_stop(&file, channel).await;
+    let _ = session.logout().await;
+    let bytes = collected.map_err(|message| fail(Status::BadGateway, message))?;
     Ok(Download {
-        chunks,
+        bytes,
         filename: download_name(&name),
-        listed: bytes.unwrap_or(0),
     })
 }
 
@@ -838,5 +858,56 @@ mod tests {
         let body = response.into_string().expect("body");
         assert!(body.contains("/ws/playback"));
         assert!(body.contains("MediaSource"));
+    }
+
+    #[test]
+    fn the_download_route_refuses_a_request_without_a_session() {
+        let rocket = client();
+        let response = rocket
+            .get("/api/playback/download?device=abc&channel=0&name=/a.h264&begin=2026-10-24%2000:00:00&end=2026-10-24%2000:05:00&bytes=1024")
+            .dispatch();
+        assert_eq!(response.status(), Status::Unauthorized);
+    }
+
+    #[test]
+    fn a_device_name_cannot_smuggle_a_header() {
+        assert_eq!(
+            super::download_name("/a/b\"\r\nSet-Cookie: x=1; é.h264"),
+            "b___Set-Cookie__x_1___.h264"
+        );
+        assert_eq!(
+            super::download_name("/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264"),
+            "10.34.00-10.40.00[R][@e19][0].h264"
+        );
+        assert_eq!(super::download_name("/"), "clip.h264");
+    }
+
+    #[test]
+    fn a_short_transfer_is_named_as_a_shortfall() {
+        assert_eq!(
+            super::short_fall(10, 20).as_deref(),
+            Some("the device sent 10 of 20 bytes")
+        );
+        assert!(super::short_fall(20, 20).is_none());
+        assert!(super::short_fall(21, 20).is_none());
+    }
+
+    #[test]
+    fn a_download_declares_its_own_length() {
+        use rocket::response::Responder;
+        let rocket = client();
+        let local = rocket.get("/");
+        let request = local.inner();
+        let response = super::Download {
+            bytes: vec![1, 2, 3],
+            filename: "clip.h264".to_string(),
+        }
+        .respond_to(request)
+        .expect("responder");
+        assert_eq!(response.body().preset_size(), Some(3));
+        assert_eq!(
+            response.headers().get_one("Content-Disposition"),
+            Some("attachment; filename=\"clip.h264\"")
+        );
     }
 }

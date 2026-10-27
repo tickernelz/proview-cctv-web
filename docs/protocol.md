@@ -1279,12 +1279,14 @@ device was dialled again on every call.
 | Fact | Measured |
 |---|---|
 | Data message id | `0x0592` (`DOWNLOAD_DATA`). Playback video uses `0x058e` (`PLAYBACK_DATA`). Both carry `00 00 01 F9/FA/FC/FD` records |
-| Claim | `Ret 100` in 0.20 s, then `DownloadStart` acknowledged in 0.00 s |
+| Claim | `Ret 100` in 0.20 s, then `DownloadStart` sent in 0.00 s. The action is fire-and-forget: the device answers with data frames, not with a `Ret`, so the first data frame is its acknowledgement |
 | Whole file | `/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264`, 1,313 chunks, **42,967,040 bytes** — `FileLength` 41,960 KiB × 1024 exactly, byte for byte on the wire |
-| Wall clock | **60.84 s** for 42.97 MB = **706 KB/s**, six times the 119 KB/s the file's own duration and size suggested |
+| Wall clock | the last data frame lands at **52.81 s** and the run ends 8 s later on the probe's idle gap: 42.97 MB in 52.81 s = **813 KB/s**, seven times the 119 KB/s the file's own duration and size suggested |
 | Records | Key 125, Delta 4,366, Pad 8,982, Info 126 = 13,599 records, 10 bytes skipped by the record scanner |
 | Video payload | Key and Delta bodies concatenated = **39,981,987 bytes**. `ffprobe`: HEVC 2304×2592, `nb_read_frames` 4,491, `r_frame_rate` 12/1 — 374 s of video |
 | Audio | none. 13,599 records is every record in the file, and all of them classify as Info/Pad/Key/Delta. No audio magic value appears, on download or on playback |
+
+A download is verified before it starts, because a broken body cannot be signalled over HTTP here. A chunked body whose reader returns an error still reaches the client as a finished download: measured on this stack, `curl` exits 0 and keeps a short file, so a reader error is invisible. `GET /api/playback/download` therefore gathers the payload first, compares the wire bytes with `FileLength` x 1024, and only then answers. A shortfall is a `502` carrying both counts (`the device sent 42,967,040 of 47,967,040 bytes`), never a truncated `200`; a complete transfer answers with the exact `Content-Length` (39,981,987 for this file), so the browser shows real progress. `bytes` is required for that comparison and capped at 512 MiB. Measured on the file above: time to first byte 54.91 s, total 55.30 s, payload byte-identical to the probe dump; the same file asked with a 5 MB larger `bytes` answered `502` after 74.66 s and wrote no file.
 
 The gap between 42,967,040 wire bytes and 39,981,987 payload bytes is the device's own storage framing: 8,982 Pad records of 328 bytes plus the 8/16-byte record headers on every record. Emitting the wire bytes as a file produces something no decoder opens; emitting the Key and Delta bodies produces the elementary stream the camera recorded, which is what `GET /api/playback/download` streams (`Content-Disposition` carries the device file name, `X-File-Bytes` carries `FileLength` × 1024). The response is chunked: the payload length is only known once the device stops.
 

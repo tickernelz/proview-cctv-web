@@ -143,8 +143,6 @@
       segment.dataset.mode = fileMode(file);
       segment.style.left = left + '%';
       segment.style.width = Math.min(width, 100 - left) + '%';
-      const minutes = file.begin.slice(11) + ' – ' + file.end.slice(11);
-      segment.title = minutes + ' · ' + mb(file.bytes) + ' · ' + fileMode(file);
       segment.setAttribute('aria-hidden', 'true');
       fragment.append(segment);
     }
@@ -166,11 +164,21 @@
       const from = parseStamp(file.begin);
       const to = parseStamp(file.end);
       if (from === null || to === null) continue;
-      if (at >= from && at <= to) return file;
+      if (at >= from && at <= to) return { file, from, at };
       if (from > at && (next === null || from < parseStamp(next.begin))) next = file;
       if (to < at && (prior === null || to > parseStamp(prior.end))) prior = file;
     }
-    return next || prior;
+    const chosen = next || prior;
+    if (!chosen) return null;
+    const from = parseStamp(chosen.begin);
+    return from === null ? null : { file: chosen, from, at };
+  }
+
+  function describeAt(clientX) {
+    const hit = fileAt(clientX);
+    if (!hit) return '';
+    const file = hit.file;
+    return file.begin.slice(11) + ' – ' + file.end.slice(11) + ' · ' + mb(file.bytes) + ' · ' + fileMode(file);
   }
 
   function renderFiles() {
@@ -201,11 +209,13 @@
     const timelineAt = performance.now();
     renderTimeline();
     const timelineMs = Math.round(performance.now() - timelineAt);
+    if (window.performance && performance.measure) {
+      performance.measure('playback-files', { start: started, duration: listMs + timelineMs });
+    }
+    console.debug('playback drew ' + state.files.length + ' files: list ' + listMs + ' ms, timeline ' + timelineMs + ' ms');
     if (summary) {
       const cap = state.truncatedCap ? ' · the device list is capped at ' + state.truncatedCap : '';
-      summary.textContent = state.files.length + ' files · ' + mb(bytes) + cap +
-        ' · list ' + listMs + ' ms · timeline ' + timelineMs + ' ms' +
-        ' · total ' + (listMs + timelineMs) + ' ms';
+      summary.textContent = state.files.length + ' files · ' + mb(bytes) + cap;
     }
   }
 
@@ -426,7 +436,7 @@
     document.body.append(anchor);
     anchor.click();
     anchor.remove();
-    setStatus('download asked of the device · ' + mb(file.bytes) + ' listed, alignment records dropped');
+    setStatus('the device is streaming ' + mb(file.bytes) + ' · the browser saves the clip when it lands');
   }
 
   function buildOverlay() {
@@ -485,8 +495,15 @@
     timeline.setAttribute('role', 'group');
     timeline.setAttribute('aria-label', 'Files across the day, click to play from a time');
     timeline.addEventListener('click', (event) => {
-      const file = fileAt(event.clientX);
-      if (file) play(file, 0);
+      const hit = fileAt(event.clientX);
+      if (!hit) return;
+      play(hit.file, Math.max(0, Math.round((hit.at - hit.from) / 1000)));
+    });
+    timeline.addEventListener('mousemove', (event) => {
+      timeline.title = describeAt(event.clientX);
+    });
+    timeline.addEventListener('mouseleave', () => {
+      timeline.title = '';
     });
 
     const stage = make('div', 'pb-stage');

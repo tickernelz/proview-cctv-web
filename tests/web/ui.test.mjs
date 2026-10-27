@@ -347,9 +347,30 @@ const PLAYBACK_BODY = {
   elapsed_ms: 12,
   files: PLAYBACK_DAY,
 };
+const GAP_DAY = ['00:00:00-00:05:00', '03:00:00-03:05:00', '06:00:00-06:05:00'].map((span) => ({
+  name: '/idea0/2026-10-23/002/' + span + '[R][@18][0].h264',
+  begin: '2026-10-23 ' + span.slice(0, 8),
+  end: '2026-10-23 ' + span.slice(9),
+  bytes: 300 * 470,
+  disk: null,
+}));
+const GAP_BODY = {
+  ok: true,
+  source: 'cloud',
+  device: DEVICES[0].id,
+  channel: 0,
+  begin: '2026-10-23 00:00:00',
+  end: '2026-10-23 23:59:59',
+  count: GAP_DAY.length,
+  bytes: GAP_DAY.reduce((total, file) => total + file.bytes, 0),
+  truncated: false,
+  cap: 2048,
+  elapsed_ms: 6,
+  files: GAP_DAY,
+};
 const PLAYBACK_FILES = {
   patterns: [{ urlPattern: '*/api/playback/files*' }],
-  respond: () => PLAYBACK_BODY,
+  respond: (url) => (String(url).includes('2026-10-23') ? GAP_BODY : PLAYBACK_BODY),
 };
 const clockAt = (fraction) => new Date(new Date(2026, 9, 24, 0, 0, 0).getTime() + fraction * 86400000).getTime();
 
@@ -383,6 +404,24 @@ test('the playback overlay draws the whole day and plays the file under the poin
       assert.ok(Date.parse(begin.replace(' ', 'T')) <= at, 'the clip starts before the clicked time: ' + label);
       assert.ok(Date.parse(end.replace(' ', 'T')) >= at, 'the clip ends after the clicked time: ' + label);
     }
+
+    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-23'; day.dispatchEvent(new Event('change')); })()");
+    await page.wait("document.querySelectorAll('.pb-row').length === 3", 'the sparse day');
+    const gapClick = await page.evaluate(
+      "(() => {" +
+      " const segments = document.querySelectorAll('.pb-seg');" +
+      " const first = segments[0].getBoundingClientRect();" +
+      " const x = first.right + 40;" +
+      " const y = first.top + first.height / 2;" +
+      " const node = document.elementFromPoint(x, y);" +
+      " node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));" +
+      " return (node.id || '') + '|' + document.getElementById('pb-playing').textContent;" +
+      " })()",
+    );
+    assert.ok(gapClick.startsWith('pb-timeline|'), 'the gap click reaches the strip: ' + gapClick);
+    assert.equal(gapClick.split('|')[1], GAP_DAY[1].begin + ' → ' + GAP_DAY[1].end, 'a click in a gap plays the clip that follows it');
+    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-24'; day.dispatchEvent(new Event('change')); })()");
+    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the dense day again');
 
     const before = await page.evaluate("document.getElementById('pb-day').value");
     await page.evaluate("document.querySelector('#pb button[aria-label=\"Next day\"]').click()");

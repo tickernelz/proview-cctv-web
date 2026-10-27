@@ -166,6 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut bytes = 0usize;
     let started = Instant::now();
     let mut first_byte = None;
+    let mut last_frame = 0.0f64;
     let limit: f64 = env("PROVIEW_LIMIT").parse().unwrap_or(0.0);
     while frames < frames_wanted || whole {
         if limit > 0.0 && started.elapsed().as_secs_f64() > limit {
@@ -177,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match connection.frame(Duration::from_secs(8)).await? {
             Some(media) => {
+                last_frame = started.elapsed().as_secs_f64();
                 if first_byte.is_none() {
                     first_byte = Some(started.elapsed());
                     eprintln!(
@@ -242,9 +244,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     eprintln!(
-        "stream   chunks={frames} bytes={bytes} first_frame={:?} elapsed={:.2}s",
+        "stream   chunks={frames} bytes={bytes} first_frame={:?} last_frame={last_frame:.2}s elapsed={:.2}s",
         first_byte,
         started.elapsed().as_secs_f64()
+    );
+    eprintln!(
+        "wire     bytes={bytes} listed={} match={} rate={:.0}B/s",
+        file.bytes,
+        bytes == file.bytes as usize,
+        if last_frame > 0.0 {
+            frames as f64 * 0.0 + file.bytes as f64 / last_frame
+        } else {
+            0.0
+        }
     );
     eprintln!("kinds    {kinds:?}");
     eprintln!(
