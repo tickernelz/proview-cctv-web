@@ -11,7 +11,6 @@
     accept: '/api/cloud/device/share/accept',
     cancel: '/api/cloud/device/share/cancel',
     cloudPassword: '/api/cloud/device/password',
-    devicePassword: '/api/device/password',
   };
 
   async function call(path, options = {}) {
@@ -65,7 +64,6 @@
   const shareKey = node('input', { type: 'text', id: 'device-admin-key', placeholder: 'transKey from the invitation' });
   const cloudOld = node('input', { type: 'password', id: 'device-admin-old', placeholder: 'current device password', autocomplete: 'off' });
   const cloudNew = node('input', { type: 'password', id: 'device-admin-new', placeholder: 'new device password', autocomplete: 'new-password' });
-  const dvripNew = node('input', { type: 'password', id: 'device-admin-dvrip', placeholder: 'new device password', autocomplete: 'new-password' });
 
   function field(label, control, hint) {
     return node('label', { class: 'field' }, [
@@ -249,7 +247,7 @@
       ]),
     ]),
     node('div', { class: 'rows' }, [
-      node('p', { class: 'hint', text: 'Device password: the cloud path reaches the camera through the account; the DVRIP path needs the camera on this network.' }),
+      node('p', { class: 'hint', text: 'Device password goes through the account: the camera picks it up on its next cloud call, and the server stores the new one for its own camera routes.' }),
       field('Current', cloudOld),
       field('New', cloudNew),
       node('button', {
@@ -264,15 +262,6 @@
           cloudOld.value = '';
           cloudNew.value = '';
           return (reply && reply.message) || 'the cloud changed the device password';
-        }),
-      }),
-      field('New over DVRIP', dvripNew),
-      node('button', {
-        type: 'button', class: 'btn btn-text', text: 'Change over DVRIP',
-        onclick: () => guard('changing', async () => {
-          const reply = await call(API.devicePassword, { method: 'POST', body: JSON.stringify({ newPassword: dvripNew.value }) });
-          dvripNew.value = '';
-          return (reply && reply.message) || 'the camera changed its login password';
         }),
       }),
     ]),

@@ -338,26 +338,6 @@ impl DeviceAttributes {
     }
 }
 
-pub fn password_change_body(user: &str, session: u32, current: &str, next: &str) -> Value {
-    json!({
-        "EncryptType": "MD5",
-        "PassWord": crate::dvrip::crypto::md5_hex(current).to_uppercase(),
-        "NewPassWord": crate::dvrip::crypto::md5_hex(next).to_uppercase(),
-        "SessionID": format!("0x{session:08X}"),
-        "UserName": if user.trim().is_empty() { "admin" } else { user.trim() },
-    })
-}
-
-pub async fn change_device_password(
-    connection: &mut crate::dvrip::client::Connection,
-    user: &str,
-    current: &str,
-    next: &str,
-) -> Result<i64, crate::dvrip::client::DvrError> {
-    let body = password_change_body(user, connection.session(), current, next);
-    connection.config_set("ModifyPassword", body).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,28 +458,5 @@ mod tests {
         let nested = json!({ "data": { "transInfos": [{ "transKey": "xyz" }] } });
         assert_eq!(trans_key_of(&nested), Some("xyz".to_string()));
         assert_eq!(trans_key_of(&json!({ "data": {} })), None);
-    }
-
-    #[test]
-    fn the_password_body_carries_uppercase_md5_and_the_session() {
-        let body = password_change_body("admin", 0x6e472e78, "lama", "baru");
-        assert_eq!(body["EncryptType"], "MD5");
-        assert_eq!(body["UserName"], "admin");
-        assert_eq!(body["SessionID"], "0x6E472E78");
-        assert_eq!(
-            body["PassWord"],
-            crate::dvrip::crypto::md5_hex("lama").to_uppercase()
-        );
-        assert_eq!(
-            body["NewPassWord"],
-            crate::dvrip::crypto::md5_hex("baru").to_uppercase()
-        );
-        assert_ne!(body["PassWord"], body["NewPassWord"]);
-    }
-
-    #[test]
-    fn an_empty_user_falls_back_to_admin() {
-        let body = password_change_body("  ", 1, "a", "b");
-        assert_eq!(body["UserName"], "admin");
     }
 }

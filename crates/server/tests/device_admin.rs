@@ -102,10 +102,6 @@ fn every_admin_route_refuses_a_call_without_a_session() {
             "/api/cloud/device/password",
             json!({ "uuid": "SN-1", "password": "lama", "newPassword": "baru" }),
         ),
-        (
-            "/api/device/password",
-            json!({ "newPassword": "baru-sekali" }),
-        ),
     ];
     for (path, payload) in &calls {
         let status = client
@@ -227,24 +223,4 @@ fn a_group_and_a_favourite_survive_a_restart() {
     );
 
     let _ = std::fs::remove_dir_all(dir);
-}
-
-#[test]
-fn the_dvrip_password_route_names_the_missing_camera() {
-    let client = client();
-    sign_in(&client);
-    let response = client
-        .post("/api/device/password")
-        .header(ContentType::JSON)
-        .body(json!({ "newPassword": "baru-sekali" }).to_string())
-        .dispatch();
-    assert_eq!(response.status(), Status::BadRequest);
-    let reply = body(response);
-    assert!(
-        reply["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("no camera address is set"),
-        "{reply}"
-    );
 }

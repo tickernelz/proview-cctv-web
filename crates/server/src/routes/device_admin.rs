@@ -6,7 +6,6 @@ use proview_core::cloud::attributes::{AttributeClient, AttributeStore, DeviceAtt
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
 use proview_core::cloud::{CloudError, CloudSession};
 use proview_core::config::Config;
-use proview_core::device::{ControlError, Controls};
 use proview_core::session::Store;
 use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
@@ -31,7 +30,6 @@ pub fn routes() -> Vec<rocket::route::Route> {
         share_accept,
         share_cancel,
         change_password,
-        change_device_password,
     ]
 }
 
@@ -54,15 +52,6 @@ fn cloud_status(error: &CloudError) -> Status {
 
 fn cloud_failure(error: CloudError) -> Failure {
     fail(cloud_status(&error), error.to_string())
-}
-
-fn control_status(error: &ControlError) -> Status {
-    match error {
-        ControlError::Unsupported { .. } => Status::NotImplemented,
-        ControlError::NotConfigured(_) => Status::BadRequest,
-        ControlError::Blocked { .. } => Status::Conflict,
-        ControlError::Device(_) => Status::BadGateway,
-    }
 }
 
 struct Signed {
@@ -139,13 +128,6 @@ fn guard_session(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Fa
         .get(&id)
         .map(|_| ())
         .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
-}
-
-fn live_device_password(cfg: &Config) -> String {
-    std::env::var("PROVIEW_DEVICE_PASS")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| cfg.device_pass.clone())
 }
 
 fn persist_device_password(settings: &State<SettingsStore>, password: &str) -> Result<(), Failure> {
@@ -442,94 +424,28 @@ async fn change_password(
     if uuid.is_empty() {
         return Err(fail(Status::BadRequest, "uuid is required"));
     }
-    let admin = clients(cfg);
-    admin
-        .admin
-        .change_login_password(&signed.token, uuid, &body.password, &body.new_password)
-        .await
-        .map_err(cloud_failure)?;
-    persist_device_password(settings, body.new_password.trim())?;
-    Ok(Json(StatusBody {
-        ok: true,
-        message: format!(
-            "the cloud changed the device password of {uuid}; restart the app so every camera route uses the new one"
-        ),
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct DevicePasswordBody {
-    #[serde(rename = "newPassword", alias = "new_password")]
-    new_password: String,
-}
-
-#[post("/device/password", data = "<body>")]
-async fn change_device_password(
-    body: Json<DevicePasswordBody>,
-    cfg: &State<Config>,
-    settings: &State<SettingsStore>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<StatusBody>, Failure> {
-    guard_session(store, cookies)?;
     let next = body.new_password.trim();
     if next.is_empty() {
         return Err(fail(Status::BadRequest, "the new password is empty"));
     }
-    if cfg.device_host.is_none() {
-        return Err(fail(
-            Status::BadRequest,
-            ControlError::NotConfigured("PROVIEW_DEVICE_HOST").to_string(),
-        ));
-    }
-    let current = live_device_password(cfg);
-    let mut live = cfg.inner().clone();
-    live.device_pass = current.clone();
-    let controls = Controls::from_config(&live);
-    let dvrip = controls
-        .dvrip()
-        .map_err(|error| fail(control_status(&error), error.to_string()))?;
-    let mut session = dvrip
-        .session()
+    let exported = std::env::var("PROVIEW_DEVICE_PASS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let admin = clients(cfg);
+    admin
+        .admin
+        .change_login_password(&signed.token, uuid, &body.password, next)
         .await
-        .map_err(|error| fail(control_status(&error), error.to_string()))?;
-    let ret = proview_core::cloud::attributes::change_device_password(
-        &mut session,
-        &live.device_user,
-        &current,
-        next,
-    )
-    .await
-    .map_err(|error| {
-        fail(
-            Status::BadGateway,
-            format!("the device refused the password change: {error}"),
-        )
-    })?;
-
-    let mut check = cfg.inner().clone();
-    check.device_pass = next.to_string();
-    let relogin = Controls::from_config(&check)
-        .dvrip()
-        .map_err(|error| fail(control_status(&error), error.to_string()))?
-        .session()
-        .await;
-    let relogin = match relogin {
-        Ok(_) => "a fresh login with the new password answered".to_string(),
-        Err(error) => {
-            return Err(fail(
-                Status::BadGateway,
-                format!(
-                    "the device reported success (ret {ret}) but a login with the new password failed: {error}; the stored password was left unchanged"
-                ),
-            ))
-        }
-    };
+        .map_err(cloud_failure)?;
     persist_device_password(settings, next)?;
+    let source = match exported {
+        Some(previous) if previous != next => {
+            "PROVIEW_DEVICE_PASS was already exported (or comes from the desktop keychain), and that source still holds the old password: change it too, a restart would bring it back"
+        }
+        _ => "the new password is in settings.json; restart the app so every camera route picks it up",
+    };
     Ok(Json(StatusBody {
         ok: true,
-        message: format!(
-            "the device changed its login password (ret {ret}); {relogin}; restart the app so every camera route uses it"
-        ),
+        message: format!("the cloud changed the device password of {uuid}; {source}"),
     }))
 }
