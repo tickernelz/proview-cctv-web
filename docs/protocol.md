@@ -809,6 +809,40 @@ The three rounds were answered by three different agents (`162.128.64.191`,
 `162.128.64.50`, `162.128.66.64`), which is the per-session assignment of 4C.7
 showing up in the diagnostic.
 
+### 4C.14 The media login is a token login, and the SDK log spells it out
+
+The SDK's own log carries the login it builds for the media channel
+(`ProtocolNetIP.cpp:1293` and the frame that follows it):
+
+```
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:zhafronadani@gm,PwdLen:13,
+             Token:o5rBSnodWCpN8VAa,Pid:,RandomStrLen:4/0, ...]
+{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"o5rBSnodWCpN8VAa",
+ "PassWord":"","CommunicateKey":"8291FD6A0A7EF5F78495CB0255F4E862A4382321D951D2257176E83E2573DE5F...",
+ ...}
+```
+
+Two things follow. The media channel does **not** use the account password: it
+logs in with `EncryptType "TOKEN"`, puts the 16-character token in `UserName`,
+sends an empty password, and passes an RSA `CommunicateKey`. And the device
+advertises exactly which algorithms it expects:
+
+```
+{"Bits":1024,
+ "DataEncryptionType":{"AES":true,"AESV2":true,"VEKEY1":true},
+ "EncryptAlgo":"RSA_V1.5",
+ "LoginEncryptionType":{"MD5":true,"NONE":true,"RSA":true,"T":...}}
+```
+
+So the earlier hunt for an AES key (4C.9-4C.12) was aimed one layer too low: the
+gate is the **token** (from the account's device token, the same kind of value
+`/deviceToken/get` already returns) plus an RSA-1.5 session key, not a password
+hash. That reframes the remaining work in 4C.11: build the token login and the
+`CommunicateKey`, then see whether media flows.
+
+The same log also shows the audio channel being negotiated as `service_type
+"RpsVoIP"` with its own `local_port`, which is the shape two-way audio will need.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
