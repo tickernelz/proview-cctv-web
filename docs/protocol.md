@@ -913,6 +913,37 @@ RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
 `CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
 ours on both ends.
 
+### 4C.18 The frames decrypt, and the start message is `OPMonitor Start`
+
+With the session key the SDK hands to `RSA_public_encrypt` (4C.16) and the bytes
+of the same run on the wire, every client control frame opens with
+**AES-128-CBC, IV = sixteen zero bytes, PKCS-free zero padding**:
+
+```
+0x03fc  {"Name":"SystemInfo","SessionID":"0x0000000265"}
+0x0550  {"Name":"SystemFunction","SessionID":"0x0000000265"}
+0x0412  {"Name":"fVideo.AudioSupportType","SessionID":"0x0000000265"}
+0x0582  {"Name":"OPMonitor","OPMonitor":{"Action":"Start","Parameter":{
+          "Channel":0,"CombinMode":"NONE","StreamType":"Main","TransMode":"TCP",
+          "VEKEY1":"dpMuSyQmXX9125NjZi1NM0a9G2yf2B509VUk5mvX1E5w53nlvr53o8ZKFG73fw3u"}},
+        "SessionID":"0x0000000265"}
+0x03ee  {"Name":"KeepAlive","SessionID":"0x0000000265"}
+```
+
+Each body is that ciphertext, base64, NUL-terminated, carried in the usual DVRIP
+header on channel 0 with the end bit clear. So the media sequence is:
+
+1. `OPMonitor` **Claim** (0x0585) — plaintext, channel 99 (4C.8).
+2. Token login (0x03e8) with `EncryptType TOKEN` and the RSA-sealed
+   `CommunicateKey` (4C.14-4C.17).
+3. `OPMonitor` **Start** (0x0582) with the parameters above, encrypted.
+4. Media frames follow; their payload is guarded by the `VEKEY1` value the client
+   chose in that Start message, which is 60 base64 characters.
+
+Steps 1-3 are reproducible today with code already in the crate
+(`claim_monitor`, `login_token`, `communicate_key`); step 3 needs the encrypted
+write, and step 4 needs the VEKEY1 cipher.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -1098,9 +1129,10 @@ device over the vendor relay. In the other direction the device streams its own
 audio back while the claim is open: a 90 s session left 743,328 bytes unread in
 the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
 build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
-report) instead of letting it fill the queue, but it does not play it. What is
-still unproven is acoustic: whether the camera speaker plays what it receives
-needs a person standing next to it.
+report) instead of letting it fill the queue, but it does not play it. The owner confirmed the
+acoustic leg on 2026-10-27 16:14Z by hearing the test tone from the camera during
+a talk run. Inbound audio arrives on `1433`, not `1432`: 328-byte frames (8-byte
+header plus 320 A-law bytes) at 25 a second, 77,952 bytes in an 8.96 s session.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second

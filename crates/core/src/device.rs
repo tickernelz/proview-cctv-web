@@ -233,14 +233,21 @@ fn store_binding(host: &str, binding: Option<PtzBinding>) {
     }
 }
 
+fn serve_binding(entry: Option<&BindingEntry>, host: &str) -> Option<PtzBinding> {
+    let entry = entry?;
+    if entry.host != host {
+        return None;
+    }
+    if binding_fresh(entry, host) || probing(entry) {
+        return entry.binding.clone();
+    }
+    None
+}
+
 pub fn cached_ptz_binding(cfg: &Config) -> Option<PtzBinding> {
     let host = binding_host(cfg)?;
     let guard = PTZ_BINDING.lock().ok()?;
-    let entry = guard.as_ref()?;
-    if !binding_fresh(entry, &host) {
-        return None;
-    }
-    entry.binding.clone()
+    serve_binding(guard.as_ref(), &host)
 }
 
 pub fn refresh_ptz_binding(cfg: &Config) {
@@ -1101,6 +1108,59 @@ mod tests {
         assert!(!probing(&overdue));
         let idle = entry("cam:34567", Duration::from_secs(0), true, None);
         assert!(!probing(&idle));
+    }
+
+    #[test]
+    fn a_stale_answer_covers_the_refresh_until_the_probe_lands() {
+        let refreshing = entry(
+            "cam:34567",
+            PTZ_BINDING_TTL + Duration::from_secs(100),
+            true,
+            Some(Duration::ZERO),
+        );
+        let served = serve_binding(Some(&refreshing), "cam:34567")
+            .expect("a stale answer keeps the lens named while its refresh runs");
+        assert_eq!(served.lens, Lens::Bottom);
+        assert_eq!(served.source, PtzSource::Device);
+
+        let expired = entry(
+            "cam:34567",
+            PTZ_BINDING_TTL + Duration::from_secs(100),
+            true,
+            None,
+        );
+        assert!(serve_binding(Some(&expired), "cam:34567").is_none());
+
+        let overdue = entry(
+            "cam:34567",
+            PTZ_BINDING_TTL + Duration::from_secs(100),
+            true,
+            Some(PTZ_BINDING_BUDGET + Duration::from_secs(30)),
+        );
+        assert!(serve_binding(Some(&overdue), "cam:34567").is_none());
+
+        assert!(serve_binding(Some(&refreshing), "other:34567").is_none());
+        assert!(serve_binding(None, "cam:34567").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_route_keeps_the_stale_answer_while_its_refresh_runs() {
+        let device = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("silent device");
+        let host = device.local_addr().expect("device address").to_string();
+        let config = test_config(None, Some(&host));
+        let stale = entry(
+            &host,
+            PTZ_BINDING_TTL + Duration::from_secs(100),
+            true,
+            None,
+        );
+        let previous = PTZ_BINDING.lock().expect("binding lock").replace(stale);
+        refresh_ptz_binding(&config);
+        let served = cached_ptz_binding(&config);
+        *PTZ_BINDING.lock().expect("binding lock") = previous;
+        assert!(served.is_some_and(|binding| binding.lens == Lens::Bottom));
     }
 
     #[test]
