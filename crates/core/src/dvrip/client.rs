@@ -1,3 +1,4 @@
+use rand::Rng;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -79,6 +80,14 @@ pub struct LoginOk {
     pub device_type: Option<String>,
     pub channels: Option<u32>,
     pub alive_interval: Option<u32>,
+}
+
+fn monitor_random() -> String {
+    const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let mut rng = rand::thread_rng();
+    (0..4)
+        .map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char)
+        .collect()
 }
 
 pub struct Connection {
@@ -170,12 +179,22 @@ impl Connection {
     }
 
     async fn send_frame(&mut self, id: u16, body: &[u8]) -> std::io::Result<()> {
+        self.send_frame_on(0, true, id, body).await
+    }
+
+    async fn send_frame_on(
+        &mut self,
+        channel: u8,
+        end: bool,
+        id: u16,
+        body: &[u8],
+    ) -> std::io::Result<()> {
         let sequence = self.next_sequence();
         let header = Header {
             session: self.session,
             sequence,
-            channel: 0,
-            end: true,
+            channel,
+            end,
             id,
             length: body.len() as u32,
         };
@@ -211,6 +230,34 @@ impl Connection {
             self.session = header.session;
         }
         Ok((header, body))
+    }
+
+    pub async fn claim_monitor(&mut self, channel: u8, stream: &str) -> Result<(), DvrError> {
+        let body = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Claim",
+                "Parameter": {
+                    "Channel": channel,
+                    "CombinMode": "CONNECT_ALL",
+                    "StreamType": stream,
+                    "TransMode": "TCP",
+                },
+            },
+            "DHParameter": { "RandomStrA": monitor_random() },
+            "SessionID": format!("0x{:08x}", self.session),
+        });
+        let mut payload =
+            serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        payload.push(0);
+        self.send_frame_on(
+            super::msg::MONITOR_CHANNEL,
+            false,
+            super::msg::MONITOR,
+            &payload,
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn request(&mut self, id: u16, body: Value) -> Result<Value, DvrError> {

@@ -107,6 +107,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         login.channels
     );
     let started = Instant::now();
+    connection.claim_monitor(0, "Main").await?;
+    for index in 0..6 {
+        let (header, payload) = match tokio::time::timeout(
+            std::time::Duration::from_secs(6),
+            connection.recv(),
+        )
+        .await
+        {
+            Ok(Ok(frame)) => frame,
+            Ok(Err(error)) => {
+                println!("frame{index}   read failed: {error:?}");
+                break;
+            }
+            Err(_) => {
+                println!("frame{index}   no more frames inside 6s");
+                break;
+            }
+        };
+        let preview: String = payload
+            .iter()
+            .take(60)
+            .map(|byte| {
+                if byte.is_ascii_graphic() {
+                    *byte as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        println!(
+            "frame{}   {:.2}s id=0x{:04x} len={} {}",
+            index,
+            started.elapsed().as_secs_f64(),
+            header.id,
+            payload.len(),
+            preview
+        );
+        if payload.is_empty() {
+            break;
+        }
+    }
+    let started = Instant::now();
     let info = connection.system_info().await?;
     println!(
         "sysinfo  {:.2}s device={} software={}",
