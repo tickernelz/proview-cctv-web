@@ -105,6 +105,20 @@ pub struct Device {
     pub online_detail: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPath {
+    pub online: bool,
+    pub access: Option<String>,
+    pub agent: Option<String>,
+    pub relay_accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_error: Option<String>,
+    pub dest_ip: Option<String>,
+    pub mtu: Option<String>,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamTicket {
     pub kind: StreamKind,
@@ -182,6 +196,16 @@ pub trait Provider: Send + Sync {
         channel: u32,
         high: bool,
     ) -> Result<StreamTicket, ProviderError>;
+
+    async fn cloud_path(
+        &self,
+        _session: &VendorSession,
+        _device: &str,
+    ) -> Result<CloudPath, ProviderError> {
+        Err(ProviderError::NotImplemented(
+            "this provider has no cloud path to report",
+        ))
+    }
 
     async fn playback(
         &self,

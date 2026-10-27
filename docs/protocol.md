@@ -788,6 +788,27 @@ What that leaves, in order of cost: the constructor that stores the key
 because the code that stores `0x1f40830` was not located), or a different
 encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
 
+### 4C.13 The path is also a diagnostic
+
+`GET /api/cloud-path?device=<serial>` walks the same steps as a live attempt and
+answers the result, per stage (`access`, `agent`, `relayAccepted`, `relayError`,
+`destIp`, `mtu`, `detail`). It never logs in to the device, so nothing crosses the
+relay beyond the handshake of 4C.7.
+
+Measured over HTTP from this box against the real account, one session:
+
+```
+POST /api/login                                       200 in 0.3 s
+GET  /api/stream?device=<sn>&channel=1&quality=hd      501 in 0.0014 s
+GET  /api/cloud-path?device=<sn>                       200 in 0.40 s, 0.38 s, 1.46 s
+   {"online":true,"access":"110.239.87.207:6510","agent":"162.128.64.191:6611",
+    "relayAccepted":true,"destIp":"103.85.122.66","mtu":"1400",...}
+```
+
+The three rounds were answered by three different agents (`162.128.64.191`,
+`162.128.64.50`, `162.128.66.64`), which is the per-session assignment of 4C.7
+showing up in the diagnostic.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

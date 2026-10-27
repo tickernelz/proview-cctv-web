@@ -108,18 +108,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let started = Instant::now();
     connection.claim_monitor(0, "Main").await?;
-    match connection.login_monitor(&device_user, &device_pass).await {
-        Ok(reply) => eprintln!(
-            "monlogin {:.2}s ret={} reply={}",
-            started.elapsed().as_secs_f64(),
-            reply
-                .get("Ret")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(-1),
-            reply
-        ),
-        Err(error) => eprintln!("monlogin failed: {error:?}"),
-    }
     for index in 0..6 {
         let (header, payload) = match tokio::time::timeout(
             std::time::Duration::from_secs(6),
