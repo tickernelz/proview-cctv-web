@@ -5,6 +5,7 @@ pub mod crypto;
 pub(crate) mod fake;
 pub mod frame;
 pub mod playback;
+pub mod settings;
 pub mod talk;
 
 pub const MAGIC: u8 = 0xff;
@@ -27,4 +28,5 @@ pub mod msg {
     pub const SNAP: u16 = 1560;
     pub const MONITOR: u16 = 0x0585;
     pub const MONITOR_CHANNEL: u8 = 99;
+    pub const MONITOR_START: u16 = 0x0582;
 }

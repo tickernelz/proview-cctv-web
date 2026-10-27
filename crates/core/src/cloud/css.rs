@@ -257,7 +257,7 @@ mod tests {
     fn request() -> SignRequest {
         SignRequest {
             serial: "DEV0001".to_string(),
-            auth_code: "aaaaaaaa-4a1c2f27d01793117365801".to_string(),
+            auth_code: "aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbb".to_string(),
             user_id: "c6f8c33b29c95774c14bae9436e721c8".to_string(),
             object: "003_DEV0001_261027214632.jpeg".to_string(),
             bucket: "OSS_oss-ap-id-pic-01".to_string(),
@@ -277,7 +277,7 @@ mod tests {
         );
         assert_eq!(
             centre["Body"]["AuthCode"],
-            "aaaaaaaa-4a1c2f27d01793117365801"
+            "aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbb"
         );
     }
 
@@ -471,11 +471,19 @@ mod tests {
         };
         let slipped = target(&relative, false);
         assert!(
-            slipped
-                .as_ref()
-                .map(|url| url.host_str() != Some(file.host.as_str()))
-                .unwrap_or(true),
-            "a relative path moved the host: {slipped:?}"
+            slipped.is_err(),
+            "a relative path must not be signed: {slipped:?}"
+        );
+        let absolute = SignedFile {
+            url: format!("/{}", file.url.trim_start_matches('/')),
+            ..file.clone()
+        };
+        assert_eq!(
+            target(&absolute, false)
+                .expect("an absolute path on the same host")
+                .host_str(),
+            Some(file.host.as_str()),
+            "an absolute path must keep the signed host"
         );
     }
 

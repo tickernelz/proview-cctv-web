@@ -111,28 +111,111 @@
     return parts.join(' · ');
   }
 
+  function parseStamp(text) {
+    const stamp = Date.parse(String(text).replace(' ', 'T'));
+    return Number.isFinite(stamp) ? stamp : null;
+  }
+
+  function fileMode(file) {
+    return /\[M\]/.test(file.name) ? 'motion' : 'continuous';
+  }
+
+  function renderTimeline() {
+    const track = el('pb-timeline');
+    if (!track) return;
+    track.textContent = '';
+    const base = parseStamp((state.day || today()) + ' 00:00:00');
+    if (base === null) return;
+    for (const hour of [0, 3, 6, 9, 12, 15, 18, 21]) {
+      const tick = make('span', 'pb-tick', String(hour).padStart(2, '0'));
+      tick.style.left = ((hour * 3600) / 86400) * 100 + '%';
+      track.append(tick);
+    }
+    const fragment = document.createDocumentFragment();
+    for (const file of state.files) {
+      const from = parseStamp(file.begin);
+      const to = parseStamp(file.end);
+      if (from === null || to === null) continue;
+      const left = ((from - base) / 86400000) * 100;
+      if (left < 0 || left > 100) continue;
+      const width = Math.max(((to - from) / 86400000) * 100, 0.06);
+      const segment = make('span', 'pb-seg');
+      segment.dataset.mode = fileMode(file);
+      segment.style.left = left + '%';
+      segment.style.width = Math.min(width, 100 - left) + '%';
+      segment.setAttribute('aria-hidden', 'true');
+      fragment.append(segment);
+    }
+    track.append(fragment);
+  }
+
+  function fileAt(clientX) {
+    const track = el('pb-timeline');
+    if (!track || !state.files.length) return null;
+    const box = track.getBoundingClientRect();
+    if (!box.width) return null;
+    const base = parseStamp((state.day || today()) + ' 00:00:00');
+    if (base === null) return null;
+    const ratio = Math.min(Math.max((clientX - box.left) / box.width, 0), 1);
+    const at = base + ratio * 86400000;
+    let next = null;
+    let prior = null;
+    for (const file of state.files) {
+      const from = parseStamp(file.begin);
+      const to = parseStamp(file.end);
+      if (from === null || to === null) continue;
+      if (at >= from && at <= to) return { file, from, at };
+      if (from > at && (next === null || from < parseStamp(next.begin))) next = file;
+      if (to < at && (prior === null || to > parseStamp(prior.end))) prior = file;
+    }
+    const chosen = next || prior;
+    if (!chosen) return null;
+    const from = parseStamp(chosen.begin);
+    return from === null ? null : { file: chosen, from, at };
+  }
+
+  function describeAt(clientX) {
+    const hit = fileAt(clientX);
+    if (!hit) return '';
+    const file = hit.file;
+    return file.begin.slice(11) + ' – ' + file.end.slice(11) + ' · ' + mb(file.bytes) + ' · ' + fileMode(file);
+  }
+
   function renderFiles() {
     const list = el('pb-files');
     if (!list) return;
+    const started = performance.now();
     list.textContent = '';
     const summary = el('pb-summary');
     if (!state.files.length) {
       if (summary) summary.textContent = 'No files in that range.';
+      renderTimeline();
       return;
     }
     const bytes = state.files.reduce((total, file) => total + file.bytes, 0);
-    if (summary) {
-      const cap = state.truncatedCap ? ' · the device list is capped at ' + state.truncatedCap : '';
-      summary.textContent = state.files.length + ' files · ' + mb(bytes) + cap;
-    }
+    const fragment = document.createDocumentFragment();
     for (const file of state.files) {
       const row = make('button', 'pb-row');
       row.type = 'button';
+      row.dataset.mode = fileMode(file);
       const span = make('span', 'pb-when', file.begin.slice(11) + ' – ' + file.end.slice(11));
       const size = make('span', 'pb-size', mb(file.bytes));
       row.append(span, size);
       row.addEventListener('click', () => play(file, 0));
-      list.append(row);
+      fragment.append(row);
+    }
+    list.append(fragment);
+    const listMs = Math.round(performance.now() - started);
+    const timelineAt = performance.now();
+    renderTimeline();
+    const timelineMs = Math.round(performance.now() - timelineAt);
+    if (window.performance && performance.measure) {
+      performance.measure('playback-files', { start: started, duration: listMs + timelineMs });
+    }
+    console.debug('playback drew ' + state.files.length + ' files: list ' + listMs + ' ms, timeline ' + timelineMs + ' ms');
+    if (summary) {
+      const cap = state.truncatedCap ? ' · the device list is capped at ' + state.truncatedCap : '';
+      summary.textContent = state.files.length + ' files · ' + mb(bytes) + cap;
     }
   }
 
@@ -299,6 +382,7 @@
     if (!state.device) return;
     const day = el('pb-day');
     const date = day && day.value ? day.value : today();
+    state.day = date;
     setStatus('asking the device for its file list…');
     try {
       const body = await api(
@@ -314,6 +398,45 @@
       renderFiles();
       setStatus(error.message);
     }
+  }
+
+  function shiftDay(delta) {
+    const input = el('pb-day');
+    const from = (input && input.value) || state.day || today();
+    const stamp = parseStamp(from + ' 00:00:00');
+    if (stamp === null) return;
+    const moved = new Date(stamp + delta * 86400000);
+    const month = String(moved.getMonth() + 1).padStart(2, '0');
+    const date = String(moved.getDate()).padStart(2, '0');
+    const next = moved.getFullYear() + '-' + month + '-' + date;
+    state.day = next;
+    if (input) input.value = next;
+    loadFiles();
+  }
+
+  function downloadUrl(file) {
+    return '/api/playback/download' +
+      '?device=' + deviceEndpoint() +
+      '&channel=0' +
+      '&name=' + encodeURIComponent(file.name) +
+      '&begin=' + encodeURIComponent(file.begin) +
+      '&end=' + encodeURIComponent(file.end) +
+      '&bytes=' + encodeURIComponent(String(file.bytes || 0));
+  }
+
+  function downloadChosen() {
+    const file = state.chosen;
+    if (!file) {
+      setStatus('pick a file first, then download it');
+      return;
+    }
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl(file);
+    anchor.download = String(file.name).split('/').pop();
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setStatus('the device is streaming ' + mb(file.bytes) + ' · the browser saves the clip when it lands');
   }
 
   function buildOverlay() {
@@ -348,15 +471,42 @@
       state.device = select.value;
       loadFiles();
     });
+    const previous = make('button', 'btn btn-line', '‹');
+    previous.type = 'button';
+    previous.title = 'Previous day';
+    previous.setAttribute('aria-label', 'Previous day');
+    previous.addEventListener('click', () => shiftDay(-1));
+    const following = make('button', 'btn btn-line', '›');
+    following.type = 'button';
+    following.title = 'Next day';
+    following.setAttribute('aria-label', 'Next day');
+    following.addEventListener('click', () => shiftDay(1));
     const refresh = make('button', 'btn btn-line', 'Refresh');
     refresh.type = 'button';
     refresh.addEventListener('click', () => loadFiles());
-    range.append(select, day, refresh);
+    range.append(select, previous, day, following, refresh);
 
     const summary = make('p', 'pb-summary');
     summary.id = 'pb-summary';
     const files = make('div', 'pb-list');
     files.id = 'pb-files';
+    const timeline = make('div', 'pb-timeline');
+    timeline.id = 'pb-timeline';
+    timeline.setAttribute('role', 'group');
+    timeline.setAttribute('aria-label', 'Files across the day, click to play from a time');
+    timeline.addEventListener('click', (event) => {
+      const hit = fileAt(event.clientX);
+      if (!hit) return;
+      const duration = secondsBetween(hit.file.begin, hit.file.end);
+      const offset = Math.min(Math.max(0, Math.round((hit.at - hit.from) / 1000)), Math.max(duration - 1, 0));
+      play(hit.file, offset);
+    });
+    timeline.addEventListener('mousemove', (event) => {
+      timeline.title = describeAt(event.clientX);
+    });
+    timeline.addEventListener('mouseleave', () => {
+      timeline.title = '';
+    });
 
     const stage = make('div', 'pb-stage');
     const video = document.createElement('video');
@@ -379,13 +529,17 @@
       if (!state.chosen) return;
       play(state.chosen, Number(scrub.value) || 0);
     });
-    scrubRow.append(scrub, seek);
+    const grab = make('button', 'btn btn-line', 'Download');
+    grab.type = 'button';
+    grab.id = 'pb-download';
+    grab.addEventListener('click', () => downloadChosen());
+    scrubRow.append(scrub, seek, grab);
     const status = make('p', 'pb-status');
     status.id = 'pb-status';
     status.setAttribute('role', 'status');
     stage.append(video, playing, scrubRow, status);
 
-    body.append(range, summary, files, stage);
+    body.append(range, summary, timeline, files, stage);
     overlay.append(body);
     document.body.append(overlay);
 
@@ -408,6 +562,11 @@
       '.pb-scrub-row{display:flex;gap:8px;align-items:center}',
       '.pb-scrub-row input{flex:1}',
       '.pb-status{margin:0;min-height:1.4em;font-variant-numeric:tabular-nums}',
+      '.pb-timeline{position:relative;grid-column:1/-1;height:34px;border-radius:8px;background:rgba(128,128,128,.12);overflow:hidden;cursor:pointer}',
+      '.pb-tick{position:absolute;top:0;bottom:0;width:1px;background:rgba(128,128,128,.3);font-size:10px;line-height:34px;padding-left:3px;opacity:.55;pointer-events:none;white-space:nowrap}',
+      '.pb-seg{position:absolute;top:7px;bottom:7px;padding:0;border:0;border-radius:2px;background:currentColor;opacity:.8;pointer-events:none}',
+      '.pb-seg[data-mode="motion"]{opacity:.42}',
+      '.pb-row[data-mode="motion"]{opacity:.75}',
     ].join('\n');
     document.head.append(style);
   }

@@ -9,6 +9,21 @@ stability before 1.0.
 
 ### Added
 
+- Media channel cipher. `crates/core/src/media/dhav.rs` speaks the envelope the
+  vendor SDK and the camera use on msgid 1000: AES-128-CBC with a 16-byte zero
+  IV, zero padding instead of PKCS#7, base64 in the body, DVRIP header kept.
+  The msgid-1000 key is the constant `dashoiahfarqdasr` at `.rodata 0x51b456`,
+  which is why the `OPMonitor` claim reply can be read before any exchange.
+  Proven on a live session: the captured 384-byte login frame decrypts to its
+  374-byte JSON and re-encrypts to the same 384 bytes; the 720-byte claim reply
+  decrypts to the capability JSON with the device's RSA public key. The same key
+  opens the vendor app's own capture (577-byte login body, 432-byte plaintext),
+  and the claim ciphertext is byte-identical between the two. The module carries
+  the cipher only, no frame parser: the recording format is a separate
+  workstream. `docs/protocol.md` 4C.19 carries the addresses, the body-class
+  table for msgid 1412 and the controlled 28-combination sweep with its positive
+  control.
+
 - Account lifecycle on the cloud envelope. `POST /api/account/remember` keeps
   the account email and access token in `account.json` (0600) next to the
   settings, and `GET /api/account/remembered` rebuilds the server session from
@@ -56,8 +71,10 @@ reports `ptzSource: "device"` with a `ptzEvidence` string that quotes the block
 and names the host it came from, instead of the measured default it used to
 guess. The read never blocks the live stream: the route answers from a cache and
 refreshes in the background with one bounded probe (10 s) at a time, keeping a
-device answer for 10 minutes and a failure or timeout for 1 minute. The measured
-default stays only as the fallback when the cache holds nothing.
+device answer for 10 minutes and a failure or timeout for 1 minute. While a
+refresh runs the last device answer keeps serving, so `/api/lens` never drops to
+`measured_default` between refreshes; the measured default stays only as the
+fallback when the cache holds nothing at all.
 - `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
 `ptz_lens_has_no_motor`, the device own locate block in the message, and a
 pointer to `lens=bottom`, so the refusal carries evidence instead of a bare

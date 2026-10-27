@@ -341,6 +341,51 @@ impl Connection {
         parse_json(&reply)
     }
 
+    pub async fn send_encrypted(
+        &mut self,
+        cipher: &crate::media::dhav::MediaCipher,
+        channel: u8,
+        id: u16,
+        body: &serde_json::Value,
+    ) -> Result<(), DvrError> {
+        let plain =
+            serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        let mut payload = cipher.encrypt_body(&plain).into_bytes();
+        payload.push(0);
+        self.send_frame_on(channel, false, id, &payload).await?;
+        Ok(())
+    }
+
+    pub async fn start_monitor(
+        &mut self,
+        cipher: &crate::media::dhav::MediaCipher,
+        channel: u8,
+        stream: &str,
+        vekey1: &str,
+    ) -> Result<(), DvrError> {
+        let body = json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Start",
+                "Parameter": {
+                    "Channel": channel,
+                    "CombinMode": "NONE",
+                    "StreamType": stream,
+                    "TransMode": "TCP",
+                    "VEKEY1": vekey1,
+                },
+            },
+            "SessionID": format!("0x{:08x}", self.session),
+        });
+        let plain =
+            serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        let mut payload = cipher.encrypt_body(&plain).into_bytes();
+        payload.push(0);
+        self.send_frame_on(0, false, super::msg::MONITOR_START, &payload)
+            .await?;
+        Ok(())
+    }
+
     pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, DvrError> {
         let body = json!({
             "EncryptType": "MD5",

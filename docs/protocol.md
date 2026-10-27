@@ -938,11 +938,154 @@ header on channel 0 with the end bit clear. So the media sequence is:
    `CommunicateKey` (4C.14-4C.17).
 3. `OPMonitor` **Start** (0x0582) with the parameters above, encrypted.
 4. Media frames follow; their payload is guarded by the `VEKEY1` value the client
-   chose in that Start message, which is 60 base64 characters.
+   chose in that Start message, which is 64 base64 characters.
 
 Steps 1-3 are reproducible today with code already in the crate
 (`claim_monitor`, `login_token`, `communicate_key`); step 3 needs the encrypted
 write, and step 4 needs the VEKEY1 cipher.
+
+### 4C.19 The media channel cipher, recovered and proven on a live session
+
+4C.10 and 4C.12 left the cipher open because they looked for it through OpenSSL's
+entry points and through the AES vtable; both are the wrong handle. The cipher is
+reached through the class's own exported methods, and the key for msgid 1000 is a
+constant inside the library.
+
+**The primitive.** `MNetSDK::CDataEncDecAES` (`vtable 0x1f40830`, vptr
+`0x1f40840`) delegates to `XAES::Encrypt128` `0xacabe4`, which is
+`AES_set_encrypt_key(key, 128, ks)` followed by `AES_cbc_encrypt(in, out, len, ks,
+iv, 1)` over a 64-byte zeroed stack block, so the IV is **16 zero bytes** and there
+is **no PKCS#7**: the output is the input zero-padded to a 16-byte multiple,
+length `(len + 15) & ~15`. `XData` frames are then wrapped by
+`CDataEncDecAES::EncData` `0xf2e1d8`, which copies the 20-byte DVRIP header
+unchanged, replaces the body with `base64(ciphertext)`, and sets the header length
+to `1 + base64len`. `NotEncryptMsgID` (`this+0x40`, read from the ctor's JSON
+config) is consulted per frame, but the device's own list (below) cannot be used as
+an outbound skip list: it names 1000, 1412, 1413 and 1414, and 1000 and 1414 travel
+encrypted here while only 1001 arrives in plaintext. The receive side is `DecData`
+`0xf2e464` -> `XAES::Decrypt128_Base64` `0xacb934`.
+
+**The key for msgid 1000 is a vendor constant.** `CProtocolNetIP::InitMsg`
+`0xf22b80` at `0xf23184` loads `.rodata 0x51b456` and passes it to
+`CDataEncDecAES::AESEncData(XData*, char const*)` `0xf23358`. The 16 bytes at that
+address are the ASCII string **`dashoiahfarqdasr`**. That is why the device can
+answer the `OPMonitor` claim with ciphertext and the client can read it: both sides
+already hold it.
+
+**Measured, not inferred.** A live cloud-P2P session on 2026-10-27 under the qemu
+harness with a prologue-patch hook over `XAES::Encrypt128`,
+`XAES::Decrypt128_Base64` and `AES_set_encrypt_key`, tcpdump on TCP 6611. The `t`
+column is seconds after the media connection's SYN, which the capture places at
+25.916331 s (so 0.044 means 25.961 s in the file):
+
+| t (s) | msgid | ch | dir | wire body | plaintext |
+|---|---|---|---|---|---|
+| 0.044 | 1413 | 99 | client | 206 B JSON | `OPMonitor Claim`, `RandomStrA 0k83`, `SessionID 0x000001869f` |
+| 0.081 | 1414 | 0 | device | 961 base64 chars | 720 B ciphertext -> **720 B** JSON |
+| 0.122 | 1000 | 99 | client | 513 base64 chars | 384 B ciphertext -> **375 B** (374 B JSON + NUL) |
+| 0.216 | 1001 | 0 | device | 128 B plaintext | `Ret:100`, `SessionID 0x000000ab` |
+
+The hook prints the key on the way in, so the pairing is not a guess:
+
+```
+[enc128] #1 plainlen=375
+[enc128] key len=16 hex=646173686f6961686661727164617372 txt=dashoiahfarqdasr
+```
+
+The 1414 body decrypts with the same constant:
+`{ "Bits" : 1024, "DataEncryptionType" : { "AES" : true, "AESV2" : true, "VEKEY1" :
+true }, "EncryptAlgo" : "RSA_V1.5", "LoginEncryptionType" : { "MD5" : true, "NONE" :
+true, "RSA" : true, "TOKEN" : true }, "NotEncryptMsgID" : [ 1000, 1001, 1008, 1009,
+1010, 1011, 1050, 1054, 1412, 1413, 1414, 1422, 1424, 1425, 1426, 1432, 1433, 1434,
+1435, 1449, 1522, 1572, 1576, 1580, 1582, 1645, 2062, 2063, 2123, 2140, 3016, 3502 ],
+"PublicKey" : "91670C27…081FF,010001", "Ret" : 100 }`. The login body decrypts to
+`{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"F0+7ghjHWzNsktOE",
+"PassWord":"","CommunicateKey":"8B917648…D8E8E3AB"}` — 374 bytes plus the protocol's
+NUL, zero-padded to 384, which is exactly `base64 512 chars + NUL = 513` on the wire.
+
+**The same constant decrypts the vendor app, not only the harness.** The owner's
+PCAPdroid capture of the real application (`PCAPdroid_27_Okt_21_18_10.pcap`, 23.6 MB,
+sha256 `9574b835456653709edd0a3073a2b3957e78b244123bae84d3c71f52e1612398`,
+21:18:10-21:22:20) holds one more media-channel pair on
+`10.215.173.1:54100 -> 162.128.66.214:6611`: claim `1413/99`, reply `1414` of 961
+base64 characters, and a `1000/99` login whose body is **577** bytes on the wire. Both
+frames open with the same key: the reply is byte-identical to the harness capture
+(the device sends one fixed JSON, so a constant key and a zero IV make the ciphertext
+constant too), and the 432-byte login plaintext is the same login JSON with one extra
+field, `"User-Agent":"Funv1.2.2c-And-wR5qH796Ky8D03r"`. That rules out the reading that
+the harness produced an artefact of its own environment.
+
+**The session key is not that constant.** Everything after the login rides a second
+cipher whose 16-char key the client generates locally (`OS::RandString`) and hands to
+the device in `CommunicateKey`: 256 hex characters = 128 bytes = RSA-1024, matching
+`"Bits" : 1024` and the 128-byte modulus in `PublicKey`, produced by `RSAV15()`
+`0xf25e38` and logged by the ctor at `ProtocolNetIP.cpp:2710`. In the run above that
+key was `Os1B8U5VJ2LE2ubx`, visible on msgid 1020, 1360, 1410 and 1006.
+
+`crates/core/src/media/dhav.rs` implements the envelope and the cipher (AES-128-CBC,
+zero IV, zero padding, base64, `trim_nul` for the wire terminator) with the captured
+bodies as test vectors: the login decrypts to the JSON above, re-encrypting that
+plaintext reproduces the captured 384 bytes byte for byte, and the vendor app's body
+does the same. A frame format parser is deliberately **not** here: the recording
+format is ZHA-4006 and ZHA-4007's work, and no capture in `~/re` contains the ASCII
+marker `DHAV` (0 hits in 8539 harness and 9148 app packets), so shipping one would be
+a guess.
+
+**What the video bodies actually look like.** Every msgid 1412 body starts with
+`00 00 01` and a one-byte class, measured on both captures:
+
+| class | harness (4111 bodies) | app (3785 bodies) | body size | shape |
+|---|---|---|---|---|
+| `fa` | 2217 | 2079 | 328 B, always | `00 00 01 fa` then `0e 02 40 01` and a `d5`/`55` filler run |
+| `fd` | 1075 | 996 | 443-1143 B harness, 93-8192 B app | `00 00 01 fd` + `u32` length at offset 4 equal to `body - 8` (1075/1075 harness, 966/996 app) + `00 00 00 01` + one marker byte + slice data; emulation-prevention `00 00 03` in 1075/1075 |
+| `fc` | 32 | 31 | 8192 B, always | 16-byte header (`00 00 01 fc`, `u32` payload length at offset 12), then an 8192-byte chunk of one large frame followed by plain `headless` continuations |
+| `f9` | 31 | 27 | 16 B, always | `00 00 01 f9 0e 00 08` plus zeros |
+| none | 756 | 652 | 8192 B and others | high entropy, no start code |
+
+So the video does arrive **partly in plaintext**: dropping the marker byte after each
+inner start code turns the 1075 `fd` bodies into 1077 slice NAL units whose header is
+the pair `02 01`. The codec is *not* proven. The header reads as HEVC
+(`nal_unit_type` 1 = TRAIL_R, `nuh_layer_id` 0, `nuh_temporal_id_plus1` 1), and the
+slice header then decodes as `first_slice_segment_in_pic_flag` 1 with `pps_id` 0 in
+1075 of 1075; `ffmpeg -f hevc` accepts the split and stops on the missing-PPS
+errors: one run of the same `fd` stream gives 1755 `PPS id out of range`, 1202
+`Skipping invalid undecodable NALU: 1` and 18 `Failed to parse header of NALU`. The H.264 reading needs one byte dropped and leaves `nal_ref_idc` 0 on
+every P-slice, and section 8 records that this camera's main stream is H.265
+(2304×2592, 25 fps declared), so HEVC is the honest label and "H.264" is not used here.
+
+Those 1077 units contain **no keyframe**: the two apparent "type 5" hits at index 72
+and 424 are container headers (`00 00 01 fd` with `u32` 453 at offset 4, so the low
+length byte `0xc5 & 0x1f` reads as 5), and the five apparent "type 14" hits are the
+`00 00 01 fa 0e 02 40 01` header of the `fa` class. Neither VPS/SPS/PPS for HEVC
+(`00 00 01 40 01`, `42 01`, `44 01`) nor SPS/PPS for H.264 (`00 00 01 67`,
+`00 00 00 01 67`, `00 00 01 68`, `00 00 00 01 68`) appears in any of the 4111
+plaintext bodies, so the parameter sets and the keyframes live in the opaque `fc`
+class, which is why this change stops at the cipher.
+
+**What was ruled out on the opaque bodies, with controls.** `keysweep2.py` (kept in
+`~/re/proview-cctv/ZHA-4005/`, log `keysweep.log`) assembles each `fc` frame properly
+first: header 16 bytes, payload length at offset 12, followed by the plain `headless`
+continuations. In the app capture all 31 runs satisfy `assembled == declared` (the
+harness capture has gaps from packet loss, so it is not used for this), and the first
+assembled payload is 28 689 bytes. On that payload, aligned at offset 0, it tries 7
+key derivations (`VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`,
+`SHA1(SHA1(VEKEY1))[..16]`, `MD5(VEKEY1)`, the channel constant, the session key)
+under 4 modes (CBC, CFB, OFB, CTR) with a zero IV: **28 combinations, 0 hits**, and a
+start-code detector decides each one. The detector is controlled in the same log: a
+real `fd` payload encrypted with a known key is a hit under all four modes, the same
+ciphertext under the wrong key is a miss, and a plaintext without a start code is a
+miss. The earlier 84-combination version of this paragraph was wrong: it sliced `fc`
+at offset 8 and mid-stream for the headless bodies, so it could not have produced a
+hit even with the right key. The lever remains `OPMonitor Start`'s
+`"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
+64-character key the device acknowledges in `1411` before the first `1412`.
+
+The 64-character `VEKEY1` is fresh every session: the capture tree under
+`~/re/proview-cctv/re/qemu/rootfs/data/data/com.termux/files/home/` holds **15 distinct
+64-character values** (4 of them in `sdk.log`) (`2jDjh333N9kg3xZk3Fi3mU6ct002v5y7o9lPqFZtLy1nOi0CuFH1GxX82Kv2WaUU`,
+`413Gzw4kkAI8030u3u10H7p53T53PVp6Rdqsbj9U4Qmt5tj9731kftO6e405hK5s`, and six more in the
+sample), which matches the static reading of `NewMediaControlPTL` at `0xf28c1c`: the
+client picks it and hands it in through `SNetMediaControlParam`.
 
 ### 4C.4 What that means for the implementation
 
@@ -968,7 +1111,12 @@ write, and step 4 needs the VEKEY1 cipher.
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
-5. P2P media channel details.
+5. The P2P media channel cipher is answered in 4C.19 for the control frames
+   (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
+   1000). The video bodies arrive partly in plaintext slice NALs (codec unproven,
+   consistent with HEVC) with no keyframe and no parameter sets; those live in the
+   opaque `fc` class, which a controlled 28-combination sweep did not open. The frame
+   format itself is the recording workstreams'.
 
 ## 6. DVRIP transport as implemented here
 
@@ -1072,6 +1220,8 @@ stream (0 decodable frames instead of 72), so it is deliberately absent.
 
 ## 9. Device control transport (ONVIF)
 
+Device settings writes ride the same DVRIP session as the controls: `Simplify.Encode` arrives as a one-entry array whose entry 0 carries `MainFormat`/`ExtraFormat`/`SnapFormat` with `Video.{BitRate,BitRateControl,Compression,FPS,GOP,Quality,Resolution}`, `NetWork.NetCommon` carries `HostIP`/`SubMask`/`GateWay`/`MAC` plus the login pair, `NetWork.NetDHCP` is an array whose entry 0 carries `Enable` and `Interface`, `NetWork.NetDNS` carries `Address`/`SpareAddress`, `General.General` carries `OverWrite` (`OverWrite` or `StopRecord`), `Record` is an array whose entry 0 carries `RecordMode`, and `StorageInfo` answers on message 1020 with `Partition[]` (`Status`, `TotalSpace`, `RemainSpace`, `OldStartTime`). The names come from the SDK bean table in the APK (`com/lib/sdk/bean/JsonConfig.java`); `PUT /api/device/settings/*` writes the full block back with only the named field changed, then reads it again and restores the saved copy when the read-back differs. A new `HostIP` is refused: the read-back and the revert both travel over the address being replaced.
+
 `POST http://192.168.0.100:8899/onvif/device_service` speaks SOAP
 (`Server: hsoap/2.8`) and serves device, media, imaging and PTZ on the same
 path. Port 80 is the web UI: it answers `200` HTML for every path, so a 200
@@ -1127,9 +1277,10 @@ device over the vendor relay. In the other direction the device streams its own
 audio back while the claim is open: a 90 s session left 743,328 bytes unread in
 the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
 build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
-report) instead of letting it fill the queue, but it does not play it. What is
-still unproven is acoustic: whether the camera speaker plays what it receives
-needs a person standing next to it.
+report) instead of letting it fill the queue, but it does not play it. The owner confirmed the
+acoustic leg on 2026-10-27 16:14Z by hearing the test tone from the camera during
+a talk run. Inbound audio arrives on `1433`, not `1432`: 328-byte frames (8-byte
+header plus 320 A-law bytes) at 25 a second, 77,952 bytes in an 8.96 s session.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
@@ -1270,6 +1421,35 @@ minute so a camera that comes back is picked up without a restart. One probe is
 in flight at a time, so a burst of requests cannot multiply sessions; before
 this, a silent peer held the request for as long as the socket lived and a dead
 device was dialled again on every call.
+
+## 9B. Playback download over the tunnel: DownloadStart, and the audio that is not there (2026-10-28)
+
+`OPPlayBack` carries two more actions beside `Claim`/`Start`/`Stop`: `DownloadStart` and `DownloadStop`, sent on the same control id `1420` with the same file body (`crates/core/src/dvrip/playback.rs`). They are not a different protocol; the file arrives as the same DHAV record framing, on a different message id.
+
+| Fact | Measured |
+|---|---|
+| Data message id | `0x0592` (`DOWNLOAD_DATA`). Playback video uses `0x058e` (`PLAYBACK_DATA`). Both carry `00 00 01 F9/FA/FC/FD` records |
+| Claim | `Ret 100` in 0.20 s, then `DownloadStart` sent in 0.00 s. The action is fire-and-forget: the device answers with data frames, not with a `Ret`, so the first data frame is its acknowledgement |
+| Whole file | `/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264`, 1,313 chunks, **42,967,040 bytes** — `FileLength` 41,960 KiB × 1024 exactly, byte for byte on the wire |
+| Wall clock | the last data frame lands at **52.81 s** and the run ends 8 s later on the probe's idle gap: 42.97 MB in 52.81 s = **813 KB/s**, seven times the 119 KB/s the file's own duration and size suggested |
+| Records | Key 125, Delta 4,366, Pad 8,982, Info 126 = 13,599 records, 10 bytes skipped by the record scanner |
+| Video payload | Key and Delta bodies concatenated = **39,981,987 bytes**. `ffprobe`: HEVC 2304×2592, `nb_read_frames` 4,491, `r_frame_rate` 12/1 — 374 s of video |
+| Audio | none. 13,599 records is every record in the file, and all of them classify as Info/Pad/Key/Delta. No audio magic value appears, on download or on playback |
+
+A download is verified before it starts, because a broken body cannot be signalled over HTTP here. A chunked body whose reader returns an error still reaches the client as a finished download: measured on this stack, `curl` exits 0 and keeps a short file, so a reader error is invisible. `GET /api/playback/download` therefore gathers the payload first, compares the wire bytes with `FileLength` x 1024, and only then answers. A shortfall is a `502` carrying both counts (`the device sent 42,967,040 of 47,967,040 bytes`), never a truncated `200`; a complete transfer answers with the exact `Content-Length` (39,981,987 for this file), so the browser shows real progress. `bytes` is required for that comparison and capped at 512 MiB. Measured on the file above: time to first byte 54.91 s, total 55.30 s, payload byte-identical to the probe dump; the same file asked with a 5 MB larger `bytes` answered `502` after 74.66 s and wrote no file.
+
+The gap between 42,967,040 wire bytes and 39,981,987 payload bytes is the device's own storage framing: 8,982 Pad records of 328 bytes plus the 8/16-byte record headers on every record. Emitting the wire bytes as a file produces something no decoder opens; emitting the Key and Delta bodies produces the elementary stream the camera recorded, which is what `GET /api/playback/download` returns: `Content-Disposition` carries the device file name, the body is a sized response with `Content-Length` equal to the payload it just collected, and no `X-File-Bytes` header exists any more because nothing could read it from an anchor download.
+
+The price of that verification is stated rather than hidden: the first byte reaches the client only after the whole transfer (54.91 s for this file), the payload is held in memory at roughly 1.0 times its size, capped at 512 MiB per request, and a browser cancel does not stop the device, because Rocket 0.5.2 runs each handler in its own task (`rocket-0.5.2/src/server.rs:97`) and the tunnel therefore runs to the end of the file. `collect()` reaching its byte total is what closes the device session, so the cleanup happens either way.
+
+Audio is therefore a boundary of this channel, not a missing implementation: the camera records video on this stream and there is no record kind to carry a G.711 frame here, unlike the two-way talk path (`1432` audio, section 9). A caller that wants playback audio has to come back for a different device surface, not for a flag on `OPPlayBack`.
+
+```
+PROVIEW_EMAIL=… PROVIEW_PASSWORD=… PROVIEW_DEVICE_SERIAL=… \
+PROVIEW_BEGIN="2026-10-24 10:34:00" PROVIEW_END="2026-10-24 10:34:02" \
+PROVIEW_DOWNLOAD=1 PROVIEW_WHOLE=1 PROVIEW_DUMP=/tmp/clip.h264 \
+timeout 600 cargo run -p proview-core --example playback_probe
+```
 
 ## 10. Cloud account: the v2 portal, as implemented here
 

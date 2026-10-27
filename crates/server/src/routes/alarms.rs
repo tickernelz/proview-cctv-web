@@ -690,7 +690,7 @@ mod tests {
         let device: CloudDevice = serde_json::from_value(serde_json::json!({
             "uuid": serial,
             "nickname": "Gate",
-            "pms": "aaaaaaaa-4a1c2f27d01793117365801"
+            "pms": "aaaaaaaa-bbbbbbbbbbbbbbbbbbbbbbb"
         }))
         .expect("device");
         client
