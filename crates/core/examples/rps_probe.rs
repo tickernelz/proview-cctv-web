@@ -68,7 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         value if value.is_empty() => rps::client_token(),
         value => value,
     };
-    eprintln!("token    {} (persistent={})", token, env("PROVIEW_CLIENT_TOKEN").len() > 0);
+    eprintln!(
+        "token    {} (persistent={})",
+        token,
+        !env("PROVIEW_CLIENT_TOKEN").is_empty()
+    );
     let body = p2p::agent_request(
         &rps_id,
         &token,
@@ -112,7 +116,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let started = Instant::now();
     connection.claim_monitor(0, "Main").await?;
-    if let Some(token) = std::env::var("PROVIEW_DEVICE_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+    if let Some(token) = std::env::var("PROVIEW_DEVICE_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
         match connection.login_token(token.trim(), "").await {
             Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
             Err(error) => eprintln!("tokenlogin failed: {error:?}"),
