@@ -804,8 +804,10 @@ length `(len + 15) & ~15`. `XData` frames are then wrapped by
 `CDataEncDecAES::EncData` `0xf2e1d8`, which copies the 20-byte DVRIP header
 unchanged, replaces the body with `base64(ciphertext)`, and sets the header length
 to `1 + base64len`. `NotEncryptMsgID` (`this+0x40`, read from the ctor's JSON
-config) is the skip list. The receive side is `DecData` `0xf2e464` ->
-`XAES::Decrypt128_Base64` `0xacb934`.
+config) is consulted per frame, but the device's own list (below) cannot be used as
+an outbound skip list: it names 1000, 1412, 1413 and 1414, and 1000 and 1414 travel
+encrypted here while only 1001 arrives in plaintext. The receive side is `DecData`
+`0xf2e464` -> `XAES::Decrypt128_Base64` `0xacb934`.
 
 **The key for msgid 1000 is a vendor constant.** `CProtocolNetIP::InitMsg`
 `0xf22b80` at `0xf23184` loads `.rodata 0x51b456` and passes it to
@@ -879,26 +881,45 @@ a guess.
 | class | harness (4111 bodies) | app (3785 bodies) | body size | shape |
 |---|---|---|---|---|
 | `fa` | 2217 | 2079 | 328 B, always | `00 00 01 fa` then `0e 02 40 01` and a `d5`/`55` filler run |
-| `fd` | 1075 | 996 | 105-1143 B | `00 00 01 fd` + `u32` length at offset 4 equal to `body - 8` (1075/1075 harness, 966/996 app) + `00 00 00 01` + one marker byte + slice data; emulation-prevention `00 00 03` in 1075/1075 |
-| `fc` | 32 | 31 | 8192 B, always | high entropy, no start code |
+| `fd` | 1075 | 996 | 443-1143 B harness, 93-8192 B app | `00 00 01 fd` + `u32` length at offset 4 equal to `body - 8` (1075/1075 harness, 966/996 app) + `00 00 00 01` + one marker byte + slice data; emulation-prevention `00 00 03` in 1075/1075 |
+| `fc` | 32 | 31 | 8192 B, always | 16-byte header (`00 00 01 fc`, `u32` payload length at offset 12), then an 8192-byte chunk of one large frame followed by plain `headless` continuations |
 | `f9` | 31 | 27 | 16 B, always | `00 00 01 f9 0e 00 08` plus zeros |
 | none | 756 | 652 | 8192 B and others | high entropy, no start code |
 
 So the video does arrive **partly in plaintext**: dropping the marker byte after each
-inner start code turns the 1075 `fd` bodies into 1084 H.264 NAL units (1077 type 1
-slices, 2 type 5 IDR frames at NAL index 72 and 424, 5 type 14 prefix NALs). ffmpeg
-parses those slices and then stops on `non-existing PPS 1 referenced`: no SPS or PPS
-appears anywhere in the plaintext bodies (0 hits for `00 00 01 67`, `00 00 00 01 67`,
-`00 00 01 68` and `00 00 00 01 68` across all 4111). Without parameter sets the
-plaintext cannot be decoded, which is why this change stops at the cipher.
+inner start code turns the 1075 `fd` bodies into 1077 slice NAL units whose header is
+the pair `02 01`. The codec is *not* proven. The header reads as HEVC
+(`nal_unit_type` 1 = TRAIL_R, `nuh_layer_id` 0, `nuh_temporal_id_plus1` 1), and the
+slice header then decodes as `first_slice_segment_in_pic_flag` 1 with `pps_id` 0 in
+1075 of 1075; `ffmpeg -f hevc` accepts the split and stops only at `PPS id out of
+range: 0`. The H.264 reading needs one byte dropped and leaves `nal_ref_idc` 0 on
+every P-slice, and section 8 records that this camera's main stream is H.265
+(2304×2592, 25 fps declared), so HEVC is the honest label and "H.264" is not used here.
 
-**What was ruled out on the opaque bodies.** `keysweep.py` (kept in
-`~/re/proview-cctv/ZHA-4005/`, log `keysweep.log`) tries 7 key derivations
-(`VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`, `SHA1(SHA1(VEKEY1))[..16]`,
-`MD5(VEKEY1)`, the channel constant, the session key) under 4 modes (CBC, CFB, OFB,
-CTR) with a zero IV against a 4 KiB slice of three body classes (`headless`, `fc`,
-`fd`): **84 combinations, 0 hits**. That is the exact surface of the negative result;
-nothing outside it is claimed. The lever remains `OPMonitor Start`'s
+Those 1077 units contain **no keyframe**: the two apparent "type 5" hits at index 72
+and 424 are container headers (`00 00 01 fd` with `u32` 453 at offset 4, so the low
+length byte `0xc5 & 0x1f` reads as 5), and the five apparent "type 14" hits are the
+`00 00 01 fa 0e 02 40 01` header of the `fa` class. Neither VPS/SPS/PPS for HEVC
+(`00 00 01 40 01`, `42 01`, `44 01`) nor SPS/PPS for H.264 (`00 00 01 67`,
+`00 00 00 01 67`, `00 00 01 68`, `00 00 00 01 68`) appears in any of the 4111
+plaintext bodies, so the parameter sets and the keyframes live in the opaque `fc`
+class, which is why this change stops at the cipher.
+
+**What was ruled out on the opaque bodies, with controls.** `keysweep2.py` (kept in
+`~/re/proview-cctv/ZHA-4005/`, log `keysweep.log`) assembles each `fc` frame properly
+first: header 16 bytes, payload length at offset 12, followed by the plain `headless`
+continuations. In the app capture all 31 runs satisfy `assembled == declared` (the
+harness capture has gaps from packet loss, so it is not used for this), and the first
+assembled payload is 28 689 bytes. On that payload, aligned at offset 0, it tries 7
+key derivations (`VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`,
+`SHA1(SHA1(VEKEY1))[..16]`, `MD5(VEKEY1)`, the channel constant, the session key)
+under 4 modes (CBC, CFB, OFB, CTR) with a zero IV: **28 combinations, 0 hits**, and a
+start-code detector decides each one. The detector is controlled in the same log: a
+real `fd` payload encrypted with a known key is a hit under all four modes, the same
+ciphertext under the wrong key is a miss, and a plaintext without a start code is a
+miss. The earlier 84-combination version of this paragraph was wrong: it sliced `fc`
+at offset 8 and mid-stream for the headless bodies, so it could not have produced a
+hit even with the right key. The lever remains `OPMonitor Start`'s
 `"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
 64-character key the device acknowledges in `1411` before the first `1412`.
 
@@ -928,9 +949,10 @@ nothing outside it is claimed. The lever remains `OPMonitor Start`'s
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
 5. The P2P media channel cipher is answered in 4C.13 for the control frames
    (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
-   1000). The video bodies themselves arrive partly in plaintext H.264 and lack
-   SPS/PPS, and the opaque ones beat 84 combos of key derivation and mode; both
-   facts are measured in 4C.13, and the frame format is ZHA-4006/4007's.
+   1000). The video bodies arrive partly in plaintext slice NALs (codec unproven,
+  consistent with HEVC) with no keyframe and no parameter sets, and those sit in
+  the opaque `fc` class, which a controlled 28-combination sweep did not open; all
+  of it is measured in 4C.13, and the frame format is ZHA-4006/4007's.
 
 ## 6. DVRIP transport as implemented here
 
