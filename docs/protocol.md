@@ -597,6 +597,42 @@ does not interpose (measured: zero hook hits across a full live run). The next
 measurement is an inline hook at the `SSL_write` symbol address inside the
 harness process, which returns both bodies unchanged.
 
+### 4C.7 The RPS access server is HTTP inside TLS, and answers AgentProtocol JSON
+
+Captured in plaintext from the SDK harness with an inline hook at the `SSL_write`
+symbol address (`LD_PRELOAD` cannot interpose: the SDK links OpenSSL statically,
+measured as zero hook hits). The RPS access endpoint takes an HTTP request on the
+raw port the status cluster reports, `POST /` with `Host: 110.239.87.207`:
+
+```json
+{"AgentProtocol":{"Body":{"Authcode":"aaaaaaaa-1a1b2f27d","ClientToken":"c_1yy07itliajqv91mz6249eet","DestPort":"34567","Encrypt":"1","ProtocolMode":"tcp","SerialNumber":"7f92970ddf5282743hrc","ServiceType":"RpsCmd","SessionId":"04yebeay8cpxqwob4ze5u7y0iev07ffo","Step":"0"},"Header":{"MessageType":"MSG_CLI_NEED_CON_REQ","Version":"1.0"}}}
+```
+
+and answers `Content-Type: text/plain`:
+
+```json
+{"AgentProtocol":{"Body":{"AgentServerIp":"162.128.64.50","AgentServerLanIp":"10.210.0.2","AgentServerDNS":"162.128.64.50","AgentServerPort":"6611","ProtocolMode":"tcp"},"Header":{"CSeq":"3","Version":"1.0","MessageType":"MSG_CLI_NEED_CON_RSP","ErrorNum":"200","ErrorString":"Success OK"}}}
+```
+
+Two requests go out, one per channel: `ServiceType "RpsCmd"` with `Step "0"`, and
+`ServiceType "RpsAV"` with `Step "8"`. Each carries its own `SessionId` and each is
+answered with a different agent (`162.128.64.50` and `162.128.66.81` in this run);
+the media tunnel is the one named by the `RpsAV` answer. `ClientToken` is a client
+side value of the shape `c_` plus 25 lowercase alphanumerics, and `Authcode` is the
+device's `rps` id from the account device list.
+
+The tunnel handshake carries that same state, and both frames end with `XXEE`:
+
+```
+base64("<Authcode>:<ClientToken>:<SerialNumber>:<RpsAV SessionId>") + "XXEE"
+```
+
+Measured in one run: `RpsAV` answered `SessionId y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`,
+and the 136-byte frame that reached `162.128.66.103:6611` decoded to
+`aaaaaaaa-1a1b397d2:c_rpftjva4cpy4aphg09y083ya:7f92970ddf5282743hrc:y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`.
+`crates/core/src/provider/p2p.rs` now builds both frames and parses the reply;
+four tests pin them to those captured strings.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
