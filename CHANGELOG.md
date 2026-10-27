@@ -9,6 +9,21 @@ stability before 1.0.
 
 ### Added
 
+- Media channel cipher. `crates/core/src/media/dhav.rs` speaks the envelope the
+  vendor SDK and the camera use on msgid 1000: AES-128-CBC with a 16-byte zero
+  IV, zero padding instead of PKCS#7, base64 in the body, DVRIP header kept.
+  The msgid-1000 key is the constant `dashoiahfarqdasr` at `.rodata 0x51b456`,
+  which is why the `OPMonitor` claim reply can be read before any exchange.
+  Proven on a live session: the captured 384-byte login frame decrypts to its
+  374-byte JSON and re-encrypts to the same 384 bytes; the 720-byte claim reply
+  decrypts to the capability JSON with the device's RSA public key. The same key
+  opens the vendor app's own capture (577-byte login body, 432-byte plaintext),
+  and the claim ciphertext is byte-identical between the two. The module carries
+  the cipher only, no frame parser: the recording format is a separate
+  workstream. `docs/protocol.md` 4C.19 carries the addresses, the body-class
+  table for msgid 1412 and the controlled 28-combination sweep with its positive
+  control.
+
 - Account lifecycle on the cloud envelope. `POST /api/account/remember` keeps
   the account email and access token in `account.json` (0600) next to the
   settings, and `GET /api/account/remembered` rebuilds the server session from
