@@ -4,7 +4,6 @@ const enc = encodeURIComponent;
 const PREFS_KEY = 'pvw_prefs_v2';
 const LIVE_WINDOW_SECONDS = 12;
 const LIVE_TARGET_LAG_SECONDS = 1.0;
-const GRID_LIMIT = 4;
 const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server'];
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
 const SIGNIN_LEDE = 'The same PROVIEW account your phone uses. The camera password stays on this machine.';

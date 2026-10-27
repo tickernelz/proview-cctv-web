@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use proview_core::dvrip::client::Connection;
 use proview_core::dvrip::frame::Header;
-use proview_core::dvrip::settings::{EncodePatch, NetworkPatch, Stream};
+use proview_core::dvrip::settings::{EncodePatch, NetworkPatch, Stream, WriteWindow};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -13,6 +13,7 @@ enum Behaviour {
     Honour,
     Ignore,
     SilentFirstSet,
+    SilentApplyFirst,
     Drift,
 }
 
@@ -108,7 +109,9 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                 .unwrap_or_default()
                 .to_string();
             match header.id {
-                proview_core::dvrip::msg::CONFIG_GET | proview_core::dvrip::msg::SYSTEM_INFO => {
+                proview_core::dvrip::msg::CONFIG_GET
+                | proview_core::dvrip::msg::SYSTEM_INFO
+                | proview_core::dvrip::msg::ABILITY => {
                     let block = fake.block(&name).unwrap_or(Value::Null);
                     let mut reply = json!({ "Ret": if block.is_null() { 607 } else { 100 }, "SessionID": "0x00000000" });
                     if !block.is_null() {
@@ -130,8 +133,15 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                     };
                     match fake.behaviour {
                         Behaviour::SilentFirstSet if index == 0 => continue,
+                        Behaviour::SilentApplyFirst if index == 0 => {
+                            let mut blocks = fake.blocks.lock().unwrap();
+                            blocks.retain(|(key, _)| key != &name);
+                            blocks.push((name.clone(), value));
+                            continue;
+                        }
                         Behaviour::Ignore => {}
                         Behaviour::Drift if index > 0 => {}
+                        Behaviour::SilentApplyFirst if index > 0 => {}
                         _ => {
                             let mut stored = value.clone();
                             if fake.behaviour == Behaviour::Drift {
@@ -174,6 +184,14 @@ fn backups() -> PathBuf {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn write_window(dir: &std::path::Path) -> WriteWindow {
+    WriteWindow::with_timeout(dir.to_path_buf(), std::time::Duration::from_secs(2))
+}
+
+fn short_window(dir: &std::path::Path) -> WriteWindow {
+    WriteWindow::with_timeout(dir.to_path_buf(), std::time::Duration::from_millis(300))
 }
 
 fn encode_block(fps: i64, bitrate: i64) -> Value {
@@ -228,7 +246,7 @@ async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
                 bitrate: Some(2048),
                 ..EncodePatch::default()
             },
-            &dir,
+            &write_window(&dir),
         )
         .await
         .unwrap();
@@ -268,7 +286,7 @@ async fn a_write_the_device_does_not_hold_is_put_back_from_the_saved_copy() {
                 fps: Some(15),
                 ..EncodePatch::default()
             },
-            &dir,
+            &write_window(&dir),
         )
         .await
         .unwrap();
@@ -302,7 +320,7 @@ async fn a_network_write_only_touches_the_dns_block() {
                 dns: Some("1.1.1.1".to_string()),
                 ..NetworkPatch::default()
             },
-            &dir,
+            &write_window(&dir),
         )
         .await
         .unwrap();
@@ -367,7 +385,10 @@ async fn a_record_mode_write_lands_on_the_first_record_entry() {
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
     let report = connection
-        .write_record_mode(proview_core::dvrip::control::RecordMode::Manual, &dir)
+        .write_record_mode(
+            proview_core::dvrip::control::RecordMode::Manual,
+            &write_window(&dir),
+        )
         .await
         .unwrap();
     assert!(!report.reverted);
@@ -409,7 +430,6 @@ async fn a_dhcp_block_shaped_as_an_array_still_reads_the_state() {
 
 #[tokio::test]
 async fn a_device_that_never_answers_the_write_gets_the_copy_put_back() {
-    std::env::set_var("PROVIEW_SETTINGS_TIMEOUT_MS", "300");
     let fake = Fake::new(Behaviour::SilentFirstSet);
     fake.seed("Simplify.Encode", encode_block(12, 1536));
     let (mut connection, handle) = device(fake.clone()).await;
@@ -421,7 +441,7 @@ async fn a_device_that_never_answers_the_write_gets_the_copy_put_back() {
                 fps: Some(10),
                 ..EncodePatch::default()
             },
-            &dir,
+            &write_window(&dir),
         )
         .await
         .unwrap_err();
@@ -437,7 +457,6 @@ async fn a_device_that_never_answers_the_write_gets_the_copy_put_back() {
 
 #[tokio::test]
 async fn a_revert_the_device_ignores_is_reported_as_a_failed_revert() {
-    std::env::set_var("PROVIEW_SETTINGS_TIMEOUT_MS", "300");
     let fake = Fake::new(Behaviour::Drift);
     fake.seed("Simplify.Encode", encode_block(12, 1536));
     let (mut connection, handle) = device(fake.clone()).await;
@@ -449,7 +468,7 @@ async fn a_revert_the_device_ignores_is_reported_as_a_failed_revert() {
                 fps: Some(10),
                 ..EncodePatch::default()
             },
-            &dir,
+            &write_window(&dir),
         )
         .await
         .unwrap_err();
@@ -471,7 +490,10 @@ async fn an_overwrite_block_shaped_as_an_array_is_written_through_its_entry() {
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
     let report = connection
-        .write_overwrite(proview_core::dvrip::settings::OverwriteMode::Stop, &dir)
+        .write_overwrite(
+            proview_core::dvrip::settings::OverwriteMode::Stop,
+            &write_window(&dir),
+        )
         .await
         .unwrap();
     assert!(!report.reverted);
@@ -481,6 +503,73 @@ async fn an_overwrite_block_shaped_as_an_array_is_written_through_its_entry() {
     assert_eq!(report.fields[0].after, json!("StopRecord"));
     let writes = fake.writes.lock().unwrap().clone();
     assert_eq!(writes[0].1[0]["OverWrite"], json!("StopRecord"));
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_rollback_the_device_does_not_take_is_reported_as_a_failed_revert() {
+    let fake = Fake::new(Behaviour::SilentApplyFirst);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let window = short_window(&dir);
+    let error = connection
+        .write_encode(
+            Stream::Main,
+            &EncodePatch {
+                fps: Some(15),
+                ..EncodePatch::default()
+            },
+            &window,
+        )
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("automatic revert failed"), "{text}");
+    assert!(text.contains("FPS reads 15 instead of 12"), "{text}");
+    assert!(text.contains("config-backup-simplify-encode"), "{text}");
+    assert_eq!(connection.encode_state().await.unwrap().main.fps, Some(15));
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_bitrate_above_the_device_capability_is_refused_before_any_write() {
+    let fake = Fake::new(Behaviour::Honour);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    fake.seed("EncodeCapability", json!({ "MaxBitrate": 2048 }));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let window = write_window(&dir);
+    let limits = connection.encode_limits().await;
+    assert_eq!(limits.max_bitrate, Some(2048));
+    let error = connection
+        .write_encode(
+            Stream::Main,
+            &EncodePatch {
+                bitrate: Some(4096),
+                ..EncodePatch::default()
+            },
+            &window,
+        )
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("outside 1..2048"), "{text}");
+    assert_eq!(fake.writes.lock().unwrap().len(), 0, "nothing is written");
+    let accepted = connection
+        .write_encode(
+            Stream::Main,
+            &EncodePatch {
+                bitrate: Some(1024),
+                ..EncodePatch::default()
+            },
+            &window,
+        )
+        .await
+        .unwrap();
+    assert!(!accepted.reverted);
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }

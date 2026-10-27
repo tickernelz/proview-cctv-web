@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
 use proview_core::cloud::status::{auth_code_of, StatusClient};
 use proview_core::dvrip::client::Connection;
-use proview_core::dvrip::settings::{EncodePatch, EncodeState, Stream};
+use proview_core::dvrip::settings::{EncodePatch, EncodeState, Stream, WriteWindow};
 use proview_core::provider::{p2p, rps};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
@@ -158,7 +158,9 @@ async fn main() -> Result<(), BoxError> {
             eprintln!("tunnel serial={serial} agent={agent}");
             let before = connection.encode_state().await?;
             print_state("before", &before);
-            let report = connection.write_encode(stream, &patch, &dir).await?;
+            let report = connection
+                .write_encode(stream, &patch, &WriteWindow::new(dir.clone()))
+                .await?;
             println!("report_json: {}", serde_json::to_string(&report)?);
             let middle = connection.encode_state().await?;
             print_state("written", &middle);
@@ -172,7 +174,9 @@ async fn main() -> Result<(), BoxError> {
                 gop: format.gop,
                 resolution: format.resolution.clone(),
             };
-            let restore = connection.write_encode(stream, &original, &dir).await?;
+            let restore = connection
+                .write_encode(stream, &original, &WriteWindow::new(dir.clone()))
+                .await?;
             println!("restore_json: {}", serde_json::to_string(&restore)?);
             let after = connection.encode_state().await?;
             print_state("restored", &after);
@@ -190,7 +194,9 @@ async fn main() -> Result<(), BoxError> {
                 gop: Some(200),
                 resolution: None,
             };
-            let report = connection.write_encode(Stream::Main, &patch, &dir).await?;
+            let report = connection
+                .write_encode(Stream::Main, &patch, &WriteWindow::new(dir.clone()))
+                .await?;
             println!("report_json: {}", serde_json::to_string(&report)?);
             let after = connection.encode_state().await?;
             print_state("after", &after);

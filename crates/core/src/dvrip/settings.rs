@@ -49,15 +49,34 @@ pub enum SettingsError {
     },
 }
 
-const IO_TIMEOUT_MS_ENV: &str = "PROVIEW_SETTINGS_TIMEOUT_MS";
+#[derive(Debug, Clone)]
+pub struct WriteWindow {
+    pub backup_dir: PathBuf,
+    pub timeout: std::time::Duration,
+}
 
-fn io_timeout() -> std::time::Duration {
-    std::env::var(IO_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .filter(|millis| *millis > 0)
-        .map(std::time::Duration::from_millis)
-        .unwrap_or_else(|| std::time::Duration::from_secs(20))
+impl WriteWindow {
+    pub fn new(backup_dir: PathBuf) -> Self {
+        Self {
+            backup_dir,
+            timeout: std::time::Duration::from_secs(20),
+        }
+    }
+
+    pub fn with_timeout(backup_dir: PathBuf, timeout: std::time::Duration) -> Self {
+        Self {
+            backup_dir,
+            timeout,
+        }
+    }
+
+    fn dir(&self) -> &Path {
+        &self.backup_dir
+    }
+
+    fn window(&self) -> std::time::Duration {
+        self.timeout
+    }
 }
 
 impl From<DvrError> for SettingsError {
@@ -406,6 +425,17 @@ pub struct EncodeState {
     pub snap: VideoFormat,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EncodeLimits {
+    pub max_bitrate: Option<i64>,
+}
+
+impl EncodeLimits {
+    pub const APP_MAX_FPS: i64 = 60;
+    pub const APP_MAX_GOP: i64 = 250;
+    pub const APP_MAX_BITRATE: i64 = 16384;
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EncodePatch {
     pub fps: Option<i64>,
@@ -422,7 +452,7 @@ impl EncodePatch {
             && self.resolution.is_none()
     }
 
-    fn validate(&self) -> Result<(), SettingsError> {
+    fn validate(&self, limits: EncodeLimits) -> Result<(), SettingsError> {
         if self.empty() {
             return Err(SettingsError::Invalid {
                 field: "encode",
@@ -430,26 +460,27 @@ impl EncodePatch {
             });
         }
         if let Some(fps) = self.fps {
-            if fps < 1 {
+            if !(1..=EncodeLimits::APP_MAX_FPS).contains(&fps) {
                 return Err(SettingsError::Invalid {
                     field: "fps",
-                    detail: format!("{fps} is not a frame rate"),
+                    detail: format!("{fps} is outside 1..{}", EncodeLimits::APP_MAX_FPS),
                 });
             }
         }
         if let Some(bitrate) = self.bitrate {
-            if bitrate < 1 {
+            let ceiling = limits.max_bitrate.unwrap_or(EncodeLimits::APP_MAX_BITRATE);
+            if bitrate < 1 || bitrate > ceiling {
                 return Err(SettingsError::Invalid {
                     field: "bitrate",
-                    detail: format!("{bitrate} is not a bitrate"),
+                    detail: format!("{bitrate} kbps is outside 1..{ceiling}"),
                 });
             }
         }
         if let Some(gop) = self.gop {
-            if gop < 1 {
+            if !(1..=EncodeLimits::APP_MAX_GOP).contains(&gop) {
                 return Err(SettingsError::Invalid {
                     field: "gop",
-                    detail: format!("{gop} is not a keyframe interval"),
+                    detail: format!("{gop} is outside 1..{}", EncodeLimits::APP_MAX_GOP),
                 });
             }
         }
@@ -582,14 +613,15 @@ impl Connection {
         &mut self,
         name: &'static str,
         value: &Value,
+        window: std::time::Duration,
     ) -> Result<Value, SettingsError> {
-        tokio::time::timeout(io_timeout(), self.put_block(name, value))
+        tokio::time::timeout(window, self.put_block(name, value))
             .await
             .map_err(|_| SettingsError::Slow {
                 block: name,
                 detail: "the write frame was sent and the device never acknowledged it".to_string(),
             })??;
-        tokio::time::timeout(io_timeout(), self.setting_block(name))
+        tokio::time::timeout(window, self.setting_block(name))
             .await
             .map_err(|_| SettingsError::Slow {
                 block: name,
@@ -597,20 +629,43 @@ impl Connection {
             })?
     }
 
+    async fn discard_late_replies(&mut self) {
+        for _ in 0..4 {
+            match tokio::time::timeout(std::time::Duration::from_millis(80), self.recv()).await {
+                Ok(Ok((_, _))) => continue,
+                _ => break,
+            }
+        }
+    }
+
     async fn roll_back(
         &mut self,
         name: &'static str,
         before: &Value,
+        fields: &[String],
         backup: &Path,
         cause: SettingsError,
+        window: std::time::Duration,
     ) -> SettingsError {
         let backup = backup.display().to_string();
-        match self.commit_block(name, before).await {
-            Ok(_) => SettingsError::WriteFailed {
-                block: name.to_string(),
-                backup,
-                detail: cause.to_string(),
-            },
+        self.discard_late_replies().await;
+        match self.commit_block(name, before, window).await {
+            Ok(restored_block) => {
+                let drift = describe(&compare(fields, before, before, &restored_block));
+                if drift.is_empty() {
+                    SettingsError::WriteFailed {
+                        block: name.to_string(),
+                        backup,
+                        detail: cause.to_string(),
+                    }
+                } else {
+                    SettingsError::RevertFailed {
+                        block: name.to_string(),
+                        backup,
+                        detail: format!("{cause}; the copy was written back but {drift}"),
+                    }
+                }
+            }
             Err(error) => SettingsError::RevertFailed {
                 block: name.to_string(),
                 backup,
@@ -624,13 +679,17 @@ impl Connection {
         name: &'static str,
         desired: Value,
         fields: &[String],
-        backup_dir: &Path,
+        write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(name).await?;
-        let backup = backup_file(name, &before, backup_dir)?;
-        let read_back = match self.commit_block(name, &desired).await {
+        let backup = backup_file(name, &before, write.dir())?;
+        let read_back = match self.commit_block(name, &desired, write.window()).await {
             Ok(value) => value,
-            Err(error) => return Err(self.roll_back(name, &before, &backup, error).await),
+            Err(error) => {
+                return Err(self
+                    .roll_back(name, &before, fields, &backup, error, write.window())
+                    .await)
+            }
         };
         let compared = compare(fields, &before, &desired, &read_back);
         if compared.iter().all(|field| field.matches) {
@@ -644,7 +703,7 @@ impl Connection {
                 restored: Vec::new(),
             });
         }
-        match self.commit_block(name, &before).await {
+        match self.commit_block(name, &before, write.window()).await {
             Ok(restored_block) => {
                 let restored = compare(fields, &before, &before, &restored_block);
                 let drift = describe(&restored);
@@ -673,6 +732,26 @@ impl Connection {
         }
     }
 
+    pub async fn encode_limits(&mut self) -> EncodeLimits {
+        let reply = self
+            .request(
+                msg::ABILITY,
+                json!({ "Name": "EncodeCapability", "SessionID": format!("0x{:08X}", self.session()) }),
+            )
+            .await;
+        let block = match reply {
+            Ok(value) => value
+                .get("EncodeCapability")
+                .cloned()
+                .unwrap_or(Value::Null),
+            Err(_) => Value::Null,
+        };
+        let (entry, _) = first_entry(&block);
+        EncodeLimits {
+            max_bitrate: number(entry, "MaxBitrate").filter(|value| *value > 0),
+        }
+    }
+
     pub async fn encode_state(&mut self) -> Result<EncodeState, SettingsError> {
         let block = self.setting_block(ENCODE_BLOCK).await?;
         Ok(EncodeState {
@@ -686,9 +765,10 @@ impl Connection {
         &mut self,
         stream: Stream,
         patch: &EncodePatch,
-        backup_dir: &Path,
+        write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
-        patch.validate()?;
+        let limits = self.encode_limits().await;
+        patch.validate(limits)?;
         let before = self.setting_block(ENCODE_BLOCK).await?;
         let mut desired = before.clone();
         let (_, prefix) = first_entry(&before);
@@ -716,7 +796,7 @@ impl Connection {
                 fields.push(format!("{base}.Resolution"));
             }
         }
-        self.write_setting(ENCODE_BLOCK, desired, &fields, backup_dir)
+        self.write_setting(ENCODE_BLOCK, desired, &fields, write)
             .await
     }
 
@@ -749,7 +829,7 @@ impl Connection {
     pub async fn write_network(
         &mut self,
         patch: &NetworkPatch,
-        backup_dir: &Path,
+        write: &WriteWindow,
     ) -> Result<Vec<WriteReport>, SettingsError> {
         let mut reports = Vec::new();
         if patch.dns.is_some() || patch.spare_dns.is_some() {
@@ -778,7 +858,7 @@ impl Connection {
                 });
             }
             reports.push(
-                self.write_setting(DNS_BLOCK, desired, &fields, backup_dir)
+                self.write_setting(DNS_BLOCK, desired, &fields, write)
                     .await?,
             );
         }
@@ -839,7 +919,7 @@ impl Connection {
     pub async fn write_overwrite(
         &mut self,
         mode: OverwriteMode,
-        backup_dir: &Path,
+        write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(GENERAL_BLOCK).await?;
         let mut desired = before.clone();
@@ -852,14 +932,14 @@ impl Connection {
             })?;
             *entry = json!(mode.wire());
         }
-        self.write_setting(GENERAL_BLOCK, desired, &[key], backup_dir)
+        self.write_setting(GENERAL_BLOCK, desired, &[key], write)
             .await
     }
 
     pub async fn write_record_mode(
         &mut self,
         mode: super::control::RecordMode,
-        backup_dir: &Path,
+        write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(RECORD_BLOCK).await?;
         let mut desired = before.clone();
@@ -872,7 +952,7 @@ impl Connection {
             })?;
             *entry = json!(mode.wire());
         }
-        self.write_setting(RECORD_BLOCK, desired, &[key], backup_dir)
+        self.write_setting(RECORD_BLOCK, desired, &[key], write)
             .await
     }
 }
@@ -975,13 +1055,14 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_negative_patches_are_refused_before_any_write() {
+    fn patches_outside_the_app_and_device_bounds_are_refused_before_any_write() {
+        let limits = EncodeLimits::default();
         let patch = EncodePatch {
             fps: Some(0),
             ..EncodePatch::default()
         };
         assert!(matches!(
-            patch.validate(),
+            patch.validate(limits),
             Err(SettingsError::Invalid { field: "fps", .. })
         ));
         let patch = EncodePatch {
@@ -989,7 +1070,7 @@ mod tests {
             ..EncodePatch::default()
         };
         assert!(matches!(
-            patch.validate(),
+            patch.validate(limits),
             Err(SettingsError::Invalid {
                 field: "bitrate",
                 ..
@@ -999,11 +1080,33 @@ mod tests {
             bitrate: Some(999_999),
             ..EncodePatch::default()
         };
-        assert!(
-            patch.validate().is_ok(),
-            "a large value is the device's call; the read-back and the revert enforce it"
-        );
-        let empty = EncodePatch::default().validate();
+        assert!(matches!(
+            patch.validate(limits),
+            Err(SettingsError::Invalid {
+                field: "bitrate",
+                ..
+            })
+        ));
+        let capped = EncodeLimits {
+            max_bitrate: Some(2048),
+        };
+        let patch = EncodePatch {
+            bitrate: Some(4096),
+            ..EncodePatch::default()
+        };
+        match patch.validate(capped) {
+            Err(SettingsError::Invalid { detail, .. }) => {
+                assert!(detail.contains("2048"), "{detail}");
+            }
+            other => panic!("expected the device cap to refuse 4096, got {other:?}"),
+        }
+        assert!(patch
+            .clone()
+            .validate(EncodeLimits {
+                max_bitrate: Some(8192)
+            })
+            .is_ok());
+        let empty = EncodePatch::default().validate(limits);
         assert!(matches!(
             empty,
             Err(SettingsError::Invalid {

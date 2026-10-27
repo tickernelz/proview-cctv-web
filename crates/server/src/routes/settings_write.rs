@@ -4,7 +4,7 @@ use proview_core::config::Config;
 use proview_core::device::{ControlError, Controls};
 use proview_core::dvrip::control::RecordMode;
 use proview_core::dvrip::settings::{
-    EncodePatch, NetworkPatch, OverwriteMode, SettingsError, Stream,
+    EncodePatch, NetworkPatch, OverwriteMode, SettingsError, Stream, WriteWindow,
 };
 use proview_core::session::Store;
 use rocket::form::FromForm;
@@ -151,7 +151,7 @@ async fn encode_write(
     };
     let mut connection = session(cfg).await?;
     let report = connection
-        .write_encode(stream, &patch, &backup_dir())
+        .write_encode(stream, &patch, &WriteWindow::new(backup_dir()))
         .await
         .map_err(settings_failure)?;
     let encode = connection.encode_state().await.ok();
@@ -254,7 +254,7 @@ async fn network_write(
     }
     let mut connection = session(cfg).await?;
     let reports = connection
-        .write_network(&patch, &backup_dir())
+        .write_network(&patch, &WriteWindow::new(backup_dir()))
         .await
         .map_err(settings_failure)?;
     let _ = connection.logout().await;
@@ -339,13 +339,19 @@ async fn storage_write(
     let mut reports = Vec::new();
     let mut errors = Vec::new();
     if let Some(mode) = overwrite {
-        match connection.write_overwrite(mode, &backup_dir()).await {
+        match connection
+            .write_overwrite(mode, &WriteWindow::new(backup_dir()))
+            .await
+        {
             Ok(report) => reports.push(report),
             Err(error) => errors.push(error.to_string()),
         }
     }
     if let Some(mode) = record {
-        match connection.write_record_mode(mode, &backup_dir()).await {
+        match connection
+            .write_record_mode(mode, &WriteWindow::new(backup_dir()))
+            .await
+        {
             Ok(report) => reports.push(report),
             Err(error) => errors.push(error.to_string()),
         }
