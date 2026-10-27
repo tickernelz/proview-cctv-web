@@ -198,6 +198,49 @@ test('Talk stays disabled with the server reason when two-way audio is not repor
   }
 });
 
+const ATTRIBUTE_STUB = {
+  patterns: [
+    { urlPattern: '*/api/cloud/device-attributes' },
+    { urlPattern: '*/api/cloud/device/group' },
+    { urlPattern: '*/api/cloud/device/favourite' },
+  ],
+  respond: (url) => {
+    if (url.includes('device-attributes')) {
+      return {
+        ok: true,
+        groups: ['pintu'],
+        devices: [
+          { uuid: '7f92970ddf5282743hrc', nickname: 'Pintu keluar masuk', group: 'pintu', favourite: false, shared_accounts: 1, administrator: true, extension: 'just_test_ext' },
+          { uuid: '0123456789abcdef0123', nickname: 'Teras', group: '', favourite: true, shared_accounts: 0, administrator: false, extension: '' },
+        ],
+      };
+    }
+    return { ok: true, message: 'stub saved the group' };
+  },
+};
+
+test('the devices panel lists the account devices and saves a group through the API', async () => {
+  const page = await open({ intercept: ATTRIBUTE_STUB });
+  try {
+    await page.evaluate("document.getElementById('device-admin-open').click()");
+    await page.wait("document.querySelectorAll('#device-admin-list .menu-row').length === 2", 'the device rows', 10000);
+    const rows = await page.evaluate("[...document.querySelectorAll('#device-admin-list .menu-row .name')].map((node) => node.textContent)");
+    assert.deepEqual(rows, ['Pintu keluar masuk', 'Teras']);
+    const tags = await page.evaluate("[...document.querySelectorAll('#device-admin-list .menu-row .sub')].map((node) => node.textContent)");
+    assert.match(tags[0], /pintu/);
+    assert.match(tags[0], /administrator/);
+    assert.match(tags[0], /1 shared/);
+    assert.match(tags[1], /favourite/);
+
+    await page.evaluate("document.getElementById('device-admin-group').value = 'teras'");
+    await page.evaluate("[...document.querySelectorAll('#device-admin button')].find((button) => button.textContent.includes('Save group')).click()");
+    await page.wait("document.getElementById('device-admin-status').textContent === 'stub saved the group'", 'the save to come back', 10000);
+    assert.equal(await page.evaluate("document.getElementById('device-admin').hidden"), false);
+  } finally {
+    await page.close();
+  }
+});
+
 const tourCalls = [];
 const TOUR_CAPS = {
   patterns: [{ urlPattern: '*/api/device/controls*' }],

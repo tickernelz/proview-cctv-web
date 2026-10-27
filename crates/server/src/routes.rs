@@ -3,6 +3,7 @@ pub mod apmode;
 
 #[path = "routes/cloud.rs"]
 pub mod cloud;
+pub mod device_admin;
 
 #[path = "routes/fisheye.rs"]
 pub mod fisheye;
@@ -49,6 +50,7 @@ pub fn files() -> Vec<rocket::route::Route> {
         talk_js,
         grid_js,
         recordings_js,
+        device_admin_js,
         style_css,
         tokens_css,
         font,
@@ -77,6 +79,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(recordings::routes())
     .chain(grid::routes())
     .chain(cloud_bind::api())
+    .chain(device_admin::routes())
     .chain(apmode::routes())
     .collect()
 }
@@ -121,6 +124,11 @@ fn talk_js() -> RawJavaScript<&'static str> {
 #[get("/recordings.js")]
 fn recordings_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/recordings.js"))
+}
+
+#[get("/device-admin.js")]
+fn device_admin_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/device-admin.js"))
 }
 
 #[get("/tokens.css")]
