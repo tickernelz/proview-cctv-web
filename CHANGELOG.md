@@ -5,7 +5,7 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## 0.3.3 — unreleased
+## 0.3.3 — 2026-10-27
 
 ### Added
 
