@@ -89,10 +89,15 @@ the login does:
 
 `POST /api/login` with `{"email","password"}` runs those steps and answers
 `{"ok":true,...}`; `GET /api/devices` then lists the devices and `GET /api/me`
-reports the account. The app's platform identity is set under Settings,
-Configuration, Cloud (`PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`,
-`PROVIEW_APP_SECRET`); without it the login fails with a notice that names those
-keys. The product path measured 0.30–0.39 s for sign-in plus device list,
+reports the account. The app's platform identity ships inside the app: the
+`release` workflow bakes `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and
+`PROVIEW_APP_SECRET` into the binary from repository secrets, so signing in asks
+for the email and the password and nothing else. The environment still wins per
+value when it is set, which is the way a build made from source brings its own
+identity; a build without one answers that the vendor cloud login is off instead
+of asking anyone to fill in variables. Rotating the identity is a release, not a
+setting: a binary keeps the identity it was built with, so the vendor has to
+issue a new one and every copy needs a build made after that. The product path measured 0.30–0.39 s for sign-in plus device list,
 against 65 s for the out-of-tree emulator the derivation used
 (`docs/performance.md`). `docs/protocol.md` sections 3A and 3B carry the
 derivation and the shipped implementation.

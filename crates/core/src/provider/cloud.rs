@@ -2,7 +2,7 @@ use super::{
     Alarm, Device, DeviceSettings, Provider, ProviderError, ProviderSource, Recording, StreamKind,
     StreamTicket, VendorSession,
 };
-use crate::cloud::envelope::{EnvelopeClient, Identity};
+use crate::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
 use crate::cloud::CloudError;
 use crate::config::Config;
 
@@ -14,7 +14,7 @@ pub struct CloudProvider {
 
 impl CloudProvider {
     pub fn new(cfg: &Config) -> Self {
-        Self::with_identity(cfg, Identity::from_env())
+        Self::with_identity(cfg, Identity::resolve())
     }
 
     pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
@@ -33,8 +33,6 @@ impl CloudProvider {
         })
     }
 }
-
-const MISSING_PLATFORM_KEYS: &str = "the cloud account login needs the app uuid, app key and app secret; set PROVIEW_APP_UUID, PROVIEW_APP_KEY and PROVIEW_APP_SECRET under Settings, Configuration, Cloud";
 
 fn map_cloud(error: CloudError) -> ProviderError {
     match error {
@@ -55,7 +53,7 @@ impl Provider for CloudProvider {
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
         if !self.client.identity().is_complete() {
             return Err(ProviderError::Misconfigured(
-                MISSING_PLATFORM_KEYS.to_string(),
+                MISSING_CLOUD_IDENTITY.to_string(),
             ));
         }
         let tokens = self

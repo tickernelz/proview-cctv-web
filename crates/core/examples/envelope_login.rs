@@ -13,9 +13,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if account.is_empty() || password.is_empty() {
         return Err("set PROVIEW_EMAIL and PROVIEW_PASSWORD".into());
     }
-    let identity = Identity::from_env();
+    let identity = Identity::resolve();
     if !identity.is_complete() {
-        return Err("set PROVIEW_APP_UUID and PROVIEW_APP_KEY".into());
+        return Err(proview_core::cloud::MISSING_CLOUD_IDENTITY.into());
     }
     let client = EnvelopeClient::new(identity);
     let overall = Instant::now();

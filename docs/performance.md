@@ -253,3 +253,7 @@ PROVIEW_EMAIL=... PROVIEW_PASSWORD=... \
 PROVIEW_APP_UUID=... PROVIEW_APP_KEY=... PROVIEW_APP_SECRET=... \
 cargo run -p proview-core --example envelope_login
 ```
+
+A release build already carries the identity and needs neither of the three; the
+example is a source build, so it takes them from the environment or from
+`cloud-identity.env` at the workspace root.

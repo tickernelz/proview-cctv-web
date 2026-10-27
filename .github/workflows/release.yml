@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  PROVIEW_REQUIRE_CLOUD_IDENTITY: "1"
 
 jobs:
   server:
@@ -49,6 +50,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: server-${{ matrix.target }}
+          cache-targets: false
+      - name: Cloud identity
+        shell: bash
+        env:
+          PROVIEW_APP_UUID: ${{ secrets.PROVIEW_APP_UUID }}
+          PROVIEW_APP_KEY: ${{ secrets.PROVIEW_APP_KEY }}
+          PROVIEW_APP_SECRET: ${{ secrets.PROVIEW_APP_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in PROVIEW_APP_UUID PROVIEW_APP_KEY PROVIEW_APP_SECRET; do
+            if [ -z "${!name:-}" ]; then missing="${missing} ${name}"; fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "CLOUD IDENTITY: missing secret(s):${missing}; a release must carry the app identity"
+            exit 1
+          fi
+          umask 077
+          {
+            printf 'PROVIEW_APP_UUID=%s\n' "${PROVIEW_APP_UUID}"
+            printf 'PROVIEW_APP_KEY=%s\n' "${PROVIEW_APP_KEY}"
+            printf 'PROVIEW_APP_SECRET=%s\n' "${PROVIEW_APP_SECRET}"
+          } > cloud-identity.env
+          echo "CLOUD IDENTITY: uuid, key and secret present in the build inputs; values not printed"
+
 
       - name: Build with cross (linux alternative architectures)
         if: matrix.use_cross
@@ -65,6 +91,28 @@ jobs:
         run: |
           rustup target add ${{ matrix.target }} || true
           cargo build --release -p proview-server --target ${{ matrix.target }}
+
+
+      - name: Check the server binary carries the identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          bin="target/${target}/release/proview-server"
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${bin}.exe"; fi
+          if [ ! -f "$bin" ]; then echo "CLOUD IDENTITY: missing ${bin}"; exit 1; fi
+          py=$(command -v python3 || command -v python || true)
+          if [ -z "$py" ]; then echo "CLOUD IDENTITY: no python to inspect ${bin}"; exit 1; fi
+          BIN="$bin" "$py" - <<'PY'
+          import os, sys
+          path = os.environ["BIN"]
+          data = open(path, "rb").read()
+          values = [line.split("=", 1)[1].strip() for line in open("cloud-identity.env") if "=" in line]
+          found = sum(1 for value in values if value and value.encode() in data)
+          print(f"CLOUD IDENTITY: {path} carries {found} of {len(values)} values")
+          sys.exit(0 if len(values) == 3 and found == 3 else 1)
+          PY
+
 
       - name: Package archive
         shell: bash
@@ -126,6 +174,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop-${{ matrix.label }}
+          cache-targets: false
+      - name: Cloud identity
+        shell: bash
+        env:
+          PROVIEW_APP_UUID: ${{ secrets.PROVIEW_APP_UUID }}
+          PROVIEW_APP_KEY: ${{ secrets.PROVIEW_APP_KEY }}
+          PROVIEW_APP_SECRET: ${{ secrets.PROVIEW_APP_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in PROVIEW_APP_UUID PROVIEW_APP_KEY PROVIEW_APP_SECRET; do
+            if [ -z "${!name:-}" ]; then missing="${missing} ${name}"; fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "CLOUD IDENTITY: missing secret(s):${missing}; a release must carry the app identity"
+            exit 1
+          fi
+          umask 077
+          {
+            printf 'PROVIEW_APP_UUID=%s\n' "${PROVIEW_APP_UUID}"
+            printf 'PROVIEW_APP_KEY=%s\n' "${PROVIEW_APP_KEY}"
+            printf 'PROVIEW_APP_SECRET=%s\n' "${PROVIEW_APP_SECRET}"
+          } > cloud-identity.env
+          echo "CLOUD IDENTITY: uuid, key and secret present in the build inputs; values not printed"
+
 
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'
@@ -192,6 +265,32 @@ jobs:
           Write-Host "SIGNING: signed $signed installer(s)"
           if ($signed -eq 0) { exit 1 }
 
+
+      - name: Check the desktop binary carries the identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          args="${{ matrix.args }}"
+          triple=""
+          case "$args" in
+            *--target\ *) triple="${args##*--target }" ;;
+          esac
+          if [ -n "$triple" ]; then bin="target/${triple}/release/proview-desktop"; else bin="target/release/proview-desktop"; fi
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${bin}.exe"; fi
+          if [ ! -f "$bin" ]; then echo "CLOUD IDENTITY: missing ${bin}"; exit 1; fi
+          py=$(command -v python3 || command -v python || true)
+          if [ -z "$py" ]; then echo "CLOUD IDENTITY: no python to inspect ${bin}"; exit 1; fi
+          BIN="$bin" "$py" - <<'PY'
+          import os, sys
+          path = os.environ["BIN"]
+          data = open(path, "rb").read()
+          values = [line.split("=", 1)[1].strip() for line in open("cloud-identity.env") if "=" in line]
+          found = sum(1 for value in values if value and value.encode() in data)
+          print(f"CLOUD IDENTITY: {path} carries {found} of {len(values)} values")
+          sys.exit(0 if len(values) == 3 and found == 3 else 1)
+          PY
+
+
       - name: Collect bundles
         shell: bash
         run: |
@@ -208,6 +307,7 @@ jobs:
 
   publish:
     needs: [server, desktop]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -37,7 +37,10 @@ async fn a_cloud_login_without_platform_keys_is_a_configuration_error() {
         matches!(error, ProviderError::Misconfigured(_)),
         "{error:?}"
     );
-    assert!(error.to_string().contains("PROVIEW_APP_KEY"), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("without a cloud identity"), "{message}");
+    assert!(message.contains("docs/cloud-app-surface.md"), "{message}");
+    assert!(!message.contains("PROVIEW_APP_"), "{message}");
 }
 
 #[tokio::test]
