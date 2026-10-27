@@ -22,7 +22,7 @@ pub const PLATFORM_ORIGIN: &str = "https://boss22.xmcsrv.net";
 pub const PLATFORM_SCHEME: &str = "icsee.boss.jftech.com";
 pub const PLATFORM_VERSION: &str = "1.0.2";
 pub const SIGNED_VERSION: &str = "v3";
-pub const COUNTER_WRAP: u32 = 38528;
+pub const COUNTER_WRAP: u32 = 10_000_000;
 pub const CODE_BAD_CREDENTIALS_VENDOR: i32 = -83000;
 pub const SCRAMBLE: u32 = 4;
 
@@ -41,8 +41,8 @@ impl std::fmt::Debug for Identity {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("Identity")
-            .field("uuid", &self.uuid)
-            .field("app_key", &self.app_key)
+            .field("uuid", &redacted(&self.uuid))
+            .field("app_key", &redacted(&self.app_key))
             .field("app_secret", &redacted(&self.app_secret))
             .finish()
     }
@@ -164,12 +164,8 @@ pub fn body_key(tsid: &str, app_secret: &str) -> String {
     key
 }
 
-fn next_counter(previous: u32) -> u32 {
-    if previous >= COUNTER_WRAP {
-        1
-    } else {
-        previous + 1
-    }
+fn next_counter(raw: u32) -> u32 {
+    raw % (COUNTER_WRAP - 1) + 1
 }
 
 pub fn signed_request(identity: &Identity, counter: u32, millis: u64) -> Signed {
@@ -661,13 +657,24 @@ mod tests {
 
     #[test]
     fn the_counter_wraps_at_the_documented_point() {
+        assert_eq!(COUNTER_WRAP, 10_000_000);
         assert_eq!(next_counter(0), 1);
-        assert_eq!(next_counter(1), 2);
-        assert_eq!(next_counter(COUNTER_WRAP - 1), COUNTER_WRAP);
-        assert_eq!(next_counter(COUNTER_WRAP), 1);
-        assert_eq!(next_counter(u32::MAX), 1);
-        let tsid = signed_request(&Identity::default(), COUNTER_WRAP, 7).tsid;
-        assert_eq!(tsid, "00385287");
+        assert_eq!(next_counter(COUNTER_WRAP - 2), COUNTER_WRAP - 1);
+        assert_eq!(next_counter(COUNTER_WRAP - 1), 1);
+        assert_eq!(next_counter(COUNTER_WRAP), 2);
+        let tsid = signed_request(&Identity::default(), COUNTER_WRAP - 1, 7).tsid;
+        assert_eq!(tsid, "99999997");
+    }
+
+    #[test]
+    fn the_client_counter_keeps_moving_after_a_wrap() {
+        let client = EnvelopeClient::new(Identity::default());
+        client.counter.store(COUNTER_WRAP - 3, Ordering::SeqCst);
+        let mut prefixes = Vec::new();
+        for _ in 0..4 {
+            prefixes.push(client.next().tsid[..7].parse::<u32>().expect("prefix"));
+        }
+        assert_eq!(prefixes, vec![COUNTER_WRAP - 2, COUNTER_WRAP - 1, 1, 2]);
     }
 
     #[test]
@@ -692,11 +699,13 @@ mod tests {
     }
 
     #[test]
-    fn debug_never_prints_the_secret() {
+    fn debug_never_prints_the_platform_keys() {
         let identity = Identity::new("uuid-value", "key-value", "secret-value");
         let text = format!("{identity:?}");
-        assert!(!text.contains("secret-value"), "{text}");
-        assert!(text.contains("uuid-value"));
+        for value in ["uuid-value", "key-value", "secret-value"] {
+            assert!(!text.contains(value), "{text}");
+        }
+        assert!(text.contains("<redacted>"), "{text}");
     }
 
     #[test]

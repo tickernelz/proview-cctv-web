@@ -158,7 +158,10 @@ tsid = sprintf("%07d%lld", counter, epoch_millis)
 
 which is why every captured path carries a 7-digit prefix that walks 1, 2, 3, 4
 across successive calls and then a 13-digit millisecond value. When the counter
-reaches `38528` (0x9680) it wraps to 1. The counter is part of the signed
+reaches `10000000` (0x989680) it wraps to 1. That bound is built from two
+instructions, `mov w9, #0x9680` then `movk w9, #0x98, lsl #16`
+(`0xf50630`-`0xf50634`); reading only the `movz` half gives 38528 and misses
+the point by two orders of magnitude. The counter is part of the signed
 material, not a nonce the server stores: a client may start anywhere.
 
 ### 3B.2 The signed string and the signature
@@ -263,7 +266,7 @@ Where each claim comes from, so it can be re-checked:
 | Claim | Artifact |
 |---|---|
 | `S = uuid + appKey + appSecret + tsid` | `LD_PRELOAD` shim over `__vsnprintf_chk` dumping the `%s%s%s%s` result, 2026-10-27 |
-| `tsid = %07d%lld`, wrap 38528 | `GetEncTimMillis` `0xf505ec`; paths `0000003...`, `0000004...` in one process |
+| `tsid = %07d%lld`, wrap 10000000 | `GetEncTimMillis` `0xf505ec`, bound `0x989680` from `movz`+`movk` at `0xf50630`; paths `0000003...`, `0000004...` in one process |
 | mirror + MD5 order | `GetEncryptStr` `0xf50ec0`-`0xf51234`; 27 of 27 `sdk.log` rows reproduced |
 | `key16` rule | `KeyFilter` `0xf4fb4c`; a row with an empty secret reads `3070132241012345` (ten timestamp digits then the digit padding), a row with the secret set keeps its first six characters after those digits |
 | body plaintext | the captured 96-hex login body decrypts to `account=...&pass=...` under that key |
