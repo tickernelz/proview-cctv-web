@@ -109,8 +109,9 @@ impl CssClient {
             file.method.trim()
         };
         let mut request = self.http.request(
-            reqwest::Method::from_bytes(method.as_bytes())
-                .map_err(|error| CloudError::Rejected(format!("signed method {method}: {error}")))?,
+            reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| {
+                CloudError::Rejected(format!("signed method {method}: {error}"))
+            })?,
             file.address(),
         );
         if !file.date.trim().is_empty() {
@@ -223,7 +224,10 @@ mod tests {
             centre["Body"]["ObjInfo"][0]["StorageBucket"],
             "OSS_oss-ap-id-pic-01"
         );
-        assert_eq!(centre["Body"]["AuthCode"], "aaaaaaaa-4a1c2f27d01793117365801");
+        assert_eq!(
+            centre["Body"]["AuthCode"],
+            "aaaaaaaa-4a1c2f27d01793117365801"
+        );
     }
 
     #[test]
@@ -268,7 +272,10 @@ mod tests {
             let request = String::from_utf8_lossy(&buffer[..read]).to_string();
             assert!(request.starts_with("POST / HTTP/1.1"), "{request}");
             assert!(request.contains("MSG_DOWNLOAD_SIGN_REQ"), "{request}");
-            assert!(request.contains("003_DEV0001_261027214632.jpeg"), "{request}");
+            assert!(
+                request.contains("003_DEV0001_261027214632.jpeg"),
+                "{request}"
+            );
             let payload = REPLY
                 .replace("\"Schema\":\"https\"", "\"Schema\":\"http\"")
                 .replace(
@@ -291,7 +298,10 @@ mod tests {
                 "{request}"
             );
             assert!(request.contains("authorization: oss "), "{request}");
-            assert!(request.contains("date: tue, 27 oct 2026 16:09:33 gmt"), "{request}");
+            assert!(
+                request.contains("date: tue, 27 oct 2026 16:09:33 gmt"),
+                "{request}"
+            );
             let body = [0xffu8, 0xd8, 0xff, 0xe0, 0x00, 0x10];
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -335,7 +345,11 @@ mod tests {
             .expect("vendor picture");
         assert!(bytes.len() > 1000, "{} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0xff, 0xd8]);
-        println!("vendor picture bytes={} first={:02x?}", bytes.len(), &bytes[..4]);
+        println!(
+            "vendor picture bytes={} first={:02x?}",
+            bytes.len(),
+            &bytes[..4]
+        );
     }
 
     #[test]

@@ -146,7 +146,6 @@ impl AlarmClient {
         }
         Ok(page)
     }
-
 }
 
 pub fn request_body(query: &AlarmQuery) -> Value {
@@ -445,5 +444,4 @@ mod tests {
         assert!(!json.contains("authCode"), "{json}");
         assert!(!json.contains("/download/"), "{json}");
     }
-
 }

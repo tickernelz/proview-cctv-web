@@ -1,4 +1,6 @@
-use proview_core::cloud::{claims, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError, SignRequest};
+use proview_core::cloud::{
+    claims, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError, SignRequest,
+};
 use proview_core::session::Store;
 use rocket::http::{ContentType, CookieJar, Status};
 use rocket::serde::json::Json;
@@ -349,7 +351,9 @@ mod tests {
     #[test]
     fn a_bucket_is_a_plain_token() {
         assert_eq!(
-            bucket_name(Some("OSS_oss-ap-id-pic-01")).ok().expect("bucket"),
+            bucket_name(Some("OSS_oss-ap-id-pic-01"))
+                .ok()
+                .expect("bucket"),
             "OSS_oss-ap-id-pic-01"
         );
         assert!(bucket_name(None).is_err());
@@ -373,12 +377,10 @@ mod tests {
         assert!(!token.is_empty(), "set PROVIEW_LIVE_TOKEN");
         assert!(!serial.is_empty(), "set PROVIEW_LIVE_SERIAL");
 
-        let rig = rocket::custom(
-            rocket::Config::figment().merge(("log_level", "critical")),
-        )
-        .manage(CloudState::new())
-        .manage(Store::new())
-        .mount("/api", routes![picture]);
+        let rig = rocket::custom(rocket::Config::figment().merge(("log_level", "critical")))
+            .manage(CloudState::new())
+            .manage(Store::new())
+            .mount("/api", routes![picture]);
         let client = rocket::local::asynchronous::Client::tracked(rig)
             .await
             .expect("client");
