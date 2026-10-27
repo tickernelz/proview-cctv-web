@@ -158,5 +158,8 @@ jobs:
         if: always()
         with:
           name: mobile-re-${{ github.run_id }}
-          path: .mobile/*.txt
+          path: |
+            .mobile/*.txt
+            .mobile/*.log
+          include-hidden-files: true
           if-no-files-found: warn
