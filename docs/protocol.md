@@ -698,6 +698,30 @@ symbol by patching its prologue, so the same trick on the statically linked
 `AES_set_encrypt_key`/`EVP_EncryptUpdate` yields the exact key and plaintext the
 SDK feeds the cipher, which settles the derivation instead of guessing it.
 
+### 4C.10 Where the media key hides: not OpenSSL's AES, and not a simple derivation
+
+Two negative results that narrow it, both from a harness run with the inline
+hook extended over the AES entry points (`AES_set_encrypt_key`, `AES_cbc_encrypt`,
+`EVP_EncryptUpdate`) besides `SSL_write`:
+
+1. Every `AES_set_encrypt_key` the run hits is 32 bytes of session material and
+   belongs to TLS record encryption; `AES_cbc_encrypt` is never called at all.
+   So the media login does not go through the OpenSSL primitives the SDK exports.
+2. A crib attack on the client's 384-byte media login (73 candidate keys:
+   `md5`/`SHA-256` over every pair of token, `RandomStrA`, password, password
+   hash and serial, plus the raw token, each under ECB and CBC with three IV
+   choices) produces no `OPLogin` plaintext.
+
+The binary explains why: `libFunSDK` carries its own class for this,
+`MNetSDK::CDataEncDecAES` (`EncData`/`DecData`/`AESEncData`), with RTTI for it in
+the library but no exported symbol, so neither `LD_PRELOAD` nor a lookup by name
+reaches it.
+
+Next measurement: recover the vtable through the RTTI structures the library
+does publish (`_ZTVN7MNetSDK14CDataEncDecAESE` is present as a name string), then
+patch `EncData` the same way `SSL_write` was patched and log the key and the
+plaintext it is handed. That settles the derivation instead of guessing it.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
