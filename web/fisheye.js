@@ -51,7 +51,7 @@
     '  return vec3(value.x, value.y * c - value.z * s, value.y * s + value.z * c);',
     '}',
     'vec3 equirectRay(vec2 uv) {',
-    '  float bearing = (0.25 - uv.x) * TAU;',
+    '  float bearing = (uv.x - 0.25) * TAU;',
     '  float elevation = (0.5 - uv.y) * PI;',
     '  return vec3(cos(elevation) * cos(bearing), cos(elevation) * sin(bearing), sin(elevation));',
     '}',

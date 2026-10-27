@@ -264,12 +264,12 @@ impl Direction {
     pub fn equirect(&self) -> (f32, f32) {
         let bearing = self.y.atan2(self.x);
         let elevation = self.z.atan2((self.x * self.x + self.y * self.y).sqrt());
-        let u = 0.25 - bearing / TAU;
+        let u = 0.25 + bearing / TAU;
         (u - u.floor(), 0.5 + elevation / PI)
     }
 
     pub fn from_equirect(u: f32, v: f32) -> Self {
-        let bearing = TAU * (0.25 - u);
+        let bearing = TAU * (u - 0.25);
         let elevation = (v - 0.5) * PI;
         let (sin_bearing, cos_bearing) = bearing.sin_cos();
         let (sin_elevation, cos_elevation) = elevation.sin_cos();
@@ -733,7 +733,7 @@ mod tests {
                 let px = lens.center_x + radius * bearing.to_radians().cos();
                 let py = lens.center_y + radius * bearing.to_radians().sin();
                 let (u, _) = lens.direction(px, py).equirect();
-                let measured = (0.25 - u) * 360.0;
+                let measured = (u - 0.25) * 360.0;
                 let mut delta = (measured - bearing).abs() % 360.0;
                 if delta > 180.0 {
                     delta = 360.0 - delta;
@@ -808,7 +808,7 @@ mod tests {
                 }
             }
             assert!(columns.len() > 60, "spoke {index} pixels {}", columns.len());
-            let measured = (0.25 - (median(&mut columns) + 0.5) / 720.0) * 360.0;
+            let measured = ((median(&mut columns) + 0.5) / 720.0 - 0.25) * 360.0;
             let expected = 15.0 + index as f32 * 30.0;
             let mut delta = (measured - expected).abs() % 360.0;
             if delta > 180.0 {
@@ -837,6 +837,63 @@ mod tests {
         assert!(
             worst_elevation < 1.0,
             "worst elevation error {worst_elevation}"
+        );
+    }
+
+    fn jacobian(map: &Map, column: u32, row: u32) -> Option<f64> {
+        let base = map.source(column, row)?;
+        let right = map.source(column + 1, row)?;
+        let down = map.source(column, row + 1)?;
+        let a = (
+            right.0 as f64 - base.0 as f64,
+            right.1 as f64 - base.1 as f64,
+        );
+        let b = (down.0 as f64 - base.0 as f64, down.1 as f64 - base.1 as f64);
+        Some(a.0 * b.1 - a.1 * b.0)
+    }
+
+    fn assert_unmirrored(map: &Map, what: &str) {
+        let mut checked = 0;
+        for row in 1..map.height - 1 {
+            for column in 1..map.width - 1 {
+                if let Some(value) = jacobian(map, column, row) {
+                    assert!(value > 0.0, "{what} mirrored at {column},{row}: {value}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 1000, "{what} checked only {checked} points");
+    }
+
+    #[test]
+    fn every_map_keeps_the_source_handedness() {
+        let lens = lens();
+        assert_unmirrored(&Map::equirect(&lens, 180, 90), "equirect");
+        assert_unmirrored(
+            &Map::equirect_mounted(&lens, 180, 90, MountType::Ceiling),
+            "ceiling",
+        );
+        assert_unmirrored(
+            &Map::equirect_mounted(&lens, 180, 90, MountType::Table),
+            "table",
+        );
+        assert_unmirrored(
+            &Map::equirect_mounted(&lens, 180, 90, MountType::Wall),
+            "wall",
+        );
+        assert_unmirrored(
+            &Map::ptz(
+                &lens,
+                180,
+                90,
+                &View {
+                    pan_deg: 30.0,
+                    tilt_deg: 0.0,
+                    fov_deg: 90.0,
+                    cam_z: 0.0,
+                },
+            ),
+            "ptz",
         );
     }
 
@@ -883,11 +940,11 @@ mod tests {
             let py = lens.center_y + radius * bearing.sin();
             let (u, v) = lens.direction(px, py).equirect();
             measured.push(u);
-            assert!((u - (0.25 - bearing_deg / 360.0)).abs() < 1.0e-4, "u {u}");
+            assert!((u - (0.25 + bearing_deg / 360.0)).abs() < 1.0e-4, "u {u}");
             assert!((v - (0.5 + 60.0 / 180.0)).abs() < 1.0e-4, "v {v}");
         }
         assert!(
-            measured[0] > measured[1],
+            measured[0] < measured[1],
             "handedness flipped: {measured:?}"
         );
     }

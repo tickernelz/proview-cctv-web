@@ -92,15 +92,44 @@ The panorama builder and the shader share one convention: the image plane is the
 and the lens axis is the pole.
 
     bearing   = atan2(y, x)                        -> u = mod((pi/2 - bearing) / 2pi, 1)
-    elevation = atan2(z, hypot(x, y))              -> v = elevation / pi + 0.5
+    elevation = atan2(z, hypot(x, y))              -> v_texture = elevation / pi + 0.5
 
-The code writes the same thing as `u = 0.25 - bearing / 2pi`; the offset is arbitrary
-because the panorama has no seam marker, the sign is not. `v` grows with elevation, so
-the covered hemisphere of a 180 degree lens is the lower half of the pano, and the
-handedness is the vendor's: a marker at image bearing +30 degrees lands at u = 0.1667 and
-one at -30 degrees at u = 0.3333. `equirect_matches_the_vendor_orientation` and
-`equirect_places_markers_on_the_columns_their_bearing_implies` pin that, because the
-symmetric fixture alone cannot see a mirror.
+Two spaces have to be distinguished, and mixing them is what produced the mirror this
+model had until round 3:
+
+- `v_texture` is a GL texture coordinate: it grows toward the last uploaded row.
+- A raster pano (`Map`, BMP, `<canvas>`) counts rows downward from the top, so its
+  `v_raster = row / height` equals `v_texture` only if the first row is `v_texture = 0`.
+
+The vendor's own display path decides how those meet. `FisheyeGL_BuildQuadsList`
+(0xa1f0) writes four vertices with the pairing position-to-texcoord
+`(-1,-1)->(0,0)`, `(-1,1)->(0,1)`, `(1,1)->(1,1)`, `(1,-1)->(1,0)`: no flip on either axis,
+and the vertex shader passes `a_vTexCoord` straight into `v_vTexCoord`. Read with REA
+6.7.0 / Ghidra 12.1.4 (`rea.open_binary`, `rea.procedure_pseudo_code`), file SHA-256
+`5ab93e63...f7ad`. So a pano texture whose row 0 holds `v_texture = 0` is drawn with that
+row at the bottom of the screen, and column 0 at the left. The vendor's own `u` therefore
+runs opposite to image bearing with no compensating flip in the quad, which is why a
+literal copy of the texture formula reads as a horizontal mirror next to the PTZ path.
+
+What the implementation does, and why: the raster pano uses
+
+    u = 0.25 + bearing / 2pi        v_raster = 0.5 + elevation / pi
+
+so a marker at image bearing +30 degrees lands at u = 0.3333 and one at -30 degrees at
+u = 0.1667, i.e. increasing bearing runs to the right, the same direction the PTZ path
+resolves. The sign of `u` therefore differs from a literal copy of the shader's texture
+coordinate, and that is deliberate: with the literal sign the equirect map and the PTZ map
+of the same lens disagreed, and the equirect one came out mirrored (det < 0, 7832 of 7832
+interior points at 180x90). The orientation is pinned by
+`every_map_keeps_the_source_handedness`, which requires the discrete Jacobian of the source
+map, `det[s(c+1,r) - s(c,r), s(c,r+1) - s(c,r)]`, to be positive at every interior point of
+`Map::equirect`, all three `Map::equirect_mounted` variants and `Map::ptz`; at 180x90 that
+is 7832 points for equirect, 7654 for table, 7832 for wall and 14608 for ptz. Measured in
+a y-up basis all four are negative, which is the same statement once the basis flips.
+
+Which side of the vendor's display quad this matches stays inference, because the texcoord
+buffer is not in the static picture. What is not inference is that the two dewarp modes now
+agree with each other and with the image orientation.
 
 Source coordinates use the pixel-area convention: column `c` covers `[c, c+1)`, so the
 geometric centre of a 512 px frame is 256.0 and `RgbFrame::sample` subtracts 0.5 before

@@ -245,7 +245,7 @@ fn dewarp_returns_a_bitmap_with_the_fixture_spokes_on_their_columns() {
         }
         assert!(columns.len() > 60, "spoke {index} pixels {}", columns.len());
         columns.sort_by(|left, right| left.partial_cmp(right).unwrap());
-        let measured = (0.25 - (columns[columns.len() / 2] + 0.5) / 720.0) * 360.0;
+        let measured = ((columns[columns.len() / 2] + 0.5) / 720.0 - 0.25) * 360.0;
         let expected = 15.0 + index as f32 * 30.0;
         let mut delta = (measured - expected).abs() % 360.0;
         if delta > 180.0 {
