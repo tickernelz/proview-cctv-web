@@ -120,7 +120,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .filter(|v| !v.trim().is_empty())
     {
-        match connection.login_token(token.trim(), "").await {
+        let sealed = match std::env::var("PROVIEW_DEVICE_MODULUS")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(modulus) => match proview_core::dvrip::crypto::communicate_key(
+                modulus.trim(),
+                "010001",
+                &rps::random_lower(16),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("communicate key failed: {error}");
+                    String::new()
+                }
+            },
+            None => String::new(),
+        };
+        eprintln!("communicate key {} hex chars", sealed.len());
+        match connection.login_token(token.trim(), &sealed).await {
             Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
             Err(error) => eprintln!("tokenlogin failed: {error:?}"),
         }

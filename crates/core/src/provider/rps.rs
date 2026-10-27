@@ -40,7 +40,7 @@ pub fn session_id() -> String {
     random_lower(SESSION_ID_LEN)
 }
 
-pub(crate) fn random_lower(len: usize) -> String {
+pub fn random_lower(len: usize) -> String {
     const ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
     let mut rng = rand::thread_rng();
     (0..len)
