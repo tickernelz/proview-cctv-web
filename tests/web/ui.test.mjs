@@ -291,7 +291,7 @@ const EXTRA_BUTTON = `(() => {
 
 for (const touch of [false, true]) {
   test('every live control is on screen and takes its own tap at phone widths' + (touch ? ' with touch-sized targets' : ''), async () => {
-    for (const width of [360, 390, 480, 600]) {
+    for (const width of [360, 390, 480, 600, 700]) {
       const page = await open({ width, height: 844 });
       try {
         await page.wait("!document.getElementById('lens-pick').hidden", 'the lens picker of the dual-lens clip');

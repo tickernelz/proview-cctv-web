@@ -61,6 +61,13 @@ lower lens gated on the device answering (`SupportPTZDirectionControl` or
 reason, and a `ptz locate` row. The pad gained a Tour control that starts and
 stops the first tour line that has points and says the ack is not motion.
 
+### Fixed
+
+- The live view toolbar fits phone widths: it wraps to a second row, and at
+  640 px and below its buttons show icons only (the label stays the accessible
+  name) with the separators hidden. At 360-480 px Talk's label covered Sound,
+  and Quality and Full screen sat off-screen.
+
 ## 0.3.3 — 2026-10-27
 
 ### Added
