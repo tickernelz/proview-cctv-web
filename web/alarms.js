@@ -15,9 +15,9 @@
 
   const css = document.createElement('style');
   css.textContent = [
-    '.alarm-fab{position:fixed;right:18px;bottom:18px;z-index:40;display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:999px;border:1px solid var(--line,#2c3140);background:var(--bg-2,#171a22);color:inherit;font:inherit;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,.35)}',
-    '.alarm-fab[hidden]{display:none}',
-    '.alarm-fab .badge{min-width:20px;height:20px;border-radius:999px;background:#e0533d;color:#fff;font-size:11px;line-height:20px;text-align:center;padding:0 5px}',
+    '.alarm-bell{position:relative}',
+    '.alarm-bell[hidden]{display:none}',
+    '.alarm-bell .badge{position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;border-radius:999px;background:#e0533d;color:#fff;font-size:10px;line-height:16px;text-align:center;padding:0 4px}',
     '.alarm-sheet{position:fixed;inset:auto 18px 74px auto;width:min(420px,calc(100vw - 36px));max-height:min(70vh,640px);z-index:41;display:flex;flex-direction:column;border-radius:14px;border:1px solid var(--line,#2c3140);background:var(--bg-1,#101218);color:inherit;box-shadow:0 18px 48px rgba(0,0,0,.5);overflow:hidden}',
     '.alarm-sheet[hidden]{display:none}',
     '.alarm-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line,#2c3140)}',
@@ -39,10 +39,12 @@
 
   const bell = document.createElement('button');
   bell.type = 'button';
-  bell.className = 'alarm-fab';
+  bell.className = 'iconbtn alarm-bell';
   bell.hidden = true;
   bell.setAttribute('aria-haspopup', 'dialog');
-  bell.innerHTML = '<span aria-hidden="true">&#128276;</span><span>Alarms</span><span class="badge" hidden>0</span>';
+  bell.setAttribute('aria-label', 'Alarm messages');
+  bell.title = 'Alarm messages';
+  bell.innerHTML = '<span aria-hidden="true">&#128276;</span><span class="badge" hidden>0</span>';
 
   const sheet = document.createElement('section');
   sheet.className = 'alarm-sheet';
@@ -56,7 +58,11 @@
     '<div class="alarm-foot"><span data-status>not polled yet</span><span class="grow"></span><button type="button" data-alerts>Notify me</button></div>',
   ].join('');
 
-  document.body.append(bell, sheet);
+  const topbar = document.querySelector('#watch .topbar');
+  const settingsButton = document.getElementById('open-settings');
+  if (topbar && settingsButton) topbar.insertBefore(bell, settingsButton);
+  else document.body.append(bell);
+  document.body.append(sheet);
 
   const badge = bell.querySelector('.badge');
   const list = sheet.querySelector('[data-list]');
