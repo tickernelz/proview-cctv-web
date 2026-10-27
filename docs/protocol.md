@@ -843,6 +843,54 @@ hash. That reframes the remaining work in 4C.11: build the token login and the
 The same log also shows the audio channel being negotiated as `service_type
 "RpsVoIP"` with its own `local_port`, which is the shape two-way audio will need.
 
+### 4C.15 The token login is accepted, and the session key is what is still missing
+
+Tried on the tunnel with the account's device token (the `deviceToken.AdminToken`
+value, 44 base64 characters) as `UserName`:
+
+```
+claim        -> {"Name":"OPMonitor","Ret":100}
+login TOKEN  -> {"Name":"OPMonitor","Ret":100,"SessionID":"0x00000250"}   accepted
+frames       -> none inside six seconds
+```
+
+So `EncryptType "TOKEN"` with an **empty** `CommunicateKey` is accepted by the
+device but buys no media. The SDK sends a non-empty `CommunicateKey` (hex, RSA
+`RSA_V1.5`, device advertises `Bits 1024`), which is the session key the media
+channel is encrypted with — and the one thing worth generating ourselves next,
+since a self-chosen AES key wrapped to the device key is a key we would know.
+
+The device public key is not in the caps payload `CapsClient` parses today
+(`grep PublicKey|Modulus|Bits` over the caps types: no hits), so the next
+measurement is to capture the key exchange or read it from the device's own
+system-info reply.
+
+`Connection::login_token` in `crates/core/src/dvrip/client.rs` reproduces the
+attempt, and `examples/rps_probe` drives it when `PROVIEW_DEVICE_TOKEN` is set.
+
+### 4C.16 The RSA call the SDK makes carries a 16-character session key
+
+Hooking `RSA_public_encrypt` in the harness (same inline-patch mechanism as
+`SSL_write`) shows three calls per live session:
+
+```
+flen=12  padding=1  <a password-shaped value, redacted>
+flen=8   padding=1  <8 random characters>
+flen=16  padding=1  iq5H3765j5t04mO6      (a second run: ke930p9mR1kxcL7Q)
+```
+
+The 16-byte one changes on every run and has exactly the shape of the
+`CommunicateKey` token `NewLoginPTL` reports (`o5rBSnodWCpN8VAa`): the client
+picks the session key itself and RSA-wraps it for the device. That is the piece
+this design was missing — the media session key is **ours to choose**, so once it
+crosses the wire we know it and can decrypt what the device sends.
+
+What is still not captured is the device public key the wrapper uses. The next
+step is a corrected dump in the same shim (`RSA_get0_key` + `BN_bn2hex` on the
+`RSA*` argument; the first attempt broke on an escaped newline in the C source
+and the run fell back to the previous binary), which turns this into a complete
+`CommunicateKey` construction in Rust.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
