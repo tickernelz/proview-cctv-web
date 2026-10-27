@@ -384,6 +384,66 @@ relay endpoint, or the reason the status could not be read). The live screen
 blocks on a known offline status only; an unknown status lets the stream be
 attempted and shows the stream's own error.
 
+## 4B. What the cloud can and cannot stream (measured 2026-10-27)
+
+Three mechanisms exist in the SDK; only one of them delivers **live** video, and
+the other two were probed against the live services today.
+
+### 4B.1 CSS HLS is cloud-storage playback, not live
+
+`CloudMediaSearchCssHls` (`0xaff748`) builds a `CssCenter` envelope:
+
+```
+{"CssCenter":{
+  "Header":{"Version":"1.0","MessageType":"MSG_GET_CSS_HLS_REQ"},
+  "Body":{"SerialNumber":…,"AuthCode":…,"UserId":…,"MAUserId":…,
+          "StartTime":"YYYY-MM-DD HH:MM:SS","StopTime":…,"Channel":"1"}}}
+```
+
+The keys were read from the binary (`0x49274f` CssCenter, `0x4cef8c`
+MSG_GET_CSS_HLS_REQ, `0x5094ed` SerialNumber, `0x575917` AuthCode, `0x55c9ab`
+UserId, `0x49b977` MAUserId, `0x57e4dc` StartTime, `0x4bda55` StopTime,
+`0x56d469` Channel).
+
+Posted to `http://access-css.secu100.net:6614/` with the account's device row
+and the `userId` from `msdlistCode`, the gateway answers:
+
+```
+{"CssCenter":{"Header":{"ErrorNum":"403","ErrorString":"Dev Not Open Cloud Storage", …}}}
+```
+
+`Body` must be an object; an array answers `402 invalid sn`, and `Sn` instead of
+`SerialNumber` is also `402`. So this endpoint is the **cloud-storage search**
+(the recording list) and this camera has no cloud storage plan. It cannot serve
+live.
+
+### 4B.2 The DSS HLS host wants a signed playlist
+
+`http://pub-dss-hls.secu100.net:8080/hls/<sn>/<a>/<b>/<name>.m3u8` answers
+`403` for every unsigned shape tried and `400` for the shorter ones; the host is
+alive on 8080 and 8180. The URL template in the SDK is
+`%s://%s:%d/hls/%s/%s/%s/%s.m3u8` with a companion
+`%s://%s:%d/hls/stop/%s/%s/%s/%d`, so the query string carries the signature.
+Nothing in the account session produces that signature yet.
+
+### 4B.3 Live is the P2P media channel
+
+The app's live player does not use a URL. `MediaPlayByURL`/`MediaPlayM3u8ByUrl`
+are only reached from the recording players (`ua/c.smali`, `va/a.smali`, both
+log lines say `RecordPlayer`), while live uses `FunSDK.MediaPlay` after a device
+connection. The transport behind that call is the SDK's own stack:
+`CNetServerP2P`, `CNetXMP2P::NatConnect`, `CNetTransport`, `CDataEncDecAES`
+and `CMediaChannel`, with `rps` over UDP+KCP.
+
+The status reply of section 4A gives the endpoints that stack uses: 7703 says
+`ServerIP 110.239.85.50:8765`, 7705 says `110.239.87.207:6510` with
+`DevicePort 34567`. Those are the relay and device ports the app dials.
+
+Next step for this milestone is to drive the SDK harness (`re/sdk_login.sh`
+machinery, `harness12.c`) through `MediaPlay` with a packet capture on the
+host, so the wire format is recorded once and the Rust client can be checked
+against it byte for byte.
+
 ## 5. Open items
 
 1. ~~The CSS request envelope for account login~~ — answered for the SDK path in
