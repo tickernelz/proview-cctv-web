@@ -36,8 +36,9 @@ Settings view and returned by `GET /api/settings`.
    alone; sending an empty string for a non-secret key clears it.
 4. The view opens from the sign-in screen (`Settings` under the form), so the cloud
    address, the camera address and the camera password can be set before anyone can
-   sign in. In that mode the Live and Grid tabs stay hidden, the device rail is not
-   drawn, and `Back to sign in` returns to the form.
+   sign in. In that mode the top-left button reads `Sign in` instead of `Live` and
+   returns to the form; the Connection section asks for a session before the
+   provider can be switched.
 5. `ROCKET_SECRET_KEY` is the one value a release build cannot take from the
    file on a first run: Rocket refuses to boot without it, so set it once in the
    environment (or in `settings.json` before the first start). Afterwards the

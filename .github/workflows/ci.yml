@@ -22,9 +22,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Contrast of every token pair
+        run: python3 tools/contrast.py
       - run: cargo fmt --all --check
       - run: cargo clippy -p proview-core -p proview-server --all-targets -- -D warnings
       - run: cargo test -p proview-core -p proview-server
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Web UI in headless Chrome (menus with and without the Popover API, shortcuts, talk)
+        run: |
+          cargo build -p proview-server
+          node --test tests/web/ui.test.mjs
       - run: cargo build --release -p proview-server
 
   desktop-smoke:

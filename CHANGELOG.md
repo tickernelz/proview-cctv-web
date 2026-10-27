@@ -5,6 +5,66 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## 0.3.0 — 2026-10-27
+
+A new interface: one window onto one camera. `DESIGN.md` describes it; the study
+behind it is `docs/design/redesign-v1/proview-redesign-v1.pdf`.
+
+### Changed
+
+- The picture fills the window. Live is the camera picture, one caption line under
+  it (camera name, the state in words, a clock) and one row of controls; the
+  device rail, the Camera controls panel, the View/Quality segmented controls and
+  the source badge are gone.
+- The camera name in the top bar is the camera picker: a menu of every camera
+  (each device channel is one camera) with its status, keys 1–9, Refresh and
+  Add a camera.
+- Lens and quality are menus under the picture. A dual-lens camera offers Both
+  lenses, Top and Bottom, named by role when the server reports which lens moves.
+- Pan and tilt moved into a pad over the picture (Move, or V), with the device's
+  presets by name. Controls the camera cannot do stay disabled with the server's
+  reason as their tooltip.
+- The capability report with the device's evidence, the camera id, connection and
+  lens layout moved to Settings → This camera, together with the white light.
+- Settings is a full screen with sections (Playback, This camera, Connection,
+  Configuration, Server), a save bar that counts unsaved fields, Discard, Ctrl+S,
+  and the restart prompt in the bar after a save that needs one. Sign out moved
+  to Connection; "Turn the picture 180°" became a Playback preference.
+- New colour tokens (graphite, one meaning per colour), IBM Plex Sans and Mono
+  bundled in `web/fonts/` under SIL OFL 1.1 and served at `/fonts/*`, so the
+  desktop app looks the same on WebView2, WKWebView and WebKitGTK and needs no
+  network for fonts.
+
+### Added
+
+- Keyboard: 1–9, G, F, M, T (hold to talk), R, S, L, Q, V, arrows, Space, `,`,
+  Esc, and `?` for the list.
+- Hold-to-talk (pointer, Space/Enter on the button, or T) with a microphone level
+  meter from an `AnalyserNode`. It is enabled only when the device reports
+  two-way audio as supported; today's server reports it blocked because it has no
+  capture path to the camera's talk channel.
+- Every-camera view: up to four cameras, each tile its own stream and its own
+  failure with Try again, and one summary line.
+- States in words: connecting, frozen with the time of the last frame, failed
+  with the server's answer and Try again, camera offline, this computer offline
+  (banner, stale picture), session ended (sign-in says when and resumes the same
+  camera).
+- `tests/web/ui.test.mjs`: headless Chrome over the DevTools protocol, no new
+  dependency. Covers the camera menu with the Popover API and with the API
+  removed (roving focus, wrap, Escape returns focus, outside click), shortcuts
+  and their text-field guard, the `?` sheet, and hold-to-talk with a fake
+  microphone. CI runs it in the `check` job.
+- `tools/contrast.py` reads the new tokens, composites alpha tokens over their
+  real background, and runs in CI; 52 of 52 pairs pass.
+
+### Fixed
+
+- Menus work without the Popover API: when `showPopover` is missing the app uses
+  a hidden-toggle with an outside-pointer handler and the same keyboard handling.
+- The focus ring shows on keyboard focus only (`:focus-visible`), 2 px with a 2 px
+  gap; every control is at least 36×36 px, 44 px under `pointer: coarse`;
+  `prefers-reduced-motion` turns the motion tokens to 0.
+
 ## 0.2.5 — 2026-10-27
 
 ### Fixed
