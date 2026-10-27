@@ -938,7 +938,7 @@ header on channel 0 with the end bit clear. So the media sequence is:
    `CommunicateKey` (4C.14-4C.17).
 3. `OPMonitor` **Start** (0x0582) with the parameters above, encrypted.
 4. Media frames follow; their payload is guarded by the `VEKEY1` value the client
-   chose in that Start message, which is 60 base64 characters.
+   chose in that Start message, which is 64 base64 characters.
 
 Steps 1-3 are reproducible today with code already in the crate
 (`claim_monitor`, `login_token`, `communicate_key`); step 3 needs the encrypted
@@ -1080,8 +1080,9 @@ hit even with the right key. The lever remains `OPMonitor Start`'s
 `"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
 64-character key the device acknowledges in `1411` before the first `1412`.
 
-The 64-character `VEKEY1` is fresh every session: the SDK's own logs carry 24
-further values, all distinct (`2jDjh333N9kg3xZk3Fi3mU6ct002v5y7o9lPqFZtLy1nOi0CuFH1GxX82Kv2WaUU`,
+The 64-character `VEKEY1` is fresh every session: the capture tree under
+`~/re/proview-cctv/re/qemu/rootfs/data/data/com.termux/files/home/` holds **15 distinct
+64-character values** (4 of them in `sdk.log`) (`2jDjh333N9kg3xZk3Fi3mU6ct002v5y7o9lPqFZtLy1nOi0CuFH1GxX82Kv2WaUU`,
 `413Gzw4kkAI8030u3u10H7p53T53PVp6Rdqsbj9U4Qmt5tj9731kftO6e405hK5s`, and six more in the
 sample), which matches the static reading of `NewMediaControlPTL` at `0xf28c1c`: the
 client picks it and hands it in through `SNetMediaControlParam`.
