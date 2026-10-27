@@ -815,7 +815,7 @@ The SDK's own log carries the login it builds for the media channel
 (`ProtocolNetIP.cpp:1293` and the frame that follows it):
 
 ```
-NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:zhafronadani@gm,PwdLen:13,
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:4,User:<account email>,PwdLen:<n>,
              Token:o5rBSnodWCpN8VAa,Pid:,RandomStrLen:4/0, ...]
 {"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"o5rBSnodWCpN8VAa",
  "PassWord":"","CommunicateKey":"8291FD6A0A7EF5F78495CB0255F4E862A4382321D951D2257176E83E2573DE5F...",
