@@ -1,10 +1,6 @@
 use proview_core::cloud::dss::envelope_client;
 
-const KEYS: [&str; 3] = [
-    "PROVIEW_APP_UUID",
-    "PROVIEW_APP_KEY",
-    "PROVIEW_APP_SECRET",
-];
+const KEYS: [&str; 3] = ["PROVIEW_APP_UUID", "PROVIEW_APP_KEY", "PROVIEW_APP_SECRET"];
 
 #[test]
 fn identity_filled_after_the_first_call_is_used_by_the_next() {
