@@ -68,7 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         value if value.is_empty() => rps::client_token(),
         value => value,
     };
-    eprintln!("token    {} (persistent={})", token, env("PROVIEW_CLIENT_TOKEN").len() > 0);
+    eprintln!(
+        "token    {} (persistent={})",
+        token,
+        env("PROVIEW_CLIENT_TOKEN").len() > 0
+    );
     let body = p2p::agent_request(
         &rps_id,
         &token,
