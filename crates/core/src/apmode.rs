@@ -174,30 +174,46 @@ pub fn trailer(payload: &[u8]) -> Option<&[u8]> {
     datagram(payload, TRAILER_BYTES)
 }
 
+fn is_open_name(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_uppercase().as_str(),
+        "" | "OPEN" | "NONE" | "DISABLE"
+    )
+}
+
 pub fn wifi_config(existing: Option<&Value>, creds: &Credentials) -> Value {
     let mut wifi = match existing {
         Some(Value::Object(map)) => Value::Object(map.clone()),
         _ => json!({}),
     };
     let secured = !creds.password.is_empty();
+    let existing_secured = match (
+        wifi.get("EncrypType").and_then(Value::as_str),
+        wifi.get("Auth").and_then(Value::as_str),
+    ) {
+        (Some(cipher), Some(auth)) => !is_open_name(cipher) && !is_open_name(auth),
+        _ => false,
+    };
     wifi["Enable"] = json!(true);
     wifi["SSID"] = json!(creds.ssid);
     wifi["Keys"] = json!(creds.password);
-    wifi["EncrypType"] = json!(if secured { "WPA2" } else { "OPEN" });
-    wifi["Auth"] = json!(if secured { "AES" } else { "NONE" });
+    if !(secured && existing_secured) {
+        wifi["Auth"] = json!(if secured { "WPA2" } else { "OPEN" });
+        wifi["EncrypType"] = json!(if secured { "AES" } else { "NONE" });
+    }
     wifi
 }
 
 pub fn wifi_block(config: &Value) -> Option<Value> {
     config
-        .get("NetWork")
-        .and_then(|section| section.get("Wifi"))
+        .get(CONFIG_NAME)
+        .or_else(|| {
+            config
+                .get("NetWork")
+                .and_then(|section| section.get("Wifi"))
+        })
         .cloned()
         .filter(Value::is_object)
-}
-
-pub fn record_bytes(creds: &Credentials) -> usize {
-    creds.ssid.len() + creds.password.len() + RECORD_OVERHEAD
 }
 
 #[cfg(test)]
@@ -389,8 +405,8 @@ mod tests {
         let secured = wifi_config(None, &credentials());
         assert_eq!(secured["SSID"], "CAM-LAB");
         assert_eq!(secured["Keys"], "rahasia123");
-        assert_eq!(secured["EncrypType"], "WPA2");
-        assert_eq!(secured["Auth"], "AES");
+        assert_eq!(secured["Auth"], "WPA2");
+        assert_eq!(secured["EncrypType"], "AES");
         assert_eq!(secured["Enable"], true);
         let open = wifi_config(
             None,
@@ -399,8 +415,66 @@ mod tests {
                 password: "",
             },
         );
-        assert_eq!(open["EncrypType"], "OPEN");
-        assert_eq!(open["Auth"], "NONE");
+        assert_eq!(open["Auth"], "OPEN");
+        assert_eq!(open["EncrypType"], "NONE");
+    }
+
+    #[test]
+    fn the_block_keeps_the_cipher_and_auth_names_the_firmware_already_uses() {
+        let existing = json!({
+            "SSID": "lab",
+            "EncrypType": "AES+TKIP",
+            "Auth": "WPA2PSK",
+            "Keys": "old",
+            "NetType": "Infra",
+            "Enable": true,
+        });
+        let merged = wifi_config(Some(&existing), &credentials());
+        assert_eq!(merged["EncrypType"], "AES+TKIP");
+        assert_eq!(merged["Auth"], "WPA2PSK");
+        assert_eq!(merged["SSID"], "CAM-LAB");
+        assert_eq!(merged["Keys"], "rahasia123");
+        assert_eq!(merged["NetType"], "Infra");
+    }
+
+    #[test]
+    fn the_cipher_class_follows_the_passphrase_not_only_the_old_block() {
+        let secured_block = json!({
+            "SSID": "lab",
+            "EncrypType": "AES+TKIP",
+            "Auth": "WPA2PSK",
+            "Keys": "old",
+        });
+        let open = wifi_config(
+            Some(&secured_block),
+            &Credentials {
+                ssid: "lab",
+                password: "",
+            },
+        );
+        assert_eq!(open["Auth"], "OPEN");
+        assert_eq!(open["EncrypType"], "NONE");
+        assert_eq!(open["Keys"], "");
+
+        let open_block = json!({ "SSID": "lab", "EncrypType": "OPEN", "Auth": "NONE" });
+        let secured = wifi_config(Some(&open_block), &credentials());
+        assert_eq!(secured["Auth"], "WPA2");
+        assert_eq!(secured["EncrypType"], "AES");
+        assert_eq!(secured["Keys"], "rahasia123");
+
+        let kept = wifi_config(Some(&secured_block), &credentials());
+        assert_eq!(kept["EncrypType"], "AES+TKIP");
+        assert_eq!(kept["Auth"], "WPA2PSK");
+    }
+
+    #[test]
+    fn the_block_is_read_from_the_flat_key_before_the_nested_one() {
+        let flat =
+            json!({ "Name": "NetWork.Wifi", "Ret": 100, "NetWork.Wifi": { "SSID": "flat" } });
+        assert_eq!(wifi_block(&flat).unwrap()["SSID"], "flat");
+        let nested = json!({ "Ret": 100, "NetWork": { "Wifi": { "SSID": "nested" } } });
+        assert_eq!(wifi_block(&nested).unwrap()["SSID"], "nested");
+        assert!(wifi_block(&json!({ "Ret": 100 })).is_none());
     }
 
     #[test]
@@ -412,6 +486,9 @@ mod tests {
         assert_eq!(merged["SSID"], "CAM-LAB");
         let wrapped = json!({ "NetWork": { "Wifi": merged.clone() } });
         assert_eq!(wifi_block(&wrapped).unwrap()["SSID"], "CAM-LAB");
-        assert_eq!(record_bytes(&credentials()), 24);
+        assert_eq!(
+            credentials().ssid.len() + credentials().password.len() + 7,
+            24
+        );
     }
 }

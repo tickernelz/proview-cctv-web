@@ -4,15 +4,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use proview_core::apmode::{self, Credentials};
-use proview_core::dvrip::client::{require_ok, Connection};
-use proview_core::dvrip::msg;
+use proview_core::dvrip::client::Connection;
 use proview_core::session::Store;
 use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
 use rocket::tokio::time::timeout as deadline;
 use rocket::State;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use super::{fail, signed_in, Failure};
 
@@ -33,7 +31,7 @@ pub struct ProvisionBody {
 pub struct PlanBody {
     pub ok: bool,
     pub record_bytes: usize,
-    pub words: usize,
+    pub symbols_per_round: usize,
     pub datagrams_per_round: usize,
     pub datagram_bytes_per_round: usize,
     pub trailer_bytes: usize,
@@ -182,13 +180,15 @@ fn plan(
     let plan = creds
         .plan(apmode::CONFIG_TARGET)
         .map_err(|error| fail(Status::BadRequest, error.to_string()))?;
-    let datagram_bytes: usize = plan.words.iter().map(|word| usize::from(*word)).sum();
+    let symbols = plan.words.len();
+    let symbol_bytes: usize = plan.words.iter().map(|word| usize::from(*word)).sum();
+    let datagram_bytes = symbol_bytes + apmode::TRAILER_BYTES;
     Ok(Json(PlanBody {
         ok: true,
         record_bytes: plan.record.len(),
-        words: plan.words.len(),
-        datagrams_per_round: plan.words.len() + 1,
-        datagram_bytes_per_round: datagram_bytes + apmode::TRAILER_BYTES,
+        symbols_per_round: symbols,
+        datagrams_per_round: symbols + 1,
+        datagram_bytes_per_round: datagram_bytes,
         trailer_bytes: apmode::TRAILER_BYTES,
         symbol_gap_ms: apmode::SYMBOL_GAP.as_millis() as u64,
         round_gap_ms: apmode::ROUND_GAP.as_millis() as u64,
@@ -406,17 +406,17 @@ fn transmit(
                 state.bytes += datagram.len() as u64;
             }
             std::thread::sleep(timing.symbol);
-            if last_trailer.elapsed() >= timing.trailer_gap {
-                if let Some(trailer) = apmode::trailer(payload) {
-                    socket.send_to(trailer, target)?;
-                    let mut state = progress
-                        .lock()
-                        .map_err(|_| std::io::Error::other("progress lock"))?;
-                    state.datagrams += 1;
-                    state.bytes += trailer.len() as u64;
-                }
-                last_trailer = Instant::now();
+        }
+        if last_trailer.elapsed() >= timing.trailer_gap {
+            if let Some(trailer) = apmode::trailer(payload) {
+                socket.send_to(trailer, target)?;
+                let mut state = progress
+                    .lock()
+                    .map_err(|_| std::io::Error::other("progress lock"))?;
+                state.datagrams += 1;
+                state.bytes += trailer.len() as u64;
             }
+            last_trailer = Instant::now();
         }
         {
             let mut state = progress
@@ -489,12 +489,12 @@ async fn apply_dvrip(
         _ => None,
     };
     let wifi = apmode::wifi_config(existing.as_ref(), creds);
-    let body = json!({
-        "Name": apmode::CONFIG_NAME,
-        "SessionID": format!("0x{:08X}", connection.session()),
-        "NetWork": { "Wifi": wifi },
-    });
-    match deadline(request_timeout, connection.request(msg::CONFIG_SET, body)).await {
+    match deadline(
+        request_timeout,
+        connection.config_set(apmode::CONFIG_NAME, wifi),
+    )
+    .await
+    {
         Err(_) => {
             report.error = Some(format!(
                 "set timed out after {} ms",
@@ -508,14 +508,7 @@ async fn apply_dvrip(
             report.elapsed_ms = started.elapsed().as_millis();
             return report;
         }
-        Ok(Ok(reply)) => match require_ok(&reply) {
-            Ok(ret) => report.ret = Some(ret),
-            Err(error) => {
-                report.error = Some(format!("set: {error}"));
-                report.elapsed_ms = started.elapsed().as_millis();
-                return report;
-            }
-        },
+        Ok(Ok(ret)) => report.ret = Some(ret),
     }
     report.read_back =
         match deadline(request_timeout, connection.config_get(apmode::CONFIG_NAME)).await {
@@ -573,18 +566,16 @@ mod tests {
         while let Ok((size, _)) = receiver.recv_from(&mut buffer) {
             seen.push((size, buffer[..size.min(16)].to_vec()));
         }
-        assert_eq!(seen.len(), lengths.len() * 2);
-        for (index, (size, head)) in seen.iter().enumerate() {
-            if index % 2 == 0 {
-                assert_eq!(*size, lengths[index / 2]);
-                assert_eq!(&head[..10], &[apmode::PAYLOAD_FILL; 10]);
-            } else {
-                assert_eq!(*size, apmode::TRAILER_BYTES);
-            }
+        assert_eq!(seen.len(), lengths.len() + 1);
+        let (last, rest) = seen.split_last().unwrap();
+        for (index, (size, head)) in rest.iter().enumerate() {
+            assert_eq!(*size, lengths[index]);
+            assert_eq!(&head[..10], &[apmode::PAYLOAD_FILL; 10]);
         }
+        assert_eq!(last.0, apmode::TRAILER_BYTES);
         let progress = state.lock().unwrap();
         assert_eq!(progress.rounds, 1);
-        assert_eq!(progress.datagrams as usize, lengths.len() * 2);
+        assert_eq!(progress.datagrams as usize, lengths.len() + 1);
     }
 
     #[test]

@@ -371,12 +371,12 @@ fn the_apmode_plan_names_the_payload_size_without_sending_anything() {
     assert_eq!(response.status(), Status::Ok);
     let body = body(response);
     assert_eq!(body["record_bytes"], 24);
-    assert_eq!(body["words"], 70);
+    assert_eq!(body["symbols_per_round"], 70);
     assert_eq!(body["datagrams_per_round"], 71);
     assert_eq!(body["trailer_bytes"], 500);
     assert_eq!(body["symbol_gap_ms"], 20);
     assert_eq!(body["round_gap_ms"], 5);
-    assert!(body["datagram_bytes_per_round"].as_u64().unwrap() > 70 * 0x80);
+    assert_eq!(body["datagram_bytes_per_round"], 32_802);
     assert!(body.get("info").is_none());
     assert!(body.get("record_hex").is_none());
 }
