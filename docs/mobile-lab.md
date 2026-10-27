@@ -11,14 +11,47 @@ not a path we accept for a 34 MB vendor SDK.
 | Host | arm64 image | Verdict |
 |---|---|---|
 | GitHub `ubuntu-*` (x86_64) | no | Google's emulator refuses arm64 guests on x86_64 hosts |
-| GitHub `ubuntu-24.04-arm` | no | Google publishes no `linux-aarch64` emulator build (issuetracker 242699119); container Android (redroid, Waydroid) needs binder/ashmem modules a hosted runner will not load |
-| GitHub `macos-14`/`macos-15` (Apple Silicon) | yes | the emulator runs arm64-v8a images natively since 30.0.26, and `android-emulator-runner` takes `arch: arm64-v8a` (Apple Silicon support since v2.20.0) |
+| GitHub `ubuntu-24.04-arm` | no | the SDK index (`repository2-3.xml`, read 2026-10-27) ships the emulator for `linux x64`, `macosx x64`, `macosx aarch64` and `windows x64` only, so no `linux-aarch64` build exists (issuetracker 242699119); container Android (redroid, Waydroid) needs binder/ashmem modules a hosted runner will not load |
+| GitHub `macos-14`/`macos-15` (Apple Silicon) | image installs, hypervisor does not | the runner is an Apple M1 VM without nested virtualization, so QEMU cannot create the guest: `HVF error: HV_UNSUPPORTED` within 5 s, six image and flag variants (below) |
+| Self-hosted Apple Silicon Mac (M-series, bare metal) | yes | HVF works on real hardware and the emulator runs `arm64-v8a` natively; this is the only hosted-free host that can boot the image |
 | Device farm (BrowserStack, Firebase Test Lab) | real arm64 phones | runs the APK as shipped, but no proxy interception and no Frida, so it is a smoke test only |
 
-`.github/workflows/mobile-re.yml` is the CI form of the third row: `macos-15`,
-`api-level: 33`, `target: google_apis`, `arch: arm64-v8a`, emulator options
-`-no-snapshot -writable-system`, then `adb root`, install and a printed
-`ro.product.cpu.abi`.
+## Why the hosted macOS path is closed
+
+Measured 2026-10-27 on `macos-15` (image `macos-15-arm64/20260907.0337`,
+`Apple M1 (Virtual)`, emulator 37.1.11 and 37.2.12):
+
+- `system-images;android-33;google_apis;arm64-v8a` installs and the AVD is created,
+  then the emulator exits inside 5 s with `HVF error: HV_UNSUPPORTED`,
+  `qemu-system-aarch64-headless: failed to initialize HVF: Invalid argument` and
+  `QEMU main loop exits abnormally with code 1`, while `adb devices` stays empty.
+  The same happens for api 30, 33, 34 and 35 `google_apis`, for
+  `-gpu swiftshader_indirect` and `-gpu host`, and with and without
+  `--device pixel_6` at `hw.ramSize` 2048 and 4096 (run 40432400695, eight jobs).
+- The host cannot virtualise: `hw.optional.arm.FEAT_EL2` is absent and
+  `kern.hv_support` is an unknown oid. `emulator -accel-check` still prints
+  `accel: 0 Hypervisor.Framework OS X Version 15.7`, which is why the failure only
+  appears at `hv_vm_create` and shows up as a ten-minute `sys.boot_completed` poll.
+- Software acceleration is not a fallback: `-accel off` is ignored for the arm64
+  guest, and `-accel off -qemu -accel tcg` still initialises HVF and dies the same
+  way, with a segfault 11 (run 40435003804).
+- GitHub states the limit itself: "Nested-virtualization is not supported due to the
+  limitation of Apple's Virtualization Framework" (GitHub-hosted runners reference,
+  arm64 macOS limitations), and `actions/runner-images#9472` is closed with that
+  explanation.
+
+So `.github/workflows/mobile-re.yml` keeps running on `macos-15` as the probe that
+would notice a change: it installs api 33 `google_apis` `arm64-v8a`, boots in two
+attempts (HVF, then HVF with the TCG accelerator), prints the emulator's own log the
+moment the process dies, and fails in about two minutes instead of polling for ten.
+Every run uploads `host.txt`, `emulator-*.log` and `result.txt`, so a future
+host that does boot records its own `arm64-v8a` ABI without a code change.
+
+To get the payload running today the job needs a host with a working hypervisor:
+a self-hosted Apple Silicon Mac with `runs-on: [self-hosted, macOS, ARM64]`, or the
+device farm row for an install-and-launch smoke test. Nothing else in the job
+changes: `ro.product.cpu.abi`, `pm list packages` and `dumpsys activity` are the
+acceptance output either way.
 
 ## The payload is not in this repository
 
@@ -33,9 +66,9 @@ job fetches its payload at run time and verifies it by hash:
 
 ## Next steps once the vendor payload runs
 
-1. `adb root` plus a writable system partition lets a mitmproxy CA go into the
-   system store, so TLS is decrypted without repackaging the APK and without
-   tripping its signature check.
+1. On the self-hosted host, adding `-writable-system` to the boot flags plus
+   `adb root` lets a mitmproxy CA go into the system store, so TLS is decrypted
+   without repackaging the APK and without tripping its signature check.
 2. `frida-server` arm64 on the same emulator hooks
    `XMAccountAPI::IXMAccount::XM_Video_Login_XMAccount` (0xf3fc2c) and
    `GetServerDSNAndPort`, which yields the ALC host, the encrypted query and the

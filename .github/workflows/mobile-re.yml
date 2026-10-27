@@ -13,6 +13,13 @@ on:
 permissions:
   contents: read
 
+env:
+  API_LEVEL: "33"
+  SYSTEM_IMAGE_TARGET: google_apis
+  SYSTEM_IMAGE_ABI: arm64-v8a
+  AVD_NAME: mobile-re
+  BOOT_TIMEOUT: "600"
+
 jobs:
   boot-arm64:
     name: boot arm64 emulator and install an arm64 app
@@ -29,6 +36,7 @@ jobs:
           set -euo pipefail
           mkdir -p .mobile
           if [ -n "${VENDOR_URL}" ]; then
+            [ -n "${VENDOR_SHA}" ] || { echo "vendor_archive_sha256 is required with vendor_archive_url" >&2; exit 1; }
             echo "payload=vendor" >> "$GITHUB_ENV"
             curl -fsSL "${VENDOR_URL}" -o .mobile/payload.zip
             printf '%s  %s\n' "${VENDOR_SHA}" .mobile/payload.zip | shasum -a 256 -c -
@@ -41,42 +49,114 @@ jobs:
             ls -l .mobile/termux-arm64.apk
           fi
 
-      - name: Boot the emulator and install
-        uses: ReactiveCircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: arm64-v8a
-          profile: pixel_6
-          disable-animations: true
-          emulator-boot-timeout: 600
-          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
-          script: |
-            set -euo pipefail
-            adb root
-            adb wait-for-device
-            echo "abi=$(adb shell getprop ro.product.cpu.abi)"
-            if [ "${payload}" = "vendor" ]; then
-              adb install-multiple -r .mobile/splits/*.apk
-              adb shell pm list packages | grep -F com.proview.cctv
-              adb shell monkey -p com.proview.cctv -c android.intent.category.LAUNCHER 1
-            else
-              adb install -r .mobile/termux-arm64.apk
-              adb shell pm list packages | grep -F com.termux
-              adb shell dumpsys package com.termux | grep -F primaryCpuAbi
-            fi
+      - name: Install the system image and create the AVD
+        run: |
+          set -euo pipefail
+          SDKMANAGER=$(ls "${ANDROID_HOME}"/cmdline-tools/*/bin/sdkmanager | head -1)
+          set +o pipefail
+          yes | "${SDKMANAGER}" --install "platform-tools" "emulator" \
+            "system-images;android-${API_LEVEL};${SYSTEM_IMAGE_TARGET};${SYSTEM_IMAGE_ABI}" > /dev/null
+          set -o pipefail
+          echo no | "${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager" create avd --force \
+            -n "${AVD_NAME}" --package "system-images;android-${API_LEVEL};${SYSTEM_IMAGE_TARGET};${SYSTEM_IMAGE_ABI}" \
+            --device pixel_6
+
+      - name: Record the host and accelerator facts
+        run: |
+          mkdir -p .mobile
+          {
+            echo "runner_arch=$(uname -m)"
+            echo "runner_os=$(sw_vers -productVersion)"
+            echo "cpu=$(sysctl -n machdep.cpu.brand_string)"
+            echo "el2=$(sysctl -n hw.optional.arm.FEAT_EL2 2>/dev/null || echo absent)"
+            echo "hv_support=$(sysctl -n kern.hv_support 2>/dev/null || echo absent)"
+            echo "emulator=$("${ANDROID_HOME}/emulator/emulator" -version | head -1)"
+            "${ANDROID_HOME}/emulator/emulator" -accel-check
+          } | tee .mobile/host.txt
+
+      - name: Boot the emulator
+        id: boot
+        run: |
+          set -uo pipefail
+          ADB="${ANDROID_HOME}/platform-tools/adb"
+          mkdir -p .mobile
+          boot() {
+            local name="$1"
+            shift
+            local log=".mobile/emulator-${name}.log"
+            local pid waited=0
+            echo "::group::Launch emulator (${name})"
+            "${ANDROID_HOME}/emulator/emulator" -port 5554 -avd "${AVD_NAME}" \
+              -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect "$@" > "${log}" 2>&1 &
+            pid=$!
+            while [ "${waited}" -lt "${BOOT_TIMEOUT}" ]; do
+              if ! kill -0 "${pid}" 2>/dev/null; then
+                echo "emulator exited after ${waited}s; last log lines:"
+                tail -25 "${log}"
+                echo "::endgroup::"
+                return 1
+              fi
+              if [ "$("${ADB}" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+                echo "booted with ${name} after ${waited}s"
+                echo "::endgroup::"
+                return 0
+              fi
+              sleep 5
+              waited=$((waited + 5))
+            done
+            echo "no boot after ${BOOT_TIMEOUT}s; last log lines:"
+            tail -25 "${log}"
+            kill "${pid}" 2>/dev/null || true
+            echo "::endgroup::"
+            return 1
+          }
+          if boot hvf; then
+            echo "accelerator=hvf" >> "$GITHUB_OUTPUT"
+          elif boot tcg -accel off -qemu -accel tcg; then
+            echo "accelerator=tcg" >> "$GITHUB_OUTPUT"
+          else
+            echo "accelerator=none" >> "$GITHUB_OUTPUT"
+            echo "::error::no accelerator booted the ${SYSTEM_IMAGE_ABI} image on $(uname -m); see .mobile/emulator-*.log"
+            exit 1
+          fi
+          echo "abi=$("${ADB}" -s emulator-5554 shell getprop ro.product.cpu.abi | tr -d '\r')" >> "$GITHUB_OUTPUT"
+
+      - name: Install and launch the arm64 app
+        if: steps.boot.outputs.accelerator != 'none'
+        run: |
+          set -euo pipefail
+          ADB="${ANDROID_HOME}/platform-tools/adb"
+          adbq() { perl -e 'alarm shift; exec @ARGV' 180 "${ADB}" "$@"; }
+          echo "abi=$(adbq shell getprop ro.product.cpu.abi | tr -d '\r')"
+          if [ "${payload}" = "vendor" ]; then
+            adbq install-multiple -r .mobile/splits/*.apk
+            adbq shell pm list packages | grep -F com.proview.cctv
+            adbq shell monkey -p com.proview.cctv -c android.intent.category.LAUNCHER 1
             sleep 10
-            adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3
+            adbq shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3
+          else
+            adbq install -r .mobile/termux-arm64.apk
+            adbq shell pm list packages | grep -F com.termux
+            adbq shell dumpsys package com.termux | grep -F primaryCpuAbi
+          fi
 
       - name: Collect logs
         if: always()
+        timeout-minutes: 3
         run: |
-          adb logcat -d > .mobile/logcat.txt 2>/dev/null || true
-          adb shell getprop > .mobile/getprop.txt 2>/dev/null || true
+          ADB="${ANDROID_HOME}/platform-tools/adb"
+          adbq() { perl -e 'alarm shift; exec @ARGV' 60 "${ADB}" "$@" 2>/dev/null || true; }
+          mkdir -p .mobile
+          { adbq devices -l; adbq logcat -d | tail -2000; } > .mobile/logcat.txt
+          adbq shell getprop > .mobile/getprop.txt
+          printf 'runner_arch=%s\nemulator_abi=%s\naccelerator=%s\n' \
+            "$(uname -m)" "$(adbq shell getprop ro.product.cpu.abi | tr -d '\r')" \
+            "${{ steps.boot.outputs.accelerator || 'unknown' }}" > .mobile/result.txt
+          cat .mobile/result.txt
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: mobile-re-${{ github.run_id }}
           path: .mobile/*.txt
-          if-no-files-found: ignore
+          if-no-files-found: warn
