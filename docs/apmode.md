@@ -289,7 +289,7 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
 7. Record in the issue: which mode worked, the `ret` value, the time from the
    last datagram to the camera joining, and the new address.
 
-Until step 7 has been run on real hardware the parity row stays `partial`.
+Until step 7 has been run on real hardware the write through the camera's own access point stays unmeasured; the parity row is `done` under Zhafron's 2026-10-27 23:29 UTC decision and keeps that boundary.
 
 ## 7. Server surface
 
