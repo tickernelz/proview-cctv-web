@@ -169,7 +169,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let limit: f64 = env("PROVIEW_LIMIT").parse().unwrap_or(0.0);
     while frames < frames_wanted || whole {
         if limit > 0.0 && started.elapsed().as_secs_f64() > limit {
-            eprintln!("limit    stopping after {:.2}s", started.elapsed().as_secs_f64());
+            eprintln!(
+                "limit    stopping after {:.2}s",
+                started.elapsed().as_secs_f64()
+            );
             break;
         }
         match connection.frame(Duration::from_secs(8)).await? {

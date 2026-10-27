@@ -6,6 +6,7 @@ use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
 use proview_core::dvrip::talk::{frame_delay, TalkLink, TalkSession};
 use proview_core::media::audio;
 use proview_core::provider::{p2p, rps};
+use tokio::sync::mpsc;
 
 fn env_or(key: &str, fallback: &str) -> String {
     env::var(key)
@@ -52,6 +53,53 @@ fn wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> {
     Err(format!("{path} carries no data chunk").into())
 }
 
+fn write_wav(path: &str, samples: &[i16]) -> std::io::Result<()> {
+    let data = audio::to_pcm16le(samples);
+    let mut out = Vec::with_capacity(44 + data.len());
+    let rate = audio::SAMPLE_RATE;
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + data.len()) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&data);
+    std::fs::write(path, out)
+}
+
+fn goertzel(samples: &[i16], hz: f64) -> f64 {
+    let rate = f64::from(audio::SAMPLE_RATE);
+    let k = (0.5 + samples.len() as f64 * hz / rate).floor();
+    let omega = 2.0 * std::f64::consts::PI * k / samples.len() as f64;
+    let coeff = 2.0 * omega.cos();
+    let mut s1 = 0.0f64;
+    let mut s2 = 0.0f64;
+    for sample in samples {
+        let s0 = f64::from(*sample) + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt() / samples.len() as f64
+}
+
+fn rms(samples: &[i16]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples
+        .iter()
+        .map(|sample| f64::from(*sample).powi(2))
+        .sum::<f64>()
+        / samples.len() as f64)
+        .sqrt()
+}
+
 async fn relay_link(serial_filter: Option<&str>) -> Result<TalkLink, Box<dyn std::error::Error>> {
     let identity = Identity::resolve();
     if !identity.is_complete() {
@@ -77,20 +125,6 @@ async fn relay_link(serial_filter: Option<&str>) -> Result<TalkLink, Box<dyn std
         started.elapsed().as_secs_f64() * 1000.0,
         devices.len()
     );
-    for device in &devices {
-        eprintln!(
-            "device   {} name={:?} model={:?} channels={:?} rps={}",
-            device.uuid,
-            device.display_name(),
-            device.model,
-            device.channel_num,
-            device
-                .extra
-                .get("rps")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-        );
-    }
     let device = match serial_filter {
         Some(serial) => devices
             .iter()
@@ -136,10 +170,8 @@ async fn relay_link(serial_filter: Option<&str>) -> Result<TalkLink, Box<dyn std
         .assign(&access_host, access_port, &body)
         .await?;
     eprintln!(
-        "cloud    agent {:.0} ms {}:{}",
-        started.elapsed().as_secs_f64() * 1000.0,
-        agent.host,
-        agent.port
+        "cloud    agent {:.0} ms",
+        started.elapsed().as_secs_f64() * 1000.0
     );
     let frame = p2p::handshake_frame(&rps_id, &token, &serial, &session);
     let started = Instant::now();
@@ -165,6 +197,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let user = env_or("PROVIEW_DEVICE_USER", "admin");
     let pass = env_or("PROVIEW_DEVICE_PASS", "");
+    if pass.is_empty() {
+        return Err("set PROVIEW_DEVICE_PASS; an empty password locks the camera IP".into());
+    }
     let channel = env::var("PROVIEW_TALK_CHANNEL")
         .ok()
         .and_then(|value| value.trim().parse::<u8>().ok());
@@ -173,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.trim().parse::<f64>().ok())
         .unwrap_or(5.0);
     let wav = env::var("PROVIEW_TALK_WAV").ok();
+    let record = env::var("PROVIEW_RECORD").ok();
     let tone_hz = env::var("PROVIEW_TALK_TONE")
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
@@ -217,13 +253,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         link.session_id()
     );
 
-    let mut talk = TalkSession::open(link, channel).await?;
+    if let Ok(name) = env::var("PROVIEW_CONFIG_GET") {
+        use proview_core::dvrip::msg;
+        link.send_json(msg::CONFIG_GET, &serde_json::json!({ "Name": name }))
+            .await?;
+        let reply = link.read_json(Duration::from_secs(5)).await?;
+        println!(
+            "config     {} -> {}",
+            name,
+            serde_json::to_string(&reply).unwrap_or_default()
+        );
+    }
+
+    let (sink, mut inbound) = mpsc::channel::<(u16, Vec<u8>)>(256);
+    let clock = Instant::now();
+    let collector = tokio::spawn(async move {
+        let mut chunks: Vec<(f64, Vec<i16>)> = Vec::new();
+        let mut ids: std::collections::BTreeMap<u16, (u64, usize)> =
+            std::collections::BTreeMap::new();
+        while let Some((id, body)) = inbound.recv().await {
+            let at = clock.elapsed().as_secs_f64();
+            let entry = ids.entry(id).or_insert((0, 0));
+            entry.0 += 1;
+            entry.1 = entry.1.max(body.len());
+            let payload = if body.len() > 8 {
+                &body[8..]
+            } else {
+                &body[..]
+            };
+            chunks.push((at, audio::decode(payload)));
+        }
+        (chunks, ids)
+    });
+
+    let mut talk = TalkSession::open_with_audio(link, channel, Some(sink)).await?;
     eprintln!(
         "talk     claim {} ms channel={:?}",
         talk.stats().claim_ms,
         talk.channel()
     );
 
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let send_start = clock.elapsed().as_secs_f64();
     let started = Instant::now();
     let mut sent = 0u64;
     let mut write_total = Duration::ZERO;
@@ -238,19 +309,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(delay) = frame_delay(sent, started.elapsed()) {
             tokio::time::sleep(delay).await;
         }
-        if sent % 25 == 0 {
-            eprintln!(
-                "frame    {:>4} t={:.2}s write={:.2}ms",
-                sent,
-                started.elapsed().as_secs_f64(),
-                spent.as_secs_f64() * 1000.0
-            );
-        }
     }
+    let send_end = clock.elapsed().as_secs_f64();
     let elapsed = started.elapsed();
+    tokio::time::sleep(Duration::from_millis(700)).await;
     let stats = talk.stats();
     talk.stop().await?;
     talk.logout().await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (chunks, ids) = collector.await?;
+    let histogram = ids
+        .iter()
+        .map(|(id, (count, longest))| format!("{id}:{count}x{longest}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    println!("inbound id {histogram}");
+
+    let mut recorded = Vec::new();
+    for (_, samples) in &chunks {
+        recorded.extend_from_slice(samples);
+    }
+    if let Some(path) = record.as_deref() {
+        write_wav(path, &recorded)?;
+        eprintln!(
+            "record   {path} ({} samples, {:.2} s)",
+            recorded.len(),
+            recorded.len() as f64 / f64::from(audio::SAMPLE_RATE)
+        );
+    }
 
     println!("frames     {}", stats.frames);
     println!("bytes      {}", stats.bytes);
@@ -269,5 +355,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         write_total.as_secs_f64() * 1000.0 / stats.frames as f64,
         write_max.as_secs_f64() * 1000.0
     );
+
+    if !recorded.is_empty() {
+        let window = (f64::from(audio::SAMPLE_RATE) * 0.25) as usize;
+        println!("echo       window=0.25 s, probe={tone_hz} Hz, send window {send_start:.2}-{send_end:.2} s");
+        println!("window      from     rms    tone");
+        let mut cursor = 0f64;
+        let mut during = Vec::new();
+        let mut before = Vec::new();
+        for (index, slice) in recorded.chunks(window).enumerate() {
+            let from = cursor;
+            cursor += slice.len() as f64 / f64::from(audio::SAMPLE_RATE);
+            if slice.len() < window / 2 {
+                continue;
+            }
+            let level = rms(slice);
+            let tone = goertzel(slice, tone_hz);
+            let in_send = from + 0.25 > send_start && from < send_end;
+            if in_send {
+                during.push(tone);
+            } else if from + 0.25 <= send_start {
+                before.push(tone);
+            }
+            println!(
+                "{:>3} {:>9.2} {:>7.0} {:>7.0}{}",
+                index,
+                from,
+                level,
+                tone,
+                if in_send {
+                    "  send"
+                } else if from + 0.25 <= send_start {
+                    "  before"
+                } else {
+                    ""
+                }
+            );
+        }
+        let mean = |values: &[f64]| {
+            if values.is_empty() {
+                0.0
+            } else {
+                values.iter().sum::<f64>() / values.len() as f64
+            }
+        };
+        let before_mean = mean(&before);
+        let during_mean = mean(&during);
+        println!(
+            "echo       tone {tone_hz} Hz: before {before_mean:.1} during {during_mean:.1} ratio {:.2}x",
+            if before_mean > 0.0 { during_mean / before_mean } else { f64::INFINITY }
+        );
+    }
     Ok(())
 }

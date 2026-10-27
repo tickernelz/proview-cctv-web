@@ -48,8 +48,10 @@ reports `ptzSource: "device"` with a `ptzEvidence` string that quotes the block
 and names the host it came from, instead of the measured default it used to
 guess. The read never blocks the live stream: the route answers from a cache and
 refreshes in the background with one bounded probe (10 s) at a time, keeping a
-device answer for 10 minutes and a failure or timeout for 1 minute. The measured
-default stays only as the fallback when the cache holds nothing.
+device answer for 10 minutes and a failure or timeout for 1 minute. While a
+refresh runs the last device answer keeps serving, so `/api/lens` never drops to
+`measured_default` between refreshes; the measured default stays only as the
+fallback when the cache holds nothing at all.
 - `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
 `ptz_lens_has_no_motor`, the device own locate block in the message, and a
 pointer to `lens=bottom`, so the refusal carries evidence instead of a bare
@@ -60,6 +62,13 @@ lower lens gated on the device answering (`SupportPTZDirectionControl` or
 `Ptz.GunBallLocate`), `ptz move` blocked on the upper lens with the device
 reason, and a `ptz locate` row. The pad gained a Tour control that starts and
 stops the first tour line that has points and says the ack is not motion.
+
+### Fixed
+
+- The live view toolbar fits phone widths: it wraps to a second row, and at
+  640 px and below its buttons show icons only (the label stays the accessible
+  name) with the separators hidden. At 360-480 px Talk's label covered Sound,
+  and Quality and Full screen sat off-screen.
 
 ## 0.3.3 — 2026-10-27
 

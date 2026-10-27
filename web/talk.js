@@ -62,7 +62,9 @@ function talkCaption() {
 
 function talkSocketUrl() {
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return scheme + '//' + location.host + '/ws/talk';
+  const device = (typeof state !== 'undefined' && state.selectedId) || '';
+  const query = device ? '?device=' + encodeURIComponent(device) : '';
+  return scheme + '//' + location.host + '/ws/talk' + query;
 }
 
 function toPcm16(samples) {
@@ -232,7 +234,7 @@ async function startTalk() {
       throw new Error('this browser has no AudioWorklet, so the microphone cannot be sampled at 8 kHz');
     }
     await startWorkletTap();
-    talkMessage('talk open on channel ' + (ready.channel === null ? 'device' : ready.channel) + ' \u00b7 claim ' + ready.claim_ms + ' ms');
+    talkMessage('talk open over ' + (ready.path || 'the device') + ' \u00b7 channel ' + (ready.channel === null ? 'device' : ready.channel) + ' \u00b7 claim ' + ready.claim_ms + ' ms');
   } catch (error) {
     stopTalk();
     talkMessage('The talk channel did not open: ' + error.message);
