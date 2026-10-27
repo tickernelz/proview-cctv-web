@@ -522,6 +522,27 @@ device's own configuration answer, both familiar shapes from the DVRIP work in
 channel is DVRIP over the relay tunnel, so the existing DVRIP client can carry
 live once the relay handshake and the framing differences are implemented.
 
+### 4C.5 The device address query, and what a replay does not do
+
+Right before the media connect the phone asks the relay set for the device's
+current address on UDP `8777`:
+
+```
+15 20 00 b0 | "7f92970ddf5282743hrc\0"
+15 20 01 b0 | 01 00 00 00 | serial\0 | zeros | "110.239.85.50\0" | zeros |
+              3d 22 00 00 | 00 00 00 00 | 02 00 00 00
+```
+
+`0x1520` is the magic here, `0x00b0` asks by serial and `0x01b0` answers with
+the device's relay `110.239.85.50` and port `0x223d` = 8765.
+
+Replaying the phone's exact 136-byte media handshake from this box against
+`162.128.66.154:6611` - and the same text with CRLF or base64-decoded - gets
+no reply at all, while the TCP connect itself succeeds. So the relay only
+answers a client it has just associated through the query path. The next step
+is to drive 4C.1/4C.5 from one socket lifetime and then handshake, which is
+what the SDK does inside a single `DevLogin`.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
