@@ -662,6 +662,42 @@ is answered with a base64 body that decodes to 720 bytes of high-entropy binary
 exchange, and our claim (which the device answers in plaintext) never reaches it.
 So the remaining work in this milestone is that exchange, not the transport.
 
+### 4C.9 The media channel: client frames are AES, device frames are plaintext
+
+Captured again on 2026-10-27 with the camera unreachable from this box (TCP 554
+and 34567 closed, ICMP 100% loss), so the whole exchange is cloud-only. Both
+directions of the tunnel, parsed past the handshake:
+
+```
+client -> relay  0x0585 ch=99  {"Name":"OPMonitor","Action":"Claim",... "RandomStrA":"o1yR","SessionID":"0x000001869f"}
+relay  -> client 0x0586 ch=0   961 bytes, base64 of 720 bytes of binary
+client -> relay  0x03e8 ch=99  513 bytes, base64 of 384 bytes (encrypted login)
+relay  -> client 0x03e9 ch=0   128 bytes, plaintext {"AliveInterval":30,...,"Ret":100,"SessionID":"0x00000098"}
+client -> relay  0x03fc/0x0550/0x0412/0x0582  89-321 byte base64 control messages
+```
+
+So the asymmetry is the useful part: everything the client sends after the claim
+is ciphertext, and the device's `1001` answer is plaintext. The SDK logs the
+parameters it uses (`ProtocolNetIP.cpp:1293`):
+
+```
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:1,User:csfy,PwdLen:6,
+             Token:F0+7ghjHWzNsktOE,Pid:,RandomStrLen:4/0,
+             PwdAppendRandomStr:0,TokenAppendRandomStr:0]
+```
+
+That `Token` is **identical in all thirteen harness runs** recorded in `sdk.log`,
+hours apart and on different relays, so it is stable material rather than
+something the claim reply hands out. Direct tries with it as an AES-128 key, with
+`md5`/SHA derivations of it, and with the account `AdminToken` (and XOR
+combinations) do not open the 720-byte claim reply, so the key derivation is
+still unproven.
+
+Next measurement, already tooled: the harness already interposes at an exported
+symbol by patching its prologue, so the same trick on the statically linked
+`AES_set_encrypt_key`/`EVP_EncryptUpdate` yields the exact key and plaintext the
+SDK feeds the cipher, which settles the derivation instead of guessing it.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
