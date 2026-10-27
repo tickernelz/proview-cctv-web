@@ -38,6 +38,20 @@ async function waitFor(check, timeout = 15000, what = 'condition') {
   throw new Error('timed out waiting for ' + what + (last instanceof Error ? ': ' + last.message : ''));
 }
 
+function ended(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((done) => {
+    const force = setTimeout(() => child.kill('SIGKILL'), 5000);
+    child.once('exit', () => {
+      clearTimeout(force);
+      done();
+    });
+    child.kill('SIGTERM');
+  });
+}
+
 export const DUAL_LENS_CLIP = join(ROOT, 'fixtures', 'dual-lens', 'dual-lens-stacked-640x720.h264');
 
 export async function startServer(devices, { clips = {}, env = {} } = {}) {
@@ -74,9 +88,9 @@ export async function startServer(devices, { clips = {}, env = {} } = {}) {
   await waitFor(async () => (await fetch(base + '/api/health')).ok, 30000, 'the server at ' + base + '\n' + log);
   return {
     base,
-    stop() {
-      child.kill('SIGTERM');
-      rmSync(dir, { recursive: true, force: true });
+    async stop() {
+      await ended(child);
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
     },
   };
 }
@@ -191,10 +205,10 @@ export async function startBrowser(extraArgs = []) {
         close: () => send('Target.closeTarget', { targetId }),
       };
     },
-    close() {
+    async close() {
       socket.close();
-      child.kill('SIGTERM');
-      rmSync(profile, { recursive: true, force: true });
+      await ended(child);
+      rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
     },
   };
 }

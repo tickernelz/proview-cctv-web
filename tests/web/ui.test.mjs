@@ -25,9 +25,12 @@ before(async () => {
   browser = await startBrowser();
 });
 
-after(() => {
-  browser?.close();
-  server?.stop();
+after(async () => {
+  try {
+    await browser?.close();
+  } finally {
+    await server?.stop();
+  }
 });
 
 async function open(options = {}) {
