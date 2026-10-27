@@ -444,8 +444,8 @@ pub fn routes() -> Vec<rocket::route::Route> {
 mod tests {
     use super::*;
 
-    fn temp_store() -> (SettingsStore, PathBuf) {
-        let dir = env::temp_dir().join(format!("proview-settings-{}", std::process::id()));
+    fn temp_store(tag: &str) -> (SettingsStore, PathBuf) {
+        let dir = env::temp_dir().join(format!("proview-settings-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         (SettingsStore::load(Some(&dir)), dir)
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_keys_and_bad_numbers() {
-        let (mut store, dir) = temp_store();
+        let (mut store, dir) = temp_store("unknown");
         let mut unknown = BTreeMap::new();
         unknown.insert("PROVIEW_NOPE".to_string(), "x".to_string());
         assert!(store.update(unknown).is_err());
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn persists_and_hides_secrets() {
-        let (mut store, dir) = temp_store();
+        let (mut store, dir) = temp_store("secrets");
         let mut values = BTreeMap::new();
         values.insert("PROVIEW_DEVICE_USER".to_string(), "admin".to_string());
         values.insert("PROVIEW_DEVICE_PASS".to_string(), "hunter2".to_string());
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn clears_a_value() {
-        let (mut store, dir) = temp_store();
+        let (mut store, dir) = temp_store("clear");
         let mut values = BTreeMap::new();
         values.insert("PROVIEW_FFMPEG".to_string(), "/opt/ffmpeg".to_string());
         store.update(values).expect("update");
