@@ -244,6 +244,10 @@ select.text-input { background: var(--bg-2); }
 .presets { display: flex; flex-wrap: wrap; gap: 2px 8px; }
 .presets button { color: var(--stage-ink); font-family: var(--f-sans); font-size: var(--t-13); text-decoration: underline; text-underline-offset: 3px; }
 #control-status { font-family: var(--f-sans); font-size: var(--t-11); color: var(--stage-ink-2); }
+#tour { align-self: flex-start; min-height: 0; font-family: var(--f-sans); font-size: var(--t-13); color: var(--stage-ink); text-decoration: underline; text-underline-offset: 3px; }
+#tour:hover { color: var(--stage-ink); }
+#tour[aria-pressed="true"] { color: var(--ok); text-decoration: none; }
+#tour:disabled { color: var(--stage-ink-2); text-decoration: none; }
 
 .sk { border-radius: var(--r-sm); background: var(--bg-3); }
 

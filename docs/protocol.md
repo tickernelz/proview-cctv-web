@@ -1082,6 +1082,142 @@ Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
 channel.
 
+## 9A. PTZ over DVRIP: the tour, the motorised lens, and what the acks are worth (2026-10-27)
+
+There is no route from this box to the camera LAN (192.168.0.0/24 answers
+nothing), so every number here was taken through the cloud relay chain: the RPS
+access server answered `110.239.87.207:6510`, handed out the agent
+`162.128.64.146:6611`, and the relay reply was dest `103.85.122.66`, MTU 1400.
+DVRIP login inside that tunnel succeeded on sessions 282-298 as `IPC` with
+`ChannelNum 1`. The runs and their artifacts are in
+`~/re/proview-cctv/ZHA-4012/`.
+
+Frames: `OPSNAP` (message 1560) on the control channel returns a 640x720 JPEG,
+which is the two lenses stacked (top = gun, bottom = ball). Every figure below
+is the mean absolute luma difference over one half of that frame, against a
+noise floor taken in the same session.
+
+| Pair, same session, camera untouched | top | bottom |
+|---|---|---|
+| `00-before` to `01-before-second`, 1 s apart | 0.13 | 0.59 |
+| five frames 1 s apart, second run | 0.13-0.14 | 0.69-0.72 |
+
+`DirectionRight`, `Step 3`, 400 ms, then the same command with `Preset -1` to
+stop, once per PTZ channel:
+
+| Move | top | bottom |
+|---|---|---|
+| channel 0 | 0.19 | **38.17** |
+| settle after channel 0 | 0.15 | 1.82 |
+| channel 1 | 0.19 | 1.09 |
+| total for the run | 0.34 | 38.21 |
+
+So the motor answers on PTZ channel 0 and it moves the lower half only: the
+upper half never leaves its noise floor and channel 1 is inert.
+
+Two examples reproduce this without a LAN route:
+`cargo run --example relay_bridge -p proview-core` opens the RPS chain and serves
+it on `127.0.0.1:34567`, which is what `PROVIEW_DEVICE_HOST` points at, and
+`cargo run --example ptz_probe -p proview-core` with
+`PROVIEW_PHASE=lens|tour|config` writes the snapshots and the replies into
+`PROVIEW_OUT`.
+
+### 9A.1 The tour runs and stops, and the device says so in its own config
+
+`Uart.PTZTour` was `null` on this camera, so a `StartTour` with no tour line is
+acknowledged and does nothing: ten frames over seven seconds stayed at
+0.15-1.03 on both halves. Building the line first is what makes a tour real.
+
+| Step | Reply | `Uart.PTZTour` after |
+|---|---|---|
+| `AddTour` tour 1, preset 1, index 0 | `Ret 100` | unchanged |
+| `AddTour` tour 1, preset 2, index 1 | `Ret 100` | `[[{"Id":1,"Name":"","Tour":[{"Id":1,"Name":"","Time":3},{"Id":2,"Name":"","Time":3}]}]]` |
+| `StartTour` tour 1 | `Ret 100` | unchanged |
+| `StopTour` tour 1 | `Ret 100` | unchanged |
+| `ClearTour` tour 1 | `Ret 100` | `[[]]` |
+
+With the two presets in the line (the camera already carried `biasa` and
+`biasabaru` under `Uart.PTZPreset`), `StartTour` moved the lower lens between
+them and `StopTour` stopped it. Bottom half, mean absolute luma change against
+the previous frame, 700 ms apart:
+
+| Frame | bottom | top |
+|---|---|---|
+| 0, first after start | 73.10 | 0.64 |
+| 1 | 29.62 | 0.67 |
+| 2 | 6.84 | 0.45 |
+| 3, dwell at a preset | 1.30 | 0.40 |
+| 4 | 19.15 | 0.38 |
+| 5 | 70.77 | 0.28 |
+| 6 | 16.58 | 0.33 |
+| 7 | 1.90 | 0.22 |
+| 8 | 40.07 | 0.22 |
+| 9 | 3.47 | 0.15 |
+| stop + 0.7 s | 1.57 | 0.18 |
+| stop + 1.4 s | 1.13 | 0.15 |
+| stop + 2.1 s | 1.02 | 0.15 |
+| stop + 2.8 s | 0.97 | 0.15 |
+
+The top half never leaves 0.15-1.07 through the whole tour: the gun lens is
+fixed while the ball cycles.
+
+### 9A.2 The ack is not evidence
+
+Every `OPPTZControl` on this firmware answers `Ret 100` before anything moves.
+Tried in one session: `StartTour`, `StopTour`, `StartAutoCruise`,
+`StopAutoCruise`, `StartScan`, `EndScan`, `StartPattern`, `StopPattern`,
+`GotoPreset`, `SetPreset`, `ClearPreset`; all `Ret 100`, including the ones that
+do nothing (9A.1 shows the difference). The API therefore reports the device own
+configuration (`Uart.PTZTour`, `Uart.PTZPreset`) as state, and the frames stay
+the only proof of motion.
+
+### 9A.3 The command surface is the app own
+
+The APK carries it in `com.lib.sdk.bean.tour.OPPTZControlBean`: `AddTour`,
+`ClearTour`, `DeleteTour`, `StartTour`, `StopTour`, a `Parameter` of `Preset`,
+`PresetIndex`, `Step`, `Tour`, `TourTimes`, the tour list at JSON path
+`Uart.PTZTour`, the preset list at `Uart.PTZPreset`, and a tour-end reply with
+message id 2141. `EPTZCMD` in the same APK is the numeric alias of the same
+surface: `EXTPTZ_STARTPANCRUISE` 20, `EXTPTZ_STOPPANCRUISE` 21,
+`EXTPTZ_ADDTOLOOP` 26, `EXTPTZ_POINT_LOOP_CONTROL` 28,
+`EXTPTZ_POINT_STOP_LOOP_CONTROL` 29.
+
+### 9A.4 The motorised lens is named by the device
+
+`Ptz.GunBallLocate[0]` is the device own description of the gun and ball pair:
+
+```json
+{"AdjustHeightSteps": 305, "AdjustWidthSteps": 1010, "Enable": true,
+ "HeightSteps": 285, "PtzLocate_CenterX": 1735, "PtzLocate_CenterY": 1028,
+ "WidthSteps": 515, "motorSpeedX": 13, "motorSpeedY": 9}
+```
+
+`Enable: true` with a locate rectangle and motor speeds is the device declaring
+exactly one motorised sensor in the pair, and the measurement above says that
+sensor is the lower half. `Uart.PTZControlCmd[0]` additionally carries
+`MirrorOperation: true`, `FlipOperation: false`. `/api/lens` reports
+`ptzSource: "device"` with this block as `ptzEvidence` instead of the measured
+default it used to guess.
+
+### 9A.5 How the route reads the binding without stalling the picture
+
+`/api/lens` sits on the path that starts the live stream (`web/app.js` awaits it
+before it asks for the stream), so it never waits on the camera: it answers from
+the cache, falls back to the measured default when the cache holds nothing, and
+asks for a refresh in the background. One refresh is one DVRIP session bounded
+by `tokio::time::timeout` at 10 s. The budget covers the measured path with
+headroom: 1.0 s for the whole probe through a local relay bridge, and 3.2 s for
+the direct chain (0.28 s envelope login, 1.02 s tunnel, 1.87 s DVRIP login).
+While the probe runs the route keeps answering in 1.3-2.3 ms with the measured
+default, then replies `device` once the answer lands.
+
+Every outcome is stored, not just success: a device answer lives 10 minutes
+(`GunBallLocate` is static configuration), a failure or a timeout lives 1
+minute so a camera that comes back is picked up without a restart. One probe is
+in flight at a time, so a burst of requests cannot multiply sessions; before
+this, a silent peer held the request for as long as the socket lived and a dead
+device was dialled again on every call.
+
 ## 10. Cloud account: the v2 portal, as implemented here
 
 `crates/core/src/cloud/` implements the account cloud of the vendor's own
