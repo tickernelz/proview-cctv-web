@@ -98,10 +98,18 @@ async function api(path, options = {}) {
     const message = body && body.message ? body.message : response.status + ' ' + response.statusText;
     const error = new Error(message);
     error.status = response.status;
+    if (body && body.code) error.code = body.code;
     throw error;
   }
   return body;
 }
+
+const OPTION_LABELS = {
+  proview: 'Vendor cloud',
+  cloud: 'Cloud account',
+  local: 'This network',
+  fixture: 'Built-in sample data',
+};
 
 let settingsInitial = new Map();
 let settingsRestartKeys = new Set();
@@ -147,7 +155,7 @@ function renderSettings(view) {
         for (const option of field.options) {
           const item = document.createElement('option');
           item.value = option;
-          item.textContent = option;
+          item.textContent = OPTION_LABELS[option] || option;
           input.append(item);
         }
         input.value = field.value || field.options[0] || '';
@@ -185,7 +193,13 @@ async function loadSettings() {
   try {
     const view = await api('/api/settings');
     renderSettings(view);
-    setSettingsStatus(view.path ? 'Loaded from ' + view.path : 'No settings file yet; values below come from the environment.');
+    if (view.exists) {
+      setSettingsStatus('Saved values loaded from ' + view.path + '.');
+    } else if (view.path) {
+      setSettingsStatus('Nothing saved yet. Saving writes ' + view.path + '.');
+    } else {
+      setSettingsStatus('No data folder is set, so saved values apply to this run only.');
+    }
   } catch (error) {
     setSettingsStatus('Could not read the settings: ' + error.message, true);
   }
@@ -390,7 +404,7 @@ function renderMode() {
   localMode.textContent =
     state.mode.mode === 'local'
       ? 'The server is set to this network, so the camera login below is the one to use.'
-      : 'The server is set to the ' + modeName(state.mode.mode) + '. Switch it under Settings → Connection once you are signed in, then come back to this tab.';
+      : 'The server is set to the ' + modeName(state.mode.mode) + '. Open Settings, Connection, choose this network, then come back to this tab.';
   setLocalFormEnabled(state.mode.mode === 'local');
   renderSourceBadge();
 }
@@ -1839,9 +1853,9 @@ el('local-connect').addEventListener('click', async () => {
     el('local-report').hidden = false;
     el('local-next').hidden = false;
   } catch (error) {
-    if (error.status === 400 && /PROVIEW_DEVICE_HOST/.test(error.message)) {
+    if (error.code === 'device_host_missing') {
       setLocalError(
-        'This server has no camera address configured. Set PROVIEW_DEVICE_HOST (and the device login) in the server environment, restart it, then probe again.',
+        'This server has no camera address yet. Open Settings, Configuration, Local network, add the camera address and its login, restart the app, then probe again.',
       );
     } else {
       setLocalError('The camera on this network did not answer: ' + error.message);

@@ -42,7 +42,7 @@ a notice when the two differ:
 ```json
 { "mode": "local", "source": "cloud",
   "notice": { "from": "local", "to": "cloud",
-              "message": "local mode is selected but no camera host is configured (set PROVIEW_DEVICE_RTSP or PROVIEW_DEVICE_HOST); using the cloud provider" } }
+              "message": "this network is selected but no camera address is set yet; add one under Settings, Configuration, Local network, then restart the app." } }
 ```
 
 `POST /api/config/mode {"mode":"local"}` needs a live session and returns the

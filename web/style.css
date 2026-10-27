@@ -575,6 +575,8 @@ button[aria-busy="true"] .label { opacity: 0.7; }
 
 body[data-config-only="true"] #view-nav a[data-view="live"],
 body[data-config-only="true"] #view-nav a[data-view="grid"] { display: none; }
+body[data-config-only="true"] .rail { display: none; }
+body[data-config-only="true"] .shell { grid-template-columns: minmax(0, 1fr); }
 
 .apply-row {
   display: flex;

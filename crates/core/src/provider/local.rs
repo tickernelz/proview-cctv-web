@@ -6,7 +6,8 @@ use crate::config::Config;
 use crate::rtsp::{self, RtspError};
 use crate::source::RtspTarget;
 
-pub const MISSING_HOST: &str = "local mode is selected but no camera host is configured (set PROVIEW_DEVICE_RTSP or PROVIEW_DEVICE_HOST); using the cloud provider";
+pub const MISSING_HOST: &str =
+    "this network is selected but no camera address is set yet; add one under Settings, Configuration, Local network, then restart the app.";
 
 pub struct LocalProvider {
     target: RtspTarget,

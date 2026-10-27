@@ -58,7 +58,7 @@ pub const FIELDS: &[Field] = &[
         "Cloud",
         Kind::Select,
         &["proview", "local", "fixture"],
-        "Which provider answers device, stream and setting calls.",
+        "Who answers device, stream and settings calls: the vendor cloud, this network, or built-in sample data.",
         true,
     ),
     field(
@@ -67,169 +67,169 @@ pub const FIELDS: &[Field] = &[
         "Cloud",
         Kind::Select,
         &["cloud", "local", "fixture"],
-        "Mode used when a session has not chosen one.",
+        "Mode a new session starts in.",
         false,
     ),
     field(
         "PROVIEW_CLOUD_BASE",
-        "Cloud base",
+        "Cloud address",
         "Cloud",
         Kind::Text,
         &[],
-        "Vendor cloud host for the app API.",
+        "Address of the vendor cloud API.",
         true,
     ),
     field(
         "PROVIEW_PORTAL_BASE",
-        "Portal base",
+        "Portal address",
         "Cloud",
         Kind::Text,
         &[],
-        "Portal host used by the account login.",
+        "Address used by the account login.",
         false,
     ),
     field(
         "PROVIEW_CAPS_BASE",
-        "Caps base",
+        "Capability address",
         "Cloud",
         Kind::Text,
         &[],
-        "Host that answers device capabilities by serial.",
+        "Address that answers device capabilities by serial.",
         false,
     ),
     field(
         "PROVIEW_CLOUD_SESSION_TTL",
-        "Cloud session seconds",
+        "Cloud session lifetime",
         "Cloud",
         Kind::Number,
         &[],
-        "How long a cloud session is kept before it must sign in again.",
+        "Seconds before a cloud session must sign in again.",
         false,
     ),
     field(
         "PROVIEW_DEVICE_HOST",
-        "Device host",
+        "Camera address",
         "Local network",
         Kind::Text,
         &[],
-        "DVRIP host and port, for example 192.168.0.100:34567.",
+        "Address and port of the camera or recorder, for example 192.168.0.100:34567.",
         true,
     ),
     field(
         "PROVIEW_DEVICE_RTSP",
-        "Device RTSP",
+        "Camera video address",
         "Local network",
         Kind::Text,
         &[],
-        "RTSP host and port, usually 554.",
+        "Address and port that serves the video stream, usually 554.",
         true,
     ),
     field(
         "PROVIEW_DEVICE_ONVIF",
-        "Device ONVIF",
+        "Camera control address",
         "Local network",
         Kind::Text,
         &[],
-        "ONVIF base address for movement and presets.",
+        "Address used for movement and presets.",
         true,
     ),
     field(
         "PROVIEW_DEVICE_USER",
-        "Device user",
+        "Camera user",
         "Local network",
         Kind::Text,
         &[],
-        "Camera user for LAN access.",
+        "User name the camera accepts.",
         true,
     ),
     field(
         "PROVIEW_DEVICE_PASS",
-        "Device password",
+        "Camera password",
         "Local network",
         Kind::Secret,
         &[],
-        "Camera password for LAN access; stored in the settings file.",
+        "Stored in the settings file and never shown back.",
         true,
     ),
     field(
         "PROVIEW_SESSION_TTL",
-        "Session seconds",
+        "Sign-in lifetime",
         "Server",
         Kind::Number,
         &[],
-        "Browser session lifetime.",
+        "Seconds a browser sign-in stays valid.",
         true,
     ),
     field(
         "PROVIEW_LISTEN",
-        "Listen address",
+        "Server address",
         "Server",
         Kind::Text,
         &[],
-        "Address the server binds; only used by the standalone server.",
+        "Address the standalone server listens on; the desktop app picks its own.",
         true,
     ),
     field(
         "PROVIEW_FFMPEG",
-        "ffmpeg path",
+        "ffmpeg program",
         "Streaming",
         Kind::Path,
         &[],
-        "Binary used to transcode HEVC; empty means ffmpeg on PATH.",
+        "Program used to convert HEVC video; empty uses the ffmpeg already on this machine.",
         false,
     ),
     field(
         "PROVIEW_LENS_PTZ",
-        "Lens PTZ channel",
+        "Movement channel",
         "Streaming",
         Kind::Number,
         &[],
-        "Channel that carries movement, when the device reports one.",
+        "Channel that carries movement, when the camera reports one.",
         false,
     ),
     field(
         "PROVIEW_LENS_CAPABILITIES",
-        "Lens capabilities",
+        "Lens features",
         "Streaming",
         Kind::Text,
         &[],
-        "Comma list of lens capabilities to advertise.",
+        "Comma separated list of lens features to advertise.",
         false,
     ),
     field(
         "PROVIEW_FIXTURE_DIR",
-        "Fixture directory",
+        "Sample data folder",
         "Advanced",
         Kind::Path,
         &[],
-        "Directory the fixture provider reads from.",
+        "Folder of sample camera data, used only by the sample provider.",
         true,
     ),
     field(
         "PROVIEW_PROFILE",
-        "Keychain profile",
+        "Credential profile",
         "Advanced",
         Kind::Text,
         &[],
-        "Profile name the desktop uses for stored device credentials.",
+        "Name the desktop app uses for stored device credentials.",
         true,
     ),
     field(
         "PROVIEW_DATA_DIR",
-        "Data directory",
+        "Data folder",
         "Advanced",
         Kind::Path,
         &[],
-        "Where the settings file and persisted state live.",
+        "Where the settings file and saved state live.",
         true,
     ),
     field(
         "ROCKET_SECRET_KEY",
-        "Cookie secret",
+        "Sign-in cookie secret",
         "Advanced",
         Kind::Secret,
         &[],
-        "Secret that signs the session cookie; empty lets the app generate one.",
+        "Signs the sign-in cookie; leave empty to let the app generate one.",
         true,
     ),
 ];
@@ -260,6 +260,7 @@ pub struct FieldView {
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsView {
     pub path: Option<String>,
+    pub exists: bool,
     pub fields: Vec<FieldView>,
 }
 
@@ -344,6 +345,7 @@ impl SettingsStore {
             .collect();
         SettingsView {
             path: self.path.as_ref().map(|path| path.display().to_string()),
+            exists: self.path.as_deref().is_some_and(Path::exists),
             fields,
         }
     }
@@ -456,6 +458,18 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("temp dir");
         (SettingsStore::load(Some(&dir)), dir)
+    }
+
+    #[test]
+    fn the_view_says_whether_a_settings_file_exists() {
+        let (store, dir) = temp_store("exists");
+        assert!(!store.view().exists, "nothing is written yet");
+        let mut values = BTreeMap::new();
+        values.insert("PROVIEW_DEVICE_USER".to_string(), "admin".to_string());
+        store.update(values).expect("update");
+        assert!(store.view().exists, "the save wrote the file");
+        env::remove_var("PROVIEW_DEVICE_USER");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

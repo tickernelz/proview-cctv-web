@@ -64,11 +64,16 @@ Settings view and returned by `GET /api/settings`.
 | Advanced | `ROCKET_SECRET_KEY` | cookie signing secret, secret, restart |
 
 Unknown keys are rejected, numbers must parse, and a select must be one of its options;
-each failure comes back as `400 {"ok":false,"message":"…"}`.
+each failure comes back as `400 {"ok":false,"message":"…"}`. `GET /api/settings` also
+reports `exists` so the view can say whether anything has been saved yet. A missing
+camera address answers `400 {"ok":false,"code":"device_host_missing",…}` (and
+`device_rtsp_missing` for the video address), so the UI keeps its guidance out of the
+message text. Every message the app shows names the Settings screen instead of the key
+it writes behind it.
 
 ## API
 
 | Call | Body | Reply |
 |---|---|---|
-| `GET /api/settings` | — | `{path, fields:[{key,label,group,kind,options,hint,restart,secret,set,value}]}` |
+| `GET /api/settings` | — | `{path, exists, fields:[{key,label,group,kind,options,hint,restart,secret,set,value}]}` |
 | `POST /api/settings` | `{"values":{ "<KEY>": "<value>" }}` | the same view, after the file is written |

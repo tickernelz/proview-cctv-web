@@ -4,6 +4,7 @@ pub mod cloud;
 use std::time::Duration;
 
 use proview_core::config::Config;
+use proview_core::device::ControlError;
 use proview_core::live::{LiveMode, StreamKey};
 use proview_core::provider::{self, Device, Provider, ProviderError, Router, StreamTicket};
 use proview_core::session::{self, Store};
@@ -72,6 +73,8 @@ fn health() -> Json<serde_json::Value> {
 pub struct StatusBody {
     pub ok: bool,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
 }
 
 pub(crate) type Failure = (Status, Json<StatusBody>);
@@ -82,6 +85,18 @@ pub(crate) fn fail(status: Status, message: impl Into<String>) -> Failure {
         Json(StatusBody {
             ok: false,
             message: message.into(),
+            code: None,
+        }),
+    )
+}
+
+pub(crate) fn fail_code(status: Status, code: &'static str, message: impl Into<String>) -> Failure {
+    (
+        status,
+        Json(StatusBody {
+            ok: false,
+            message: message.into(),
+            code: Some(code),
         }),
     )
 }
@@ -148,7 +163,11 @@ async fn login(
         Some(notice) => format!("signed in via {}: {}", notice.to.as_str(), notice.message),
         None => format!("signed in via {}", router.source().as_str()),
     };
-    Ok(Json(StatusBody { ok: true, message }))
+    Ok(Json(StatusBody {
+        ok: true,
+        message,
+        code: None,
+    }))
 }
 
 #[post("/logout")]
@@ -165,6 +184,7 @@ fn logout(
     Json(StatusBody {
         ok: true,
         message: "signed out".to_string(),
+        code: None,
     })
 }
 
@@ -216,10 +236,13 @@ fn stream_key(
 
 #[post("/device/rtsp")]
 async fn rtsp_probe(cfg: &State<Config>) -> Result<Json<RtspReport>, Failure> {
-    let target = cfg
-        .device_rtsp
-        .clone()
-        .ok_or_else(|| fail(Status::BadRequest, "PROVIEW_DEVICE_RTSP is not configured"))?;
+    let target = cfg.device_rtsp.clone().ok_or_else(|| {
+        fail_code(
+            Status::BadRequest,
+            "device_rtsp_missing",
+            ControlError::NotConfigured("PROVIEW_DEVICE_RTSP").to_string(),
+        )
+    })?;
     let (host, port) = target.rsplit_once(':').unwrap_or((target.as_str(), "554"));
     let port: u16 = port.parse().unwrap_or(554);
     let info = proview_core::rtsp::describe(host, port, "/", &cfg.device_user, &cfg.device_pass)
@@ -266,10 +289,13 @@ pub struct DeviceProbe {
 
 #[post("/device/probe")]
 async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure> {
-    let host = cfg
-        .device_host
-        .clone()
-        .ok_or_else(|| fail(Status::BadRequest, "PROVIEW_DEVICE_HOST is not configured"))?;
+    let host = cfg.device_host.clone().ok_or_else(|| {
+        fail_code(
+            Status::BadRequest,
+            "device_host_missing",
+            ControlError::NotConfigured("PROVIEW_DEVICE_HOST").to_string(),
+        )
+    })?;
     let mut connection = proview_core::dvrip::client::Connection::connect(&host)
         .await
         .map_err(|e| fail(Status::BadGateway, format!("connect {host}: {e}")))?;

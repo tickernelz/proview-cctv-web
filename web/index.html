@@ -69,7 +69,7 @@
         <p id="login-error" class="field-error" role="alert" hidden></p>
       </div>
 
-      <p class="field-note compact">Cannot sign in yet? Open <button id="login-settings" class="link-button" type="button">Settings</button> to set the cloud host, the camera address and the camera password without touching an environment file.</p>
+      <p class="field-note compact">Cannot sign in yet? Open <button id="login-settings" class="link-button" type="button">Settings</button> to set the cloud address, the camera address and the camera password, with no configuration file to edit.</p>
 
       <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" tabindex="0" hidden>
         <p class="field-note">This network path signs in to the camera itself. Its address lives in the server configuration; the credentials below go straight to that camera.</p>
@@ -318,7 +318,7 @@
 
         <div class="settings-group" role="group" aria-labelledby="set-config">
           <h2 id="set-config">Configuration</h2>
-          <p class="field-note">Every server setting in one place. Values are written to <code>settings.json</code> in the app data folder and take effect after the app restarts; an environment variable that is already set wins until it is cleared here. Secrets are never shown back.</p>
+          <p class="field-note">Every server setting in one place. Saved values go to <code>settings.json</code> in the app data folder and start working after a restart; a value the server was started with from outside the app wins until you save your own here. Secrets are never shown back.</p>
           <div id="settings-fields"></div>
           <div class="panel-actions">
             <button id="settings-save" class="primary" type="button">Save configuration</button>

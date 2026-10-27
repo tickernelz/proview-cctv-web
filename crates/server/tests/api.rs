@@ -119,8 +119,8 @@ fn choosing_local_without_a_host_reports_the_cloud_fallback() {
     assert_eq!(report["notice"]["to"], "fixture");
     let message = report["notice"]["message"].as_str().unwrap_or_default();
     assert!(
-        message.contains("PROVIEW_DEVICE_RTSP"),
-        "the notice names the missing setting: {message}"
+        !message.is_empty() && !message.contains("PROVIEW_"),
+        "the notice explains the fallback without a raw key: {message}"
     );
 
     let devices = client.get("/api/devices").dispatch();
@@ -220,6 +220,13 @@ fn device_probe_reports_a_configuration_error_before_any_network_call() {
     );
     if std::env::var("PROVIEW_DEVICE_HOST").is_err() {
         assert_eq!(status, Status::BadRequest);
+        let report = body(response);
+        assert_eq!(report["code"], "device_host_missing");
+        let message = report["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("PROVIEW_"),
+            "the probe error explains the fix without a raw key: {message}"
+        );
     }
 }
 

@@ -93,7 +93,7 @@ impl std::fmt::Display for ControlError {
                 "{feature} is not served by the {} backend",
                 backend.as_str()
             ),
-            ControlError::NotConfigured(name) => write!(f, "{name} is not configured"),
+            ControlError::NotConfigured(name) => f.write_str(missing_setting(name)),
             ControlError::Blocked { operation, reason } => {
                 write!(f, "{operation} is blocked: {reason}")
             }
@@ -103,6 +103,20 @@ impl std::fmt::Display for ControlError {
 }
 
 impl std::error::Error for ControlError {}
+
+fn missing_setting(name: &str) -> &'static str {
+    match name {
+        "PROVIEW_DEVICE_RTSP" => {
+            "no camera RTSP address is set; add one under Settings, Configuration, Local network, then restart the app."
+        }
+        "PROVIEW_DEVICE_ONVIF" => {
+            "no camera ONVIF address is set; add one under Settings, Configuration, Local network, then restart the app."
+        }
+        _ => {
+            "no camera address is set; add one under Settings, Configuration, Local network, then restart the app."
+        }
+    }
+}
 
 impl From<OnvifError> for ControlError {
     fn from(error: OnvifError) -> Self {
