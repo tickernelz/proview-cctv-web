@@ -173,15 +173,105 @@ impl Provider for CloudProvider {
 
     async fn stream(
         &self,
-        _session: &VendorSession,
-        _device: &str,
-        _channel: u32,
-        _high: bool,
+        session: &VendorSession,
+        device: &str,
+        channel: u32,
+        high: bool,
     ) -> Result<StreamTicket, ProviderError> {
-        let _ = (&self.device_user, &self.device_pass, StreamKind::Rtsp);
-        Err(ProviderError::NotImplemented(
-            "live stream needs the device session: LAN RTSP or CSS HLS, neither wired yet",
-        ))
+        let token = self.token(session)?;
+        let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        let Some(entry) = devices.iter().find(|entry| entry.uuid == device.trim()) else {
+            return Err(ProviderError::UnknownDevice(device.to_string()));
+        };
+        let rps = entry
+            .extra
+            .get("rps")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if rps.is_empty() {
+            return Err(ProviderError::Upstream(
+                "the device list carries no rps id, so the relay cannot be asked".to_string(),
+            ));
+        }
+        let state = match self
+            .status
+            .query(&entry.uuid, &status::auth_code_of(entry))
+            .await
+        {
+            Ok(state) => state,
+            Err(error) => status::unchecked(error.to_string()),
+        };
+        let Some((host, port)) = state.access_server() else {
+            return Err(ProviderError::Upstream(format!(
+                "{} (no cluster reported an access server)",
+                state.summary()
+            )));
+        };
+        let client_token = rps_client::client_token();
+        let session_id = rps_client::session_id();
+        let request = p2p::agent_request(
+            &rps,
+            &client_token,
+            &entry.uuid,
+            p2p::AGENT_SERVICE_MEDIA,
+            &session_id,
+            p2p::AGENT_STEP_MEDIA,
+        );
+        let agent = rps_client::AccessClient::new()
+            .assign(&host, port, &request)
+            .await
+            .map_err(|error| {
+                ProviderError::Upstream(format!("agent assignment failed: {error}"))
+            })?;
+        let frame = p2p::handshake_frame(&rps, &client_token, &entry.uuid, &session_id);
+        let tunnel = rps_client::open(&agent, &frame)
+            .await
+            .map_err(|error| ProviderError::Upstream(format!("relay handshake failed: {error}")))?;
+        if !tunnel.reply.accepted() {
+            return Err(ProviderError::Upstream(format!(
+                "relay refused the session: ErrorNum {}",
+                tunnel.reply.error_num
+            )));
+        }
+        let dest = tunnel.reply.dest_ip.clone();
+        let mut connection = tunnel.into_connection();
+        let device_token = entry
+            .extra
+            .get("deviceToken")
+            .and_then(|value| value.get("AdminToken"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let login = if device_token.is_empty() {
+            match connection.login(&self.device_user, &self.device_pass).await {
+                Ok(ok) => format!("password login, session {}", ok.session),
+                Err(error) => {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, device login failed: {error:?}"
+                    )))
+                }
+            }
+        } else {
+            match connection.login_token(device_token, "").await {
+                Ok(reply) => format!(
+                    "token login, ret {}",
+                    reply
+                        .get("Ret")
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+                Err(error) => {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, token login failed: {error:?}"
+                    )))
+                }
+            }
+        };
+        let _ = (channel, high, StreamKind::Rtsp);
+        Err(ProviderError::Upstream(format!(
+            "live media is not wired yet: relay accepted for {dest}, {login}, cipher and start pending"
+        )))
     }
 
     async fn playback(
