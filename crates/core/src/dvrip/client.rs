@@ -151,6 +151,15 @@ impl Connection {
         })
     }
 
+    pub fn from_stream(stream: TcpStream) -> Self {
+        stream.set_nodelay(true).ok();
+        Self {
+            stream,
+            session: 0,
+            sequence: 0,
+        }
+    }
+
     pub fn session(&self) -> u32 {
         self.session
     }

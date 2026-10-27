@@ -204,6 +204,7 @@ impl CloudClient {
                     wan_ip: None,
                     server_ip: None,
                     server_port: None,
+                    servers: Vec::new(),
                     device_type: None,
                     error: None,
                     replies: Vec::new(),

@@ -203,16 +203,17 @@ struct AgentEndpoint {
 struct AgentHeader {
     #[serde(rename = "ErrorNum")]
     error_num: String,
-    #[serde(rename = "ErrorString", default)]
-    error_string: String,
 }
 
 pub fn parse_agent_reply(bytes: &[u8]) -> Result<AgentServer, WireError> {
-    let split = bytes
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or(WireError::Unsupported("agent reply without HTTP headers"))?;
-    let body = &bytes[split + 4..];
+    parse_agent_body(bytes)
+}
+
+pub fn parse_agent_body(bytes: &[u8]) -> Result<AgentServer, WireError> {
+    let body = match bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+        Some(split) => &bytes[split + 4..],
+        None => bytes,
+    };
     let reply: AgentReply = serde_json::from_slice(body).map_err(|_| WireError::BadText)?;
     if reply.protocol.header.error_num != "200" {
         return Err(WireError::Unsupported(

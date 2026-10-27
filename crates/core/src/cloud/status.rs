@@ -8,6 +8,8 @@ use super::client::{CloudError, CloudResult};
 pub const STATUS_HOST: &str = "pub-status.secu100.net";
 pub const STATUS_PORTS: [u16; 7] = [7700, 7701, 7702, 7703, 7704, 7705, 7706];
 pub const STATUS_PATH: &str = "/v1/status/third";
+pub const DISCOVERY_RELAY_PORT: u16 = 8765;
+pub const DEFAULT_ACCESS_PORT: u16 = 6510;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +25,18 @@ pub struct DeviceOnline {
     pub device_type: Option<String>,
     pub error: Option<String>,
     pub replies: Vec<PortReply>,
+    pub servers: Vec<StatusEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusEndpoint {
+    pub port: u16,
+    pub status: String,
+    pub online: bool,
+    pub server_ip: Option<String>,
+    pub server_port: Option<u16>,
+    pub wan_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +90,7 @@ pub fn unchecked(summary: impl Into<String>) -> DeviceOnline {
         device_type: None,
         error: Some(summary.into()),
         replies: Vec::new(),
+        servers: Vec::new(),
     }
 }
 
@@ -155,6 +170,7 @@ impl StatusClient {
         }
 
         let mut replies = Vec::with_capacity(pending.len());
+        let mut servers = Vec::with_capacity(pending.len());
         let mut best: Option<(u16, StatusEntry)> = None;
         let mut first_status: Option<(u16, StatusEntry)> = None;
         for handle in pending {
@@ -176,6 +192,14 @@ impl StatusClient {
                             port,
                             status: Some(entry.status.clone()),
                             error: None,
+                        });
+                        servers.push(StatusEndpoint {
+                            port,
+                            online: entry.is_online(),
+                            status: entry.status.clone(),
+                            server_ip: entry.server_ip.clone(),
+                            server_port: entry.server_port,
+                            wan_ip: entry.wan_ip.clone(),
                         });
                         if entry.is_online() && best.is_none() {
                             best = Some((port, entry));
@@ -224,7 +248,20 @@ impl StatusClient {
             device_type: entry.device_type,
             error: None,
             replies,
+            servers,
         })
+    }
+}
+
+impl DeviceOnline {
+    pub fn access_server(&self) -> Option<(String, u16)> {
+        let candidates = self.servers.iter().filter(|entry| entry.online);
+        let preferred = candidates
+            .clone()
+            .find(|entry| entry.server_port != Some(DISCOVERY_RELAY_PORT))
+            .or_else(|| candidates.clone().next())?;
+        let host = preferred.server_ip.clone()?;
+        Some((host, preferred.server_port.unwrap_or(DEFAULT_ACCESS_PORT)))
     }
 }
 

@@ -3,6 +3,7 @@ pub mod fixture;
 pub mod local;
 pub mod p2p;
 pub mod router;
+pub mod rps;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
