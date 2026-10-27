@@ -28,6 +28,14 @@ stability before 1.0.
   fictional one answers `2000` and appears in `GET /api/devices`, `mdrm`
   removes it, `uuid=no` answers `4104` (`docs/protocol.md` 10D).
 
+- Alarm message centre. `GET /api/cloud/alarms` reads the vendor alarm centre
+  (`access-alc.secu100.net:6602`) with the envelope recovered from
+  `libFunSDK.so` (`AlarmCenter/Header/*`, `MSG_ALARM_QUERY_REQ` and
+  `MSG_ALARM_QUERY_BY_TIME_REQ`), and `web/alarms.js` lists the results with
+  time, event and channel, polls on an interval and raises a browser
+  notification for alarm ids it has not seen before. Live: 52 alarms for one
+  local day, route round-trip 457 ms cold and 77-86 ms warm, a silent host failing in 6 s.
+
 ## 0.3.3 — 2026-10-27
 
 ### Added
@@ -40,15 +48,6 @@ stability before 1.0.
   appends that line when it arrives, so "not wired" no longer hides whether the
   relay is reachable. It also makes the relay transport part of the shipped
   binary, which the 0.3.2 binaries did not carry.
-
-- Alarm message centre. `GET /api/cloud/alarms` reads the vendor alarm centre
-  (`access-alc.secu100.net:6602`) with the envelope recovered from
-  `libFunSDK.so` (`AlarmCenter/Header/*`, `MSG_ALARM_QUERY_REQ` and
-  `MSG_ALARM_QUERY_BY_TIME_REQ`), and `web/alarms.js` lists the results with
-  time, event and channel, polls on an interval and raises a browser
-  notification for alarm ids it has not seen before. Live: 52 alarms for one
-  local day, route round-trip 213-297 ms over a 157 ms vendor call.
-
 
 ## 0.3.2 — 2026-10-27
 

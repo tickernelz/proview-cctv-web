@@ -234,11 +234,13 @@ async fn login(
 fn logout(
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<crate::routes::cloud::CloudState>,
     cookies: &CookieJar<'_>,
 ) -> Json<StatusBody> {
     if let Some(c) = cookies.get_private("pvw_session") {
         store.remove(c.value());
         modes.forget(c.value());
+        cloud.forget_devices(c.value());
         cookies.remove_private(c);
     }
     Json(StatusBody {
