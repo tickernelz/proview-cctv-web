@@ -344,6 +344,7 @@ impl Connection {
     pub async fn send_encrypted(
         &mut self,
         cipher: &crate::media::dhav::MediaCipher,
+        channel: u8,
         id: u16,
         body: &serde_json::Value,
     ) -> Result<(), DvrError> {
@@ -351,7 +352,7 @@ impl Connection {
             serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
         let mut payload = cipher.encrypt_body(&plain).into_bytes();
         payload.push(0);
-        self.send_frame_on(0, false, id, &payload).await?;
+        self.send_frame_on(channel, false, id, &payload).await?;
         Ok(())
     }
 
