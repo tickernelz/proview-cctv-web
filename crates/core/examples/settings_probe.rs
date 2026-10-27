@@ -256,7 +256,11 @@ async fn main() -> Result<(), BoxError> {
                 }
             }
         }
-        other => return Err(format!("unknown mode {other}: read, cloudkeys, write, negate or bridge").into()),
+        other => {
+            return Err(
+                format!("unknown mode {other}: read, cloudkeys, write, negate or bridge").into(),
+            )
+        }
     }
     Ok(())
 }

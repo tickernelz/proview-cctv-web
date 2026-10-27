@@ -1,7 +1,10 @@
 pub mod client;
 pub mod control;
 pub mod crypto;
+#[cfg(test)]
+pub(crate) mod fake;
 pub mod frame;
+pub mod playback;
 pub mod settings;
 pub mod talk;
 

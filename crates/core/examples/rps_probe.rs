@@ -8,6 +8,27 @@ fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_default().trim().to_string()
 }
 
+fn client_random() -> String {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|delta| delta.as_nanos() as u64)
+        .unwrap_or(1);
+    let mut state = seed ^ (std::process::id() as u64) << 17;
+    let mut out = String::with_capacity(16);
+    for _ in 0..16 {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let index = ((state >> 33) % 36) as u8;
+        out.push(if index < 10 {
+            (b'0' + index) as char
+        } else {
+            (b'a' + index - 10) as char
+        });
+    }
+    out
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account = env("PROVIEW_EMAIL");
@@ -120,7 +141,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .filter(|v| !v.trim().is_empty())
     {
-        match connection.login_token(token.trim(), "").await {
+        let sealed = match std::env::var("PROVIEW_DEVICE_MODULUS")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(modulus) => match proview_core::dvrip::crypto::communicate_key(
+                modulus.trim(),
+                "010001",
+                &client_random(),
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    eprintln!("communicate key failed: {error}");
+                    String::new()
+                }
+            },
+            None => String::new(),
+        };
+        eprintln!("communicate key {} hex chars", sealed.len());
+        match connection.login_token(token.trim(), &sealed).await {
             Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
             Err(error) => eprintln!("tokenlogin failed: {error:?}"),
         }
