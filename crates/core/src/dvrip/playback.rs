@@ -138,6 +138,8 @@ pub enum PlaybackAction {
     Claim,
     Start,
     Stop,
+    DownloadStart,
+    DownloadStop,
 }
 
 impl PlaybackAction {
@@ -146,6 +148,8 @@ impl PlaybackAction {
             PlaybackAction::Claim => "Claim",
             PlaybackAction::Start => "Start",
             PlaybackAction::Stop => "Stop",
+            PlaybackAction::DownloadStart => "DownloadStart",
+            PlaybackAction::DownloadStop => "DownloadStop",
         }
     }
 }
@@ -386,6 +390,38 @@ impl Session {
         let body = playback_body(
             self.session,
             PlaybackAction::Start,
+            channel,
+            &file.name,
+            &file.begin,
+            &file.end,
+        );
+        self.send_json(PLAYBACK_CONTROL, &body).await
+    }
+
+    pub async fn download_start(
+        &mut self,
+        file: &PlaybackFile,
+        channel: u8,
+    ) -> Result<(), PlaybackError> {
+        let body = playback_body(
+            self.session,
+            PlaybackAction::DownloadStart,
+            channel,
+            &file.name,
+            &file.begin,
+            &file.end,
+        );
+        self.send_json(PLAYBACK_CONTROL, &body).await
+    }
+
+    pub async fn download_stop(
+        &mut self,
+        file: &PlaybackFile,
+        channel: u8,
+    ) -> Result<(), PlaybackError> {
+        let body = playback_body(
+            self.session,
+            PlaybackAction::DownloadStop,
             channel,
             &file.name,
             &file.begin,

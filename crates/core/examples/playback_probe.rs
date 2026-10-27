@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let frames_wanted: usize = env("PROVIEW_FRAMES").parse().unwrap_or(48);
     let whole = !env("PROVIEW_WHOLE").is_empty();
+    let download = !env("PROVIEW_DOWNLOAD").is_empty();
     let pick = env("PROVIEW_PICK");
     let seek: u32 = env("PROVIEW_SEEK").parse().unwrap_or(0);
     if account.is_empty() || password.is_empty() || serial.is_empty() {
@@ -146,8 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         started.elapsed().as_secs_f64()
     );
     let started = Instant::now();
-    connection.start(&file, 0).await?;
-    eprintln!("start    sent in {:.2}s", started.elapsed().as_secs_f64());
+    if download {
+        connection.download_start(&file, 0).await?;
+        eprintln!("download sent in {:.2}s", started.elapsed().as_secs_f64());
+    } else {
+        connection.start(&file, 0).await?;
+        eprintln!("start    sent in {:.2}s", started.elapsed().as_secs_f64());
+    }
 
     let mut reader = MediaReader::new();
     let mut rate = FrameRate::default();
@@ -261,6 +267,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(0)
         );
     }
-    let _ = connection.stop(&file, 0).await;
+    if download {
+        let _ = connection.download_stop(&file, 0).await;
+    } else {
+        let _ = connection.stop(&file, 0).await;
+    }
     Ok(())
 }
