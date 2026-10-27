@@ -8,19 +8,28 @@ fn env(key: &str) -> String {
 }
 
 fn field(device: &proview_core::cloud::CloudDevice, key: &str) -> String {
-    device.extra.get(key).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+    device
+        .extra
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let day = std::env::args().nth(1).unwrap_or_else(|| "2026-10-27".to_string());
+    let day = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "2026-10-27".to_string());
     let client = EnvelopeClient::new(Identity::resolve());
     let started = Instant::now();
     let tokens = client
         .login_envelope(&env("PROVIEW_EMAIL"), &env("PROVIEW_PASSWORD"))
         .await?;
     let devices = client.device_list(&tokens.access).await?;
-    let user = claims(&tokens.access).and_then(|c| c.account).unwrap_or_default();
+    let user = claims(&tokens.access)
+        .and_then(|c| c.account)
+        .unwrap_or_default();
     let device = devices.first().ok_or("no device on this account")?;
     let login = started.elapsed();
     let body = json!({
@@ -61,6 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn reply_code(text: &str) -> String {
     serde_json::from_str::<serde_json::Value>(text)
         .ok()
-        .and_then(|value| value.get("code").and_then(|code| code.as_str().map(str::to_string)))
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|code| code.as_str().map(str::to_string))
+        })
         .unwrap_or_else(|| text.chars().take(40).collect())
 }

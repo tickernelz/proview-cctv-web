@@ -74,9 +74,13 @@ pub fn read_reply(text: &str) -> CloudResult<DssToken> {
     }
     let raw = reply.token.trim();
     if raw.is_empty() {
-        return Err(CloudError::Malformed("token endpoint answered without a token".into()));
+        return Err(CloudError::Malformed(
+            "token endpoint answered without a token".into(),
+        ));
     }
-    Ok(DssToken { raw: raw.to_string() })
+    Ok(DssToken {
+        raw: raw.to_string(),
+    })
 }
 
 fn percent_decode(text: &str) -> Option<String> {
@@ -388,7 +392,8 @@ mod tests {
     fn reply_without_a_token_is_rejected() {
         let error = read_reply(r#"{"ret":401,"msg":"service empty."}"#).unwrap_err();
         assert!(error.to_string().contains("ret 401"), "{error}");
-        let error = read_reply(r#"{"ret":200,"code":2000,"msg":"Success","token":""}"#).unwrap_err();
+        let error =
+            read_reply(r#"{"ret":200,"code":2000,"msg":"Success","token":""}"#).unwrap_err();
         assert!(error.to_string().contains("without a token"), "{error}");
     }
 
@@ -460,7 +465,13 @@ mod tests {
             duration_between("2026-10-27 23:59:30", "2026-10-28 00:00:30"),
             Some(60)
         );
-        assert_eq!(duration_between("2026-02-28 23:00:00", "2026-03-01 01:00:00"), Some(7200));
-        assert_eq!(duration_between("2026-10-27 10:00:00", "2026-10-27 09:00:00"), None);
+        assert_eq!(
+            duration_between("2026-02-28 23:00:00", "2026-03-01 01:00:00"),
+            Some(7200)
+        );
+        assert_eq!(
+            duration_between("2026-10-27 10:00:00", "2026-10-27 09:00:00"),
+            None
+        );
     }
 }

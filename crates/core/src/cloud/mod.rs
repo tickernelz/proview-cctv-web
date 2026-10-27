@@ -11,8 +11,9 @@ pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTE
 pub use client::{CloudClient, CloudError, CloudResult};
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
 pub use dss::{
-    cloud_recordings, query_body, read_recordings, token_body, CloudRecording, DssClaims, DssClient,
-    DssToken, RecordingPage, RecordingQuery, PMS_BASE, TOKEN_BASE, TOKEN_PATH, TOKEN_SERVICE,
+    cloud_recordings, query_body, read_recordings, token_body, CloudRecording, DssClaims,
+    DssClient, DssToken, RecordingPage, RecordingQuery, PMS_BASE, TOKEN_BASE, TOKEN_PATH,
+    TOKEN_SERVICE,
 };
 pub use envelope::{
     body_key, claims, open, scramble, seal, signature, signed_request, url_encode, Claims,
