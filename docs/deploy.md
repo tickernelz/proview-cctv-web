@@ -90,6 +90,13 @@ PROVIEW_APP_UUID=... PROVIEW_APP_KEY=... PROVIEW_APP_SECRET=... \
 cargo build --release -p proview-server
 ```
 
+The file is only watched once it exists: after creating or replacing
+`cloud-identity.env`, run `touch crates/core/build.rs` (or set
+`PROVIEW_REQUIRE_CLOUD_IDENTITY=1`) so the build script runs again. A build
+configured while the file was absent keeps the identity it baked, which is none.
+`Cross.toml` passes `PROVIEW_REQUIRE_CLOUD_IDENTITY` into the cross containers,
+so the cross targets fail on a missing identity instead of shipping without one.
+
 At run time the environment still wins per value: `PROVIEW_APP_UUID`,
 `PROVIEW_APP_KEY` or `PROVIEW_APP_SECRET` set in the service environment
 override what the build baked in.

@@ -1,0 +1,2 @@
+[build.env]
+passthrough = ["PROVIEW_REQUIRE_CLOUD_IDENTITY"]

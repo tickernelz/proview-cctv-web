@@ -100,7 +100,8 @@ jobs:
           target="${{ matrix.target }}"
           bin="target/${target}/release/proview-server"
           if [ "${RUNNER_OS}" = "Windows" ]; then bin="${bin}.exe"; fi
-          matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l)
+          if [ ! -f "$bin" ]; then echo "CLOUD IDENTITY: missing ${bin}"; exit 1; fi
+          matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l || true)
           echo "CLOUD IDENTITY: ${bin} carries ${matches} of 3 values"
           if [ "${matches}" -ne 3 ]; then exit 1; fi
 
@@ -260,13 +261,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bins=$(find target -type f \( -name proview-desktop -o -name proview-desktop.exe \) -path '*/release/*' | head -5)
-          if [ -z "${bins}" ]; then echo "CLOUD IDENTITY: no desktop binary found"; exit 1; fi
-          for bin in ${bins}; do
-            matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l)
-            echo "CLOUD IDENTITY: ${bin} carries ${matches} of 3 values"
-            if [ "${matches}" -ne 3 ]; then exit 1; fi
-          done
+          args="${{ matrix.args }}"
+          triple=""
+          case "$args" in
+            *--target\ *) triple="${args##*--target }" ;;
+          esac
+          if [ -n "$triple" ]; then bin="target/${triple}/release/proview-desktop"; else bin="target/release/proview-desktop"; fi
+          if [ "${RUNNER_OS}" = "Windows" ]; then bin="${bin}.exe"; fi
+          if [ ! -f "$bin" ]; then echo "CLOUD IDENTITY: missing ${bin}"; exit 1; fi
+          matches=$(grep -a -o -F -f <(cut -d= -f2- cloud-identity.env) "$bin" | sort -u | wc -l || true)
+          echo "CLOUD IDENTITY: ${bin} carries ${matches} of 3 values"
+          if [ "${matches}" -ne 3 ]; then exit 1; fi
 
       - name: Collect bundles
         shell: bash
