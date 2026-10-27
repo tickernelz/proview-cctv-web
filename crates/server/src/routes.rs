@@ -1,6 +1,9 @@
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
+#[path = "routes/grid.rs"]
+pub mod grid;
+
 use std::time::Duration;
 
 use proview_core::config::Config;
@@ -20,7 +23,7 @@ use crate::config::ModeStore;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, grid_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -37,6 +40,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(grid::routes())
     .collect()
 }
 
@@ -52,6 +56,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/grid.js")]
+fn grid_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/grid.js"))
 }
 
 #[get("/tokens.css")]

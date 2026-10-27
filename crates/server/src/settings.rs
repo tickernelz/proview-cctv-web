@@ -268,6 +268,8 @@ pub fn field_for(key: &str) -> Option<&'static Field> {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SettingsFile {
     pub values: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -295,6 +297,7 @@ pub struct SettingsView {
 pub struct SettingsStore {
     path: Option<PathBuf>,
     values: RwLock<BTreeMap<String, String>>,
+    grid: RwLock<Option<serde_json::Value>>,
 }
 
 impl SettingsStore {
@@ -306,16 +309,55 @@ impl SettingsStore {
                 .map(PathBuf::from)
         });
         let path = dir.map(|dir| dir.join(FILE));
-        let values = path
+        let file = path
             .as_deref()
             .and_then(|path| fs::read_to_string(path).ok())
             .and_then(|raw| serde_json::from_str::<SettingsFile>(&raw).ok())
-            .map(|file| file.values)
             .unwrap_or_default();
         Self {
             path,
-            values: RwLock::new(values),
+            values: RwLock::new(file.values),
+            grid: RwLock::new(file.grid),
         }
+    }
+
+    pub fn grid_spec(&self) -> crate::routes::grid::GridSpec {
+        self.grid
+            .read()
+            .expect("grid lock")
+            .as_ref()
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_grid_spec(&self, spec: &crate::routes::grid::GridSpec) -> Result<(), String> {
+        let value = serde_json::to_value(spec).map_err(|error| format!("encode grid: {error}"))?;
+        let values = self.values.read().expect("settings lock").clone();
+        let mut grid = self.grid.write().expect("grid lock");
+        self.persist(&values, Some(&value))?;
+        *grid = Some(value);
+        Ok(())
+    }
+
+    fn persist(
+        &self,
+        values: &BTreeMap<String, String>,
+        grid: Option<&serde_json::Value>,
+    ) -> Result<(), String> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("create directory: {error}"))?;
+        }
+        let staged = path.with_extension("json.tmp");
+        let body = serde_json::to_string_pretty(&SettingsFile {
+            values: values.clone(),
+            grid: grid.cloned(),
+        })
+        .map_err(|error| format!("encode settings: {error}"))?;
+        fs::write(&staged, body).map_err(|error| format!("write settings: {error}"))?;
+        fs::rename(&staged, path).map_err(|error| format!("replace settings: {error}"))
     }
 
     pub fn apply_env(&self) {
@@ -402,6 +444,7 @@ impl SettingsStore {
                 _ => {}
             }
         }
+        let grid = self.grid.read().expect("grid lock").clone();
         let mut guard = self.values.write().expect("settings lock");
         let mut next = guard.clone();
         for (key, value) in incoming {
@@ -419,18 +462,7 @@ impl SettingsStore {
                 env::set_var(&key, trimmed);
             }
         }
-        if let Some(path) = &self.path {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).map_err(|error| format!("create directory: {error}"))?;
-            }
-            let staged = path.with_extension("json.tmp");
-            let body = serde_json::to_string_pretty(&SettingsFile {
-                values: next.clone(),
-            })
-            .map_err(|error| format!("encode settings: {error}"))?;
-            fs::write(&staged, body).map_err(|error| format!("write settings: {error}"))?;
-            fs::rename(&staged, path).map_err(|error| format!("replace settings: {error}"))?;
-        }
+        self.persist(&next, grid.as_ref())?;
         *guard = next;
         drop(guard);
         Ok(self.view())
