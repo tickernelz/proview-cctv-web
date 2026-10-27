@@ -131,7 +131,7 @@ async fn encode_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<EncodeBody>, Failure> {
     signed_in(store, cookies)?;
-    let window = write_window().timeout;
+    let window = settings_window();
     let mut connection = session(cfg, window).await?;
     let encode = connection
         .encode_state_within(window)
@@ -223,7 +223,7 @@ async fn network_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<NetworkBody>, Failure> {
     signed_in(store, cookies)?;
-    let window = write_window().timeout;
+    let window = settings_window();
     let mut connection = session(cfg, window).await?;
     let network = connection
         .network_state_within(window)
@@ -333,7 +333,7 @@ async fn storage_read(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StorageBody>, Failure> {
     signed_in(store, cookies)?;
-    let window = write_window().timeout;
+    let window = settings_window();
     let mut connection = session(cfg, window).await?;
     let storage = connection
         .storage_state_within(window)

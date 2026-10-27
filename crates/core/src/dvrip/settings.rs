@@ -97,7 +97,7 @@ impl std::fmt::Display for SettingsError {
                 write!(f, "could not write the pre-write copy at {path}: {detail}")
             }
             SettingsError::Slow { block, detail } => {
-                write!(f, "{block} did not answer inside the write window: {detail}")
+                write!(f, "{block} did not answer inside the settings window: {detail}")
             }
             SettingsError::WriteFailed {
                 block,

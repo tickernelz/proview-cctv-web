@@ -188,7 +188,7 @@ async fn a_device_that_stays_silent_on_config_get_times_the_read_out() {
         let (status, body) = read(&client, path).await;
         assert_eq!(status, Status::GatewayTimeout, "{path}: {body}");
         assert!(
-            body.contains("did not answer inside the write window"),
+            body.contains("did not answer inside the settings window"),
             "{path}: {body}"
         );
     }
