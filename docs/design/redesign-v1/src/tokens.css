@@ -1,0 +1,84 @@
+@font-face{font-family:"Plex Sans";src:url("fonts/plex-sans-400.woff2") format("woff2");font-weight:400;font-display:block}
+@font-face{font-family:"Plex Sans";src:url("fonts/plex-sans-500.woff2") format("woff2");font-weight:500;font-display:block}
+@font-face{font-family:"Plex Sans";src:url("fonts/plex-sans-600.woff2") format("woff2");font-weight:600;font-display:block}
+@font-face{font-family:"Plex Mono";src:url("fonts/plex-mono-400.woff2") format("woff2");font-weight:400;font-display:block}
+@font-face{font-family:"Plex Mono";src:url("fonts/plex-mono-500.woff2") format("woff2");font-weight:500;font-display:block}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: oklch(0.175 0.004 255);
+  --bg-2: oklch(0.228 0.005 255);
+  --bg-3: oklch(0.268 0.006 255);
+  --line: oklch(0.345 0.006 255);
+  --line-soft: oklch(0.305 0.005 255);
+  --ink: oklch(0.962 0.003 255);
+  --ink-2: oklch(0.845 0.005 255);
+  --ink-3: oklch(0.735 0.007 255);
+  --stage: oklch(0.105 0.004 255);
+  --stage-ink: oklch(0.86 0.004 255);
+  --stage-ink-2: oklch(0.68 0.006 255);
+  --live: oklch(0.70 0.185 26);
+  --live-soft: oklch(0.70 0.185 26 / 0.16);
+  --ok: oklch(0.775 0.135 152);
+  --warn: oklch(0.815 0.125 80);
+  --bad: oklch(0.715 0.17 22);
+  --focus: oklch(0.80 0.125 250);
+  --shadow-menu: 0 1px 0 oklch(1 0 0 / 0.04) inset, 0 10px 24px -12px oklch(0 0 0 / 0.7), 0 2px 6px -2px oklch(0 0 0 / 0.5);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: oklch(0.906 0.003 255);
+  --bg-2: oklch(0.958 0.002 255);
+  --bg-3: oklch(0.872 0.004 255);
+  --line: oklch(0.762 0.005 255);
+  --line-soft: oklch(0.802 0.004 255);
+  --ink: oklch(0.235 0.006 255);
+  --ink-2: oklch(0.385 0.006 255);
+  --ink-3: oklch(0.492 0.008 255);
+  --stage: oklch(0.105 0.004 255);
+  --stage-ink: oklch(0.88 0.004 255);
+  --stage-ink-2: oklch(0.70 0.006 255);
+  --live: oklch(0.482 0.190 26);
+  --live-soft: oklch(0.545 0.195 26 / 0.10);
+  --ok: oklch(0.468 0.112 152);
+  --warn: oklch(0.505 0.105 75);
+  --bad: oklch(0.512 0.185 24);
+  --focus: oklch(0.545 0.165 250);
+  --shadow-menu: 0 10px 24px -14px oklch(0.235 0.02 255 / 0.35), 0 2px 6px -3px oklch(0.235 0.02 255 / 0.25);
+}
+
+:root {
+  --f-sans: "Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --f-mono: "Plex Mono", ui-monospace, monospace;
+
+  --t-11: 11px;
+  --t-13: 13px;
+  --t-14: 14px;
+  --t-15: 15px;
+  --t-17: 17px;
+  --t-21: 21px;
+  --t-30: 30px;
+
+  --s1: 4px;
+  --s2: 6px;
+  --s3: 8px;
+  --s4: 12px;
+  --s5: 16px;
+  --s6: 20px;
+  --s7: 24px;
+  --s8: 32px;
+  --s9: 40px;
+  --s10: 56px;
+
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 10px;
+
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --topbar: 56px;
+  --bar: 64px;
+}
