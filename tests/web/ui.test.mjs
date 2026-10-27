@@ -266,3 +266,45 @@ test('the pad starts and stops the device tour, and reports that the ack is not 
     await page.close();
   }
 });
+const TOOLBAR_HITS = `(() => {
+  const misses = [];
+  for (const button of document.querySelectorAll('#controls button')) {
+    if (!button.getClientRects().length) continue;
+    const box = button.getBoundingClientRect();
+    const name = button.id || button.textContent.trim();
+    if (box.left < 0 || box.top < 0 || box.right > innerWidth || box.bottom > innerHeight) {
+      misses.push(name + ' outside the viewport at ' + [box.left, box.top, box.right, box.bottom].map(Math.round).join(','));
+      continue;
+    }
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    if (hit?.closest('button') !== button) misses.push(name + ' centre hits ' + (hit?.closest('button')?.id || hit?.tagName));
+  }
+  return misses;
+})()`;
+const EXTRA_BUTTON = `(() => {
+  const extra = document.getElementById('record').cloneNode(true);
+  extra.id = 'extra-ctl';
+  extra.querySelector('span').textContent = 'Cloud';
+  const controls = document.getElementById('controls');
+  controls.insertBefore(extra, controls.querySelector('.spacer'));
+})()`;
+
+for (const touch of [false, true]) {
+  test('every live control is on screen and takes its own tap at phone widths' + (touch ? ' with touch-sized targets' : ''), async () => {
+    for (const width of [360, 390, 480, 600, 700]) {
+      const page = await open({ width, height: 844 });
+      try {
+        await page.wait("!document.getElementById('lens-pick').hidden", 'the lens picker of the dual-lens clip');
+        if (touch) {
+          await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+          await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'pointer', value: 'coarse' }] });
+        }
+        assert.deepEqual(await page.evaluate(TOOLBAR_HITS), [], 'at ' + width + ' px');
+        await page.evaluate(EXTRA_BUTTON);
+        assert.deepEqual(await page.evaluate(TOOLBAR_HITS), [], 'at ' + width + ' px with one more control');
+      } finally {
+        await page.close();
+      }
+    }
+  });
+}
