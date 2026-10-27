@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(modulus) => match proview_core::dvrip::crypto::communicate_key(
                 modulus.trim(),
                 "010001",
-                &rps::random_lower(16),
+                &rps::session_key(),
             ) {
                 Ok(value) => value,
                 Err(error) => {
