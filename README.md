@@ -4,7 +4,7 @@ A small Rocket server, and a Tauri desktop shell around it, that put PROVIEW
 CCTV (package `com.proview.cctv`, a Xiongmai / XMEye white-label) cameras on a
 desktop instead of a phone.
 
-Current release: **v0.2.6** (`CHANGELOG.md` carries what changed). Status: a
+Current release: **v0.3.0** (`CHANGELOG.md` carries what changed). Status: a
 working server and desktop app with configuration in the app itself. Live video
 from a LAN camera works end to end. The vendor cloud account login **ships
 here**: email + password is sealed in the signed v3 envelope from Rust
@@ -19,7 +19,8 @@ proven and what is not.
 | Rocket server, static UI, JSON API | works |
 | Server-side session (private cookie → in-memory vendor session) | works |
 | Settings view: every server key, from the sign-in screen, saved to `settings.json` | works, saves merge, secrets never read back |
-| Desktop app (Tauri 2): Settings, mode choice, "Restart the app" | built by CI for 7 targets; not launched on a graphical session yet |
+| Desktop app (Tauri 2): Settings, mode choice, "Restart the app" | built by CI for 7 targets; launched on Linux (WebKitGTK 2.54, Xvfb) for v0.3.0, signs in and renders; live H.264 there needs the GStreamer H.264 decoder (`docs/webview-matrix.md`) |
+| Web UI (v0.3.0): one camera fills the window, camera menu, lens menu, every-camera view, move pad, keyboard shortcuts (`?`), Settings as a screen | works; `DESIGN.md` |
 | DVRIP framing, login handshake, session | works, tested against the camera at `192.168.0.100` (`Ret: 100`) and a mock |
 | Annex-B NAL splitter, H.264/H.265 detection, SPS parse | works, tested |
 | Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
@@ -172,15 +173,17 @@ crates/core          config, providers (cloud/local/fixture), RTSP, DVRIP, ONVIF
                      media (RTP, HEVC, fMP4), lens
 crates/server        Rocket app: JSON API, static files, settings store, sessions
 src-tauri            desktop shell: embedded server, keychain, restart command
-web                  UI (no build step): app.js, index.html, style.css, tokens.css
+web                  UI (no build step): app.js, index.html, style.css, tokens.css,
+                     fonts/ (IBM Plex, SIL OFL 1.1)
 fixtures             recorded device metadata for local runs
 tools                measurement and contrast scripts
+tests/web            UI tests in headless Chrome over the DevTools protocol (node --test)
 docs                 protocol record, contracts, deploy and install guides
 ```
 
 ## Download and signing status
 
-Installers and server binaries come from one release per tag (v0.2.6 is the
+Installers and server binaries come from one release per tag (v0.3.0 is the
 current one), with `SHA256SUMS` covering every file. None of them are
 code-signed — there is no Apple Developer certificate and no Windows signing
 certificate behind this project.

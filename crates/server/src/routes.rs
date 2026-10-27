@@ -8,7 +8,7 @@ use proview_core::device::ControlError;
 use proview_core::live::{LiveMode, StreamKey};
 use proview_core::provider::{self, Device, Provider, ProviderError, Router, StreamTicket};
 use proview_core::session::{self, Store};
-use rocket::http::{Cookie, CookieJar, SameSite, Status};
+use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
 use rocket::serde::json::Json;
 use rocket::State;
@@ -20,7 +20,7 @@ use crate::config::ModeStore;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, media_clip]
+    routes![index, app_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -62,6 +62,38 @@ fn tokens_css() -> RawCss<&'static str> {
 #[get("/style.css")]
 fn style_css() -> RawCss<&'static str> {
     RawCss(include_str!("../../../web/style.css"))
+}
+
+#[get("/fonts/<name>")]
+fn font(name: &str) -> Option<(ContentType, &'static [u8])> {
+    let woff2 = ContentType::new("font", "woff2");
+    match name {
+        "plex-sans-400.woff2" => Some((
+            woff2,
+            include_bytes!("../../../web/fonts/plex-sans-400.woff2"),
+        )),
+        "plex-sans-500.woff2" => Some((
+            woff2,
+            include_bytes!("../../../web/fonts/plex-sans-500.woff2"),
+        )),
+        "plex-sans-600.woff2" => Some((
+            woff2,
+            include_bytes!("../../../web/fonts/plex-sans-600.woff2"),
+        )),
+        "plex-mono-400.woff2" => Some((
+            woff2,
+            include_bytes!("../../../web/fonts/plex-mono-400.woff2"),
+        )),
+        "plex-mono-500.woff2" => Some((
+            woff2,
+            include_bytes!("../../../web/fonts/plex-mono-500.woff2"),
+        )),
+        "OFL.txt" => Some((
+            ContentType::Plain,
+            include_bytes!("../../../web/fonts/OFL.txt"),
+        )),
+        _ => None,
+    }
 }
 
 #[get("/health")]
