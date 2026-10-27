@@ -85,7 +85,7 @@
 
   const picUrl = (entry) => {
     if (STATE.photos !== true || !entry.picture || !entry.picture.object) return '';
-    return '/api/cloud/alarms/picture?sn=' + encodeURIComponent(STATE.serial) + '&object=' + encodeURIComponent(entry.picture.object);
+    return picUrlOf(entry.picture.object, entry.picture.bucket);
   };
 
   const probePicture = async () => {
@@ -97,7 +97,7 @@
     }
     STATE.photos = false;
     try {
-      const reply = await fetch(picUrlOf(newest.picture.object), { credentials: 'same-origin' });
+      const reply = await fetch(picUrlOf(newest.picture.object, newest.picture.bucket), { credentials: 'same-origin' });
       STATE.photos = reply.ok;
     } catch (error) {
       STATE.photos = false;
@@ -105,7 +105,7 @@
     if (STATE.photos) render();
   };
 
-  const picUrlOf = (object) => '/api/cloud/alarms/picture?sn=' + encodeURIComponent(STATE.serial) + '&object=' + encodeURIComponent(object);
+  const picUrlOf = (object, bucket) => '/api/cloud/alarms/picture?sn=' + encodeURIComponent(STATE.serial) + '&object=' + encodeURIComponent(object) + '&bucket=' + encodeURIComponent(bucket || '');
 
   const render = () => {
     const rows = [...STATE.entries.values()].sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0));

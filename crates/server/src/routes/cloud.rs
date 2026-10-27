@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use proview_core::cloud::{
     new_session_id, AlarmClient, AppCaps, CapsClient, Captcha, CloudClient, CloudDevice,
-    CloudError, CloudProfile, CloudSessions, EnvelopeClient, Identity, REQUESTED_CAPS,
+    CloudError, CloudProfile, CloudSessions, CssClient, EnvelopeClient, Identity, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -20,6 +20,7 @@ pub struct CloudState {
     sessions: CloudSessions,
     envelope: EnvelopeClient,
     alarms: AlarmClient,
+    css: CssClient,
     devices: Mutex<HashMap<String, (Instant, Vec<CloudDevice>)>>,
 }
 
@@ -27,6 +28,10 @@ pub(crate) const DEVICE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 impl CloudState {
     pub fn new() -> Self {
+        Self::with_css(CssClient::from_env())
+    }
+
+    pub fn with_css(css: CssClient) -> Self {
         let ttl = std::env::var("PROVIEW_CLOUD_SESSION_TTL")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -37,6 +42,7 @@ impl CloudState {
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
             envelope: EnvelopeClient::new(Identity::resolve()),
             alarms: AlarmClient::from_env(),
+            css,
             devices: Mutex::new(HashMap::new()),
         }
     }
@@ -51,6 +57,10 @@ impl CloudState {
 
     pub(crate) fn alarms(&self) -> &AlarmClient {
         &self.alarms
+    }
+
+    pub(crate) fn css(&self) -> &CssClient {
+        &self.css
     }
 
     pub(crate) fn cached_devices(&self, session: &str) -> Option<Vec<CloudDevice>> {

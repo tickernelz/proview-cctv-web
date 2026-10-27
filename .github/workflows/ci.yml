@@ -33,7 +33,7 @@ jobs:
       - name: Web UI in headless Chrome (menus with and without the Popover API, shortcuts, talk)
         run: |
           cargo build -p proview-server
-          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs
+          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/alarms-pictures.test.mjs
       - run: cargo build --release -p proview-server
 
   desktop-smoke:

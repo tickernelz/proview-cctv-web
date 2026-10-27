@@ -180,12 +180,21 @@ export async function startBrowser(extraArgs = []) {
         await call('Fetch.enable', { patterns: intercept.patterns });
         listeners.add(async (data) => {
           if (data.sessionId !== sessionId || data.method !== 'Fetch.requestPaused') return;
-          const body = await intercept.respond(data.params.request.url);
+          const answer = await intercept.respond(data.params.request.url);
+          const raw = answer && answer.raw;
+          const headers = raw
+            ? [
+                { name: 'content-type', value: raw.type || 'application/octet-stream' },
+                ...(raw.cache ? [{ name: 'cache-control', value: raw.cache }] : []),
+              ]
+            : [{ name: 'content-type', value: 'application/json' }];
           await call('Fetch.fulfillRequest', {
             requestId: data.params.requestId,
-            responseCode: 200,
-            responseHeaders: [{ name: 'content-type', value: 'application/json' }],
-            body: Buffer.from(JSON.stringify(body)).toString('base64'),
+            responseCode: raw && raw.status ? raw.status : 200,
+            responseHeaders: headers,
+            body: raw
+              ? Buffer.from(raw.body, 'base64').toString('base64')
+              : Buffer.from(JSON.stringify(answer)).toString('base64'),
           });
         });
       }

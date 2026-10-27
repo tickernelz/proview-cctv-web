@@ -1,6 +1,12 @@
-use proview_core::cloud::{AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError};
+use std::io::Cursor;
+
+use proview_core::cloud::{
+    claims, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError, SignRequest,
+};
 use proview_core::session::Store;
 use rocket::http::{ContentType, CookieJar, Status};
+use rocket::request::Request;
+use rocket::response::{Responder, Response};
 use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
@@ -62,24 +68,79 @@ pub async fn list(
     }))
 }
 
-#[get("/cloud/alarms/picture?<sn>&<object>")]
+const PICTURE_CACHE: &str = "private, max-age=86400, immutable";
+
+pub struct Picture(Vec<u8>);
+
+impl<'r> Responder<'r, 'r> for Picture {
+    fn respond_to(self, _: &'r Request<'_>) -> rocket::response::Result<'r> {
+        Response::build()
+            .header(ContentType::JPEG)
+            .raw_header("Cache-Control", PICTURE_CACHE)
+            .sized_body(self.0.len(), Cursor::new(self.0))
+            .ok()
+    }
+}
+
+#[get("/cloud/alarms/picture?<sn>&<object>&<bucket>")]
 pub async fn picture(
     sn: String,
     object: String,
+    bucket: Option<String>,
     state: &State<CloudState>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
-) -> Result<(ContentType, Vec<u8>), Failure> {
+) -> Result<Picture, Failure> {
     let session_id = session_id(cookies)?;
     let token = cloud_token(store, &session_id)?;
     let device = lookup(state, &session_id, &token, sn.trim()).await?;
-    let name = object_name(&object)?;
+    let request = SignRequest {
+        serial: device.uuid.clone(),
+        auth_code: auth_code(&device),
+        user_id: account_of(&token),
+        object: owned_object(&object, &device.uuid)?,
+        bucket: bucket_name(bucket.as_deref())?,
+    };
     let picture = state
-        .alarms()
-        .picture(&device.uuid, &auth_code(&device), &name)
+        .css()
+        .picture(&request)
         .await
         .map_err(|error| vendor_failure(&error))?;
-    Ok((ContentType::JPEG, picture))
+    Ok(Picture(picture))
+}
+
+fn owned_object(object: &str, serial: &str) -> Result<String, Failure> {
+    let name = object_name(object)?;
+    let stamp = format!("_{}_", serial.trim().to_ascii_lowercase());
+    if !name.to_ascii_lowercase().contains(&stamp) {
+        return Err(fail(
+            Status::BadRequest,
+            "that picture does not belong to this device",
+        ));
+    }
+    Ok(name)
+}
+
+fn account_of(token: &str) -> String {
+    claims(token)
+        .and_then(|claims| claims.account)
+        .unwrap_or_default()
+}
+
+fn bucket_name(bucket: Option<&str>) -> Result<String, Failure> {
+    let name = bucket.unwrap_or_default().trim();
+    let shaped = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '_' | '-'));
+    if !shaped {
+        return Err(fail(
+            Status::BadRequest,
+            "the alarm entry carries no storage bucket",
+        ));
+    }
+    Ok(name.to_string())
 }
 
 fn vendor_failure(error: &CloudError) -> Failure {
@@ -328,5 +389,330 @@ mod tests {
         assert!(!plain_token(""));
         assert!(!plain_token("a/b"));
         assert!(!plain_token("a b"));
+    }
+
+    #[test]
+    fn a_bucket_is_a_plain_token() {
+        assert_eq!(
+            bucket_name(Some("OSS_oss-ap-id-pic-01"))
+                .ok()
+                .expect("bucket"),
+            "OSS_oss-ap-id-pic-01"
+        );
+        assert!(bucket_name(None).is_err());
+        assert!(bucket_name(Some("  ")).is_err());
+        assert!(bucket_name(Some("a/b")).is_err());
+    }
+
+    fn live(key: &str) -> String {
+        std::env::var(key).unwrap_or_default()
+    }
+
+    #[rocket::async_test]
+    #[ignore = "talks to the vendor cloud"]
+    async fn the_picture_route_returns_a_vendor_thumbnail() {
+        use proview_core::cloud::CloudDevice;
+        use proview_core::provider::VendorSession;
+        use rocket::http::Cookie;
+
+        let token = live("PROVIEW_LIVE_TOKEN");
+        let serial = live("PROVIEW_LIVE_SERIAL");
+        assert!(!token.is_empty(), "set PROVIEW_LIVE_TOKEN");
+        assert!(!serial.is_empty(), "set PROVIEW_LIVE_SERIAL");
+
+        let rig = rocket::custom(rocket::Config::figment().merge(("log_level", "critical")))
+            .manage(CloudState::new())
+            .manage(Store::new())
+            .mount("/api", routes![picture]);
+        let client = rocket::local::asynchronous::Client::tracked(rig)
+            .await
+            .expect("client");
+        client
+            .rocket()
+            .state::<Store>()
+            .expect("session store")
+            .put(
+                "live".to_string(),
+                VendorSession {
+                    account: "owner".to_string(),
+                    token: Some(token),
+                },
+                std::time::Duration::from_secs(600),
+            );
+        let device: CloudDevice = serde_json::from_value(serde_json::json!({
+            "uuid": serial,
+            "pms": live("PROVIEW_LIVE_CODE"),
+        }))
+        .expect("device");
+        client
+            .rocket()
+            .state::<CloudState>()
+            .expect("cloud state")
+            .keep_devices("live", &[device]);
+
+        let target = format!(
+            "/api/cloud/alarms/picture?sn={}&object={}&bucket={}",
+            serial,
+            live("PROVIEW_LIVE_OBJECT"),
+            live("PROVIEW_LIVE_BUCKET")
+        );
+        let mut route_ms = Vec::new();
+        let mut bytes = Vec::new();
+        for _ in 0..5 {
+            let clock = std::time::Instant::now();
+            let reply = client
+                .get(target.clone())
+                .private_cookie(Cookie::new("pvw_session", "live"))
+                .dispatch()
+                .await;
+            route_ms.push(clock.elapsed().as_millis() as u64);
+            let status = reply.status();
+            if status != Status::Ok {
+                let body = reply.into_string().await.unwrap_or_default();
+                panic!("picture route refused {status}: {body}");
+            }
+            bytes = reply.into_bytes().await.expect("picture bytes");
+        }
+        assert!(bytes.len() > 1000, "{} bytes", bytes.len());
+        assert_eq!(&bytes[..2], &[0xff, 0xd8]);
+        println!(
+            "route picture bytes={} route_ms={route_ms:?} median={} max={}",
+            bytes.len(),
+            median(&route_ms),
+            worst(&route_ms)
+        );
+    }
+
+    fn median(values: &[u64]) -> u64 {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    }
+
+    fn worst(values: &[u64]) -> u64 {
+        values.iter().copied().max().unwrap_or_default()
+    }
+
+    #[rocket::async_test]
+    async fn the_picture_route_answers_with_the_object_bytes() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind vendor");
+        let port = listener.local_addr().expect("vendor address").port();
+        let vendor = std::thread::spawn(move || {
+            let (mut sign, _) = listener.accept().expect("sign accept");
+            let mut buffer = [0u8; 8192];
+            let read = sign.read(&mut buffer).expect("sign read");
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            assert!(request.contains("MSG_DOWNLOAD_SIGN_REQ"), "{request}");
+            assert!(request.contains("OSS_bucket"), "{request}");
+            let payload = format!(
+                concat!(
+                    "{{\"CssCenter\":{{\"Body\":{{\"ObjInfo\":[{{\"Schema\":\"http\",",
+                    "\"URL\":\"/003_DEV0001_261027214632.jpeg\",",
+                    "\"ReqHeader\":{{\"Date\":\"Tue, 27 Oct 2026 16:09:33 GMT\",",
+                    "\"Authorization\":\"OSS key:sig\"}},",
+                    "\"Host\":\"127.0.0.1:{}\"}}],\"SerialNumber\":\"DEV0001\",\"Method\":\"GET\"}},",
+                    "\"Header\":{{\"Version\":\"1.0\",\"MessageType\":\"MSG_DOWNLOAD_SIGN_RSP\",",
+                    "\"ErrorNum\":\"200\",\"ErrorString\":\"Success OK\"}}}}}}"
+                ),
+                port
+            );
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            sign.write_all(reply.as_bytes()).expect("sign write");
+            drop(sign);
+
+            let (mut object, _) = listener.accept().expect("object accept");
+            let read = object.read(&mut buffer).expect("object read");
+            let request = String::from_utf8_lossy(&buffer[..read]).to_lowercase();
+            assert!(
+                request.starts_with("get /003_dev0001_261027214632.jpeg "),
+                "{request}"
+            );
+            assert!(request.contains("authorization: oss key:sig"), "{request}");
+            let body = [0xffu8, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46];
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            object.write_all(head.as_bytes()).expect("object head");
+            object.write_all(&body).expect("object body");
+        });
+
+        let client = seeded(
+            proview_core::cloud::CssClient::new(format!("127.0.0.1:{port}")),
+            "DEV0001",
+        )
+        .await;
+
+        let reply = picture_of(
+            &client,
+            "DEV0001",
+            "003_DEV0001_261027214632.jpeg",
+            "OSS_bucket",
+        )
+        .await;
+        let status = reply.status();
+        if status != Status::Ok {
+            let body = reply.into_string().await.unwrap_or_default();
+            panic!("picture route refused {status}: {body}");
+        }
+        assert_eq!(reply.content_type(), Some(ContentType::JPEG));
+        assert_eq!(
+            reply.headers().get_one("Cache-Control"),
+            Some("private, max-age=86400, immutable")
+        );
+        let bytes = reply.into_bytes().await.expect("picture bytes");
+        vendor.join().expect("vendor thread");
+        assert_eq!(bytes.len(), 8);
+        assert_eq!(&bytes[..2], &[0xff, 0xd8]);
+    }
+
+    #[rocket::async_test]
+    async fn the_picture_route_refuses_an_object_from_another_device() {
+        let client = seeded(
+            proview_core::cloud::CssClient::new("127.0.0.1:1"),
+            "DEV0001",
+        )
+        .await;
+        let reply = picture_of(
+            &client,
+            "DEV0001",
+            "003_OTHER0001_261027214632.jpeg",
+            "OSS_bucket",
+        )
+        .await;
+        assert_eq!(reply.status(), Status::BadRequest);
+        let body = reply.into_string().await.expect("body");
+        assert!(body.contains("does not belong to this device"), "{body}");
+    }
+
+    #[rocket::async_test]
+    async fn the_picture_route_reports_a_storage_refusal_as_upstream() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind vendor");
+        let port = listener.local_addr().expect("vendor address").port();
+        let vendor = std::thread::spawn(move || {
+            let (mut sign, _) = listener.accept().expect("sign accept");
+            let mut buffer = [0u8; 8192];
+            let read = sign.read(&mut buffer).expect("sign read");
+            assert!(String::from_utf8_lossy(&buffer[..read]).contains("MSG_DOWNLOAD_SIGN_REQ"));
+            let payload = format!(
+                concat!(
+                    "{{\"CssCenter\":{{\"Body\":{{\"ObjInfo\":[{{\"Schema\":\"http\",",
+                    "\"URL\":\"/003_DEV0001_261027214632.jpeg\",",
+                    "\"ReqHeader\":{{\"Date\":\"Tue, 27 Oct 2026 16:09:33 GMT\",",
+                    "\"Authorization\":\"OSS key:sig\"}},",
+                    "\"Host\":\"127.0.0.1:{}\"}}],\"SerialNumber\":\"DEV0001\",\"Method\":\"GET\"}},",
+                    "\"Header\":{{\"Version\":\"1.0\",\"MessageType\":\"MSG_DOWNLOAD_SIGN_RSP\",",
+                    "\"ErrorNum\":\"200\",\"ErrorString\":\"Success OK\"}}}}}}"
+                ),
+                port
+            );
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            sign.write_all(reply.as_bytes()).expect("sign write");
+            drop(sign);
+
+            let (mut object, _) = listener.accept().expect("object accept");
+            let _ = object.read(&mut buffer);
+            let body = concat!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Error><Code>AccessDenied</Code>",
+                "<Message>The bucket you access does not belong to you.</Message>",
+                "<RequestId>6A1B2C3D4E5F60718293A4B5</RequestId><HostId>oss-ap-id-pic-01</HostId></Error>"
+            );
+            let head = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            object.write_all(head.as_bytes()).expect("object head");
+        });
+
+        let client = seeded(
+            proview_core::cloud::CssClient::new(format!("127.0.0.1:{port}")),
+            "DEV0001",
+        )
+        .await;
+        let reply = picture_of(
+            &client,
+            "DEV0001",
+            "003_DEV0001_261027214632.jpeg",
+            "OSS_bucket",
+        )
+        .await;
+        assert_eq!(reply.status(), Status::BadGateway);
+        let body = reply.into_string().await.expect("body");
+        vendor.join().expect("vendor thread");
+        assert!(body.len() < 300, "the vendor body was copied whole: {body}");
+        assert!(body.contains("403"), "{body}");
+    }
+
+    async fn seeded(
+        css: proview_core::cloud::CssClient,
+        serial: &str,
+    ) -> rocket::local::asynchronous::Client {
+        use proview_core::provider::VendorSession;
+
+        let rig = rocket::custom(
+            rocket::Config::figment()
+                .merge(("secret_key", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="))
+                .merge(("log_level", "critical")),
+        )
+        .manage(CloudState::with_css(css))
+        .manage(Store::new())
+        .mount("/api", routes![picture]);
+        let client = rocket::local::asynchronous::Client::tracked(rig)
+            .await
+            .expect("client");
+        client
+            .rocket()
+            .state::<Store>()
+            .expect("session store")
+            .put(
+                "s1".to_string(),
+                VendorSession {
+                    account: "acc".to_string(),
+                    token: Some("h.eyJhY2NvdW50IjoiYWNjMSJ9.s".to_string()),
+                },
+                std::time::Duration::from_secs(600),
+            );
+        let device: CloudDevice = serde_json::from_value(serde_json::json!({
+            "uuid": serial,
+            "nickname": "Gate",
+            "pms": "aaaaaaaa-4a1c2f27d01793117365801"
+        }))
+        .expect("device");
+        client
+            .rocket()
+            .state::<CloudState>()
+            .expect("cloud state")
+            .keep_devices("s1", &[device]);
+        client
+    }
+
+    async fn picture_of<'a>(
+        client: &'a rocket::local::asynchronous::Client,
+        serial: &str,
+        object: &str,
+        bucket: &str,
+    ) -> rocket::local::asynchronous::LocalResponse<'a> {
+        client
+            .get(format!(
+                "/api/cloud/alarms/picture?sn={serial}&object={object}&bucket={bucket}"
+            ))
+            .private_cookie(rocket::http::Cookie::new("pvw_session", "s1"))
+            .dispatch()
+            .await
     }
 }
