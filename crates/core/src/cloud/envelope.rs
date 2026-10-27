@@ -1,3 +1,4 @@
+use std::hint::black_box;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -103,9 +104,9 @@ impl Identity {
 
     pub fn built() -> Self {
         Self {
-            uuid: BUILT_APP_UUID.to_string(),
-            app_key: BUILT_APP_KEY.to_string(),
-            app_secret: BUILT_APP_SECRET.to_string(),
+            uuid: black_box(BUILT_APP_UUID).to_string(),
+            app_key: black_box(BUILT_APP_KEY).to_string(),
+            app_secret: black_box(BUILT_APP_SECRET).to_string(),
         }
     }
 

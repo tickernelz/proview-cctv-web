@@ -113,30 +113,6 @@ jobs:
           sys.exit(0 if len(values) == 3 and found == 3 else 1)
           PY
 
-      - name: Diagnose the build when the identity is missing
-        if: failure()
-        shell: bash
-        run: |
-          set -uo pipefail
-          for out in target/*/release/build/proview-core-*/output; do
-            if [ -f "$out" ]; then
-              echo "script-output ${out} rustc-env=$(grep -c 'cargo:rustc-env=PROVIEW_BUILT_APP' "$out" || true)"
-            fi
-          done
-          py=$(command -v python3 || command -v python || true)
-          if [ -z "$py" ]; then echo "no python for diagnostics"; exit 0; fi
-          "$py" - <<'PY'
-          import glob, os
-          values = [line.split("=", 1)[1].strip() for line in open("cloud-identity.env") if "=" in line]
-          control = b"without a cloud identity"
-          paths = sorted(glob.glob("target/*/release/proview-server*") + glob.glob("target/*/release/proview-desktop*"))
-          for path in paths:
-              if not os.path.isfile(path) or os.path.getsize(path) < 1024:
-                  continue
-              data = open(path, "rb").read()
-              found = [len(value) for value in values if value.encode() in data]
-              print(f"binary {path} size={len(data)} control={control in data} found_lengths={found}")
-          PY
 
       - name: Package archive
         shell: bash
@@ -314,30 +290,6 @@ jobs:
           sys.exit(0 if len(values) == 3 and found == 3 else 1)
           PY
 
-      - name: Diagnose the build when the identity is missing
-        if: failure()
-        shell: bash
-        run: |
-          set -uo pipefail
-          for out in target/*/release/build/proview-core-*/output; do
-            if [ -f "$out" ]; then
-              echo "script-output ${out} rustc-env=$(grep -c 'cargo:rustc-env=PROVIEW_BUILT_APP' "$out" || true)"
-            fi
-          done
-          py=$(command -v python3 || command -v python || true)
-          if [ -z "$py" ]; then echo "no python for diagnostics"; exit 0; fi
-          "$py" - <<'PY'
-          import glob, os
-          values = [line.split("=", 1)[1].strip() for line in open("cloud-identity.env") if "=" in line]
-          control = b"without a cloud identity"
-          paths = sorted(glob.glob("target/*/release/proview-server*") + glob.glob("target/*/release/proview-desktop*"))
-          for path in paths:
-              if not os.path.isfile(path) or os.path.getsize(path) < 1024:
-                  continue
-              data = open(path, "rb").read()
-              found = [len(value) for value in values if value.encode() in data]
-              print(f"binary {path} size={len(data)} control={control in data} found_lengths={found}")
-          PY
 
       - name: Collect bundles
         shell: bash
@@ -355,6 +307,7 @@ jobs:
 
   publish:
     needs: [server, desktop]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
