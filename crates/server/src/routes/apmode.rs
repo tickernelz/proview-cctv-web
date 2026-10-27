@@ -34,7 +34,8 @@ pub struct PlanBody {
     pub ok: bool,
     pub record_bytes: usize,
     pub words: usize,
-    pub datagrams_per_round: usize,
+    pub symbols_per_round: usize,
+    pub trailers_per_round: usize,
     pub datagram_bytes_per_round: usize,
     pub trailer_bytes: usize,
     pub symbol_gap_ms: u64,
@@ -182,13 +183,23 @@ fn plan(
     let plan = creds
         .plan(apmode::CONFIG_TARGET)
         .map_err(|error| fail(Status::BadRequest, error.to_string()))?;
-    let datagram_bytes: usize = plan.words.iter().map(|word| usize::from(*word)).sum();
+    let symbols = plan.words.len();
+    let symbol_gap_ms = apmode::SYMBOL_GAP.as_millis() as usize;
+    let trailer_gap_ms = apmode::TRAILER_GAP_MS as usize;
+    let trailers = symbols * symbol_gap_ms / trailer_gap_ms;
+    let datagram_bytes: usize = plan
+        .words
+        .iter()
+        .map(|word| usize::from(*word))
+        .sum::<usize>()
+        + trailers * apmode::TRAILER_BYTES;
     Ok(Json(PlanBody {
         ok: true,
         record_bytes: plan.record.len(),
-        words: plan.words.len(),
-        datagrams_per_round: plan.words.len() + 1,
-        datagram_bytes_per_round: datagram_bytes + apmode::TRAILER_BYTES,
+        words: symbols,
+        symbols_per_round: symbols,
+        trailers_per_round: trailers,
+        datagram_bytes_per_round: datagram_bytes,
         trailer_bytes: apmode::TRAILER_BYTES,
         symbol_gap_ms: apmode::SYMBOL_GAP.as_millis() as u64,
         round_gap_ms: apmode::ROUND_GAP.as_millis() as u64,

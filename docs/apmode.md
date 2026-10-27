@@ -255,12 +255,16 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
 3. Run the server, sign in, and ask for the plan:
    `POST /api/apmode/plan {"ssid":"<home>","password":"<key>"}`. It answers the
    record size, the symbol count and the per-round totals. Expected for a
-   7-character SSID and a 10-character key: 24-byte record, 70 symbols,
-   71 datagrams per round.
+   7-character SSID and a 10-character key: 24-byte record, 70 symbols, and
+   `trailers_per_round 27` (70 symbols at 20 ms is 1.40 s, and a 500-byte
+   datagram goes out whenever 51 ms have passed), so about 97 datagrams and
+   roughly 12 kB per round.
 4. `POST /api/apmode/provision {"ssid":"<home>","password":"<key>","mode":"dvrip"}`.
    Expected: `ret 100` from message 1040, `read_back true` when the camera
-   echoes the SSID, and `elapsed_ms` under the 3 s connect plus 2 s request
-   budget. On a reachable IPC this path is already measured: 163-170 ms for the
+   echoes the SSID, and `elapsed_ms` inside the budget that is actually
+   enforced: a 3 s connect timeout, up to four requests at 2 s each (login,
+   read, write, read-back) and one more for logout, so **about 11 s worst
+   case** and 0.4-1 s when the camera answers. On a reachable IPC this path is already measured: 163-170 ms for the
    read, 201 ms for the write, `Ret 100` and an identical read-back
    (section 3.1). What is not yet measured is the write **through the camera's
    own access point**, which is what step 2 sets up.
@@ -284,6 +288,15 @@ Until step 7 has been run on real hardware the parity row stays `partial`.
 | `POST /api/apmode/provision` | `{ssid, password, mode?, device_password?, rounds?}` | DVRIP `ret`/`read_back`/`elapsed_ms` or its error, plus the broadcast run status |
 | `GET /api/apmode/provision` | — | rounds, datagrams, bytes, elapsed, error, whether it is still running |
 | `DELETE /api/apmode/provision` | — | asks the sender to stop at the next symbol (the app's `DevStopWifiConfig`) |
+
+Limits the caller can hit:
+
+| Limit | Value |
+|---|---|
+| SSID / passphrase | 34 / 132 bytes (`ApError::SsidTooLong`, `PasswordTooLong`) |
+| record per packet | `MAX_WORDS` 186 symbols, i.e. an SSID plus passphrase of about 60 bytes; longer credentials answer `ApError::RecordTooLong` at plan time |
+| one run at a time | a second `POST` while a run is sending answers `409` |
+| run length | `rounds` or the 180 s ceiling, which is about 127 rounds at the app's timing |
 
 The target is fixed: DVRIP `192.168.10.1:34567` as `admin` with an empty
 password unless `device_password` is given, and UDP `255.255.255.255:8001`.

@@ -204,10 +204,6 @@ pub fn wifi_block(config: &Value) -> Option<Value> {
         .filter(Value::is_object)
 }
 
-pub fn record_bytes(creds: &Credentials) -> usize {
-    creds.ssid.len() + creds.password.len() + RECORD_OVERHEAD
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,6 +444,9 @@ mod tests {
         assert_eq!(merged["SSID"], "CAM-LAB");
         let wrapped = json!({ "NetWork": { "Wifi": merged.clone() } });
         assert_eq!(wifi_block(&wrapped).unwrap()["SSID"], "CAM-LAB");
-        assert_eq!(record_bytes(&credentials()), 24);
+        assert_eq!(
+            credentials().ssid.len() + credentials().password.len() + 7,
+            24
+        );
     }
 }

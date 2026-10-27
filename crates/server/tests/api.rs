@@ -351,7 +351,8 @@ fn the_apmode_plan_names_the_payload_size_without_sending_anything() {
     let body = body(response);
     assert_eq!(body["record_bytes"], 24);
     assert_eq!(body["words"], 70);
-    assert_eq!(body["datagrams_per_round"], 71);
+    assert_eq!(body["symbols_per_round"], 70);
+    assert_eq!(body["trailers_per_round"], 27);
     assert_eq!(body["trailer_bytes"], 500);
     assert_eq!(body["symbol_gap_ms"], 20);
     assert_eq!(body["round_gap_ms"], 5);
