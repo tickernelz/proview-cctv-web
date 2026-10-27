@@ -7,8 +7,6 @@ use super::client::{CloudError, CloudResult};
 
 pub const ALARM_HOST: &str = "access-alc.secu100.net";
 pub const ALARM_PORT: u16 = 6602;
-pub const PICTURE_HOST: &str = "pub-pms-pic.secu100.net";
-pub const PICTURE_PORT: u16 = 8082;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 pub const PAGE_LIMIT: u32 = 60;
 pub const API_VERSION: &str = "1.0";
@@ -149,32 +147,6 @@ impl AlarmClient {
         Ok(page)
     }
 
-    pub async fn picture(
-        &self,
-        serial: &str,
-        auth_code: &str,
-        object: &str,
-    ) -> CloudResult<Vec<u8>> {
-        let url = picture_url(serial, auth_code, object);
-        let reply = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
-        let status = reply.status();
-        let bytes = reply
-            .bytes()
-            .await
-            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
-        if bytes.len() > 3 && bytes[0] == 0xff && bytes[1] == 0xd8 {
-            return Ok(bytes.to_vec());
-        }
-        let text = String::from_utf8_lossy(&bytes).trim().to_string();
-        Err(CloudError::Rejected(format!(
-            "picture server refused {object}: {text} ({status})"
-        )))
-    }
 }
 
 pub fn request_body(query: &AlarmQuery) -> Value {
@@ -365,19 +337,6 @@ pub fn event_name(event: &str) -> String {
         .join(" ")
 }
 
-pub fn picture_url(serial: &str, auth_code: &str, object: &str) -> String {
-    let stem = object
-        .strip_suffix(".jpeg")
-        .or_else(|| object.strip_suffix(".jpg"))
-        .unwrap_or(object);
-    format!(
-        "http://{PICTURE_HOST}:{PICTURE_PORT}/download/{}/{}/{}.jpeg",
-        serial.trim(),
-        auth_code.trim(),
-        stem
-    )
-}
-
 fn value_text(value: &Value) -> Option<String> {
     match value {
         Value::String(text) => Some(text.clone()),
@@ -487,14 +446,4 @@ mod tests {
         assert!(!json.contains("/download/"), "{json}");
     }
 
-    #[test]
-    fn a_picture_url_matches_the_sdk_download_shape() {
-        let url = picture_url("DEV0001", "code", "003_DEV0001_261027203358.jpeg");
-        assert_eq!(
-            url,
-            "http://pub-pms-pic.secu100.net:8082/download/DEV0001/code/003_DEV0001_261027203358.jpeg"
-        );
-        let same = picture_url("DEV0001", "code", "003_DEV0001_261027203358.jpg");
-        assert_eq!(url, same);
-    }
 }
