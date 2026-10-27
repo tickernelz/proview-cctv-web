@@ -10,6 +10,7 @@
     busy: false,
     alerts: false,
     photos: 'unknown',
+    missing: new Set(),
     last: null,
   };
 
@@ -84,25 +85,37 @@
   };
 
   const picUrl = (entry) => {
-    if (STATE.photos !== true || !entry.picture || !entry.picture.object) return '';
+    if (STATE.photos !== true || STATE.missing.has(entry.id)) return '';
+    if (!entry.picture || !entry.picture.object) return '';
     return picUrlOf(entry.picture.object, entry.picture.bucket);
   };
 
   const probePicture = async () => {
     if (STATE.photos !== 'unknown' || !STATE.serial) return;
-    const newest = [...STATE.entries.values()].sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0))[0];
-    if (!newest || !newest.picture || !newest.picture.object) {
+    const candidates = [...STATE.entries.values()]
+      .filter((entry) => entry.picture && entry.picture.object && !STATE.missing.has(entry.id))
+      .sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0))
+      .slice(0, 3);
+    if (!candidates.length) {
       STATE.photos = false;
       return;
     }
     STATE.photos = false;
-    try {
-      const reply = await fetch(picUrlOf(newest.picture.object, newest.picture.bucket), { credentials: 'same-origin' });
-      STATE.photos = reply.ok;
-    } catch (error) {
-      STATE.photos = false;
+    for (const entry of candidates) {
+      let reply;
+      try {
+        reply = await fetch(picUrlOf(entry.picture.object, entry.picture.bucket), { credentials: 'same-origin' });
+      } catch (error) {
+        STATE.photos = 'unknown';
+        return;
+      }
+      if (reply.ok) {
+        STATE.photos = true;
+        render();
+        return;
+      }
+      STATE.missing.add(entry.id);
     }
-    if (STATE.photos) render();
   };
 
   const picUrlOf = (object, bucket) => '/api/cloud/alarms/picture?sn=' + encodeURIComponent(STATE.serial) + '&object=' + encodeURIComponent(object) + '&bucket=' + encodeURIComponent(bucket || '');
@@ -130,7 +143,7 @@
         img.loading = 'lazy';
         img.src = src;
         img.addEventListener('error', () => {
-          STATE.photos = false;
+          STATE.missing.add(entry.id);
           render();
         });
         row.append(img);
@@ -268,6 +281,7 @@
     STATE.serial = devicePick.value;
     STATE.entries = new Map();
     STATE.seen = new Set();
+    STATE.missing = new Set();
     STATE.last = null;
     poll();
   });
@@ -292,6 +306,7 @@
       STATE.devices = [];
       STATE.entries = new Map();
       STATE.seen = new Set();
+      STATE.missing = new Set();
       STATE.last = null;
       STATE.photos = 'unknown';
       return;

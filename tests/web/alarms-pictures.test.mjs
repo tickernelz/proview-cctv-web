@@ -47,6 +47,31 @@ async function until(check, timeout, what) {
   throw new Error('timed out waiting for ' + what);
 }
 
+const PATTERNS = [{ urlPattern: '*/api/cloud/alarms?*' }, { urlPattern: '*/api/cloud/alarms/picture*' }];
+
+const refusedReply = () => ({
+  raw: { status: 403, type: 'text/plain', body: Buffer.from('gone').toString('base64'), cache: 'no-store' },
+});
+
+const objectOf = (url) => new URL(url, 'http://panel.invalid').searchParams.get('object');
+
+const picturesIn = (page) => page.evaluate("document.querySelectorAll('.alarm-row img').length");
+
+const rowOf = (page, id) =>
+  page.evaluate(`(() => {
+    const row = [...document.querySelectorAll('.alarm-row')].find((node) => node.textContent.includes(${JSON.stringify(id)}));
+    return row ? { found: true, images: row.querySelectorAll('img').length } : { found: false, images: -1 };
+  })()`);
+
+async function openPanel(respond) {
+  const page = await browser.page({ intercept: { patterns: PATTERNS, respond } });
+  await signIn(page, server.base);
+  await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell');
+  await page.evaluate("document.querySelector('.alarm-bell').click()");
+  await page.wait("document.querySelectorAll('.alarm-row').length === 3", 'three alarm rows');
+  return page;
+}
+
 before(async () => {
   server = await startServer(DEVICES);
   browser = await startBrowser();
@@ -63,24 +88,15 @@ after(async () => {
 test('the panel asks object storage once per thumbnail across poll cycles', async () => {
   let pictures = 0;
   let polls = 0;
-  const page = await browser.page({
-    intercept: {
-      patterns: [{ urlPattern: '*/api/cloud/alarms?*' }, { urlPattern: '*/api/cloud/alarms/picture*' }],
-      respond: (url) => {
-        if (url.includes('/api/cloud/alarms/picture')) {
-          pictures += 1;
-          return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
-        }
-        polls += 1;
-        return ALARMS;
-      },
-    },
+  const page = await openPanel((url) => {
+    if (url.includes('/api/cloud/alarms/picture')) {
+      pictures += 1;
+      return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
+    }
+    polls += 1;
+    return ALARMS;
   });
   try {
-    await signIn(page, server.base);
-    await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell');
-    await page.evaluate("document.querySelector('.alarm-bell').click()");
-    await page.wait("document.querySelectorAll('.alarm-row').length === 3", 'three alarm rows');
     await until(() => polls >= 2, 40000, 'two poll cycles');
     await sleep(600);
     const shown = await page.evaluate("document.querySelectorAll('.alarm-row img').length");
@@ -90,6 +106,64 @@ test('the panel asks object storage once per thumbnail across poll cycles', asyn
       'object storage was called ' + pictures + ' times over ' + polls + ' polls for ' + ALARMS.entries.length + ' objects',
     );
     console.log('polls=' + polls + ' picture_requests=' + pictures + ' cache=' + JSON.stringify(CACHE));
+  } finally {
+    await page.close();
+  }
+});
+
+test('one refused object leaves every other thumbnail on screen', async () => {
+  const refused = ALARMS.entries[1];
+  let refusedHits = 0;
+  let polls = 0;
+  const page = await openPanel((url) => {
+    if (url.includes('/api/cloud/alarms/picture')) {
+      if (objectOf(url) === refused.picture.object) {
+        refusedHits += 1;
+        return refusedReply();
+      }
+      return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
+    }
+    polls += 1;
+    return ALARMS;
+  });
+  try {
+    await until(async () => (await picturesIn(page)) === 2, 20000, 'the panel to drop the refused row');
+    await until(() => polls >= 2, 40000, 'two poll cycles');
+    await sleep(600);
+    const images = await picturesIn(page);
+    assert.equal(images, 2, 'one 403 left ' + images + ' of 3 thumbnails on screen');
+    assert.deepEqual(await rowOf(page, refused.id), { found: true, images: 0 }, 'the refused row kept a picture');
+    assert.equal(refusedHits, 1, 'the refused object was fetched ' + refusedHits + ' times');
+    console.log('refused_row=blank kept_thumbnails=' + images + ' refused_fetches=' + refusedHits + ' polls=' + polls);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a refused newest picture does not turn the whole panel off', async () => {
+  const refused = ALARMS.entries[2];
+  let refusedHits = 0;
+  let polls = 0;
+  const page = await openPanel((url) => {
+    if (url.includes('/api/cloud/alarms/picture')) {
+      if (objectOf(url) === refused.picture.object) {
+        refusedHits += 1;
+        return refusedReply();
+      }
+      return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
+    }
+    polls += 1;
+    return ALARMS;
+  });
+  try {
+    await until(async () => (await picturesIn(page)) === 2, 20000, 'the probe to fall back to the next picture');
+    await until(() => polls >= 2, 40000, 'two poll cycles');
+    await sleep(600);
+    const images = await picturesIn(page);
+    assert.equal(images, 2, 'a refused probe left ' + images + ' of 3 thumbnails on screen');
+    assert.deepEqual(await rowOf(page, refused.id), { found: true, images: 0 }, 'the refused row kept a picture');
+    assert.equal(refusedHits, 1, 'the refused object was fetched ' + refusedHits + ' times');
+    console.log('probe_fallback=picture kept_thumbnails=' + images + ' refused_fetches=' + refusedHits + ' polls=' + polls);
   } finally {
     await page.close();
   }
