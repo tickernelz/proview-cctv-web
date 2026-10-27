@@ -891,6 +891,28 @@ step is a corrected dump in the same shim (`RSA_get0_key` + `BN_bn2hex` on the
 and the run fell back to the previous binary), which turns this into a complete
 `CommunicateKey` construction in Rust.
 
+### 4C.17 The device public key is captured, so the session key is constructible
+
+The corrected shim (`RSA_get0_key` + `BN_bn2hex` on the `RSA*` argument of
+`RSA_public_encrypt`) now prints the key the SDK wraps its session key to:
+
+```
+[rsa] public_encrypt flen=16 padding=1 key=68763265375543773975507336397431
+[rsa] modulus=<256 hex chars, 1024-bit>
+[rsa] exponent=010001
+```
+
+The same modulus came back for all three encryptions in the session, and the
+16-byte plaintext is the client-chosen session token again (`hv2e7UCw9uPs69t1`
+in this run). Stored outside the repository at
+`~/re/proview-cctv/captures/device-pubkey.txt` rather than inlined here, because
+the value identifies this specific device.
+
+That closes the last unknown input for `CommunicateKey`: generate 16 characters,
+RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
+`CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
+ours on both ends.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
