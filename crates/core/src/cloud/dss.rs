@@ -209,6 +209,16 @@ pub struct RecordingPage {
     pub notice: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RecordingError {
+    #[error("{0}")]
+    Cloud(#[from] CloudError),
+    #[error("device {0} is not on this account")]
+    UnknownDevice(String),
+    #[error("device {0} has no pms auth code on this account")]
+    MissingAuth(String),
+}
+
 pub struct RecordingQuery<'a> {
     pub access: &'a str,
     pub account: &'a str,
@@ -217,10 +227,10 @@ pub struct RecordingQuery<'a> {
     pub day: &'a str,
 }
 
-pub fn query_body(request: &RecordingQuery<'_>, auth: &str) -> String {
+pub fn query_body(request: &RecordingQuery<'_>, sn: &str, auth: &str) -> String {
     json!({
         "msg": "video_query",
-        "sn": request.sn,
+        "sn": sn,
         "st": format!("{} 00:00:00", request.day),
         "et": format!("{} 23:59:59", request.day),
         "auth": auth,
@@ -318,14 +328,25 @@ fn stamp_seconds(text: &str) -> Option<i64> {
     Some(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
 }
 
-pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<RecordingPage> {
-    let identity = Identity::resolve();
-    if !identity.is_complete() {
-        return Err(CloudError::Malformed(
-            super::envelope::MISSING_CLOUD_IDENTITY.to_string(),
-        ));
-    }
-    let client = super::envelope::EnvelopeClient::new(identity);
+fn envelope_client() -> Option<&'static super::envelope::EnvelopeClient> {
+    static CLIENT: std::sync::OnceLock<Option<super::envelope::EnvelopeClient>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            let identity = Identity::resolve();
+            identity
+                .is_complete()
+                .then(|| super::envelope::EnvelopeClient::new(identity))
+        })
+        .as_ref()
+}
+
+pub async fn cloud_recordings(
+    request: RecordingQuery<'_>,
+) -> Result<RecordingPage, RecordingError> {
+    let client = envelope_client().ok_or_else(|| {
+        CloudError::Malformed(super::envelope::MISSING_CLOUD_IDENTITY.to_string())
+    })?;
     let devices = client.device_list(request.access).await?;
     let wanted = request.sn.trim();
     let device = if wanted.is_empty() {
@@ -336,9 +357,7 @@ pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<Record
         devices
             .iter()
             .find(|device| device.uuid == wanted)
-            .ok_or_else(|| {
-                CloudError::Rejected(format!("device {wanted} is not on this account"))
-            })?
+            .ok_or_else(|| RecordingError::UnknownDevice(wanted.to_string()))?
     };
     let auth = device
         .extra
@@ -346,26 +365,9 @@ pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<Record
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            CloudError::Rejected(format!(
-                "device {} has no pms auth code on this account",
-                device.uuid
-            ))
-        })?
+        .ok_or_else(|| RecordingError::MissingAuth(device.uuid.clone()))?
         .to_string();
-    let sn = if request.sn.trim().is_empty() {
-        device.uuid.clone()
-    } else {
-        request.sn.to_string()
-    };
-    let resolved = RecordingQuery {
-        access: request.access,
-        account: request.account,
-        sn: &sn,
-        channel: request.channel,
-        day: request.day,
-    };
-    let body = query_body(&resolved, &auth);
+    let body = query_body(&request, device.uuid.as_str(), &auth);
     let response = http_client()
         .post(format!("{PMS_BASE}/v2"))
         .header("Content-Type", "application/json")
@@ -379,11 +381,11 @@ pub async fn cloud_recordings(request: RecordingQuery<'_>) -> CloudResult<Record
         .await
         .map_err(|error| CloudError::Unreachable(error.to_string()))?;
     if !status.is_success() {
-        return Err(CloudError::Malformed(format!(
-            "cloud storage answered {status}: {text}"
-        )));
+        return Err(
+            CloudError::Malformed(format!("cloud storage answered {status}: {text}")).into(),
+        );
     }
-    read_recordings(&text)
+    Ok(read_recordings(&text)?)
 }
 
 #[cfg(test)]
@@ -448,7 +450,8 @@ mod tests {
             channel: 0,
             day: "2026-10-27",
         };
-        let parsed: serde_json::Value = serde_json::from_str(&query_body(&request, "abc")).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&query_body(&request, "SN0001", "abc")).unwrap();
         assert_eq!(parsed["msg"], "video_query");
         assert_eq!(parsed["sn"], "SN0001");
         assert_eq!(parsed["st"], "2026-10-27 00:00:00");

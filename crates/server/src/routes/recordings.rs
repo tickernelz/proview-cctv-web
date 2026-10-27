@@ -1,4 +1,4 @@
-use proview_core::cloud::dss::{cloud_recordings, RecordingPage, RecordingQuery};
+use proview_core::cloud::dss::{cloud_recordings, RecordingError, RecordingPage, RecordingQuery};
 use proview_core::cloud::CloudError;
 use proview_core::session::Store;
 use rocket::http::{CookieJar, Status};
@@ -50,13 +50,15 @@ async fn recordings(
         .map_err(|error| fail(status_of(&error), error.to_string()))
 }
 
-fn status_of(error: &CloudError) -> Status {
+fn status_of(error: &RecordingError) -> Status {
     match error {
-        CloudError::Credentials | CloudError::Expired => Status::Unauthorized,
-        CloudError::Unreachable(_) => Status::ServiceUnavailable,
-        CloudError::Malformed(_) => Status::BadGateway,
-        CloudError::Rejected(message) if message.starts_with("device ") => Status::NotFound,
-        CloudError::Rejected(_) => Status::BadGateway,
+        RecordingError::UnknownDevice(_) => Status::NotFound,
+        RecordingError::MissingAuth(_) => Status::BadGateway,
+        RecordingError::Cloud(error) => match error {
+            CloudError::Credentials | CloudError::Expired => Status::Unauthorized,
+            CloudError::Unreachable(_) => Status::ServiceUnavailable,
+            CloudError::Malformed(_) | CloudError::Rejected(_) => Status::BadGateway,
+        },
     }
 }
 

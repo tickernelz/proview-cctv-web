@@ -3,9 +3,7 @@
 
   const style = document.createElement('style');
   style.textContent = [
-    '#recordings-launcher{position:fixed;right:16px;bottom:16px;z-index:60;padding:10px 16px;border-radius:999px;border:0;',
-    'background:var(--live,#b3123c);color:#fff;font:inherit;font-weight:600;cursor:pointer;box-shadow:var(--shadow-menu,0 6px 20px rgba(0,0,0,.28))}',
-    '#recordings-launcher:focus-visible{outline:2px solid var(--focus,#fff);outline-offset:2px}',
+    '#recordings-launcher[aria-pressed="true"]{background:var(--bg-2,#ececec);color:var(--ink,#111);box-shadow:inset 0 0 0 1px var(--line,#c8c8c8)}',
     '#recordings-panel{position:fixed;right:16px;bottom:72px;z-index:61;width:min(420px,calc(100vw - 32px));max-height:min(70vh,560px);',
     'overflow:auto;padding:16px;border-radius:16px;background:var(--bg,#fff);color:var(--ink,#111);border:1px solid var(--line,#d0d0d0);',
     'box-shadow:var(--shadow-menu,0 18px 48px rgba(0,0,0,.35));font:inherit}',
@@ -34,11 +32,17 @@
   ].join('');
   document.body.appendChild(panel);
 
+  const controls = document.getElementById('controls');
   const launcher = document.createElement('button');
   launcher.type = 'button';
   launcher.id = 'recordings-launcher';
-  launcher.textContent = 'Recordings';
-  document.body.appendChild(launcher);
+  launcher.className = 'ctl';
+  launcher.setAttribute('aria-pressed', 'false');
+  launcher.setAttribute('aria-controls', 'recordings-panel');
+  launcher.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg><span>Cloud</span>';
+  if (!controls) return;
+  const spacer = controls.querySelector('.spacer');
+  controls.insertBefore(launcher, spacer || null);
 
   const form = panel.querySelector('[data-form]');
   const dayInput = form.elements.day;
@@ -57,6 +61,7 @@
 
   function show(open) {
     panel.hidden = !open;
+    launcher.setAttribute('aria-pressed', open ? 'true' : 'false');
     if (open) {
       loadDevices().catch(function (error) {
         status.textContent = error.message;
