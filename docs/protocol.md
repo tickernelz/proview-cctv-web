@@ -536,6 +536,18 @@ current address on UDP `8777`:
 `0x1520` is the magic here, `0x00b0` asks by serial and `0x01b0` answers with
 the device's relay `110.239.85.50` and port `0x223d` = 8765.
 
+The 8777 query also answers this box, so it is not phone-specific:
+
+```
+send 152000b0 + "7f92970ddf5282743hrc\0"  -> 140 bytes
+recv 152001b0 01000000 "7f92970ddf5282743hrc\0" ... "110.239.85.50\0" ... 3d220000 00000000 02000000
+```
+
+The reply names the relay the device sits on right now (`110.239.85.50`, then
+`0x223d` = 8765, then `2`), but the phone's media flow went to a different
+host on 6611, so the mapping from this reply to the media endpoint is still
+open: the trailing values are the candidate fields.
+
 Replaying the phone's exact 136-byte media handshake from this box against
 `162.128.66.154:6611` - and the same text with CRLF or base64-decoded - gets
 no reply at all, while the TCP connect itself succeeds. So the relay only
