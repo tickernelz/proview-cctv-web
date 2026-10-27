@@ -34,6 +34,9 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 
+#[path = "routes/recordings.rs"]
+pub mod recordings;
+
 pub fn files() -> Vec<rocket::route::Route> {
     routes![
         index,
@@ -41,6 +44,7 @@ pub fn files() -> Vec<rocket::route::Route> {
         account_js,
         talk_js,
         grid_js,
+        recordings_js,
         style_css,
         tokens_css,
         font,
@@ -65,6 +69,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(recordings::routes())
     .chain(grid::routes())
     .chain(cloud_bind::api())
     .chain(apmode::routes())
@@ -101,6 +106,11 @@ fn account_js() -> RawJavaScript<&'static str> {
 #[get("/talk.js")]
 fn talk_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/talk.js"))
+}
+
+#[get("/recordings.js")]
+fn recordings_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/recordings.js"))
 }
 
 #[get("/tokens.css")]
