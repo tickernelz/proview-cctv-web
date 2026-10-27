@@ -1,8 +1,10 @@
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use proview_core::cloud::{
-    new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudProfile,
-    CloudSessions, REQUESTED_CAPS,
+    new_session_id, AlarmClient, AppCaps, CapsClient, Captcha, CloudClient, CloudDevice,
+    CloudError, CloudProfile, CloudSessions, CssClient, EnvelopeClient, Identity, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -16,10 +18,20 @@ pub struct CloudState {
     client: CloudClient,
     caps: CapsClient,
     sessions: CloudSessions,
+    envelope: EnvelopeClient,
+    alarms: AlarmClient,
+    css: CssClient,
+    devices: Mutex<HashMap<String, (Instant, Vec<CloudDevice>)>>,
 }
+
+pub(crate) const DEVICE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 impl CloudState {
     pub fn new() -> Self {
+        Self::with_css(CssClient::from_env())
+    }
+
+    pub fn with_css(css: CssClient) -> Self {
         let ttl = std::env::var("PROVIEW_CLOUD_SESSION_TTL")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -28,11 +40,46 @@ impl CloudState {
             client: CloudClient::from_env(),
             caps: CapsClient::from_env(),
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
+            envelope: EnvelopeClient::new(Identity::resolve()),
+            alarms: AlarmClient::from_env(),
+            css,
+            devices: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn portal(&self) -> &str {
         self.client.base()
+    }
+
+    pub(crate) fn envelope(&self) -> &EnvelopeClient {
+        &self.envelope
+    }
+
+    pub(crate) fn alarms(&self) -> &AlarmClient {
+        &self.alarms
+    }
+
+    pub(crate) fn css(&self) -> &CssClient {
+        &self.css
+    }
+
+    pub(crate) fn cached_devices(&self, session: &str) -> Option<Vec<CloudDevice>> {
+        let mut guard = self.devices.lock().ok()?;
+        guard.retain(|_, (seen, _)| seen.elapsed() < DEVICE_CACHE_TTL);
+        guard.get(session).map(|(_, devices)| devices.clone())
+    }
+
+    pub(crate) fn keep_devices(&self, session: &str, devices: &[CloudDevice]) {
+        if let Ok(mut guard) = self.devices.lock() {
+            guard.retain(|_, (seen, _)| seen.elapsed() < DEVICE_CACHE_TTL);
+            guard.insert(session.to_string(), (Instant::now(), devices.to_vec()));
+        }
+    }
+
+    pub(crate) fn forget_devices(&self, session: &str) {
+        if let Ok(mut guard) = self.devices.lock() {
+            guard.remove(session);
+        }
     }
 }
 
@@ -50,7 +97,7 @@ pub struct StatusBody {
 
 type Failure = (Status, Json<StatusBody>);
 
-fn fail(status: Status, message: impl Into<String>) -> Failure {
+pub(crate) fn fail(status: Status, message: impl Into<String>) -> Failure {
     (
         status,
         Json(StatusBody {
@@ -60,12 +107,12 @@ fn fail(status: Status, message: impl Into<String>) -> Failure {
     )
 }
 
-fn cloud_failure(error: &CloudError) -> Failure {
+pub(crate) fn cloud_failure(error: &CloudError) -> Failure {
     tracing::warn!(%error, "cloud call failed");
     fail(status_for(error), error.to_string())
 }
 
-fn status_for(error: &CloudError) -> Status {
+pub(crate) fn status_for(error: &CloudError) -> Status {
     match error {
         CloudError::Rejected(_) => Status::BadRequest,
         CloudError::Credentials => Status::Unauthorized,
@@ -75,14 +122,14 @@ fn status_for(error: &CloudError) -> Status {
     }
 }
 
-fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
+pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
     cookies
         .get_private(COOKIE)
         .map(|cookie| cookie.value().to_string())
         .ok_or_else(|| fail(Status::Unauthorized, "not signed in to the cloud"))
 }
 
-fn restore(
+pub(crate) fn restore(
     state: &CloudState,
     cookies: &CookieJar<'_>,
 ) -> Result<proview_core::cloud::CloudSession, Failure> {
