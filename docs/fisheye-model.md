@@ -124,12 +124,14 @@ interior points at 180x90). The orientation is pinned by
 `every_map_keeps_the_source_handedness`, which requires the discrete Jacobian of the source
 map, `det[s(c+1,r) - s(c,r), s(c,r+1) - s(c,r)]`, to be positive at every interior point of
 `Map::equirect`, all three `Map::equirect_mounted` variants and `Map::ptz`; at 180x90 that
-is 7832 points for equirect, 7654 for table, 7832 for wall and 14608 for ptz. Measured in
-a y-up basis all four are negative, which is the same statement once the basis flips.
+is 7832 points for equirect, 7832 for ceiling, 7654 for table, 7832 for wall and 14608 for
+ptz. Measured in a y-up basis all five are negative, which is the same statement once the
+basis flips.
 
-Which side of the vendor's display quad this matches stays inference, because the texcoord
-buffer is not in the static picture. What is not inference is that the two dewarp modes now
-agree with each other and with the image orientation.
+What stays unproven is narrower than the quad: the row order of the buffer the vendor
+uploads as its pano texture (whether row 0 is the nadir or the zenith) and whether the
+application flips the rendered output before it reaches the screen. Neither changes the
+horizontal handedness the quad evidence settles.
 
 Source coordinates use the pixel-area convention: column `c` covers `[c, c+1)`, so the
 geometric centre of a 512 px frame is 256.0 and `RgbFrame::sample` subtracts 0.5 before
