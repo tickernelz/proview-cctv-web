@@ -1238,6 +1238,108 @@ Reaching the pinned host, and with it the minting request and the device list,
 needs a hooked or jailbroken client, or static work on the Mach-O, not another
 proxy export.
 
+## 10D. Device bind on the account envelope (`mdadd`, `mdrm`), and the QR payload codec
+
+Measured 2026-10-27, issue ZHA-4008, against the live account and cloud; the
+strings come from `libFunSDK.so` (arm64-v8a, the APK's own copy).
+
+### 10D.1 The bind call is `mdadd`, not `/createbind`
+
+The `XMAccount` module carries the whole device list surface next to
+`msdlistCode`: `mdadd`, `mdrm`, `delDevices`, `mdedit`, `mdeditPass`,
+`useredun`, `devicesTransOut/In/Info/Cancel` and `hasDevicesTrans`. `mdadd`
+builds `uuid=%s&username=%s&password=%s&userId=%s&nickname=%s&type=%s&ip=%s&port=%s`
+(0xf3e798) and posts it as `mdadd` on the same signed envelope as
+`loginExist`/`msdlistCode`; `mdrm` is `uuid=%s` (0xf3ebdc). The `/createbind`
+and `/listbind` strings sit in the RPS relay agent instead
+(`[rps agent]`, `tcp_proxy_agent_client.cpp`, `CDeviceAgent::ListBind`), which
+is the media tunnel, not the account.
+
+Wire shape, exercised from this box:
+
+    POST https://rs.xmeye.net/mdadd/v3/<7-digit counter><millis>/<sig>.rs
+    uuid: <app uuid>   appKey: <app key>   Authorization: <account access token>
+    body: HEX( AES-128-ECB-PKCS7( "uuid=…&username=…&password=…&userId=…&nickname=…&type=0&ip=0.0.0.0&port=34567", body_key(tsid, app secret) ) )
+    reply: {"code":2000,"msg":"SUCCESS","data":""}
+
+Replies seen, in order of the measurements:
+
+| Body | Vendor reply |
+|---|---|
+| `uuid=<serial>` only | `4105 DEV_USERNAME_FAIL` |
+| `uuid=<serial>&userId=<account id>` | `4105 DEV_USERNAME_FAIL` |
+| full body, real serial, real camera password | `4101 DEV_ALREADY` |
+| full body, real serial, wrong camera password | `4101 DEV_ALREADY` (the already-bound short circuit wins) |
+| full body, `uuid=no` | `4104 DEV_UUID_FAIL` |
+| full body, fictional `AASN000000000999` | `2000`, and `msdlistCode` then returns **two** devices |
+| `mdrm` `uuid=AASN000000000999` | `2000`, `msdlistCode` back to one device |
+
+Two consequences worth keeping: the cloud does **not** validate that a serial
+belongs to a real device on bind (`2000` for a made-up one), so a bind result is
+not a device check — `msdlistCode` is; and `4101` means "this account already
+holds that serial", which is why a wrong camera password on an already-bound
+camera still answers `4101`. The account was left exactly as it was found: the
+fictional device was removed again with `mdrm` and the list returned to one
+camera.
+
+### 10D.2 The QR payload codec
+
+`DevQrCodeDlg` is the generator: the owner path builds
+`{devType,userId,loginName,pwd,devId,shareTimes}` and calls
+`FunSDK.EncGeneralDevInfo(json)`, the other path calls
+`EncDevInfo(sn,user,pwd,devType)`; both end in `XEnCodeStr`. Scanning runs the
+inverse, `XDeCodeStr`, and splits the plain text on commas; the SDK's own
+`FUN_DecGeneralDevInfo` also accepts a plain `sn,user,pwd,type,time` string
+(it checks the character classes before decoding).
+
+`crates/core/src/cloud/bind.rs` implements both directions. The pipeline,
+read off `XEnCodeStr(char*, char const*, int)` at 0xc374a8 and its helpers:
+
+1. `offset = time() % 744` (the two-argument wrapper, 0xc3728c).
+2. Each byte becomes `%03d` of `byte + offset`, so the digits stay printable.
+3. Every digit is shifted by `digitsum(offset) % 10`.
+4. `%03d` of the offset is appended, unshifted.
+5. Digits are packed in pairs, `value = d0*10 + d1`, by `To62` (0xc36fec):
+   `0..25 → a..z`, `26..51 → A..Z`, `52..60 → 1..9`, and `≥61 → '0'` followed by
+   `To62(value-61)`.
+6. `DevInfoEncode` (0xc36bdc) shifts every character inside its own class —
+   digits `% 10`, lower and upper `% 26` — by `key[index % len(key)]` with the
+   key `DecInfoEncode`.
+7. A literal `z` closes the string.
+
+Vectors produced by the shipped library under the bionic harness (qemu-user,
+`re/qemu/harness_qr*.c`) and reproduced byte for byte:
+
+| Plain | Offset | Blob |
+|---|---|---|
+| `a` | 0 | `z1evz` |
+| `abc` | 0 | `z1e3Rh1Ugz` |
+| `abc` | 1 / 2 / 3 | `a1Zvbiiz` / `lkrBKaz` / `HFDMEbz` |
+| `abc` | 334 | `HlBMNGz` |
+| `7f92970ddf5282743hrc` | 0 | `vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz` |
+| `AASN000000000001,,,2,1793109504` | 312 | `8DIC0Ga40A1eX8C9dG2M9oV1B1yX9A0gH9L9pX1UAh3KBJ9KYI0CDw9A0KI9L9pv1VqV3Lbtz` |
+
+`EncDevInfo` replaces a `admin` login name with an empty field and appends
+`time(0)` as the fifth column, which is why the vendor blob for the real camera
+decodes to `7f92970ddf5282743hrc,,TestPass1,0,1793109504`.
+
+### 10D.3 Sign-out
+
+`IXMAccount::XM_Video_Logout_XMAccount` (0xf40808) is a cookie call:
+`POST /webservice/app/user/logOut` with `Host` from `MI_SERVER`
+(`rs.xmeye.net:443`), `Cookie: <the session that /webservice/app/user/logInByAccount
+set>`, `Connection: close`. That cookie belongs to the legacy portal login whose
+envelope is still unsolved here, so the call cannot be authenticated from a v3
+session. Measured from this box: `/webservice/app/user/logOut` answers
+`5005 PARAM_FAIL` on `rs.xmeye.net` — and so does the control path `/zzz`, so the
+gateway tells us nothing about the route. The v3 account service has no
+sign-out route at all: `logOut`, `logout`, `userLogout`, `signOut`, `quit`,
+`userexit` and the control `zzzNoSuchMethod` each answer the same Spring 404
+with the path echoed, while `mdadd` on the same shape answers a real code.
+`AccountUnBindingWX` is a WeChat unlink (`userunbindWx`), not a sign-out. What
+the client does instead: `POST /api/account/signout` clears the server session
+and the remembered token and records the vendor's raw reply in its answer.
+
 ## 11. Live passthrough transport (stream 2)
 
 A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards

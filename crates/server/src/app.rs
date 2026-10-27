@@ -75,6 +75,7 @@ pub fn build_with_state(
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .manage(crate::routes::cloud::CloudState::new())
+        .manage(crate::routes::cloud_bind::AccountStore::from_env())
         .manage(settings)
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
@@ -105,6 +106,9 @@ pub async fn serve_with_state(
     settings: crate::settings::SettingsStore,
 ) -> Result<ServerHandle, Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
+    if let Some(dir) = &opts.data_dir {
+        std::env::set_var("PROVIEW_DATA_DIR", dir);
+    }
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
     let rig = build_with_state(figment(&opts, port), config, modes, settings);
     let server = rig.ignite().await.map_err(Box::new)?;

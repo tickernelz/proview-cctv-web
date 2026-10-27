@@ -5,7 +5,31 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- Account lifecycle on the cloud envelope. `POST /api/account/remember` keeps
+  the account email and access token in `account.json` (0600) next to the
+  settings, and `GET /api/account/remembered` rebuilds the server session from
+  that token without the password: measured 401 → `restored: true` → `GET
+  /api/devices` 200 on the account's camera. `POST /api/account/signout` drops
+  the session and the stored token and records the vendor's raw reply, which is
+  `5005 PARAM_FAIL` because the legacy cookie sign-out cannot be authenticated
+  from a v3 session (`docs/protocol.md` 10D.3).
+
+- Device bind by serial and by QR. `POST /api/devices/bind`,
+  `POST /api/devices/bind/qr` and `POST /api/devices/unbind` drive the vendor's
+  `mdadd`/`mdrm` on the same signed envelope the device list uses. The QR codec
+  (`XEnCodeStr`/`XDeCodeStr` from libFunSDK) is reproduced byte for byte in
+  `crates/core/src/cloud/bind.rs`, with the vendor's own vectors as unit tests,
+  and both the bare blob and the `https://d.xmeye.net/CSee?shareInfo=` share
+  link parse into a serial. Measured: the real serial answers `4101`, a
+  fictional one answers `2000` and appears in `GET /api/devices`, `mdrm`
+  removes it, `uuid=no` answers `4104` (`docs/protocol.md` 10D).
+
 ## 0.3.2 — 2026-10-27
+
 
 ### Added
 
