@@ -871,9 +871,15 @@ function tick() {
 
 window.setInterval(tick, 1000);
 
+const cloudPathWalks = new Set();
+
 async function cloudPathDetail(deviceId) {
+  if (cloudPathWalks.has(deviceId)) {
+    return '';
+  }
+  cloudPathWalks.add(deviceId);
   try {
-    const path = await api('/api/cloud/device-path?sn=' + encodeURIComponent(deviceId));
+    const path = await api('/api/cloud-path?device=' + encodeURIComponent(deviceId));
     const parts = [];
     if (path.access) {
       parts.push('access server ' + path.access);
@@ -881,12 +887,19 @@ async function cloudPathDetail(deviceId) {
     if (path.agent) {
       parts.push('agent ' + path.agent);
     }
-    if (path.relayError) {
+    if (path.relayAccepted) {
+      parts.push('relay accepted the session for ' + (path.destIp || 'the device'));
+    } else if (path.relayError) {
       parts.push('relay ' + path.relayError);
+    }
+    if (!parts.length && path.detail) {
+      parts.push(path.detail);
     }
     return parts.join(', ');
   } catch (error) {
     return '';
+  } finally {
+    cloudPathWalks.delete(deviceId);
   }
 }
 
@@ -1797,15 +1810,21 @@ async function requestStream() {
     if (sessionLost(error)) {
       return;
     }
-    let text = explainStreamError(error);
-    if (error.status === 501 && camera.device) {
-      const detail = await cloudPathDetail(camera.device.id);
-      if (detail) {
-        text += ' Cloud reach: ' + detail + '.';
-      }
-    }
-    setStage('error', { text, code: error.message });
+    const base = explainStreamError(error);
+    setStage('error', { text: base, code: error.message });
     console.error('stream request failed', error);
+    if (error.status === 501 && camera.device) {
+      const deviceId = camera.device.id;
+      cloudPathDetail(deviceId).then((detail) => {
+        if (!detail || currentCamera() !== camera || state.stage.name !== 'error') {
+          return;
+        }
+        setStage('error', {
+          text: base + ' Cloud reach: ' + detail + '.',
+          code: error.message,
+        });
+      });
+    }
   }
 }
 

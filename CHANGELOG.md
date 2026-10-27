@@ -9,12 +9,14 @@ stability before 1.0.
 
 ### Added
 
-- `GET /api/cloud/device-path?sn=<serial>` reports what the cloud path can reach
+- `GET /api/cloud-path?device=<serial>` reports what the cloud path can reach
   for one device today: the access server the status cluster names, the media
-  agent the RPS answers with, and the relay handshake result. The live screen
-  calls it when the stream is not wired and prints that line, so "not wired" no
-  longer hides whether the relay itself is reachable. It also makes the relay
-  transport part of the shipped binary, which the 0.3.2 binaries did not carry.
+  agent the RPS answers with, and whether the relay accepted the handshake. It
+  rides the same session cookie as `/api/stream`, so the browser can call it
+  without a second sign-in. The live screen shows its own error immediately and
+  appends that line when it arrives, so "not wired" no longer hides whether the
+  relay is reachable. It also makes the relay transport part of the shipped
+  binary, which the 0.3.2 binaries did not carry.
 
 ## 0.3.2 — 2026-10-27
 

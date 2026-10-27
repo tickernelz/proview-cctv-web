@@ -7,7 +7,7 @@ pub mod status;
 pub mod types;
 
 pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTED_CAPS};
-pub use client::{CloudClient, CloudError, CloudPath, CloudResult};
+pub use client::{CloudClient, CloudError, CloudResult};
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
 pub use envelope::{
     body_key, claims, open, scramble, seal, signature, signed_request, url_encode, Claims,
