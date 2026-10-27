@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { startServer, startBrowser, signIn } from './cdp.mjs';
 
-const DEVICES = [{ id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 }];
+const DEVICES = [
+  { id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 },
+  { id: 'yard', name: 'Yard camera', model: 'XM-IPC', online: true, channels: 1 },
+];
 const PIXEL =
   '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
   'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA' +
@@ -35,6 +38,18 @@ const ALARMS = {
   })),
 };
 
+const YARD = {
+  ...ALARMS,
+  serial: 'yard',
+  name: 'Yard camera',
+  entries: ALARMS.entries.map((entry, index) => ({
+    ...entry,
+    id: '2610272150' + (10 + index),
+    time: '2026-10-27 21:1' + index + ':10',
+    picture: { ...entry.picture, object: '003_yard_2610272150' + (10 + index) + '.jpeg' },
+  })),
+};
+
 let server;
 let browser;
 
@@ -63,12 +78,12 @@ const rowOf = (page, id) =>
     return row ? { found: true, images: row.querySelectorAll('img').length } : { found: false, images: -1 };
   })()`);
 
-async function openPanel(respond) {
+async function openPanel(respond, ready = "document.querySelectorAll('.alarm-row').length === 3") {
   const page = await browser.page({ intercept: { patterns: PATTERNS, respond } });
   await signIn(page, server.base);
   await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell');
   await page.evaluate("document.querySelector('.alarm-bell').click()");
-  await page.wait("document.querySelectorAll('.alarm-row').length === 3", 'three alarm rows');
+  await page.wait(ready, 'the panel to open');
   return page;
 }
 
@@ -164,6 +179,56 @@ test('a refused newest picture does not turn the whole panel off', async () => {
     assert.deepEqual(await rowOf(page, refused.id), { found: true, images: 0 }, 'the refused row kept a picture');
     assert.equal(refusedHits, 1, 'the refused object was fetched ' + refusedHits + ' times');
     console.log('probe_fallback=picture kept_thumbnails=' + images + ' refused_fetches=' + refusedHits + ' polls=' + polls);
+  } finally {
+    await page.close();
+  }
+});
+
+test('an empty first window does not switch pictures off for later alarms', async () => {
+  let polls = 0;
+  const page = await openPanel(
+    (url) => {
+      if (url.includes('/api/cloud/alarms/picture')) return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
+      polls += 1;
+      return polls === 1 ? { ...ALARMS, entries: [], total: 0 } : ALARMS;
+    },
+    "document.querySelector('.alarm-list p')",
+  );
+  try {
+    await until(() => polls >= 2, 40000, 'a second poll with alarms in it');
+    await until(async () => (await picturesIn(page)) === 3, 20000, 'three thumbnails on the late alarms');
+    const images = await picturesIn(page);
+    assert.equal(images, 3, 'alarms that arrived after an empty window showed ' + images + ' of 3 thumbnails');
+    console.log('empty_first_window=1 late_thumbnails=' + images + ' polls=' + polls);
+  } finally {
+    await page.close();
+  }
+});
+
+test('a camera switch does not carry a picture failure from the previous camera', async () => {
+  const dead = new Set(ALARMS.entries.map((entry) => entry.picture.object));
+  let refusedHits = 0;
+  const page = await openPanel((url) => {
+    if (url.includes('/api/cloud/alarms/picture')) {
+      if (dead.has(objectOf(url))) {
+        refusedHits += 1;
+        return refusedReply();
+      }
+      return { raw: { type: 'image/jpeg', body: PIXEL, cache: CACHE } };
+    }
+    return new URL(url, 'http://panel.invalid').searchParams.get('sn') === 'yard' ? YARD : ALARMS;
+  });
+  try {
+    await until(() => refusedHits === 3, 20000, 'the gate camera to refuse three candidates');
+    assert.equal(await picturesIn(page), 0, 'the gate camera still had thumbnails');
+    await page.wait("document.querySelectorAll('[data-device] option').length === 2", 'two cameras');
+    await page.evaluate(
+      "(() => { const pick = document.querySelector('[data-device]'); pick.value = 'yard'; pick.dispatchEvent(new Event('change')); })()",
+    );
+    await until(async () => (await picturesIn(page)) === 3, 30000, 'the yard camera thumbnails');
+    const images = await picturesIn(page);
+    assert.equal(images, 3, 'the second camera showed ' + images + ' of 3 thumbnails after the first one failed');
+    console.log('gate_refused=' + refusedHits + ' yard_thumbnails=' + images);
   } finally {
     await page.close();
   }

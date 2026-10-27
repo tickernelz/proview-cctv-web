@@ -91,24 +91,23 @@
   };
 
   const probePicture = async () => {
-    if (STATE.photos !== 'unknown' || !STATE.serial) return;
+    const serial = STATE.serial;
+    if (STATE.photos !== 'unknown' || !serial) return;
     const candidates = [...STATE.entries.values()]
       .filter((entry) => entry.picture && entry.picture.object && !STATE.missing.has(entry.id))
       .sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0))
       .slice(0, 3);
-    if (!candidates.length) {
-      STATE.photos = false;
-      return;
-    }
+    if (!candidates.length) return;
     STATE.photos = false;
     for (const entry of candidates) {
       let reply;
       try {
         reply = await fetch(picUrlOf(entry.picture.object, entry.picture.bucket), { credentials: 'same-origin' });
       } catch (error) {
-        STATE.photos = 'unknown';
+        if (STATE.serial === serial) STATE.photos = 'unknown';
         return;
       }
+      if (STATE.serial !== serial) return;
       if (reply.ok) {
         STATE.photos = true;
         render();
@@ -282,6 +281,7 @@
     STATE.entries = new Map();
     STATE.seen = new Set();
     STATE.missing = new Set();
+    STATE.photos = 'unknown';
     STATE.last = null;
     poll();
   });
