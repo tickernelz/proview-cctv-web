@@ -239,10 +239,16 @@ pub async fn download(
         .download_start(&file, channel)
         .await
         .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
-    let collected = collect(&mut session, listed).await;
-    let _ = session.download_stop(&file, channel).await;
-    let _ = session.logout().await;
-    let bytes = collected.map_err(|message| fail(Status::BadGateway, message))?;
+    let handle = tokio::spawn(async move {
+        let collected = collect(&mut session, listed).await;
+        let _ = session.download_stop(&file, channel).await;
+        let _ = session.logout().await;
+        collected
+    });
+    let bytes = handle
+        .await
+        .map_err(|error| fail(Status::BadGateway, format!("the download stopped: {error}")))?
+        .map_err(|message| fail(Status::BadGateway, message))?;
     Ok(Download {
         bytes,
         filename: download_name(&name),
