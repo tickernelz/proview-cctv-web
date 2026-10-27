@@ -10,15 +10,33 @@ pub struct CloudProvider {
     client: EnvelopeClient,
     device_user: String,
     device_pass: String,
+    device_id: String,
 }
 
 impl CloudProvider {
     pub fn new(cfg: &Config) -> Self {
+        Self::with_identity(cfg, Identity::from_env())
+    }
+
+    pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
         Self {
-            client: EnvelopeClient::with_base(Identity::from_env(), cfg.cloud_base.clone()),
+            client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             device_user: cfg.device_user.clone(),
             device_pass: cfg.device_pass.clone(),
+            device_id: std::env::var("PROVIEW_DEVICE_ID")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "00000000000000000000".to_string()),
         }
+    }
+
+    pub async fn device_token(&self, session: &VendorSession) -> Result<String, ProviderError> {
+        let token = self.token(session)?;
+        self.client
+            .device_token(token, &self.device_id)
+            .await
+            .map_err(map_cloud)
     }
 
     fn token<'a>(&self, session: &'a VendorSession) -> Result<&'a str, ProviderError> {
@@ -30,13 +48,13 @@ impl CloudProvider {
     }
 }
 
+const MISSING_PLATFORM_KEYS: &str = "the cloud account login needs the app uuid, app key and app secret; set PROVIEW_APP_UUID, PROVIEW_APP_KEY and PROVIEW_APP_SECRET under Settings, Configuration, Cloud";
+
 fn map_cloud(error: CloudError) -> ProviderError {
     match error {
         CloudError::Credentials => ProviderError::BadCredentials,
         CloudError::Rejected(message) => ProviderError::Upstream(message),
-        CloudError::Expired => {
-            ProviderError::Upstream("session expired; sign in again".to_string())
-        }
+        CloudError::Expired => ProviderError::Expired,
         CloudError::Unreachable(message) => ProviderError::Unreachable(message),
         CloudError::Malformed(message) => ProviderError::Upstream(message),
     }
@@ -49,6 +67,11 @@ impl Provider for CloudProvider {
     }
 
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
+        if !self.client.identity().is_complete() {
+            return Err(ProviderError::Misconfigured(
+                MISSING_PLATFORM_KEYS.to_string(),
+            ));
+        }
         let tokens = self
             .client
             .login_envelope(user, pass)

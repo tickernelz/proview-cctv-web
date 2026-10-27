@@ -14,7 +14,7 @@ fn fixture() -> serde_json::Value {
 }
 
 #[test]
-fn scramble_matches_the_captured_rows() {
+fn scramble_matches_the_reference_vectors() {
     let fixture = fixture();
     for row in fixture["scramble"].as_array().expect("scramble rows") {
         let input = row["input"].as_str().expect("input");
@@ -24,7 +24,7 @@ fn scramble_matches_the_captured_rows() {
 }
 
 #[test]
-fn signature_and_key_match_the_captured_rows() {
+fn signature_and_key_match_the_reference_vectors() {
     let fixture = fixture();
     for group in ["vectors", "uninitialised"] {
         for row in fixture[group].as_array().expect("rows") {

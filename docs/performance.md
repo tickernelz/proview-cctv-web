@@ -220,11 +220,14 @@ the run depends on them being logged.
 | platform exchange + sealed `/deviceToken/get` | 0.39 s | 0.21 s | 0.20 s |
 | `msdlistCode` device list (1 device) | 0.06 s | 0.07 s | 0.06 s |
 | `refreshToken` | 0.13 s | 0.13 s | 0.13 s |
-| end to end, sign-in to device list | 0.94 s | 0.66 s | 0.64 s |
-| same three steps through `re/sdk_login.sh` (qemu, chroot, vendor SDK) | 65 s | 65 s | 65 s |
+| product path: `loginExist` then `msdlistCode` (what `CloudProvider` does) | 0.39 s | 0.32 s | 0.30 s |
+| example end to end (all four steps above) | 0.94 s | 0.66 s | 0.64 s |
+| `re/sdk_login.sh`, the same login + device list through qemu | 65 s (measured once, 2026-10-27 03:45Z, notes 12 section 10) | | |
 
-Against 65 s for the qemu harness, the in-process path is about 70-100x
-faster on the same box and the same account. Reading the split:
+The in-process product path is 0.30-0.39 s against 65 s for the qemu harness,
+about 170x on the same box and the same account; the 65 s was recorded once by
+that harness run, so it is a reference point, not a distribution. Reading the
+split:
 
 1. The protocol is cheap: each signed call costs 60-400 ms, which is round
 trip plus AES/MD5 over a ~110-character string. Nothing in the envelope needs

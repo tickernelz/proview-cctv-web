@@ -117,7 +117,7 @@ Accept-Encoding: gzip
 Content-Type: application/x-www-form-urlencoded
 Content-Length: 96
 
-body: 96 lowercase hex characters
+body: 96 uppercase hex characters
 ```
 
 - `tsid` is 20 digits: a 7-digit per-process request counter followed by
@@ -134,9 +134,10 @@ body: 96 lowercase hex characters
   refusal belongs to requests that arrive unsigned.
 
 Not in this repository: the SDK, the chroot, and the application key material the
-harness passes in. None of it is redistributable, and the server in this
-repository has no login integration — the harness proves the envelope, it does
-not ship a client.
+harness passes in. None of it is redistributable. The harness proved the
+envelope; section 3B derives it and `crates/core` now carries the client, which
+takes the key material from `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and
+`PROVIEW_APP_SECRET` at run time.
 
 ## 3B. The envelope algorithm, derived from the binary (2026-10-27)
 
@@ -264,7 +265,7 @@ Where each claim comes from, so it can be re-checked:
 | `S = uuid + appKey + appSecret + tsid` | `LD_PRELOAD` shim over `__vsnprintf_chk` dumping the `%s%s%s%s` result, 2026-10-27 |
 | `tsid = %07d%lld`, wrap 38528 | `GetEncTimMillis` `0xf505ec`; paths `0000003...`, `0000004...` in one process |
 | mirror + MD5 order | `GetEncryptStr` `0xf50ec0`-`0xf51234`; 27 of 27 `sdk.log` rows reproduced |
-| `key16` rule | `KeyFilter` `0xf4fb4c`; log keys `3070132241012345` (empty secret) and `3070268874689de0` (secret set) |
+| `key16` rule | `KeyFilter` `0xf4fb4c`; a row with an empty secret reads `3070132241012345` (ten timestamp digits then the digit padding), a row with the secret set keeps its first six characters after those digits |
 | body plaintext | the captured 96-hex login body decrypts to `account=...&pass=...` under that key |
 | device list | captured `msdlistCode` reply decrypts to `{"code":2000,"data":{"mine":[..."7f92970ddf5282743hrc"...]}}` |
 
@@ -278,11 +279,13 @@ repository.
 Live run from this box, `cargo run -p proview-core --example envelope_login`,
 three consecutive runs on 2026-10-27: login 0.24-0.50 s, device token
 0.20-0.39 s, device list 0.06-0.07 s, refresh 0.13 s, one device returned each
-time (`uuid 7f92970ddf5282743hrc`, nickname `Pintu keluar masuk`, owner
-`csfy`, one channel). The qemu harness of section 3A needs about 65 s for the
-same three steps.
+time (`uuid 7f92970ddf5282743hrc`, a nickname, an owner account and one
+channel). The qemu harness of section 3A needs about 65 s for the same three
+steps.
 
 
+
+## 4. Media paths
 
 Three are present in the SDK. In order of implementation cost:
 

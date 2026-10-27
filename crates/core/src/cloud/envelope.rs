@@ -14,7 +14,7 @@ use rsa::RsaPublicKey;
 use serde::Deserialize;
 
 use super::client::{CloudError, CloudResult};
-use super::types::{user_message, CloudDevice, Envelope, CODE_BAD_CREDENTIALS};
+use super::types::{user_message, CloudDevice, Envelope, CODE_BAD_CREDENTIALS, CODE_TOKEN_EXPIRED};
 
 pub const ENVELOPE_BASE: &str = "https://rs.xmeye.net";
 pub const PLATFORM_BASE: &str = "https://boss22-api.xmcsrv.net";
@@ -30,11 +30,29 @@ const ACCEPT: &str = "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2";
 const USER_AGENT: &str = "proview-cctv-web/0.2";
 const BLOCK: usize = 16;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct Identity {
     pub uuid: String,
     pub app_key: String,
     pub app_secret: String,
+}
+
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Identity")
+            .field("uuid", &self.uuid)
+            .field("app_key", &self.app_key)
+            .field("app_secret", &redacted(&self.app_secret))
+            .finish()
+    }
+}
+
+fn redacted(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    format!("{}..{}", &value[..4.min(value.len())], value.len())
 }
 
 impl Identity {
@@ -59,7 +77,9 @@ impl Identity {
     }
 
     pub fn is_complete(&self) -> bool {
-        !self.uuid.trim().is_empty() && !self.app_key.trim().is_empty()
+        !self.uuid.trim().is_empty()
+            && !self.app_key.trim().is_empty()
+            && !self.app_secret.trim().is_empty()
     }
 }
 
@@ -241,6 +261,13 @@ fn is_hex_block(text: &str) -> bool {
         && trimmed.chars().all(|value| value.is_ascii_hexdigit())
 }
 
+pub fn login_error(code: i32, vendor: Option<&str>) -> CloudError {
+    match code {
+        CODE_BAD_CREDENTIALS | CODE_BAD_CREDENTIALS_VENDOR => CloudError::Credentials,
+        other => CloudError::Rejected(user_message(other, vendor)),
+    }
+}
+
 pub fn claims(token: &str) -> Option<Claims> {
     let payload = token.split('.').nth(1)?;
     let raw = URL_SAFE_NO_PAD.decode(payload).ok()?;
@@ -264,10 +291,7 @@ pub struct EnvelopeClient {
 
 impl EnvelopeClient {
     pub fn new(identity: Identity) -> Self {
-        Self::with_base(
-            identity,
-            env_override("PROVIEW_ENVELOPE_BASE", ENVELOPE_BASE),
-        )
+        Self::with_base(identity, ENVELOPE_BASE)
     }
 
     pub fn with_base(identity: Identity, base: impl Into<String>) -> Self {
@@ -284,7 +308,7 @@ impl EnvelopeClient {
             } else {
                 base
             },
-            platform: env_override("PROVIEW_PLATFORM_BASE", PLATFORM_BASE),
+            platform: PLATFORM_BASE.to_string(),
             identity,
             counter: AtomicU32::new(0),
         }
@@ -299,11 +323,20 @@ impl EnvelopeClient {
     }
 
     fn next(&self) -> Signed {
-        let mut counter = self.counter.load(Ordering::SeqCst) + 1;
-        if counter >= COUNTER_WRAP {
-            counter = 1;
-        }
-        self.counter.store(counter, Ordering::SeqCst);
+        let counter = self
+            .counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                let next = current + 1;
+                Some(if next >= COUNTER_WRAP { 1 } else { next })
+            })
+            .map(|previous| {
+                if previous + 1 >= COUNTER_WRAP {
+                    1
+                } else {
+                    previous + 1
+                }
+            })
+            .unwrap_or(1);
         signed_request(&self.identity, counter, now_millis())
     }
 
@@ -363,10 +396,7 @@ impl EnvelopeClient {
         let envelope: Envelope = serde_json::from_str(&plain)
             .map_err(|error| CloudError::Malformed(format!("login: {error}")))?;
         if !envelope.is_ok() {
-            return Err(match envelope.code {
-                CODE_BAD_CREDENTIALS | CODE_BAD_CREDENTIALS_VENDOR => CloudError::Credentials,
-                code => CloudError::Rejected(user_message(code, envelope.msg.as_deref())),
-            });
+            return Err(login_error(envelope.code, envelope.msg.as_deref()));
         }
         let access = envelope
             .data
@@ -541,7 +571,11 @@ impl EnvelopeClient {
         let envelope: Envelope = serde_json::from_str(&plain)
             .map_err(|error| CloudError::Malformed(format!("refreshToken: {error}")))?;
         if !envelope.is_ok() {
-            return Err(CloudError::Expired);
+            return Err(if envelope.code == CODE_TOKEN_EXPIRED {
+                CloudError::Expired
+            } else {
+                CloudError::Rejected(user_message(envelope.code, envelope.msg.as_deref()))
+            });
         }
         let access = envelope
             .data
@@ -587,14 +621,6 @@ pub fn device_token_of(reply: &str) -> CloudResult<String> {
     )))
 }
 
-fn env_override(key: &str, fallback: &str) -> String {
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,8 +637,8 @@ mod tests {
     fn body_key_pads_short_material() {
         assert_eq!(body_key("00000021793070132241", ""), "3070132241012345");
         assert_eq!(
-            body_key("00000031793070268874", "689de0d362e741888b9a04d0f9a96202"),
-            "3070268874689de0"
+            body_key("00000031793070268874", "fedcba98765432100123456789abcdef"),
+            "3070268874fedcba"
         );
     }
 
@@ -635,6 +661,35 @@ mod tests {
         assert_eq!(url_encode("a@b.c"), "a%40b.c");
         assert_eq!(url_encode("Tu!long-1_2*3(4)"), "Tu!long-1_2*3(4)");
         assert_eq!(url_encode("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn login_errors_separate_credentials_from_refusals() {
+        assert!(matches!(login_error(4000, None), CloudError::Credentials));
+        assert!(matches!(
+            login_error(-83000, Some("username or password error")),
+            CloudError::Credentials
+        ));
+        match login_error(5004, Some("SIGNATURE_ERROR")) {
+            CloudError::Rejected(message) => assert!(message.contains("SIGNATURE_ERROR")),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identity_needs_all_three_platform_strings() {
+        assert!(!Identity::new("uuid", "key", "").is_complete());
+        assert!(!Identity::new("", "key", "secret").is_complete());
+        assert!(!Identity::new("uuid", "", "secret").is_complete());
+        assert!(Identity::new("uuid", "key", "secret").is_complete());
+    }
+
+    #[test]
+    fn debug_never_prints_the_secret() {
+        let identity = Identity::new("uuid-value", "key-value", "secret-value");
+        let text = format!("{identity:?}");
+        assert!(!text.contains("secret-value"), "{text}");
+        assert!(text.contains("uuid-value"));
     }
 
     #[test]
