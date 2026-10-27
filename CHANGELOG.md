@@ -5,15 +5,32 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## 0.3.2 — unreleased
+## 0.3.2 — 2026-10-27
 
 ### Added
+
+- Cloud live path. Between the app and the camera's DVRIP there is now the
+  vendor relay: the status cluster names the access server, an `AgentProtocol`
+  request buys a media agent for the session, the base64 handshake is answered
+  with `ErrorNum 200`, and DVRIP rides that tunnel up to the `OPMonitor` claim.
+  Measured from a machine with no route to the camera. The picture itself still
+  waits on the vendor's encrypted media login; `docs/protocol.md` 4C.6-4C.12
+  records exactly what is proven and what is not.
 
 - Cloud device status. `GET /api/devices` now reads `pub-status.secu100.net`
   `/v1/status/third` across all seven clusters and answers `online`,
   `online_status`, `online_checked_at` and `online_detail` instead of a
   hard-coded false. The live screen blocks only on a known offline status and
   prints the vendor's reason when the status cannot be read.
+
+### Changed
+
+- `GET /api/devices` asks the status clusters in parallel and stops once one of
+  them reports the access server, so the device list answers in 0.11-0.18 s
+  where it took 0.79-4.09 s when every port had to time out first.
+- The Windows release jobs install Strawberry Perl and NASM and pin
+  `OPENSSL_SRC_PERL`, because the vendored OpenSSL build cannot use the perl
+  that the bash shell puts first on those runners.
 
 ## 0.3.1 — 2026-10-27
 
