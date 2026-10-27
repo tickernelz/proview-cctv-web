@@ -555,6 +555,48 @@ answers a client it has just associated through the query path. The next step
 is to drive 4C.1/4C.5 from one socket lifetime and then handshake, which is
 what the SDK does inside a single `DevLogin`.
 
+### 4C.6 The relay address comes from the RPS agent, and live plays from this box
+
+The SDK harness (`re/qemu/harness12.c`, mode `live`) plays live from this box:
+one run pulled **12 MB in 90 s** from `162.128.66.64:6611` (host capture of the
+run: TCP conversation `172.23.199.41:48500 <-> 162.128.66.64:6611`, 10845
+inbound segments, 13 MB total).
+
+The SDK log names the whole chain, file and line included:
+
+```
+agent_session: session_id = aporjw9z96js0jin0qludar0yird3g8e,
+               access_ip = 110.239.87.207, access_port = 6510,
+               uuid = 7f92970ddf5282743hrc, dest_port = 34567, svr_type = RpsAV
+agent create socket (110.239.87.207, 6510)
+agent_session, set_agent_server, get tcp port addr: 162.128.66.64:6611
+agent create socket (162.128.66.64, 6611)
+```
+
+So the media relay is **assigned per session by the RPS access server**, dialled
+on the `ServerIP:ServerPort` the status cluster already reports: cluster 7705
+says `110.239.87.207` with `DevicePort 34567`, and the access port is 6510.
+That is why replaying the phone's handshake against `162.128.66.154:6611` was
+never answered (4C.5): the tunnel only serves a client the RPS has just
+registered, and 8777/7999 only hand out the 8765 discovery relays.
+
+Our own client's handshake on the assigned agent, straight from that capture:
+
+```
+-> base64 aaaaaaaa-1a1b2f27d:c_v4w9y...:7f92970ddf5282743hrc:<token>
+<- base64 {"ErrorNum":"200","DestIP":"103.85.122.66","MTU":"1400"} + "XXEE"
+```
+
+Immediately after it: `ff010000 ... {"Name":"OPMonitor","OPMonitor":{"Action":"Claim",...}}`,
+the device's `{"AliveInterval":30,"ChannelNum":1,"DeviceType ":"IPC",...}` answer,
+then the media stream in the same DVRIP envelope the LAN path already parses.
+
+What is still missing is the body of the 6510 conversation: it is TLS 1.3 and
+the SDK links OpenSSL statically, so an `LD_PRELOAD` of `SSL_read`/`SSL_write`
+does not interpose (measured: zero hook hits across a full live run). The next
+measurement is an inline hook at the `SSL_write` symbol address inside the
+harness process, which returns both bodies unchanged.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
