@@ -16,6 +16,7 @@ pub const FILE_QUERY: u16 = 1440;
 pub const PLAYBACK_CLAIM: u16 = 1424;
 pub const PLAYBACK_CONTROL: u16 = 1420;
 pub const PLAYBACK_DATA: u16 = 0x058e;
+pub const DOWNLOAD_DATA: u16 = 0x0592;
 pub const PAGE_FILES: usize = 64;
 pub const MAX_FILES: usize = 2048;
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
@@ -138,6 +139,8 @@ pub enum PlaybackAction {
     Claim,
     Start,
     Stop,
+    DownloadStart,
+    DownloadStop,
 }
 
 impl PlaybackAction {
@@ -146,6 +149,8 @@ impl PlaybackAction {
             PlaybackAction::Claim => "Claim",
             PlaybackAction::Start => "Start",
             PlaybackAction::Stop => "Stop",
+            PlaybackAction::DownloadStart => "DownloadStart",
+            PlaybackAction::DownloadStop => "DownloadStop",
         }
     }
 }
@@ -386,6 +391,38 @@ impl Session {
         let body = playback_body(
             self.session,
             PlaybackAction::Start,
+            channel,
+            &file.name,
+            &file.begin,
+            &file.end,
+        );
+        self.send_json(PLAYBACK_CONTROL, &body).await
+    }
+
+    pub async fn download_start(
+        &mut self,
+        file: &PlaybackFile,
+        channel: u8,
+    ) -> Result<(), PlaybackError> {
+        let body = playback_body(
+            self.session,
+            PlaybackAction::DownloadStart,
+            channel,
+            &file.name,
+            &file.begin,
+            &file.end,
+        );
+        self.send_json(PLAYBACK_CONTROL, &body).await
+    }
+
+    pub async fn download_stop(
+        &mut self,
+        file: &PlaybackFile,
+        channel: u8,
+    ) -> Result<(), PlaybackError> {
+        let body = playback_body(
+            self.session,
+            PlaybackAction::DownloadStop,
             channel,
             &file.name,
             &file.begin,

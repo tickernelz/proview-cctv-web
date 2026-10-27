@@ -1422,6 +1422,35 @@ in flight at a time, so a burst of requests cannot multiply sessions; before
 this, a silent peer held the request for as long as the socket lived and a dead
 device was dialled again on every call.
 
+## 9B. Playback download over the tunnel: DownloadStart, and the audio that is not there (2026-10-28)
+
+`OPPlayBack` carries two more actions beside `Claim`/`Start`/`Stop`: `DownloadStart` and `DownloadStop`, sent on the same control id `1420` with the same file body (`crates/core/src/dvrip/playback.rs`). They are not a different protocol; the file arrives as the same DHAV record framing, on a different message id.
+
+| Fact | Measured |
+|---|---|
+| Data message id | `0x0592` (`DOWNLOAD_DATA`). Playback video uses `0x058e` (`PLAYBACK_DATA`). Both carry `00 00 01 F9/FA/FC/FD` records |
+| Claim | `Ret 100` in 0.20 s, then `DownloadStart` sent in 0.00 s. The action is fire-and-forget: the device answers with data frames, not with a `Ret`, so the first data frame is its acknowledgement |
+| Whole file | `/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264`, 1,313 chunks, **42,967,040 bytes** — `FileLength` 41,960 KiB × 1024 exactly, byte for byte on the wire |
+| Wall clock | the last data frame lands at **52.81 s** and the run ends 8 s later on the probe's idle gap: 42.97 MB in 52.81 s = **813 KB/s**, seven times the 119 KB/s the file's own duration and size suggested |
+| Records | Key 125, Delta 4,366, Pad 8,982, Info 126 = 13,599 records, 10 bytes skipped by the record scanner |
+| Video payload | Key and Delta bodies concatenated = **39,981,987 bytes**. `ffprobe`: HEVC 2304×2592, `nb_read_frames` 4,491, `r_frame_rate` 12/1 — 374 s of video |
+| Audio | none. 13,599 records is every record in the file, and all of them classify as Info/Pad/Key/Delta. No audio magic value appears, on download or on playback |
+
+A download is verified before it starts, because a broken body cannot be signalled over HTTP here. A chunked body whose reader returns an error still reaches the client as a finished download: measured on this stack, `curl` exits 0 and keeps a short file, so a reader error is invisible. `GET /api/playback/download` therefore gathers the payload first, compares the wire bytes with `FileLength` x 1024, and only then answers. A shortfall is a `502` carrying both counts (`the device sent 42,967,040 of 47,967,040 bytes`), never a truncated `200`; a complete transfer answers with the exact `Content-Length` (39,981,987 for this file), so the browser shows real progress. `bytes` is required for that comparison and capped at 512 MiB. Measured on the file above: time to first byte 54.91 s, total 55.30 s, payload byte-identical to the probe dump; the same file asked with a 5 MB larger `bytes` answered `502` after 74.66 s and wrote no file.
+
+The gap between 42,967,040 wire bytes and 39,981,987 payload bytes is the device's own storage framing: 8,982 Pad records of 328 bytes plus the 8/16-byte record headers on every record. Emitting the wire bytes as a file produces something no decoder opens; emitting the Key and Delta bodies produces the elementary stream the camera recorded, which is what `GET /api/playback/download` returns: `Content-Disposition` carries the device file name, the body is a sized response with `Content-Length` equal to the payload it just collected, and no `X-File-Bytes` header exists any more because nothing could read it from an anchor download.
+
+The price of that verification is stated rather than hidden: the first byte reaches the client only after the whole transfer (54.91 s for this file), the payload is held in memory at roughly 1.0 times its size, capped at 512 MiB per request, and a browser cancel does not stop the device, because Rocket 0.5.2 runs each handler in its own task (`rocket-0.5.2/src/server.rs:97`) and the tunnel therefore runs to the end of the file. `collect()` reaching its byte total is what closes the device session, so the cleanup happens either way.
+
+Audio is therefore a boundary of this channel, not a missing implementation: the camera records video on this stream and there is no record kind to carry a G.711 frame here, unlike the two-way talk path (`1432` audio, section 9). A caller that wants playback audio has to come back for a different device surface, not for a flag on `OPPlayBack`.
+
+```
+PROVIEW_EMAIL=… PROVIEW_PASSWORD=… PROVIEW_DEVICE_SERIAL=… \
+PROVIEW_BEGIN="2026-10-24 10:34:00" PROVIEW_END="2026-10-24 10:34:02" \
+PROVIEW_DOWNLOAD=1 PROVIEW_WHOLE=1 PROVIEW_DUMP=/tmp/clip.h264 \
+timeout 600 cargo run -p proview-core --example playback_probe
+```
+
 ## 10. Cloud account: the v2 portal, as implemented here
 
 `crates/core/src/cloud/` implements the account cloud of the vendor's own

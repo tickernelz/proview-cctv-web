@@ -139,9 +139,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             None => String::new(),
         };
         eprintln!("communicate key {} hex chars", sealed.len());
-        match connection.login_token(token.trim(), &sealed).await {
-            Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
-            Err(error) => eprintln!("tokenlogin failed: {error:?}"),
+        let encrypted_login = std::env::var("PROVIEW_ENCRYPTED_LOGIN").is_ok();
+        if encrypted_login {
+            let cipher = proview_core::media::dhav::MediaCipher::from_text(&session_key)
+                .ok_or("the session key is not sixteen bytes")?;
+            let body = serde_json::json!({
+                "EncryptType": "TOKEN",
+                "LoginType": "DVRIP-FutureHome",
+                "UserName": token.trim(),
+                "PassWord": "",
+                "CommunicateKey": sealed,
+            });
+            match connection
+                .send_encrypted(&cipher, 99, 0x03e8, &body)
+                .await
+            {
+                Ok(()) => eprintln!("enclogin sent"),
+                Err(error) => eprintln!("enclogin failed: {error:?}"),
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(6), connection.recv()).await {
+                Ok(Ok((header, payload))) => eprintln!(
+                    "enclogin reply id=0x{:04x} {}",
+                    header.id,
+                    String::from_utf8_lossy(&payload[..payload.len().min(80)])
+                ),
+                other => eprintln!("enclogin reply: {other:?}"),
+            }
+        } else {
+            match connection.login_token(token.trim(), &sealed).await {
+                Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
+                Err(error) => eprintln!("tokenlogin failed: {error:?}"),
+            }
         }
         let cipher = proview_core::media::dhav::MediaCipher::from_text(&session_key)
             .ok_or("the session key is not sixteen bytes")?;
@@ -153,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (0x0412, "fVideo.AudioSupportType"),
         ] {
             let body = serde_json::json!({ "Name": name, "SessionID": session_text });
-            match connection.send_encrypted(&cipher, id, &body).await {
+            match connection.send_encrypted(&cipher, 0, id, &body).await {
                 Ok(()) => eprintln!("query    sent {}", name),
                 Err(error) => eprintln!("query {} failed: {error:?}", name),
             }
