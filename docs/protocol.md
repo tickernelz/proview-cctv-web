@@ -913,7 +913,38 @@ RSA-encrypt them PKCS#1 v1.5 with this modulus and exponent, send the hex as
 `CommunicateKey` in the `DVRIP-FutureHome` token login, and the session key is
 ours on both ends.
 
-### 4C.18 The media channel cipher, recovered and proven on a live session
+### 4C.18 The frames decrypt, and the start message is `OPMonitor Start`
+
+With the session key the SDK hands to `RSA_public_encrypt` (4C.16) and the bytes
+of the same run on the wire, every client control frame opens with
+**AES-128-CBC, IV = sixteen zero bytes, PKCS-free zero padding**:
+
+```
+0x03fc  {"Name":"SystemInfo","SessionID":"0x0000000265"}
+0x0550  {"Name":"SystemFunction","SessionID":"0x0000000265"}
+0x0412  {"Name":"fVideo.AudioSupportType","SessionID":"0x0000000265"}
+0x0582  {"Name":"OPMonitor","OPMonitor":{"Action":"Start","Parameter":{
+          "Channel":0,"CombinMode":"NONE","StreamType":"Main","TransMode":"TCP",
+          "VEKEY1":"dpMuSyQmXX9125NjZi1NM0a9G2yf2B509VUk5mvX1E5w53nlvr53o8ZKFG73fw3u"}},
+        "SessionID":"0x0000000265"}
+0x03ee  {"Name":"KeepAlive","SessionID":"0x0000000265"}
+```
+
+Each body is that ciphertext, base64, NUL-terminated, carried in the usual DVRIP
+header on channel 0 with the end bit clear. So the media sequence is:
+
+1. `OPMonitor` **Claim** (0x0585) — plaintext, channel 99 (4C.8).
+2. Token login (0x03e8) with `EncryptType TOKEN` and the RSA-sealed
+   `CommunicateKey` (4C.14-4C.17).
+3. `OPMonitor` **Start** (0x0582) with the parameters above, encrypted.
+4. Media frames follow; their payload is guarded by the `VEKEY1` value the client
+   chose in that Start message, which is 60 base64 characters.
+
+Steps 1-3 are reproducible today with code already in the crate
+(`claim_monitor`, `login_token`, `communicate_key`); step 3 needs the encrypted
+write, and step 4 needs the VEKEY1 cipher.
+
+### 4C.19 The media channel cipher, recovered and proven on a live session
 
 4C.10 and 4C.12 left the cipher open because they looked for it through OpenSSL's
 entry points and through the AES vtable; both are the wrong handle. The cipher is
@@ -1049,6 +1080,12 @@ hit even with the right key. The lever remains `OPMonitor Start`'s
 `"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
 64-character key the device acknowledges in `1411` before the first `1412`.
 
+The 64-character `VEKEY1` is fresh every session: the SDK's own logs carry 24
+further values, all distinct (`2jDjh333N9kg3xZk3Fi3mU6ct002v5y7o9lPqFZtLy1nOi0CuFH1GxX82Kv2WaUU`,
+`413Gzw4kkAI8030u3u10H7p53T53PVp6Rdqsbj9U4Qmt5tj9731kftO6e405hK5s`, and six more in the
+sample), which matches the static reading of `NewMediaControlPTL` at `0xf28c1c`: the
+client picks it and hands it in through `SNetMediaControlParam`.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -1073,7 +1110,7 @@ hit even with the right key. The lever remains `OPMonitor Start`'s
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
-5. The P2P media channel cipher is answered in 4C.18 for the control frames
+5. The P2P media channel cipher is answered in 4C.19 for the control frames
    (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
    1000). The video bodies arrive partly in plaintext slice NALs (codec unproven,
    consistent with HEVC) with no keyframe and no parameter sets; those live in the

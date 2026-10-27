@@ -20,7 +20,7 @@ stability before 1.0.
   opens the vendor app's own capture (577-byte login body, 432-byte plaintext),
   and the claim ciphertext is byte-identical between the two. The module carries
   the cipher only, no frame parser: the recording format is a separate
-  workstream. `docs/protocol.md` 4C.18 carries the addresses, the body-class
+  workstream. `docs/protocol.md` 4C.19 carries the addresses, the body-class
   table for msgid 1412 and the controlled 28-combination sweep with its positive
   control.
 
