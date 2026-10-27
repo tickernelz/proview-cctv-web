@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use proview_core::cloud::{
-    new_session_id, Captcha, CloudClient, CloudError, CloudProfile, CloudSessions,
+    new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudProfile,
+    CloudSessions, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -13,6 +14,7 @@ const COOKIE: &str = "pvw_cloud";
 
 pub struct CloudState {
     client: CloudClient,
+    caps: CapsClient,
     sessions: CloudSessions,
 }
 
@@ -24,6 +26,7 @@ impl CloudState {
             .unwrap_or(3600);
         Self {
             client: CloudClient::from_env(),
+            caps: CapsClient::from_env(),
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
         }
     }
@@ -188,6 +191,30 @@ async fn devices(
         .map_err(|error| fail(status_for(&error), error.to_string()))
 }
 
+#[get("/cloud/device-caps?<sn>")]
+async fn device_caps(state: &State<CloudState>, sn: String) -> Result<Json<AppCaps>, Failure> {
+    let caps = state
+        .caps
+        .req_caps(&sn, &REQUESTED_CAPS)
+        .await
+        .map_err(|error| fail(status_for(&error), error.to_string()))?;
+    if !caps.is_known() {
+        return Err(fail(
+            Status::NotFound,
+            format!("{} is not a device the cloud knows", sn.trim()),
+        ));
+    }
+    Ok(Json(caps))
+}
+
 pub fn api() -> Vec<rocket::route::Route> {
-    routes![portal, captcha, login, logout, profile, devices]
+    routes![
+        portal,
+        captcha,
+        login,
+        logout,
+        profile,
+        devices,
+        device_caps
+    ]
 }

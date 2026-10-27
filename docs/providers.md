@@ -6,7 +6,7 @@ recordings and settings.
 
 | Provider | Default | Transport | What it can do today |
 |---|---|---|---|
-| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | login envelope unsolved, so nothing is exposed yet |
+| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | portal account login is unsolved, and the app's own login is behind a pinned host. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md` |
 | `local` | opt-in | LAN: DVRIP 34567, RTSP 554, HTTP 80 | RTSP `DESCRIBE` with Digest works against a real IPC; DVRIP login returns `ret 203` |
 
 ## Selection rules

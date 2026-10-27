@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "proview-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "async-trait",
@@ -3000,7 +3000,7 @@ dependencies = [
 
 [[package]]
 name = "proview-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "keyring",
  "proview-core",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "proview-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures-util",
