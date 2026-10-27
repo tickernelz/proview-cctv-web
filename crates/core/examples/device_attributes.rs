@@ -25,7 +25,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let uuid = devices[0].uuid.clone();
     let started = Instant::now();
-    let pending = admin.share_pending(&tokens.access, std::slice::from_ref(&uuid)).await?;
+    let pending = admin
+        .share_pending(&tokens.access, std::slice::from_ref(&uuid))
+        .await?;
     println!(
         "hasDevicesTrans  {} ms -> {}",
         started.elapsed().as_millis(),
@@ -75,7 +77,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let started = Instant::now();
     let share = admin
-        .share_out(&tokens.access, std::slice::from_ref(&uuid), "nobody@example.invalid")
+        .share_out(
+            &tokens.access,
+            std::slice::from_ref(&uuid),
+            "nobody@example.invalid",
+        )
         .await;
     println!(
         "devicesTransOut  {} ms -> {:?}",
