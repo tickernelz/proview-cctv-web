@@ -87,6 +87,7 @@ fn reply(method: &str, form: &str) -> Value {
                     json!({ "code": 4105, "msg": "DEV_USERNAME_FAIL", "data": "" })
                 }
                 "AASN000000000004" => json!({ "code": -4004, "msg": "token expired", "data": "" }),
+                "AASN000000000005" => json!({ "code": 4104, "msg": "DEV_UUID_FAIL", "data": "" }),
                 _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
             }
         }
@@ -568,6 +569,17 @@ fn the_bind_routes_report_the_vendor_codes_they_received() {
             )
             .await;
         assert_eq!(status, 401);
+
+        let (status, reply) = browser
+            .post(
+                &running.base,
+                "/api/devices/bind",
+                json!({ "sn": "AASN000000000005", "username": "admin", "password": "x" }),
+            )
+            .await;
+        assert_eq!(status, 400);
+        assert_eq!(reply["code"], json!("bind_rejected"));
+        assert!(reply["message"].as_str().unwrap().contains("DEV_UUID_FAIL"));
 
         let (status, reply) = browser
             .post(

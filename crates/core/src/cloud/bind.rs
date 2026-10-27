@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::Deserialize;
 
-use super::client::classify;
 use super::client::CloudError;
 use super::envelope::{
     open, seal, signed_request, url_encode, EnvelopeClient, Identity, SIGNED_VERSION,
@@ -184,7 +183,10 @@ impl BindClient {
                 code: envelope.code,
                 message: envelope.msg.unwrap_or_default(),
             }),
-            other => Err(BindFailure::Cloud(classify(other, envelope.msg.as_deref()))),
+            other => Err(BindFailure::Vendor {
+                code: other,
+                message: envelope.msg.unwrap_or_default(),
+            }),
         }
     }
 

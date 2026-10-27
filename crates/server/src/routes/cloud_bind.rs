@@ -130,10 +130,6 @@ impl AccountStore {
         current.saved_at = now_seconds();
         self.write(&current)
     }
-
-    pub fn cleared(&self) -> bool {
-        self.snapshot().access_token.is_empty()
-    }
 }
 
 fn now_seconds() -> i64 {

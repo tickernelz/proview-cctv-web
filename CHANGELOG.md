@@ -5,18 +5,9 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## 0.3.3 — 2026-10-27
+## 0.3.4 — unreleased
 
 ### Added
-
-- `GET /api/cloud-path?device=<serial>` reports what the cloud path can reach
-  for one device today: the access server the status cluster names, the media
-  agent the RPS answers with, and whether the relay accepted the handshake. It
-  rides the same session cookie as `/api/stream`, so the browser can call it
-  without a second sign-in. The live screen shows its own error immediately and
-  appends that line when it arrives, so "not wired" no longer hides whether the
-  relay is reachable. It also makes the relay transport part of the shipped
-  binary, which the 0.3.2 binaries did not carry.
 
 - Account lifecycle on the cloud envelope. `POST /api/account/remember` keeps
   the account email and access token in `account.json` (0600) next to the
@@ -37,8 +28,20 @@ stability before 1.0.
   fictional one answers `2000` and appears in `GET /api/devices`, `mdrm`
   removes it, `uuid=no` answers `4104` (`docs/protocol.md` 10D).
 
-## 0.3.2 — 2026-10-27
+## 0.3.3 — 2026-10-27
 
+### Added
+
+- `GET /api/cloud-path?device=<serial>` reports what the cloud path can reach
+  for one device today: the access server the status cluster names, the media
+  agent the RPS answers with, and whether the relay accepted the handshake. It
+  rides the same session cookie as `/api/stream`, so the browser can call it
+  without a second sign-in. The live screen shows its own error immediately and
+  appends that line when it arrives, so "not wired" no longer hides whether the
+  relay is reachable. It also makes the relay transport part of the shipped
+  binary, which the 0.3.2 binaries did not carry.
+
+## 0.3.2 — 2026-10-27
 
 ### Added
 
