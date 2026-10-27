@@ -35,6 +35,7 @@ const state = {
   muted: true,
   stage: { name: 'idle', requestedAt: 0, failedAt: 0, lastFrameAt: 0, error: null },
   padOpen: false,
+  tour: null,
   bannerError: '',
   networkLostAt: null,
   expiredAt: null,
@@ -499,6 +500,7 @@ async function setMode(mode) {
   try {
     state.mode = await api('/api/config/mode', { method: 'POST', body: JSON.stringify({ mode }) });
     state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null };
+    state.tour = null;
     renderMode();
     await loadDevices({ keepScreen: true });
   } catch (error) {
@@ -1231,6 +1233,8 @@ function normaliseLens(payload, source) {
     streams,
     countSource: payload && payload.countSource ? payload.countSource : null,
     cropsVerified: payload && payload.cropsVerified === true,
+    ptzSource: payload && payload.ptzSource ? payload.ptzSource : null,
+    ptzEvidence: payload && payload.ptzEvidence ? payload.ptzEvidence : null,
     lenses: lenses.map((lens, index) => ({
       index: typeof lens.index === 'number' ? lens.index : index,
       label: lensLabel(lens, index),
@@ -1259,6 +1263,12 @@ function contractCaption(lens) {
   if (fixed) {
     roles.push(fixed.label.toLowerCase() + ' is aimed by hand');
   }
+  const motor =
+    lens.ptzSource === 'device'
+      ? 'the device names the motor'
+      : lens.ptzSource === 'measured_default'
+        ? 'the motor lens is assumed, the device has not answered'
+        : '';
   return (
     'Lens layout: ' +
     lens.lenses.length +
@@ -1270,8 +1280,37 @@ function contractCaption(lens) {
     size +
     ')' +
     (roles.length ? ' · ' + roles.join(' · ') : '') +
+    (motor ? ' · ' + motor : '') +
     '.'
   );
+}
+
+async function toggleTour() {
+  const button = el('tour');
+  try {
+    if (state.tour !== null) {
+      const stopped = await api('/api/device/controls/tour/stop?tour=' + enc(state.tour), { method: 'POST' });
+      state.tour = null;
+      button.setAttribute('aria-pressed', 'false');
+      setControlStatus('Stopped tour ' + stopped.tour + '.');
+      return;
+    }
+    const tour = await api('/api/device/controls/tour');
+    const line = (tour.lines || [])[0];
+    if (!line) {
+      setControlStatus('No tour line on this camera: ' + (tour.note || 'add presets to a tour first'));
+      return;
+    }
+    const started = await api('/api/device/controls/tour/start?tour=' + enc(line.id) + '&times=1', { method: 'POST' });
+    state.tour = line.id;
+    button.setAttribute('aria-pressed', 'true');
+    const stops = line.points.length === 1 ? '1 stop' : line.points.length + ' stops';
+    setControlStatus('Tour ' + started.tour + ' running over ' + stops + '; the camera acks before it moves, so watch the picture.');
+  } catch (error) {
+    if (!sessionLost(error)) {
+      setControlStatus('The camera refused the tour: ' + error.status + ' ' + error.message);
+    }
+  }
 }
 
 function deriveLensFromFrame() {
@@ -1375,6 +1414,7 @@ function renderLensPicker() {
   el('lens-pick').hidden = !pair;
   el('lens-pick-label').textContent = lensViewLabel();
   el('lens-source').textContent = lensNote();
+  el('lens-source').title = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : '';
   el('lens-roles-note').hidden = entries.some((entry) => entry.role !== 'unknown');
   const menu = el('lens-menu');
   menu.replaceChildren(make('div', 'menu-h', 'Lens · L cycles'));
@@ -1666,6 +1706,8 @@ async function sendControl(action) {
     if (action === 'home') {
       const stopped = await api('/api/device/controls/ptz/stop', { method: 'POST' });
       setControlStatus(stopped.detail || 'Stopped.');
+    } else if (action === 'cruise') {
+      await toggleTour();
     } else if (action === 'up' || action === 'down' || action === 'left' || action === 'right') {
       const velocity = { up: [0, -0.5], down: [0, 0.5], left: [-0.5, 0], right: [0.5, 0] }[action];
       const query = 'lens=' + enc(movingLensName()) + '&pan=' + velocity[0] + '&tilt=' + velocity[1] + '&hold_ms=600';
@@ -1730,6 +1772,8 @@ async function selectDevice(deviceId, options = {}) {
   state.channel = channel;
   state.ticket = null;
   state.stage.lastFrameAt = 0;
+  state.tour = null;
+  el('tour').setAttribute('aria-pressed', 'false');
   renderSwitcher();
   renderCameraMenu();
   setControlStatus('');
@@ -2759,6 +2803,7 @@ el('run-checks').addEventListener('click', runChecks);
 for (const key of el('pad').querySelectorAll('.pk')) {
   key.addEventListener('click', () => sendControl(key.dataset.act));
 }
+el('tour').addEventListener('click', () => sendControl('cruise'));
 document.querySelector('.skip').addEventListener('click', (event) => {
   event.preventDefault();
   const first = el('controls').querySelector('button:not(:disabled):not([hidden])');

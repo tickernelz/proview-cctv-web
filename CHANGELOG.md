@@ -5,6 +5,38 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- PTZ tours over DVRIP. `GET /api/device/controls/tour` reports the device own
+tour lines (`Uart.PTZTour`), the presets it can cycle (`Uart.PTZPreset`) and the
+gun/ball locate block, and `POST /api/device/controls/tour/{start,stop,add,clear}`
+drives `OPPTZControl` `StartTour`, `StopTour`, `AddTour` and `ClearTour`, which is
+the surface the app itself uses (`com.lib.sdk.bean.tour.OPPTZControlBean`).
+Measured through the cloud relay: with two presets in the line the lower lens
+moved 73.10 and 70.77 mean-luma points between stops while the upper lens stayed
+at 0.15-1.07, and `StopTour` dropped it to 0.97-1.57. Every `OPPTZControl` answers
+`Ret 100` before it moves, so the route returns the device configuration as state
+and says so in `note`; `docs/protocol.md` 9A carries the numbers.
+
+### Changed
+
+- `/api/lens` reads the motorised lens from the device (`Ptz.GunBallLocate`,
+taken once and cached for a minute) and reports `ptzSource: "device"` with a
+`ptzEvidence` string that quotes the block, instead of the measured default it
+used to guess. The measured default stays only as the fallback when the device
+does not answer.
+- `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
+`ptz_lens_has_no_motor`, the device own locate block in the message, and a
+pointer to `lens=bottom`, so the refusal carries evidence instead of a bare
+conflict.
+- The PTZ capability report names the tour row `ptz patrol` (it was
+`ptz patrol over dvrip`, which no client matched) and adds `ptz move` on the
+lower lens, `ptz move` blocked on the upper lens with the device reason, and a
+`ptz locate` row. The pad gained a Tour control that starts and stops the device
+tour and says the ack is not motion.
+
 ## 0.3.2 — 2026-10-27
 
 ### Added

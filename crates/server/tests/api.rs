@@ -312,3 +312,24 @@ fn live_stats_needs_a_session_and_starts_empty() {
     assert_eq!(body["active_streams"], 0);
     assert_eq!(body["streams"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn the_tour_routes_are_mounted_and_refuse_an_anonymous_caller() {
+    let client = client();
+    assert_eq!(
+        client.get("/api/device/controls/tour").dispatch().status(),
+        Status::Unauthorized
+    );
+    for uri in [
+        "/api/device/controls/tour/start?tour=1",
+        "/api/device/controls/tour/stop?tour=1",
+        "/api/device/controls/tour/add?tour=1&preset=1",
+        "/api/device/controls/tour/clear?tour=1",
+    ] {
+        assert_eq!(
+            client.post(uri).dispatch().status(),
+            Status::Unauthorized,
+            "{uri}"
+        );
+    }
+}

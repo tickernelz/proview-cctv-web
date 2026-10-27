@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use proview_core::config::Config;
 use proview_core::device::{Backend, ControlError, Controls, DeviceControl, Lens};
+use proview_core::dvrip::control::{PresetEntry, PtzLocate, TourLine};
 use proview_core::dvrip::control::{RecordMode, WhiteLightMode};
 use proview_core::session::Store;
 use rocket::form::FromForm;
@@ -10,7 +11,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
 
-use super::{fail, session_id, Failure};
+use super::{fail, fail_code, session_id, Failure};
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
@@ -27,6 +28,11 @@ pub fn routes() -> Vec<rocket::route::Route> {
         record_write,
         snapshot,
         settings,
+        tour_state,
+        tour_start,
+        tour_stop,
+        tour_add,
+        tour_clear,
     ]
 }
 
@@ -170,7 +176,22 @@ async fn ptz_move(
             )
         }
     };
-    outcome.map_err(control_failure)?;
+    if let Err(error) = outcome {
+        return Err(match error {
+            ControlError::Blocked { operation, reason } if lens == Lens::Top => {
+                let evidence = match proview_core::device::ptz_binding(cfg).await {
+                    Some(binding) => format!("{reason}; {}", binding.evidence),
+                    None => reason.to_string(),
+                };
+                fail_code(
+                    Status::Conflict,
+                    "ptz_lens_has_no_motor",
+                    format!("{operation}: {evidence}; the motor answers for lens=bottom"),
+                )
+            }
+            other => control_failure(other),
+        });
+    }
     Ok(Json(MoveBody {
         ok: true,
         lens: lens_name(lens),
@@ -400,6 +421,132 @@ async fn snapshot(
     let control = controls.dvrip().map_err(control_failure)?;
     let picture = control.snapshot().await.map_err(control_failure)?;
     Ok((rocket::http::ContentType::JPEG, picture))
+}
+
+#[derive(Serialize)]
+pub struct TourStateBody {
+    pub ok: bool,
+    pub backend: String,
+    pub lines: Vec<TourLine>,
+    pub presets: Vec<PresetEntry>,
+    pub locate: Option<PtzLocate>,
+    pub note: String,
+}
+
+const TOUR_NOTE: &str = "the device answers every OPPTZControl with Ret 100 before it moves, so this listing is the device's own configuration and the frames are the only proof of motion";
+
+#[get("/device/controls/tour")]
+async fn tour_state(
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TourStateBody>, Failure> {
+    signed_in(store, cookies)?;
+    let controls = controls(cfg);
+    let control = controls.dvrip().map_err(control_failure)?;
+    let state = control.tour_state().await.map_err(control_failure)?;
+    Ok(Json(TourStateBody {
+        ok: true,
+        backend: Backend::Dvrip.as_str().to_string(),
+        lines: state.lines,
+        presets: state.presets,
+        locate: state.locate,
+        note: TOUR_NOTE.to_string(),
+    }))
+}
+
+#[derive(Serialize)]
+pub struct TourActionBody {
+    pub ok: bool,
+    pub backend: String,
+    pub action: String,
+    pub tour: i64,
+    pub times: i64,
+    pub note: String,
+}
+
+fn tour_action_body(action: &str, tour: i64, times: i64) -> TourActionBody {
+    TourActionBody {
+        ok: true,
+        backend: Backend::Dvrip.as_str().to_string(),
+        action: action.to_string(),
+        tour,
+        times,
+        note: TOUR_NOTE.to_string(),
+    }
+}
+
+#[post("/device/controls/tour/start?<tour>&<times>")]
+async fn tour_start(
+    tour: i64,
+    times: Option<i64>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TourActionBody>, Failure> {
+    signed_in(store, cookies)?;
+    let times = times.unwrap_or(1).clamp(1, 3600);
+    let controls = controls(cfg);
+    let control = controls.dvrip().map_err(control_failure)?;
+    control
+        .start_tour(tour, times)
+        .await
+        .map_err(control_failure)?;
+    Ok(Json(tour_action_body("start", tour, times)))
+}
+
+#[post("/device/controls/tour/stop?<tour>")]
+async fn tour_stop(
+    tour: i64,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TourActionBody>, Failure> {
+    signed_in(store, cookies)?;
+    let controls = controls(cfg);
+    let control = controls.dvrip().map_err(control_failure)?;
+    control.stop_tour(tour).await.map_err(control_failure)?;
+    Ok(Json(tour_action_body("stop", tour, 0)))
+}
+
+#[post("/device/controls/tour/add?<tour>&<preset>&<index>")]
+async fn tour_add(
+    tour: i64,
+    preset: i64,
+    index: Option<i64>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TourActionBody>, Failure> {
+    signed_in(store, cookies)?;
+    if preset <= 0 {
+        return Err(fail(
+            Status::BadRequest,
+            "preset must be the device preset id reported under Uart.PTZPreset",
+        ));
+    }
+    let index = index.unwrap_or(0).max(0);
+    let controls = controls(cfg);
+    let control = controls.dvrip().map_err(control_failure)?;
+    control
+        .add_tour_point(tour, preset, index)
+        .await
+        .map_err(control_failure)?;
+    Ok(Json(tour_action_body("add", tour, index)))
+}
+
+#[post("/device/controls/tour/clear?<tour>")]
+async fn tour_clear(
+    tour: i64,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<TourActionBody>, Failure> {
+    signed_in(store, cookies)?;
+    let controls = controls(cfg);
+    let control = controls.dvrip().map_err(control_failure)?;
+    control.clear_tour(tour).await.map_err(control_failure)?;
+    Ok(Json(tour_action_body("clear", tour, 0)))
 }
 
 #[get("/device/controls/settings")]
