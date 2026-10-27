@@ -28,6 +28,10 @@ pub(crate) const DEVICE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 impl CloudState {
     pub fn new() -> Self {
+        Self::with_css(CssClient::from_env())
+    }
+
+    pub fn with_css(css: CssClient) -> Self {
         let ttl = std::env::var("PROVIEW_CLOUD_SESSION_TTL")
             .ok()
             .and_then(|value| value.parse().ok())
@@ -38,7 +42,7 @@ impl CloudState {
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
             envelope: EnvelopeClient::new(Identity::resolve()),
             alarms: AlarmClient::from_env(),
-            css: CssClient::from_env(),
+            css,
             devices: Mutex::new(HashMap::new()),
         }
     }

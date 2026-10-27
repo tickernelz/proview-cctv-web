@@ -11,6 +11,13 @@ pub const SIGN_REQUEST: &str = "MSG_DOWNLOAD_SIGN_REQ";
 pub const OBJECT_TYPE: &str = "PIC";
 pub const CHANNEL: &str = "0";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+pub const USER_AGENT: &str = "proview-cctv-web/0.1";
+pub const STORAGE_HOSTS: [&str; 4] = [
+    ".aliyuncs.com",
+    ".myhuaweicloud.com",
+    ".jftech.com",
+    ".xmcsrv.net",
+];
 
 #[derive(Debug, Clone, Default)]
 pub struct SignRequest {
@@ -44,6 +51,7 @@ impl SignedFile {
 
 pub struct CssClient {
     endpoint: String,
+    loopback: bool,
     http: reqwest::Client,
 }
 
@@ -54,18 +62,21 @@ impl CssClient {
             .trim_start_matches("http://")
             .trim_start_matches("https://")
             .trim_end_matches('/');
-        let (host, port) = match host.rsplit_once(':') {
-            Some((host, port)) if port.parse::<u16>().is_ok() => {
-                (host, port.parse::<u16>().unwrap_or(CSS_PORT))
-            }
-            _ => (host, CSS_PORT),
+        let (host, port) = match host
+            .rsplit_once(':')
+            .and_then(|(head, tail)| tail.parse::<u16>().ok().map(|port| (head, port)))
+        {
+            Some((head, port)) => (head, port),
+            None => (host, CSS_PORT),
         };
         let http = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .unwrap_or_default();
+            .expect("css http client");
         Self {
             endpoint: format!("http://{host}:{port}/"),
+            loopback: is_loopback(host),
             http,
         }
     }
@@ -103,6 +114,7 @@ impl CssClient {
     }
 
     pub async fn fetch(&self, file: &SignedFile) -> CloudResult<Vec<u8>> {
+        check_target(file, self.loopback)?;
         let method = if file.method.trim().is_empty() {
             "GET"
         } else {
@@ -132,12 +144,48 @@ impl CssClient {
         if bytes.len() > 3 && bytes[0] == 0xff && bytes[1] == 0xd8 {
             return Ok(bytes.to_vec());
         }
-        let text = String::from_utf8_lossy(&bytes).trim().to_string();
-        Err(CloudError::Rejected(format!(
-            "object storage refused {}: {text} ({status})",
-            file.address()
+        Err(CloudError::Malformed(format!(
+            "object storage refused {status}: {}",
+            brief(&bytes)
         )))
     }
+}
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+pub fn check_target(file: &SignedFile, loopback: bool) -> CloudResult<()> {
+    if loopback {
+        return Ok(());
+    }
+    let schema = file.schema.trim();
+    if !schema.eq_ignore_ascii_case("https") {
+        return Err(CloudError::Malformed(format!(
+            "signed file is not https: {schema}"
+        )));
+    }
+    let host = file.host.trim();
+    if !STORAGE_HOSTS
+        .iter()
+        .any(|suffix| host.ends_with(suffix) && host.len() > suffix.len())
+    {
+        return Err(CloudError::Malformed(format!(
+            "signed file host is not object storage: {host}"
+        )));
+    }
+    if !file.url.trim().starts_with('/') {
+        return Err(CloudError::Malformed(
+            "signed file path is not absolute".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn brief(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let flat = text.split_whitespace().collect::<Vec<&str>>().join(" ");
+    flat.chars().take(120).collect()
 }
 
 pub fn request_body(request: &SignRequest) -> Value {
@@ -340,16 +388,74 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        let bytes = runtime
-            .block_on(async { CssClient::from_env().picture(&request).await })
-            .expect("vendor picture");
+        let client = CssClient::from_env();
+        let mut sign_ms = Vec::new();
+        let mut fetch_ms = Vec::new();
+        let mut total_ms = Vec::new();
+        let mut bytes = Vec::new();
+        for _ in 0..5 {
+            let whole = std::time::Instant::now();
+            let clock = std::time::Instant::now();
+            let signed = runtime
+                .block_on(async { client.sign(&request).await })
+                .expect("vendor sign");
+            sign_ms.push(clock.elapsed().as_millis() as u64);
+            let clock = std::time::Instant::now();
+            bytes = runtime
+                .block_on(async { client.fetch(&signed).await })
+                .expect("vendor fetch");
+            fetch_ms.push(clock.elapsed().as_millis() as u64);
+            total_ms.push(whole.elapsed().as_millis() as u64);
+        }
         assert!(bytes.len() > 1000, "{} bytes", bytes.len());
         assert_eq!(&bytes[..2], &[0xff, 0xd8]);
         println!(
-            "vendor picture bytes={} first={:02x?}",
+            "vendor picture bytes={} sign_ms={sign_ms:?} fetch_ms={fetch_ms:?} total_ms={total_ms:?} sign_median={} fetch_median={} total_median={} total_max={}",
             bytes.len(),
-            &bytes[..4]
+            median(&sign_ms),
+            median(&fetch_ms),
+            median(&total_ms),
+            worst(&total_ms)
         );
+    }
+
+    fn median(values: &[u64]) -> u64 {
+        let mut sorted = values.to_vec();
+        sorted.sort_unstable();
+        sorted[sorted.len() / 2]
+    }
+
+    fn worst(values: &[u64]) -> u64 {
+        values.iter().copied().max().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_signed_target_must_be_https_on_storage() {
+        let mut file = parse_sign(REPLY).expect("signed file");
+        check_target(&file, false).expect("vendor target");
+        check_target(&file, true).expect("loopback target");
+
+        let plain = SignedFile {
+            schema: "http".to_string(),
+            ..file.clone()
+        };
+        assert!(check_target(&plain, false).is_err());
+        assert!(check_target(&plain, true).is_ok());
+
+        let foreign = SignedFile {
+            host: "evil.example.com".to_string(),
+            ..file.clone()
+        };
+        assert!(check_target(&foreign, false).is_err());
+
+        let relative = SignedFile {
+            url: "objects/x.jpeg".to_string(),
+            ..file.clone()
+        };
+        assert!(check_target(&relative, false).is_err());
+
+        file.host = "notaliyuncs.com".to_string();
+        assert!(check_target(&file, false).is_err());
     }
 
     #[test]
