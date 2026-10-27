@@ -18,9 +18,18 @@ use serde::{Deserialize, Serialize};
 use crate::config::ModeStore;
 
 pub mod control;
+pub mod settings_write;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, font, media_clip]
+    routes![
+        index,
+        app_js,
+        style_css,
+        tokens_css,
+        font,
+        media_clip,
+        settings_write::device_settings_js
+    ]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -37,6 +46,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(settings_write::routes())
     .collect()
 }
 

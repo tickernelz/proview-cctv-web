@@ -2,6 +2,7 @@ pub mod client;
 pub mod control;
 pub mod crypto;
 pub mod frame;
+pub mod settings;
 
 pub const MAGIC: u8 = 0xff;
 pub const HEADER_LEN: usize = 20;

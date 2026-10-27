@@ -916,6 +916,8 @@ stream (0 decodable frames instead of 72), so it is deliberately absent.
 
 ## 9. Device control transport (ONVIF)
 
+Device settings writes ride the same DVRIP session as the controls: `Simplify.Encode` carries `MainFormat`/`ExtraFormat`/`SnapFormat` with `Video.{BitRate,BitRateControl,Compression,FPS,GOP,Quality,Resolution}`, `NetWork.NetCommon` carries `HostIP`/`SubMask`/`GateWay`/`MAC` plus the login pair, `NetWork.NetDHCP` carries `Enable`, `NetWork.NetDNS` carries `Address`/`SpareAddress`, `General.General` carries `OverWrite` (`OverWrite` or `StopRecord`), `Record` is an array whose entry 0 carries `RecordMode`, and `StorageInfo` answers on message 1020 with `Partition[]` (`Status`, `TotalSpace`, `RemainSpace`, `OldStartTime`). The names come from the SDK bean table in the APK (`com/lib/sdk/bean/JsonConfig.java`); `PUT /api/device/settings/*` writes the full block back with only the named field changed, then reads it again and restores the saved copy when the read-back differs. A new `HostIP` is refused: the read-back and the revert both travel over the address being replaced.
+
 `POST http://192.168.0.100:8899/onvif/device_service` speaks SOAP
 (`Server: hsoap/2.8`) and serves device, media, imaging and PTZ on the same
 path. Port 80 is the web UI: it answers `200` HTML for every path, so a 200
