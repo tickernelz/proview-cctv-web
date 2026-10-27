@@ -104,6 +104,7 @@ async function api(path, options = {}) {
 }
 
 let settingsInitial = new Map();
+let settingsRestartKeys = new Set();
 
 function settingsInputId(key) {
   return 'setting-' + key.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
@@ -119,6 +120,8 @@ function renderSettings(view) {
   const host = el('settings-fields');
   host.textContent = '';
   settingsInitial = new Map();
+  settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
+  el('settings-apply').hidden = true;
   const groups = new Map();
   for (const field of view.fields) {
     if (!groups.has(field.group)) groups.set(field.group, []);
@@ -136,7 +139,7 @@ function renderSettings(view) {
       wrap.className = 'settings-field';
       const label = document.createElement('label');
       label.setAttribute('for', id);
-      label.textContent = field.label + (field.restart ? ' (restart)' : '');
+      label.textContent = field.label + (field.restart ? ' · needs restart' : '');
       wrap.append(label);
       let input;
       if (field.kind === 'select') {
@@ -207,8 +210,10 @@ async function saveSettings() {
   setBusy(button, true);
   try {
     const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
+    const restartNeeded = Object.keys(payload).some((key) => settingsRestartKeys.has(key));
     renderSettings(view);
-    setSettingsStatus('Saved ' + Object.keys(payload).length + ' setting(s). Restart the app for the ones marked (restart).');
+    setSettingsStatus('Saved ' + Object.keys(payload).length + ' setting(s).');
+    if (restartNeeded) showApplyRow();
   } catch (error) {
     setSettingsStatus('Could not save: ' + error.message, true);
   } finally {
@@ -235,10 +240,44 @@ function applyTheme() {
   }
 }
 
+function showApplyRow() {
+  const row = el('settings-apply');
+  const tauri = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+  row.hidden = false;
+  row.scrollIntoView({ block: 'nearest' });
+  el('settings-restart').hidden = !tauri;
+  row.querySelector('p').textContent = tauri
+    ? 'Changes saved. They start working after a restart.'
+    : 'Changes saved. Restart the server process to use them.';
+}
+
+function openSettingsPanel() {
+  stopPlayback();
+  stopGrid();
+  stopClock();
+  el('login-view').hidden = true;
+  el('app-view').hidden = false;
+  el('view-nav').hidden = false;
+  el('account').hidden = true;
+  el('signout').hidden = true;
+  el('settings-back').hidden = false;
+  document.body.dataset.configOnly = 'true';
+  setView('settings');
+  window.scrollTo({ top: 0 });
+}
+
+function leaveSettingsPanel() {
+  delete document.body.dataset.configOnly;
+  el('settings-back').hidden = true;
+  showLogin();
+}
+
 function showLogin() {
   stopPlayback();
   stopGrid();
   stopClock();
+  delete document.body.dataset.configOnly;
+  el('settings-back').hidden = true;
   el('login-view').hidden = false;
   el('app-view').hidden = true;
   el('view-nav').hidden = true;
@@ -249,6 +288,8 @@ function showLogin() {
 }
 
 function showApp(account) {
+  delete document.body.dataset.configOnly;
+  el('settings-back').hidden = true;
   el('login-view').hidden = true;
   el('app-view').hidden = false;
   el('view-nav').hidden = false;
@@ -1823,6 +1864,18 @@ el('signout').addEventListener('click', async () => {
 
 el('settings-save').addEventListener('click', () => saveSettings());
 el('settings-reload').addEventListener('click', () => loadSettings());
+el('login-settings').addEventListener('click', () => openSettingsPanel());
+el('settings-back').addEventListener('click', () => leaveSettingsPanel());
+el('settings-restart').addEventListener('click', async () => {
+  const button = el('settings-restart');
+  setBusy(button, true);
+  try {
+    await window.__TAURI__.core.invoke('restart_app');
+  } catch (error) {
+    setSettingsStatus('Could not restart: ' + error.message, true);
+    setBusy(button, false);
+  }
+});
 el('refresh').addEventListener('click', () => {
   loadDevices();
 });

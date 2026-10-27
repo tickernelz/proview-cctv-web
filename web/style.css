@@ -559,3 +559,33 @@ button[aria-busy="true"] .label { opacity: 0.7; }
 .capabilities td.state[data-state="blocked"]::before { background: var(--warning); }
 .capabilities td.evidence { max-width: 46ch; }
 
+
+
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--info);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-button:hover { color: var(--ink); }
+.link-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+
+body[data-config-only="true"] #view-nav a[data-view="live"],
+body[data-config-only="true"] #view-nav a[data-view="grid"] { display: none; }
+
+.apply-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.apply-row p { margin: 0; }

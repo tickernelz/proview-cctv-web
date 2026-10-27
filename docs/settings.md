@@ -22,13 +22,21 @@ Settings view and returned by `GET /api/settings`.
 1. On start the file is read and every key is exported into the environment **only when
    that variable is not already set**. An exported variable therefore wins until it is
    cleared.
-2. `POST /api/settings` writes the file atomically and applies the values immediately.
-   Keys marked *(restart)* in the view only take effect after a restart, because they are
-   read once at startup (provider, listen address, data directory, cookie secret, cloud
-   hosts).
+2. `POST /api/settings` writes the file atomically and exports the values into the
+   process environment at once. Each save merges into what is already stored, so a second
+   save never drops the first. Keys read per request (`PROVIEW_MODE`,
+   `PROVIEW_PORTAL_BASE`, `PROVIEW_CAPS_BASE`, `PROVIEW_CLOUD_SESSION_TTL`,
+   `PROVIEW_FFMPEG`, `PROVIEW_LENS_PTZ`, `PROVIEW_LENS_CAPABILITIES`) apply
+   immediately. Keys marked *needs restart* are read once at startup — provider, cloud
+   base, device host/RTSP/ONVIF/user/password, session lifetime, fixture directory,
+   keychain profile, listen address, data directory and cookie secret — and the view
+   offers a **Restart the app** button for the desktop build.
 3. Secret values (`PROVIEW_DEVICE_PASS`, `ROCKET_SECRET_KEY`) are never returned: the
    API reports `set: true` and `value: null`. An empty input leaves a stored secret
    alone; sending an empty string for a non-secret key clears it.
+4. The view opens from the sign-in screen (`Settings` under the form), so the cloud host,
+   the camera address and the camera password can be set before anyone can sign in. In
+   that mode the Live and Grid tabs stay hidden until a session exists.
 
 ## Keys
 

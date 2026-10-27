@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use rocket::http::Status;
 use rocket::serde::json::Json;
@@ -85,7 +86,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Portal host used by the account login.",
-        true,
+        false,
     ),
     field(
         "PROVIEW_CAPS_BASE",
@@ -94,7 +95,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Host that answers device capabilities by serial.",
-        true,
+        false,
     ),
     field(
         "PROVIEW_CLOUD_SESSION_TTL",
@@ -112,7 +113,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "DVRIP host and port, for example 192.168.0.100:34567.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DEVICE_RTSP",
@@ -121,7 +122,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "RTSP host and port, usually 554.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DEVICE_ONVIF",
@@ -130,7 +131,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "ONVIF base address for movement and presets.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DEVICE_USER",
@@ -139,7 +140,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Camera user for LAN access.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DEVICE_PASS",
@@ -148,7 +149,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Secret,
         &[],
         "Camera password for LAN access; stored in the settings file.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_SESSION_TTL",
@@ -157,7 +158,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Number,
         &[],
         "Browser session lifetime.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_LISTEN",
@@ -202,7 +203,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Path,
         &[],
         "Directory the fixture provider reads from.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_PROFILE",
@@ -211,7 +212,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Profile name the desktop uses for stored device credentials.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DATA_DIR",
@@ -262,10 +263,10 @@ pub struct SettingsView {
     pub fields: Vec<FieldView>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SettingsStore {
     path: Option<PathBuf>,
-    values: BTreeMap<String, String>,
+    values: RwLock<BTreeMap<String, String>>,
 }
 
 impl SettingsStore {
@@ -283,11 +284,15 @@ impl SettingsStore {
             .and_then(|raw| serde_json::from_str::<SettingsFile>(&raw).ok())
             .map(|file| file.values)
             .unwrap_or_default();
-        Self { path, values }
+        Self {
+            path,
+            values: RwLock::new(values),
+        }
     }
 
     pub fn apply_env(&self) {
-        for (key, value) in &self.values {
+        let values = self.values.read().expect("settings lock");
+        for (key, value) in values.iter() {
             if value.trim().is_empty() || field_for(key).is_none() {
                 continue;
             }
@@ -298,6 +303,7 @@ impl SettingsStore {
     }
 
     pub fn view(&self) -> SettingsView {
+        let values = self.values.read().expect("settings lock");
         let fields = FIELDS
             .iter()
             .map(|field| {
@@ -305,8 +311,7 @@ impl SettingsStore {
                 let current = env::var(field.key)
                     .ok()
                     .filter(|value| !value.trim().is_empty());
-                let stored = self
-                    .values
+                let stored = values
                     .get(field.key)
                     .filter(|value| !value.trim().is_empty());
                 let is_set = current.is_some() || stored.is_some();
@@ -343,7 +348,7 @@ impl SettingsStore {
         }
     }
 
-    pub fn update(&mut self, incoming: BTreeMap<String, String>) -> Result<SettingsView, String> {
+    pub fn update(&self, incoming: BTreeMap<String, String>) -> Result<SettingsView, String> {
         for (key, value) in &incoming {
             let Some(field) = field_for(key) else {
                 return Err(format!("unknown setting {key}"));
@@ -368,7 +373,8 @@ impl SettingsStore {
                 _ => {}
             }
         }
-        let mut next = self.values.clone();
+        let mut guard = self.values.write().expect("settings lock");
+        let mut next = guard.clone();
         for (key, value) in incoming {
             if field_for(&key).is_none() {
                 continue;
@@ -396,7 +402,8 @@ impl SettingsStore {
             fs::write(&staged, body).map_err(|error| format!("write settings: {error}"))?;
             fs::rename(&staged, path).map_err(|error| format!("replace settings: {error}"))?;
         }
-        self.values = next;
+        *guard = next;
+        drop(guard);
         Ok(self.view())
     }
 }
@@ -429,8 +436,8 @@ fn write_settings(
     store: &State<SettingsStore>,
     body: Json<SettingsFile>,
 ) -> Result<Json<SettingsView>, Failure> {
-    let mut guard = store.inner().clone();
-    guard
+    store
+        .inner()
         .update(body.into_inner().values)
         .map(Json)
         .map_err(|error| fail(Status::BadRequest, error))
@@ -453,7 +460,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_keys_and_bad_numbers() {
-        let (mut store, dir) = temp_store("unknown");
+        let (store, dir) = temp_store("unknown");
         let mut unknown = BTreeMap::new();
         unknown.insert("PROVIEW_NOPE".to_string(), "x".to_string());
         assert!(store.update(unknown).is_err());
@@ -468,7 +475,7 @@ mod tests {
 
     #[test]
     fn persists_and_hides_secrets() {
-        let (mut store, dir) = temp_store("secrets");
+        let (store, dir) = temp_store("secrets");
         let mut values = BTreeMap::new();
         values.insert("PROVIEW_DEVICE_USER".to_string(), "admin".to_string());
         values.insert("PROVIEW_DEVICE_PASS".to_string(), "hunter2".to_string());
@@ -495,8 +502,74 @@ mod tests {
     }
 
     #[test]
+    fn a_second_save_keeps_the_first() {
+        let (store, dir) = temp_store("merge");
+        let mut first = BTreeMap::new();
+        first.insert(
+            "PROVIEW_DEVICE_HOST".to_string(),
+            "192.168.0.100:34567".to_string(),
+        );
+        store.update(first).expect("first save");
+        let mut second = BTreeMap::new();
+        second.insert(
+            "PROVIEW_CLOUD_BASE".to_string(),
+            "https://cloud.example".to_string(),
+        );
+        store.update(second).expect("second save");
+        let raw = fs::read_to_string(dir.join(FILE)).expect("settings file");
+        assert!(
+            raw.contains("PROVIEW_DEVICE_HOST"),
+            "the second save dropped the first: {raw}"
+        );
+        assert!(raw.contains("PROVIEW_CLOUD_BASE"));
+        let view = store.view();
+        let host = view
+            .fields
+            .iter()
+            .find(|f| f.key == "PROVIEW_DEVICE_HOST")
+            .expect("host field");
+        assert_eq!(host.value.as_deref(), Some("192.168.0.100:34567"));
+        env::remove_var("PROVIEW_DEVICE_HOST");
+        env::remove_var("PROVIEW_CLOUD_BASE");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn fields_read_once_at_startup_declare_a_restart() {
+        let restart: Vec<&str> = FIELDS.iter().filter(|f| f.restart).map(|f| f.key).collect();
+        for key in [
+            "PROVIEW_DEVICE_HOST",
+            "PROVIEW_DEVICE_RTSP",
+            "PROVIEW_DEVICE_ONVIF",
+            "PROVIEW_DEVICE_USER",
+            "PROVIEW_DEVICE_PASS",
+            "PROVIEW_SESSION_TTL",
+            "PROVIEW_FIXTURE_DIR",
+            "PROVIEW_PROFILE",
+            "PROVIEW_PROVIDER",
+            "PROVIEW_CLOUD_BASE",
+        ] {
+            assert!(
+                restart.contains(&key),
+                "{key} feeds startup config and must say it needs a restart"
+            );
+        }
+        for key in [
+            "PROVIEW_MODE",
+            "PROVIEW_PORTAL_BASE",
+            "PROVIEW_CAPS_BASE",
+            "PROVIEW_CLOUD_SESSION_TTL",
+        ] {
+            assert!(
+                !restart.contains(&key),
+                "{key} is read per request and must not claim a restart"
+            );
+        }
+    }
+
+    #[test]
     fn clears_a_value() {
-        let (mut store, dir) = temp_store("clear");
+        let (store, dir) = temp_store("clear");
         let mut values = BTreeMap::new();
         values.insert("PROVIEW_FFMPEG".to_string(), "/opt/ffmpeg".to_string());
         store.update(values).expect("update");

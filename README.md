@@ -42,9 +42,11 @@ email:    fixture@example.invalid
 password: fixture-password
 ```
 
-Configuration can be exported, and it can also be set in the app: the Settings view
-writes `settings.json` in the data directory and applies it on save, so nothing has to be
-exported by hand. `docs/settings.md` lists every key, the precedence and the API.
+Configuration lives in the app: the Settings view is reachable from the sign-in screen
+before any login, writes `settings.json` in the data directory, and offers a Restart button
+for the keys read once at startup. Keys read per request (mode, portal and caps hosts,
+cloud session lifetime, ffmpeg, lens capabilities) apply as soon as they are saved. Nothing
+has to be exported by hand. `docs/settings.md` lists every key, the precedence and the API.
 
 To point it at the real cloud without the app UI:
 

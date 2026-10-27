@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PROVIEW CCTV",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "identifier": "io.zhafron.proview-cctv",
   "build": {
     "frontendDist": "../web"
   },
   "app": {
+    "withGlobalTauri": true,
     "windows": [],
     "security": {
       "csp": null

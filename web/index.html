@@ -69,6 +69,8 @@
         <p id="login-error" class="field-error" role="alert" hidden></p>
       </div>
 
+      <p class="field-note compact">Cannot sign in yet? Open <button id="login-settings" class="link-button" type="button">Settings</button> to set the cloud host, the camera address and the camera password without touching an environment file.</p>
+
       <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" tabindex="0" hidden>
         <p class="field-note">This network path signs in to the camera itself. Its address lives in the server configuration; the credentials below go straight to that camera.</p>
         <p id="local-mode" class="field-note compact" role="status">Checking which provider the server uses…</p>
@@ -265,7 +267,8 @@
       <section id="view-settings" class="view" hidden aria-labelledby="settings-title">
         <div class="view-head">
           <h1 id="settings-title" tabindex="-1">Settings</h1>
-          <p class="field-note">Stored in this browser only.</p>
+          <p class="field-note">Appearance and playback are stored in this browser; configuration is stored on the server.</p>
+          <button id="settings-back" class="secondary" type="button" hidden>Back to sign in</button>
         </div>
 
         <div class="settings-group" role="group" aria-labelledby="set-appearance">
@@ -315,13 +318,17 @@
 
         <div class="settings-group" role="group" aria-labelledby="set-config">
           <h2 id="set-config">Configuration</h2>
-          <p class="field-note">Every server setting in one place. Values are written to <code>settings.json</code> in the app data folder and applied immediately; an environment variable that is already set wins until it is cleared here. Secrets are never shown back.</p>
+          <p class="field-note">Every server setting in one place. Values are written to <code>settings.json</code> in the app data folder and take effect after the app restarts; an environment variable that is already set wins until it is cleared here. Secrets are never shown back.</p>
           <div id="settings-fields"></div>
           <div class="panel-actions">
             <button id="settings-save" class="primary" type="button">Save configuration</button>
             <button id="settings-reload" class="secondary" type="button">Reload</button>
           </div>
           <p id="settings-status" class="field-note compact" role="status">Not loaded yet.</p>
+          <div id="settings-apply" class="apply-row" hidden>
+            <p class="field-note compact">Changes saved. They start working after a restart.</p>
+            <button id="settings-restart" class="primary" type="button">Restart the app</button>
+          </div>
         </div>
 
         <div class="settings-group" role="group" aria-labelledby="set-server">

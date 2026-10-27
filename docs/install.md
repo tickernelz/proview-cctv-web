@@ -59,14 +59,14 @@ Path to a signed build later: Apple Developer ID certificate + notarization.
 
 ```sh
 # AppImage
-chmod +x PROVIEW-CCTV_0.2.3_amd64.AppImage
-./PROVIEW-CCTV_0.2.3_amd64.AppImage
+chmod +x PROVIEW-CCTV_0.2.4_amd64.AppImage
+./PROVIEW-CCTV_0.2.4_amd64.AppImage
 
 # Debian / Ubuntu
-sudo apt install ./proview-cctv_0.2.3_amd64.deb
+sudo apt install ./proview-cctv_0.2.4_amd64.deb
 
 # Fedora / RHEL
-sudo rpm -i proview-cctv-0.2.3-1.x86_64.rpm
+sudo rpm -i proview-cctv-0.2.4-1.x86_64.rpm
 ```
 
 The desktop build needs `webkit2gtk-4.1` at runtime (installed automatically by

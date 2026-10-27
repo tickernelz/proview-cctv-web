@@ -116,6 +116,11 @@ fn config_from_keychain() -> Config {
     config
 }
 
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 fn main() {
     if flag("--version") || flag("-V") {
         println!("proview-desktop {}", env!("CARGO_PKG_VERSION"));
@@ -157,6 +162,7 @@ fn main() {
                 .build()?;
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![restart_app])
         .run(tauri::generate_context!())
         .expect("tauri application");
 
