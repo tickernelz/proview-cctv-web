@@ -294,14 +294,14 @@ pub struct TalkSession {
 async fn send_frame(
     writer: &mut OwnedWriteHalf,
     session: u32,
-    sequence: &mut u32,
+    sequence: u32,
     id: u16,
     body: &[u8],
-) -> Result<(), TalkError> {
-    *sequence = sequence.wrapping_add(1);
+) -> Result<u32, TalkError> {
+    let sequence = sequence.wrapping_add(1);
     let header = Header {
         session,
-        sequence: *sequence,
+        sequence,
         channel: 0,
         end: false,
         id,
@@ -310,16 +310,16 @@ async fn send_frame(
     writer.write_all(&header.encode()).await?;
     writer.write_all(body).await?;
     writer.flush().await?;
-    Ok(())
+    Ok(sequence)
 }
 
 async fn send_json(
     writer: &mut OwnedWriteHalf,
     session: u32,
-    sequence: &mut u32,
+    sequence: u32,
     id: u16,
     body: &Value,
-) -> Result<(), TalkError> {
+) -> Result<u32, TalkError> {
     let mut payload =
         serde_json::to_vec(body).map_err(|error| TalkError::BadReply(error.to_string()))?;
     payload.push(b'\n');
@@ -429,10 +429,10 @@ impl TalkSession {
             if payload.len() < PACKET_BYTES {
                 audio::pad_to_frame(&mut payload, PACKET_BYTES);
             }
-            send_frame(
+            self.sequence = send_frame(
                 &mut self.writer,
                 self.session,
-                &mut self.sequence,
+                self.sequence,
                 msg::TALK_DATA,
                 &data_frame(&payload),
             )
@@ -446,26 +446,30 @@ impl TalkSession {
 
     pub async fn stop(&mut self) -> Result<(), TalkError> {
         let session = format!("0x{:08X}", self.session);
-        send_json(
+        self.sequence = send_json(
             &mut self.writer,
             self.session,
-            &mut self.sequence,
+            self.sequence,
             msg::TALK,
             &talk_body("Stop", self.channel, &session),
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     pub async fn logout(mut self) -> Result<(), TalkError> {
         let session = format!("0x{:08X}", self.session);
-        let _ = send_json(
+        let sent = send_json(
             &mut self.writer,
             self.session,
-            &mut self.sequence,
+            self.sequence,
             msg::LOGOUT,
             &json!({ "Name": "", "SessionID": session }),
         )
         .await;
+        if let Ok(sequence) = sent {
+            self.sequence = sequence;
+        }
         let _ = self.writer.shutdown().await;
         let _ = timeout(Duration::from_secs(2), self.reader).await;
         Ok(())
