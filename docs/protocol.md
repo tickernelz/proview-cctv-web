@@ -956,11 +956,24 @@ the capability row both report that reason instead of a value. PTZ is bound to t
 reported `blocked` per lens instead of hidden. DVRIP (`34567`) stays the
 fallback for movement and the only path for settings, snapshot and record.
 
-Two-way audio stays blocked with a recorded offer rather than a guess: the RTSP
-SDP carries `m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) but no backchannel,
-and the ONVIF device service exposes no audio output. DVRIP reports
-`SupportTwoWayVoiceTalk=true`, so the missing piece is a capture path in the
-server, not the device API.
+Two-way audio uses the DVRIP backchannel, not RTSP: the SDP carries
+`m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) with no backchannel and the ONVIF
+device service exposes no audio output, while the device reports
+`SupportTwoWayVoiceTalk=true`. The message ids come from the shipped SDK —
+`CProtocolNetIP::NewMediaControlPTLE` (0xf2816c) for the `OPTalk` body and the
+`1434` claim against `1430` start/stop, `CProtocolNetIP::NewMediaDataPTLE`
+(0xf29ee8) for the `1432` audio frames whose 8-byte header is
+`00 00 01 FA | 0E | 02 | length` followed by G.711 A-law, 320 samples (40 ms) per
+frame at 8 kHz. The browser captures through an AudioWorklet at 8 kHz and the
+server encodes A-law, so no capture plugin is needed. Measured 2026-10-27: claim
+`Ret 100` in 477 ms, 50 frames in 2.00 s and 0.079 ms mean write time to the
+device over the vendor relay. In the other direction the device streams its own
+audio back while the claim is open: a 90 s session left 743,328 bytes unread in
+the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
+build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
+report) instead of letting it fill the queue, but it does not play it. What is
+still unproven is acoustic: whether the camera speaker plays what it receives
+needs a person standing next to it.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second

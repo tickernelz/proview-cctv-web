@@ -2,6 +2,7 @@ pub mod client;
 pub mod control;
 pub mod crypto;
 pub mod frame;
+pub mod talk;
 
 pub const MAGIC: u8 = 0xff;
 pub const HEADER_LEN: usize = 20;
@@ -17,7 +18,7 @@ pub mod msg {
     pub const ABILITY: u16 = 1360;
     pub const PTZ_CONTROL: u16 = 1400;
     pub const TALK: u16 = 1430;
-    pub const TALK_DATA: u16 = 1433;
+    pub const TALK_DATA: u16 = 1432;
     pub const TALK_CLAIM: u16 = 1434;
     pub const TIME_QUERY: u16 = 1452;
     pub const SNAP: u16 = 1560;

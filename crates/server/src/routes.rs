@@ -17,10 +17,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ModeStore;
 
+pub mod audio;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, talk_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -42,6 +43,9 @@ pub fn api() -> Vec<rocket::route::Route> {
 
 pub fn live() -> Vec<rocket::route::Route> {
     routes![ws_live]
+        .into_iter()
+        .chain(audio::routes())
+        .collect()
 }
 
 #[get("/")]
@@ -52,6 +56,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/talk.js")]
+fn talk_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/talk.js"))
 }
 
 #[get("/tokens.css")]
