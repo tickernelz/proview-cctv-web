@@ -788,6 +788,27 @@ What that leaves, in order of cost: the constructor that stores the key
 because the code that stores `0x1f40830` was not located), or a different
 encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
 
+### 4C.13 The path is also a diagnostic
+
+`GET /api/cloud-path?device=<serial>` walks the same steps as a live attempt and
+answers the result, per stage (`access`, `agent`, `relayAccepted`, `relayError`,
+`destIp`, `mtu`, `detail`). It never logs in to the device, so nothing crosses the
+relay beyond the handshake of 4C.7.
+
+Measured over HTTP from this box against the real account, one session:
+
+```
+POST /api/login                                       200 in 0.3 s
+GET  /api/stream?device=<sn>&channel=1&quality=hd      501 in 0.0014 s
+GET  /api/cloud-path?device=<sn>                       200 in 0.40 s, 0.38 s, 1.46 s
+   {"online":true,"access":"110.239.87.207:6510","agent":"162.128.64.191:6611",
+    "relayAccepted":true,"destIp":"103.85.122.66","mtu":"1400",...}
+```
+
+The three rounds were answered by three different agents (`162.128.64.191`,
+`162.128.64.50`, `162.128.66.64`), which is the per-session assignment of 4C.7
+showing up in the diagnostic.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -956,11 +977,24 @@ the capability row both report that reason instead of a value. PTZ is bound to t
 reported `blocked` per lens instead of hidden. DVRIP (`34567`) stays the
 fallback for movement and the only path for settings, snapshot and record.
 
-Two-way audio stays blocked with a recorded offer rather than a guess: the RTSP
-SDP carries `m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) but no backchannel,
-and the ONVIF device service exposes no audio output. DVRIP reports
-`SupportTwoWayVoiceTalk=true`, so the missing piece is a capture path in the
-server, not the device API.
+Two-way audio uses the DVRIP backchannel, not RTSP: the SDP carries
+`m=audio 0 RTP/AVP 8` (`PCMA/8000`, `trackID=4`) with no backchannel and the ONVIF
+device service exposes no audio output, while the device reports
+`SupportTwoWayVoiceTalk=true`. The message ids come from the shipped SDK —
+`CProtocolNetIP::NewMediaControlPTLE` (0xf2816c) for the `OPTalk` body and the
+`1434` claim against `1430` start/stop, `CProtocolNetIP::NewMediaDataPTLE`
+(0xf29ee8) for the `1432` audio frames whose 8-byte header is
+`00 00 01 FA | 0E | 02 | length` followed by G.711 A-law, 320 samples (40 ms) per
+frame at 8 kHz. The browser captures through an AudioWorklet at 8 kHz and the
+server encodes A-law, so no capture plugin is needed. Measured 2026-10-27: claim
+`Ret 100` in 477 ms, 50 frames in 2.00 s and 0.079 ms mean write time to the
+device over the vendor relay. In the other direction the device streams its own
+audio back while the claim is open: a 90 s session left 743,328 bytes unread in
+the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
+build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
+report) instead of letting it fill the queue, but it does not play it. What is
+still unproven is acoustic: whether the camera speaker plays what it receives
+needs a person standing next to it.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
