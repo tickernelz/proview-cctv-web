@@ -4,9 +4,9 @@ A small Rocket server that puts PROVIEW CCTV (package `com.proview.cctv`, a
 Xiongmai / XMEye white-label) cameras on a desktop browser instead of a phone.
 
 Status: **protocol reconnaissance, skeleton server**. The web layer, session
-handling and provider boundary are real; the vendor cloud calls and the live
-video transport are not finished. See `docs/protocol.md` for exactly what is
-proven and what is not.
+handling and provider boundary are real, live video works, and one vendor cloud
+call ships (device caps by serial); account login and the cloud device list are
+not finished. See `docs/protocol.md` for exactly what is proven and what is not.
 
 ## What works today
 
@@ -20,7 +20,8 @@ proven and what is not.
 | Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
 | H.264 SPS parse (dimensions, profile) | works, tested |
 | Vendor cloud login | partially mapped; the portal login encoder is recovered but the PROVIEW account lives on the white-label cloud, not the global portal |
-| Device list from the vendor cloud | not implemented |
+| Device caps from the app cloud | works: `GET /api/cloud/device-caps?sn=<serial>` answers model, firmware, WAN address and the capability block from the app's own cloud, no account session needed; an unknown serial is a 404 |
+| Device list from the vendor cloud | not implemented; the app's device list sits behind a certificate-pinned host |
 | Live video to the browser | works: RTSP pull + H.265 depacketize + one transcode per stream + fMP4 over WebSocket into MSE; verified against a real IPC |
 | Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
 

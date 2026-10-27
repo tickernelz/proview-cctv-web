@@ -20,8 +20,9 @@ not is listed as `blocked` with the missing input.
 | Session expiry handling | design | partial | server expires and returns 401; UI shows the error but does not re-prompt silently |
 | Remember account | `SplashActivity`, `loginExist`, `savePwdToken` strings | blocked | needs the flow in the previous rows |
 | Logout | `IXMAccount::AccountUnBindingWX`, `/webservice/app/user/logOut` | partial | local logout works; vendor-side logout call not wired |
-| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | same cloud blocker |
+| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | the app fetches it from a certificate-pinned host (`pub-dscn.secu100.net`) and from `as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs`, whose path signature is per request; see `cloud-app-surface.md` |
 | Device online status | `pub-status.secu100.net:7700-7706`, `IXMCloud::GetDevsStatus` | blocked | same cloud blocker |
+| Device identity and capabilities by serial | iOS capture 2026-10-27: `POST https://caps.xmcsrv.net/api/asMsgQ` `{"method":"reqCaps","body":{"caps":[…],"sn":…}}` with no session | done | `GET /api/cloud/device-caps?sn=<serial>` over `cloud::app::CapsClient`: model, hardware id, firmware, `lastWanIp` and the capability block; empty serial 400, unknown serial 404. See `cloud-app-surface.md` |
 
 ## Application shell
 

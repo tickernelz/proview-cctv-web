@@ -272,7 +272,8 @@ channel.
 `crates/core/src/cloud/` implements the account cloud of the vendor's own
 browser client (`https://v2.xmeye.net`, a Vue SPA over
 `https://api.xmeye.net/api`), and the server mounts it at `/api/cloud/*`:
-`portal`, `captcha`, `session`, `logout`, `profile`, `devices`.
+`portal`, `captcha`, `session`, `logout`, `profile`, `devices`, and the
+session-free `device-caps` of section 10B.
 
 ### 10.1 Endpoints
 
@@ -503,6 +504,40 @@ as "the account is wrong".
 Related rate limit, measured: around ten `usercheck` calls in a few minutes make
 every shape answer `5005` as well, so burst probing erases information.
 
+
+## 10C. The iOS app's cloud surface, and the one call it makes without a session
+
+Captured on 2026-10-27 from the owner's iPhone through Proxyman with SSL proxying
+on every domain (290 entries, 174 decrypted), written up in full in
+`cloud-app-surface.md`. The app (`com.szyarsor.proviewcctv` 1.0.2) never touches
+`api.xmeye.net`; it speaks to `api.jftechws.com`, `caps-as.jftechws.com`,
+`as-ams.jftechws.com`, `boss22-api.xmcsrv.net`, `caps.xmcsrv.net`,
+`app-support.xmcsrv.net`, `upgrade.secu100.net` and `promotion.xmeye.net`.
+
+Three facts that matter for this project:
+
+- The login the app does complete is
+  `POST boss22-api.xmcsrv.net/account/userToken/login` with
+  `{request:{authorization:<JWT>, appKey, appScheme, appVer}}`; the reply echoes
+  the same HS256 JWT (`iss rss`, `type com`, `account <account id>`) as
+  `accessToken`, plus an RSA-1024 `publicKey`. Where that JWT is minted stays
+  unseen: `pub-dscn.secu100.net` was the only vendor host still tunnelled while
+  every other host decrypted, i.e. certificate pinning, and the token's `iat`
+  falls inside that host's window.
+- The device list is `POST as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs`
+  with `shareUuid=`; each row's `powers.devInfo` is encrypted and the path
+  signature is per request, so nothing there can be replayed.
+- `POST caps.xmcsrv.net/api/asMsgQ` with
+  `{"method":"reqCaps","body":{"caps":[…],"sn":<serial>}}` answers model,
+  hardware id, firmware, `lastWanIp` and the capability block **without any
+  session**. That is the only cloud call this project ships so far:
+  `GET /api/cloud/device-caps?sn=<serial>` over `cloud::app::CapsClient`. An empty
+  serial answers 400; a serial the cloud does not know answers `ret 200` with
+  blank `model`/`pid`, which the route reports as 404.
+
+Reaching the pinned host, and with it the minting request and the device list,
+needs a hooked or jailbroken client, or static work on the Mach-O, not another
+proxy export.
 
 ## 11. Live passthrough transport (stream 2)
 
