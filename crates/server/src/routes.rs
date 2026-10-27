@@ -1,6 +1,9 @@
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
+#[path = "routes/fisheye.rs"]
+pub mod fisheye;
+
 use std::time::Duration;
 
 use proview_core::config::Config;
@@ -20,7 +23,7 @@ use crate::config::ModeStore;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, fisheye_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -37,6 +40,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(fisheye::api())
     .collect()
 }
 
@@ -52,6 +56,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/fisheye.js")]
+fn fisheye_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/fisheye.js"))
 }
 
 #[get("/tokens.css")]
