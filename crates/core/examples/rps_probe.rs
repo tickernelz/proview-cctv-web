@@ -120,6 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .filter(|v| !v.trim().is_empty())
     {
+        let session_key = rps::session_key();
         let sealed = match std::env::var("PROVIEW_DEVICE_MODULUS")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -127,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(modulus) => match proview_core::dvrip::crypto::communicate_key(
                 modulus.trim(),
                 "010001",
-                &rps::session_key(),
+                &session_key,
             ) {
                 Ok(value) => value,
                 Err(error) => {
@@ -141,6 +142,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         match connection.login_token(token.trim(), &sealed).await {
             Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
             Err(error) => eprintln!("tokenlogin failed: {error:?}"),
+        }
+        let cipher = proview_core::media::dhav::MediaCipher::from_text(&session_key)
+            .ok_or("the session key is not sixteen bytes")?;
+        let vekey1 = rps::random_lower(60);
+        let session_text = format!("0x{:08x}", connection.session());
+        for (id, name) in [
+            (0x03fcu16, "SystemInfo"),
+            (0x0550, "SystemFunction"),
+            (0x0412, "fVideo.AudioSupportType"),
+        ] {
+            let body = serde_json::json!({ "Name": name, "SessionID": session_text });
+            match connection.send_encrypted(&cipher, id, &body).await {
+                Ok(()) => eprintln!("query    sent {}", name),
+                Err(error) => eprintln!("query {} failed: {error:?}", name),
+            }
+        }
+        match connection.start_monitor(&cipher, 0, "Main", &vekey1).await {
+            Ok(()) => eprintln!("start    sent vekey1={} chars", vekey1.len()),
+            Err(error) => eprintln!("start failed: {error:?}"),
         }
     }
     for index in 0..6 {
