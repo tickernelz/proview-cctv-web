@@ -18,8 +18,10 @@ stability before 1.0.
   374-byte JSON and re-encrypts to the same 384 bytes; the 720-byte claim reply
   decrypts to the capability JSON with the device's RSA public key. The same key
   opens the vendor app's own capture (577-byte login body, 432-byte plaintext),
-  and the claim ciphertext is byte-identical between the two. `docs/protocol.md`
-  4C.13 carries the addresses and the measurements.
+  and the claim ciphertext is byte-identical between the two. The module carries
+  the cipher only, no frame parser: the recording format is a separate
+  workstream. `docs/protocol.md` 4C.13 carries the addresses, the body-class
+  table for msgid 1412 and the 84-combination negative result.
 
 ## 0.3.2 — 2026-10-27
 

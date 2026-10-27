@@ -37,7 +37,7 @@ impl MediaCipher {
     }
 
     pub fn decrypt(&self, cipher: &[u8]) -> Option<Vec<u8>> {
-        if cipher.is_empty() || cipher.len() % BLOCK != 0 {
+        if cipher.len() % BLOCK != 0 {
             return None;
         }
         let mut out = vec![0u8; cipher.len()];
@@ -75,55 +75,6 @@ pub fn trim_nul(body: &[u8]) -> &[u8] {
     &body[..end]
 }
 
-pub fn trim_padding(plain: &[u8]) -> &[u8] {
-    trim_nul(plain)
-}
-
-pub const DHAV_MAGIC: [u8; 4] = *b"DHAV";
-const DHAV_HEADER: usize = 7;
-
-pub struct DhavFrame<'a> {
-    pub declared_len: usize,
-    pub body: &'a [u8],
-}
-
-impl<'a> DhavFrame<'a> {
-    pub fn parse(buf: &'a [u8]) -> Option<(Self, usize)> {
-        if buf.len() < DHAV_HEADER || buf[..4] != DHAV_MAGIC {
-            return None;
-        }
-        let declared = u16::from_le_bytes([buf[5], buf[6]]) as usize;
-        if declared < DHAV_HEADER || declared > buf.len() {
-            return None;
-        }
-        Some((
-            Self {
-                declared_len: declared,
-                body: &buf[DHAV_HEADER..declared],
-            },
-            declared,
-        ))
-    }
-
-    pub fn scan(mut buf: &'a [u8]) -> Vec<Self> {
-        let mut frames = Vec::new();
-        while let Some(at) = find_magic(buf) {
-            match Self::parse(&buf[at..]) {
-                Some((frame, used)) => {
-                    frames.push(frame);
-                    buf = &buf[at + used..];
-                }
-                None => buf = &buf[at + 1..],
-            }
-        }
-        frames
-    }
-}
-
-fn find_magic(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == DHAV_MAGIC)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,7 +103,7 @@ mod tests {
             .decrypt_body(LOGIN_BODY.as_bytes())
             .expect("login body");
         assert_eq!(plain.len(), 384);
-        assert_eq!(trim_padding(&plain), LOGIN_TEXT.as_bytes());
+        assert_eq!(trim_nul(&plain), LOGIN_TEXT.as_bytes());
     }
 
     #[test]
@@ -161,7 +112,7 @@ mod tests {
             .decrypt_body(APP_LOGIN_BODY.as_bytes())
             .expect("app login body");
         assert_eq!(plain.len(), 432);
-        assert_eq!(trim_padding(&plain), APP_LOGIN_TEXT.as_bytes());
+        assert_eq!(trim_nul(&plain), APP_LOGIN_TEXT.as_bytes());
         assert_eq!(APP_CLAIM_BODY, CLAIM_BODY);
     }
 
@@ -178,7 +129,7 @@ mod tests {
             .decrypt_body(CLAIM_BODY.as_bytes())
             .expect("claim body");
         assert_eq!(plain.len(), 720);
-        let text = String::from_utf8_lossy(trim_padding(&plain)).to_string();
+        let text = String::from_utf8_lossy(trim_nul(&plain)).to_string();
         assert!(text.starts_with(CLAIM_HEAD), "{text}");
         assert!(text.contains("\"PublicKey\" : \"91670C27"));
         assert!(text.contains("\"NotEncryptMsgID\""));
@@ -188,8 +139,16 @@ mod tests {
     #[test]
     fn rejects_bodies_that_are_not_block_aligned() {
         assert!(cipher().decrypt(&[0u8; 15]).is_none());
-        assert!(cipher().decrypt(&[]).is_none());
+        assert!(cipher().decrypt(&[0u8; 17]).is_none());
         assert!(cipher().decrypt_body(b"not base64").is_none());
+    }
+
+    #[test]
+    fn keeps_the_empty_payload_symmetric() {
+        assert_eq!(cipher().encrypt(b""), Vec::<u8>::new());
+        assert_eq!(cipher().decrypt(&[]), Some(Vec::new()));
+        assert_eq!(cipher().encrypt_body(b""), "");
+        assert_eq!(cipher().decrypt_body(b""), Some(Vec::new()));
     }
 
     #[test]
@@ -204,46 +163,5 @@ mod tests {
         assert_eq!(trim_nul(b"json\0\0"), b"json");
         assert_eq!(trim_nul(b"json"), b"json");
         assert_eq!(trim_nul(b"\0\0"), b"");
-    }
-
-    fn dhav_frame(body: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(b"DHAV");
-        out.push(0x01);
-        let len = (DHAV_HEADER + body.len()) as u16;
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(body);
-        out
-    }
-
-    #[test]
-    fn parses_one_frame_and_reports_its_length() {
-        let frame = dhav_frame(b"payload");
-        let (parsed, used) = DhavFrame::parse(&frame).expect("frame");
-        assert_eq!(used, frame.len());
-        assert_eq!(parsed.declared_len, frame.len());
-        assert_eq!(parsed.body, b"payload");
-    }
-
-    #[test]
-    fn scans_frames_across_a_stream() {
-        let mut stream = vec![0xff, 0x00, 0x12];
-        stream.extend_from_slice(&dhav_frame(b"one"));
-        stream.extend_from_slice(&[0xaa]);
-        stream.extend_from_slice(&dhav_frame(b"two"));
-        let frames = DhavFrame::scan(&stream);
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].body, b"one");
-        assert_eq!(frames[1].body, b"two");
-    }
-
-    #[test]
-    fn rejects_frames_with_a_bad_magic_or_a_lying_length() {
-        let mut lying = dhav_frame(b"x");
-        lying[5] = 0xff;
-        lying[6] = 0xff;
-        assert!(DhavFrame::parse(&lying).is_none());
-        assert!(DhavFrame::parse(b"DHAV").is_none());
-        assert!(DhavFrame::parse(b"\x00DHAV\x01").is_none());
     }
 }

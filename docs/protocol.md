@@ -816,8 +816,9 @@ already hold it.
 
 **Measured, not inferred.** A live cloud-P2P session on 2026-10-27 under the qemu
 harness with a prologue-patch hook over `XAES::Encrypt128`,
-`XAES::Decrypt128_Base64` and `AES_set_encrypt_key`, tcpdump on TCP 6611, ordered by
-capture timestamp:
+`XAES::Decrypt128_Base64` and `AES_set_encrypt_key`, tcpdump on TCP 6611. The `t`
+column is seconds after the media connection's SYN, which the capture places at
+25.916331 s (so 0.044 means 25.961 s in the file):
 
 | t (s) | msgid | ch | dir | wire body | plaintext |
 |---|---|---|---|---|---|
@@ -863,19 +864,43 @@ the device in `CommunicateKey`: 256 hex characters = 128 bytes = RSA-1024, match
 `0xf25e38` and logged by the ctor at `ProtocolNetIP.cpp:2710`. In the run above that
 key was `Os1B8U5VJ2LE2ubx`, visible on msgid 1020, 1360, 1410 and 1006.
 
-`crates/core/src/media/dhav.rs` implements the envelope, the cipher and the DHAV
-frame split (`DHAV` magic, `u16` little-endian length at offset 5), with the captured
-bodies as test vectors: the login decrypts to the JSON above, and re-encrypting that
-plaintext reproduces the captured 384 bytes byte for byte.
+`crates/core/src/media/dhav.rs` implements the envelope and the cipher (AES-128-CBC,
+zero IV, zero padding, base64, `trim_nul` for the wire terminator) with the captured
+bodies as test vectors: the login decrypts to the JSON above, re-encrypting that
+plaintext reproduces the captured 384 bytes byte for byte, and the vendor app's body
+does the same. A frame format parser is deliberately **not** here: the recording
+format is ZHA-4006 and ZHA-4007's work, and no capture in `~/re` contains the ASCII
+marker `DHAV` (0 hits in 8539 harness and 9148 app packets), so shipping one would be
+a guess.
 
-**Still open.** The video payload is msgid 1412 in 328-byte and 8192-byte bodies and
-does **not** use this envelope: no `DHAV` magic, no H.264 start code at offset 0, and
-no hit from AES-128/256 in CBC, CFB, OFB or CTR over seven candidate keys
-(`VEKEY1`, `VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`,
-`SHA1(SHA1(VEKEY1))[..16]`, `MD5(VEKEY1)`, the constant, the session key). What the
-run does show is the lever: `OPMonitor Start` carries
+**What the video bodies actually look like.** Every msgid 1412 body starts with
+`00 00 01` and a one-byte class, measured on both captures:
+
+| class | harness (4111 bodies) | app (3785 bodies) | body size | shape |
+|---|---|---|---|---|
+| `fa` | 2217 | 2079 | 328 B, always | `00 00 01 fa` then `0e 02 40 01` and a `d5`/`55` filler run |
+| `fd` | 1075 | 996 | 105-1143 B | `00 00 01 fd` + `u32` length at offset 4 equal to `body - 8` (1075/1075 harness, 966/996 app) + `00 00 00 01` + one marker byte + slice data; emulation-prevention `00 00 03` in 1075/1075 |
+| `fc` | 32 | 31 | 8192 B, always | high entropy, no start code |
+| `f9` | 31 | 27 | 16 B, always | `00 00 01 f9 0e 00 08` plus zeros |
+| none | 756 | 652 | 8192 B and others | high entropy, no start code |
+
+So the video does arrive **partly in plaintext**: dropping the marker byte after each
+inner start code turns the 1075 `fd` bodies into 1084 H.264 NAL units (1077 type 1
+slices, 2 type 5 IDR frames at NAL index 72 and 424, 5 type 14 prefix NALs). ffmpeg
+parses those slices and then stops on `non-existing PPS 1 referenced`: no SPS or PPS
+appears anywhere in the plaintext bodies (0 hits for `00 00 01 67`, `00 00 00 01 67`,
+`00 00 01 68` and `00 00 00 01 68` across all 4111). Without parameter sets the
+plaintext cannot be decoded, which is why this change stops at the cipher.
+
+**What was ruled out on the opaque bodies.** `keysweep.py` (kept in
+`~/re/proview-cctv/ZHA-4005/`, log `keysweep.log`) tries 7 key derivations
+(`VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`, `SHA1(SHA1(VEKEY1))[..16]`,
+`MD5(VEKEY1)`, the channel constant, the session key) under 4 modes (CBC, CFB, OFB,
+CTR) with a zero IV against a 4 KiB slice of three body classes (`headless`, `fc`,
+`fd`): **84 combinations, 0 hits**. That is the exact surface of the negative result;
+nothing outside it is claimed. The lever remains `OPMonitor Start`'s
 `"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
-64-character key that the device acknowledges in `1411` before the first `1412`.
+64-character key the device acknowledges in `1411` before the first `1412`.
 
 ### 4C.4 What that means for the implementation
 
@@ -903,9 +928,9 @@ run does show is the lever: `OPMonitor Start` carries
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
 5. The P2P media channel cipher is answered in 4C.13 for the control frames
    (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
-   1000). What remains is the video payload itself: msgid 1412 bodies resist
-   every key derivation tested against `VEKEY1`, so that stream is the next
-   change rather than a protocol gap.
+   1000). The video bodies themselves arrive partly in plaintext H.264 and lack
+   SPS/PPS, and the opaque ones beat 84 combos of key derivation and mode; both
+   facts are measured in 4C.13, and the frame format is ZHA-4006/4007's.
 
 ## 6. DVRIP transport as implemented here
 
