@@ -80,33 +80,6 @@ pub const FIELDS: &[Field] = &[
         true,
     ),
     field(
-        "PROVIEW_APP_UUID",
-        "Platform app uuid",
-        "Cloud",
-        Kind::Text,
-        &[],
-        "Identity the app ships for the signed cloud login.",
-        false,
-    ),
-    field(
-        "PROVIEW_APP_KEY",
-        "Platform app key",
-        "Cloud",
-        Kind::Text,
-        &[],
-        "Key that travels in the appKey header of the signed cloud login.",
-        false,
-    ),
-    field(
-        "PROVIEW_APP_SECRET",
-        "Platform app secret",
-        "Cloud",
-        Kind::Secret,
-        &[],
-        "Secret the login signature and body key are derived from.",
-        false,
-    ),
-    field(
         "PROVIEW_PORTAL_BASE",
         "Portal address",
         "Cloud",
@@ -258,6 +231,33 @@ pub const FIELDS: &[Field] = &[
         &[],
         "Signs the sign-in cookie; leave empty to let the app generate one.",
         true,
+    ),
+    field(
+        "PROVIEW_APP_UUID",
+        "Platform app uuid",
+        "Self-built builds",
+        Kind::Text,
+        &[],
+        "Only for a build made from source without a baked cloud identity; release builds carry one.",
+        false,
+    ),
+    field(
+        "PROVIEW_APP_KEY",
+        "Platform app key",
+        "Self-built builds",
+        Kind::Text,
+        &[],
+        "Only for a build made from source without a baked cloud identity; release builds carry one.",
+        false,
+    ),
+    field(
+        "PROVIEW_APP_SECRET",
+        "Platform app secret",
+        "Self-built builds",
+        Kind::Secret,
+        &[],
+        "Only for a build made from source without a baked cloud identity; release builds carry one.",
+        false,
     ),
 ];
 
@@ -608,6 +608,14 @@ mod tests {
                 !restart.contains(&key),
                 "{key} is read per request and must not claim a restart"
             );
+        }
+    }
+
+    #[test]
+    fn the_platform_identity_sits_under_self_built_builds() {
+        for key in ["PROVIEW_APP_UUID", "PROVIEW_APP_KEY", "PROVIEW_APP_SECRET"] {
+            let field = field_for(key).expect(key);
+            assert_eq!(field.group, "Self-built builds", "{key}");
         }
     }
 

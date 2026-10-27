@@ -10,6 +10,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  PROVIEW_REQUIRE_CLOUD_IDENTITY: "1"
 
 jobs:
   server:
@@ -49,6 +50,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: server-${{ matrix.target }}
+          cache-targets: false
+      - name: Cloud identity
+        shell: bash
+        env:
+          PROVIEW_APP_UUID: ${{ secrets.PROVIEW_APP_UUID }}
+          PROVIEW_APP_KEY: ${{ secrets.PROVIEW_APP_KEY }}
+          PROVIEW_APP_SECRET: ${{ secrets.PROVIEW_APP_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in PROVIEW_APP_UUID PROVIEW_APP_KEY PROVIEW_APP_SECRET; do
+            if [ -z "${!name:-}" ]; then missing="${missing} ${name}"; fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "CLOUD IDENTITY: missing secret(s):${missing}; a release must carry the app identity"
+            exit 1
+          fi
+          umask 077
+          {
+            printf 'PROVIEW_APP_UUID=%s\n' "${PROVIEW_APP_UUID}"
+            printf 'PROVIEW_APP_KEY=%s\n' "${PROVIEW_APP_KEY}"
+            printf 'PROVIEW_APP_SECRET=%s\n' "${PROVIEW_APP_SECRET}"
+          } > cloud-identity.env
+          echo "CLOUD IDENTITY: uuid, key and secret present in the build inputs; values not printed"
+
 
       - name: Build with cross (linux alternative architectures)
         if: matrix.use_cross
@@ -126,6 +152,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: desktop-${{ matrix.label }}
+          cache-targets: false
+      - name: Cloud identity
+        shell: bash
+        env:
+          PROVIEW_APP_UUID: ${{ secrets.PROVIEW_APP_UUID }}
+          PROVIEW_APP_KEY: ${{ secrets.PROVIEW_APP_KEY }}
+          PROVIEW_APP_SECRET: ${{ secrets.PROVIEW_APP_SECRET }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in PROVIEW_APP_UUID PROVIEW_APP_KEY PROVIEW_APP_SECRET; do
+            if [ -z "${!name:-}" ]; then missing="${missing} ${name}"; fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "CLOUD IDENTITY: missing secret(s):${missing}; a release must carry the app identity"
+            exit 1
+          fi
+          umask 077
+          {
+            printf 'PROVIEW_APP_UUID=%s\n' "${PROVIEW_APP_UUID}"
+            printf 'PROVIEW_APP_KEY=%s\n' "${PROVIEW_APP_KEY}"
+            printf 'PROVIEW_APP_SECRET=%s\n' "${PROVIEW_APP_SECRET}"
+          } > cloud-identity.env
+          echo "CLOUD IDENTITY: uuid, key and secret present in the build inputs; values not printed"
+
 
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'

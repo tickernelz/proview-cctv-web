@@ -61,6 +61,41 @@ ProtectHome=true
 WantedBy=multi-user.target
 ```
 
+## Cloud identity in a release
+
+The vendor cloud sign-in signs with the app's platform identity: an app uuid, an
+app key and an app secret. No value of it is in this repository. The `release`
+workflow reads it from the repository secrets `PROVIEW_APP_UUID`,
+`PROVIEW_APP_KEY` and `PROVIEW_APP_SECRET`, writes them to a
+`cloud-identity.env` file next to the workspace and sets
+`PROVIEW_REQUIRE_CLOUD_IDENTITY=1`; `crates/core/build.rs` bakes the three
+values into the binary as constants, logs one line that the identity is present
+(never the values), and fails the build when any of them is missing. The file is
+gitignored, exists only on the runner, and the release jobs keep the target
+directory out of the Actions cache so the values are not cached either.
+
+A build made from these sources without that step has no identity. It still
+serves the local network and the sample provider; the cloud sign-in answers that
+the build was made without a cloud identity, and points at
+`docs/cloud-app-surface.md`, instead of asking anyone to set variables.
+
+Building from source with an identity of your own:
+
+```sh
+PROVIEW_REQUIRE_CLOUD_IDENTITY=1 \
+PROVIEW_APP_UUID=... PROVIEW_APP_KEY=... PROVIEW_APP_SECRET=... \
+cargo build --release -p proview-server
+```
+
+At run time the environment still wins per value: `PROVIEW_APP_UUID`,
+`PROVIEW_APP_KEY` or `PROVIEW_APP_SECRET` set in the service environment
+override what the build baked in.
+
+Rotating the identity is a release, not a configuration change. The vendor issues
+a new one, the three repository secrets are replaced, and every installed copy
+needs a binary built after that: a release keeps the identity it was built with
+forever, so an old installer cannot be repaired from this side.
+
 ## Threat model
 
 - The server keeps the vendor account session in memory only. Camera

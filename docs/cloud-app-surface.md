@@ -167,8 +167,11 @@ still out of reach.
    mechanism and does not make the v2 portal captcha/login any more solved.
 4. The cloud account login is part of the app: `POST /api/login` runs the
    signed v3 envelope from `crates/core/src/cloud/envelope.rs`, the device list
-   follows on `GET /api/devices`, and the only configuration is the app identity
-   (`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET`). The out-of-tree
-   emulator of `protocol.md` section 3A is how the envelope was learned; it is
-   not needed to log in.
+   follows on `GET /api/devices`, and the app identity the envelope signs with is a
+   build-time constant: the `release` workflow injects it from repository secrets
+   (`crates/core/build.rs`), so the app needs no configuration to log in. The
+   environment (`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET`) still
+   wins per value for a build made from source, and a build without an identity
+   answers `MISSING_CLOUD_IDENTITY`. The out-of-tree emulator of `protocol.md`
+   section 3A is how the envelope was learned; it is not needed to log in.
 

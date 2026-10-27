@@ -30,6 +30,27 @@ const ACCEPT: &str = "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2";
 const USER_AGENT: &str = "proview-cctv-web/0.2";
 const BLOCK: usize = 16;
 
+const BUILT_APP_UUID: &str = baked(option_env!("PROVIEW_BUILT_APP_UUID"));
+const BUILT_APP_KEY: &str = baked(option_env!("PROVIEW_BUILT_APP_KEY"));
+const BUILT_APP_SECRET: &str = baked(option_env!("PROVIEW_BUILT_APP_SECRET"));
+
+pub const MISSING_CLOUD_IDENTITY: &str = "this build was made without a cloud identity, so the vendor cloud sign-in is unavailable; see docs/cloud-app-surface.md";
+
+const fn baked(value: Option<&'static str>) -> &'static str {
+    match value {
+        Some(value) => value,
+        None => "",
+    }
+}
+
+fn prefer(runtime: String, built: String) -> String {
+    if runtime.trim().is_empty() {
+        built.trim().to_string()
+    } else {
+        runtime.trim().to_string()
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct Identity {
     pub uuid: String,
@@ -69,11 +90,31 @@ impl Identity {
         }
     }
 
-    pub fn from_env() -> Self {
+    pub fn resolve() -> Self {
+        Self::layered(
+            Self {
+                uuid: env("PROVIEW_APP_UUID"),
+                app_key: env("PROVIEW_APP_KEY"),
+                app_secret: env("PROVIEW_APP_SECRET"),
+            },
+            Self::built(),
+        )
+    }
+
+    pub fn built() -> Self {
         Self {
-            uuid: env("PROVIEW_APP_UUID"),
-            app_key: env("PROVIEW_APP_KEY"),
-            app_secret: env("PROVIEW_APP_SECRET"),
+            uuid: BUILT_APP_UUID.to_string(),
+            app_key: BUILT_APP_KEY.to_string(),
+            app_secret: BUILT_APP_SECRET.to_string(),
+        }
+    }
+
+    /// Takes each field from `runtime` where it is filled and from `built` otherwise.
+    pub fn layered(runtime: Self, built: Self) -> Self {
+        Self {
+            uuid: prefer(runtime.uuid, built.uuid),
+            app_key: prefer(runtime.app_key, built.app_key),
+            app_secret: prefer(runtime.app_secret, built.app_secret),
         }
     }
 
@@ -373,10 +414,7 @@ impl EnvelopeClient {
 
     pub async fn login_envelope(&self, account: &str, password: &str) -> CloudResult<Tokens> {
         if !self.identity.is_complete() {
-            return Err(CloudError::Malformed(
-                "the cloud login needs the app uuid, app key and app secret; set PROVIEW_APP_UUID, PROVIEW_APP_KEY and PROVIEW_APP_SECRET"
-                    .to_string(),
-            ));
+            return Err(CloudError::Malformed(MISSING_CLOUD_IDENTITY.to_string()));
         }
         let body = format!("account={}&pass={}", account.trim(), url_encode(password));
         let (request, key) = self.signed("loginExist", Some(&body))?;

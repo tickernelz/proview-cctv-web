@@ -48,6 +48,13 @@ Settings view and returned by `GET /api/settings`.
    interactive camera login in the OS keychain instead; there the order is keychain,
    then environment, then `settings.json`.
 
+7. The cloud app identity is not something an operator fills in: a release build
+   carries `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and `PROVIEW_APP_SECRET` as
+   constants the build baked in from the release workflow's secrets. The environment
+   still wins per value when it is set, which is how a build made from source takes
+   its own identity. Rotating the identity is a vendor change followed by a release:
+   an installed binary keeps the identity it was built with.
+
 ## What the view shows
 
 Each key carries a plain label and one sentence of hint, and the two select keys
@@ -73,7 +80,7 @@ value says which screen owns it.
 | Cloud | `PROVIEW_MODE` | default mode for a session that has not chosen one |
 | Cloud | `PROVIEW_CLOUD_BASE` | host for the signed cloud login envelope (default `https://rs.xmeye.net`) |
 | Cloud | `PROVIEW_PORTAL_BASE` | host for the portal account login |
-| Cloud | `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`, `PROVIEW_APP_SECRET` | the app's platform identity for the signed envelope; not shipped with the app |
+| Self-built builds | `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`, `PROVIEW_APP_SECRET` | the app's platform identity for the signed envelope; a release build bakes it in, so these are only for a build made from source without one |
 | Cloud | `PROVIEW_CAPS_BASE` | host for device capabilities by serial |
 | Cloud | `PROVIEW_CLOUD_SESSION_TTL` | seconds a cloud session is kept |
 | Local network | `PROVIEW_DEVICE_HOST` | DVRIP `host:port` |

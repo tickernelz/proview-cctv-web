@@ -134,10 +134,12 @@ body: 96 uppercase hex characters
   refusal belongs to requests that arrive unsigned.
 
 Not in this repository: the SDK, the chroot, and the application key material the
-harness passes in. None of it is redistributable. The harness proved the
-envelope; section 3B derives it and `crates/core` now carries the client, which
-takes the key material from `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and
-`PROVIEW_APP_SECRET` at run time.
+harness passes in. None of it is redistributable, and no value of it is written
+here. The harness proved the envelope; section 3B derives it and `crates/core`
+now carries the client, which signs with the identity the build baked in
+(`release` injects it from repository secrets through `crates/core/build.rs`)
+and lets `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and `PROVIEW_APP_SECRET`
+override it per value when they are set.
 
 ## 3B. The envelope algorithm, derived from the binary (2026-10-27)
 
@@ -275,9 +277,10 @@ Where each claim comes from, so it can be re-checked:
 Implementation: `crates/core/src/cloud/envelope.rs` (`scramble`, `signature`,
 `body_key`, `seal`, `open`, `signed_request`, `EnvelopeClient`), wired into
 `provider/cloud.rs`. Fixtures in `fixtures/cloud-envelope.json` use a demo
-identity; the app key material itself is supplied through
-`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET` and is not in the
-repository.
+identity; the real key material is injected at build time by the `release`
+workflow from repository secrets and overridable per value through
+`PROVIEW_APP_UUID`/`PROVIEW_APP_KEY`/`PROVIEW_APP_SECRET`. No value and no
+encrypted blob of it is stored in the sources, the workflows or the tags.
 
 Live run from this box, `cargo run -p proview-core --example envelope_login`,
 three consecutive runs on 2026-10-27: login 0.24-0.33 s, device token

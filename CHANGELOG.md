@@ -5,6 +5,21 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Changed
+
+- The cloud app identity ships with the app. `release` bakes
+  `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and `PROVIEW_APP_SECRET` from
+  repository secrets into the binary at build time and fails the build when one of
+  them is missing, so signing in asks for an email and a password and nothing
+  else. The environment still wins per value when it is set, which is how a build
+  made from source brings its own identity; without one the notice says the build
+  was made without a cloud identity and points at the documentation, instead of
+  asking a user to set variables. The three fields moved from Settings →
+  Configuration → Cloud to Settings → Self-built builds. Rotating the identity now
+  means a new release: a binary keeps the identity it was built with.
+
 ## 0.3.0 — 2026-10-27
 
 A new interface: one window onto one camera. `DESIGN.md` describes it; the study
