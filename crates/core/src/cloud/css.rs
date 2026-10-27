@@ -114,7 +114,7 @@ impl CssClient {
     }
 
     pub async fn fetch(&self, file: &SignedFile) -> CloudResult<Vec<u8>> {
-        check_target(file, self.loopback)?;
+        let url = target(file, self.loopback)?;
         let method = if file.method.trim().is_empty() {
             "GET"
         } else {
@@ -124,7 +124,7 @@ impl CssClient {
             reqwest::Method::from_bytes(method.as_bytes()).map_err(|error| {
                 CloudError::Rejected(format!("signed method {method}: {error}"))
             })?,
-            file.address(),
+            url,
         );
         if !file.date.trim().is_empty() {
             request = request.header("Date", file.date.trim());
@@ -155,17 +155,20 @@ fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
-pub fn check_target(file: &SignedFile, loopback: bool) -> CloudResult<()> {
+pub fn target(file: &SignedFile, loopback: bool) -> CloudResult<reqwest::Url> {
+    let address = file.address();
+    let url = reqwest::Url::parse(&address)
+        .map_err(|error| CloudError::Malformed(format!("signed file is not a url: {error}")))?;
     if loopback {
-        return Ok(());
+        return Ok(url);
     }
-    let schema = file.schema.trim();
-    if !schema.eq_ignore_ascii_case("https") {
+    if url.scheme() != "https" {
         return Err(CloudError::Malformed(format!(
-            "signed file is not https: {schema}"
+            "signed file is not https: {}",
+            url.scheme()
         )));
     }
-    let host = file.host.trim();
+    let host = url.host_str().unwrap_or_default();
     if !STORAGE_HOSTS
         .iter()
         .any(|suffix| host.ends_with(suffix) && host.len() > suffix.len())
@@ -174,12 +177,12 @@ pub fn check_target(file: &SignedFile, loopback: bool) -> CloudResult<()> {
             "signed file host is not object storage: {host}"
         )));
     }
-    if !file.url.trim().starts_with('/') {
+    if !url.path().starts_with('/') || url.path().len() < 2 {
         return Err(CloudError::Malformed(
             "signed file path is not absolute".to_string(),
         ));
     }
-    Ok(())
+    Ok(url)
 }
 
 fn brief(bytes: &[u8]) -> String {
@@ -431,31 +434,49 @@ mod tests {
 
     #[test]
     fn a_signed_target_must_be_https_on_storage() {
-        let mut file = parse_sign(REPLY).expect("signed file");
-        check_target(&file, false).expect("vendor target");
-        check_target(&file, true).expect("loopback target");
+        let file = parse_sign(REPLY).expect("signed file");
+        let url = target(&file, false).expect("vendor target");
+        assert_eq!(
+            url.host_str(),
+            Some("oss-ap-id-pic-01.oss-ap-southeast-5.aliyuncs.com")
+        );
+        assert!(target(&file, true).is_ok());
 
         let plain = SignedFile {
             schema: "http".to_string(),
             ..file.clone()
         };
-        assert!(check_target(&plain, false).is_err());
-        assert!(check_target(&plain, true).is_ok());
+        assert!(target(&plain, false).is_err());
+        assert!(target(&plain, true).is_ok());
 
-        let foreign = SignedFile {
-            host: "evil.example.com".to_string(),
-            ..file.clone()
-        };
-        assert!(check_target(&foreign, false).is_err());
+        for host in [
+            "evil.example.com",
+            "notaliyuncs.com",
+            "evil.example/x.aliyuncs.com",
+            "evil.example?.aliyuncs.com",
+            "evil.example#.aliyuncs.com",
+            "evil.example\\.aliyuncs.com",
+        ] {
+            let hostile = SignedFile {
+                host: host.to_string(),
+                ..file.clone()
+            };
+            let checked = target(&hostile, false);
+            assert!(checked.is_err(), "{host} was accepted as {checked:?}");
+        }
 
         let relative = SignedFile {
             url: "objects/x.jpeg".to_string(),
             ..file.clone()
         };
-        assert!(check_target(&relative, false).is_err());
-
-        file.host = "notaliyuncs.com".to_string();
-        assert!(check_target(&file, false).is_err());
+        let slipped = target(&relative, false);
+        assert!(
+            slipped
+                .as_ref()
+                .map(|url| url.host_str() != Some(file.host.as_str()))
+                .unwrap_or(true),
+            "a relative path moved the host: {slipped:?}"
+        );
     }
 
     #[test]
