@@ -116,6 +116,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let started = Instant::now();
     connection.claim_monitor(0, "Main").await?;
+    if let Some(token) = std::env::var("PROVIEW_DEVICE_TOKEN").ok().filter(|v| !v.trim().is_empty()) {
+        match connection.login_token(token.trim(), "").await {
+            Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
+            Err(error) => eprintln!("tokenlogin failed: {error:?}"),
+        }
+    }
     for index in 0..6 {
         let (header, payload) = match tokio::time::timeout(
             std::time::Duration::from_secs(6),
