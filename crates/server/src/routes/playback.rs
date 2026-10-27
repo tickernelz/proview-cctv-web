@@ -910,4 +910,98 @@ mod tests {
             Some("attachment; filename=\"clip.h264\"")
         );
     }
+
+    fn record(kind: u8, body: &[u8]) -> Vec<u8> {
+        let mut out = vec![0u8, 0, 1, kind];
+        match kind {
+            0xfc => {
+                out.extend_from_slice(&[0u8; 4]);
+                out.extend_from_slice(&1u32.to_le_bytes());
+                out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            }
+            0xfd => out.extend_from_slice(&(body.len() as u32).to_le_bytes()),
+            _ => {}
+        }
+        out.extend_from_slice(body);
+        out
+    }
+
+    async fn feed(socket: &mut tokio::net::TcpStream, id: u16, payload: &[u8]) {
+        use tokio::io::AsyncWriteExt;
+        let header = proview_core::dvrip::frame::Header {
+            session: 7,
+            sequence: 0,
+            channel: 0,
+            end: false,
+            id,
+            length: payload.len() as u32,
+        };
+        socket.write_all(&header.encode()).await.expect("header");
+        socket.write_all(payload).await.expect("body");
+        socket.flush().await.expect("flush");
+    }
+
+    async fn device(frames: Vec<(u16, Vec<u8>)>, close: bool) -> tokio::net::TcpStream {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listen");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            for (id, payload) in frames {
+                feed(&mut socket, id, &payload).await;
+            }
+            if close {
+                drop(socket);
+            } else {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+        tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect")
+    }
+
+    #[tokio::test]
+    async fn a_complete_file_is_collected_to_its_payload() {
+        let key = record(0xfc, &[1u8; 40]);
+        let delta = record(0xfd, &[2u8; 24]);
+        let wire = (key.len() + delta.len()) as u64;
+        let socket = device(
+            vec![
+                (0x1234, b"not media".to_vec()),
+                (0x058e, key.clone()),
+                (0x0592, delta.clone()),
+            ],
+            false,
+        )
+        .await;
+        let mut session = proview_core::dvrip::playback::Session::open(socket);
+        let payload = super::collect(&mut session, wire).await.expect("collect");
+        assert_eq!(payload, [vec![1u8; 40], vec![2u8; 24]].concat());
+    }
+
+    #[tokio::test]
+    async fn a_file_that_stops_before_its_last_byte_is_an_error() {
+        let key = record(0xfc, &[3u8; 32]);
+        let wire = key.len() as u64;
+        let socket = device(vec![(0x058e, key)], true).await;
+        let mut session = proview_core::dvrip::playback::Session::open(socket);
+        let error = super::collect(&mut session, wire + 1)
+            .await
+            .expect_err("a short file");
+        assert!(error.contains("the tunnel broke"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_file_that_reports_more_than_it_holds_is_an_error() {
+        let key = record(0xfc, &[4u8; 16]);
+        let wire = key.len() as u64;
+        let socket = device(vec![(0x058e, key)], true).await;
+        let mut session = proview_core::dvrip::playback::Session::open(socket);
+        let error = super::collect(&mut session, wire + 4096)
+            .await
+            .expect_err("an overstated length");
+        assert!(error.contains("the tunnel broke"), "{error}");
+    }
 }

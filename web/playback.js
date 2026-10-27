@@ -497,7 +497,9 @@
     timeline.addEventListener('click', (event) => {
       const hit = fileAt(event.clientX);
       if (!hit) return;
-      play(hit.file, Math.max(0, Math.round((hit.at - hit.from) / 1000)));
+      const duration = secondsBetween(hit.file.begin, hit.file.end);
+      const offset = Math.min(Math.max(0, Math.round((hit.at - hit.from) / 1000)), Math.max(duration - 1, 0));
+      play(hit.file, offset);
     });
     timeline.addEventListener('mousemove', (event) => {
       timeline.title = describeAt(event.clientX);

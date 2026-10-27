@@ -248,15 +248,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_byte,
         started.elapsed().as_secs_f64()
     );
+    let throughput = if last_frame > 0.0 {
+        file.bytes as f64 / last_frame
+    } else {
+        0.0
+    };
     eprintln!(
-        "wire     bytes={bytes} listed={} match={} rate={:.0}B/s",
+        "wire     bytes={bytes} listed={} match={} rate={throughput:.0}B/s",
         file.bytes,
-        bytes == file.bytes as usize,
-        if last_frame > 0.0 {
-            frames as f64 * 0.0 + file.bytes as f64 / last_frame
-        } else {
-            0.0
-        }
+        bytes == file.bytes as usize
     );
     eprintln!("kinds    {kinds:?}");
     eprintln!(
