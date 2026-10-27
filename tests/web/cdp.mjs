@@ -165,13 +165,16 @@ export async function startBrowser(extraArgs = []) {
       socket.send(JSON.stringify({ id: next, method, params, sessionId }));
     });
   return {
-    async page({ width = 1440, height = 900, init = [], intercept = null } = {}) {
+    async page({ width = 1440, height = 900, init = [], intercept = null, downloads = null } = {}) {
       const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
       const call = (method, params) => send(method, params, sessionId);
       await call('Page.enable');
       await call('Runtime.enable');
       await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      if (downloads) {
+        await send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
+      }
       for (const source of init) {
         await call('Page.addScriptToEvaluateOnNewDocument', { source });
       }
@@ -222,6 +225,7 @@ export async function startBrowser(extraArgs = []) {
         close: () => send('Target.closeTarget', { targetId }),
       };
     },
+    send,
     async close() {
       socket.close();
       await ended(child);
