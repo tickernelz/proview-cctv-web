@@ -1,5 +1,8 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use proview_core::config::{Config, ProviderKind};
 use proview_core::device::{ControlError, DeviceControl, DvripControl, Lens};
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
@@ -7,12 +10,13 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-const WINDOW_MS: &str = "300";
 const WINDOW: Duration = Duration::from_millis(300);
 const OUTER: Duration = Duration::from_secs(4);
+const HOLD: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Silent {
+    None,
     Ability,
     ConfigGet,
     PtzControl,
@@ -20,10 +24,44 @@ enum Silent {
     Logout,
 }
 
-fn control(device: &str) -> DvripControl {
-    std::env::set_var("PROVIEW_DVRIP_WINDOW_MS", WINDOW_MS);
-    DvripControl::new(&proview_core::config::Config {
-        provider: proview_core::config::ProviderKind::Fixture,
+impl Silent {
+    fn matches(self, id: u16) -> bool {
+        match self {
+            Silent::None => false,
+            Silent::Ability => id == msg::ABILITY,
+            Silent::ConfigGet => id == msg::CONFIG_GET,
+            Silent::PtzControl => id == msg::PTZ_CONTROL,
+            Silent::Snap => id == msg::SNAP,
+            Silent::Logout => id == msg::LOGOUT,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Behaviour {
+    silent: Silent,
+    listing_delay: Duration,
+    write_ret: i64,
+}
+
+impl Default for Behaviour {
+    fn default() -> Self {
+        Self {
+            silent: Silent::None,
+            listing_delay: Duration::ZERO,
+            write_ret: 100,
+        }
+    }
+}
+
+struct Fake {
+    address: String,
+    ptz_frames: Arc<AtomicUsize>,
+}
+
+fn config(device: &str) -> Config {
+    Config {
+        provider: ProviderKind::Fixture,
         cloud_base: "https://pub-token.xmeye.net".to_string(),
         device_user: "admin".to_string(),
         device_pass: "device-password".to_string(),
@@ -32,19 +70,27 @@ fn control(device: &str) -> DvripControl {
         device_onvif: None,
         device_rtsp: None,
         session_ttl_secs: 3600,
-    })
-    .expect("the device host is set")
+    }
 }
 
-async fn fake(silent: Silent) -> String {
+fn control(device: &str, window: Duration) -> DvripControl {
+    DvripControl::with_window(&config(device), window).expect("the device host is set")
+}
+
+async fn fake(behaviour: Behaviour) -> Fake {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
+    let ptz_frames = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&ptz_frames);
     tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
-            tokio::spawn(serve(socket, silent));
+            tokio::spawn(serve(socket, behaviour, Arc::clone(&counter)));
         }
     });
-    address
+    Fake {
+        address,
+        ptz_frames,
+    }
 }
 
 fn frame(header: &Header, payload: &[u8]) -> Vec<u8> {
@@ -81,7 +127,7 @@ fn requested_name(body: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-async fn serve(mut socket: TcpStream, silent: Silent) {
+async fn serve(mut socket: TcpStream, behaviour: Behaviour, ptz_frames: Arc<AtomicUsize>) {
     loop {
         let mut header_bytes = [0u8; HEADER_LEN];
         if socket.read_exact(&mut header_bytes).await.is_err() {
@@ -95,26 +141,29 @@ async fn serve(mut socket: TcpStream, silent: Silent) {
         if header.length > 0 && socket.read_exact(&mut body).await.is_err() {
             return;
         }
-        let goes_silent = match silent {
-            Silent::Ability => header.id == msg::ABILITY,
-            Silent::ConfigGet => header.id == msg::CONFIG_GET,
-            Silent::PtzControl => header.id == msg::PTZ_CONTROL,
-            Silent::Snap => header.id == msg::SNAP,
-            Silent::Logout => header.id == msg::LOGOUT,
-        };
-        if goes_silent {
+        if behaviour.silent.matches(header.id) {
             std::future::pending::<()>().await;
             return;
         }
-        let out = match header.id {
-            msg::LOGIN => reply(&header, &json!({ "Ret": 100, "SessionID": "0x11223344" })),
-            msg::SNAP => frame(&header, &[0xff, 0xd8, 0xff, 0x00, 0x01]),
-            msg::CONFIG_GET => match requested_name(&body) {
-                Some(name) => reply(&header, &json!({ "Ret": 100, name: [{}] })),
-                None => reply(&header, &json!({ "Ret": 100 })),
-            },
+        let name = requested_name(&body);
+        let mut delay = Duration::ZERO;
+        let out = match (header.id, name.as_deref()) {
+            (msg::LOGIN, _) => reply(&header, &json!({ "Ret": 100, "SessionID": "0x11223344" })),
+            (msg::SNAP, _) => frame(&header, &[0xff, 0xd8, 0xff, 0x00, 0x01]),
+            (msg::PTZ_CONTROL, _) => {
+                ptz_frames.fetch_add(1, Ordering::SeqCst);
+                reply(&header, &json!({ "Ret": behaviour.write_ret }))
+            }
+            (msg::CONFIG_GET, Some("Uart")) => {
+                delay = behaviour.listing_delay;
+                reply(&header, &json!({ "Ret": 100, "Uart": [] }))
+            }
+            (msg::CONFIG_GET, Some(name)) => reply(&header, &json!({ "Ret": 100, name: [{}] })),
             _ => reply(&header, &json!({ "Ret": 100 })),
         };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         if socket.write_all(&out).await.is_err() {
             return;
         }
@@ -151,28 +200,48 @@ fn assert_window(
 
 #[tokio::test]
 async fn a_silent_capability_read_times_out() {
-    let control = control(&fake(Silent::Ability).await);
+    let device = fake(Behaviour {
+        silent: Silent::Ability,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("capabilities", control.capabilities()).await;
     assert_window("capabilities", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_tour_listing_times_out() {
-    let control = control(&fake(Silent::ConfigGet).await);
+    let device = fake(Behaviour {
+        silent: Silent::ConfigGet,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("tour state", control.tour_state()).await;
     assert_window("tour state", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_tour_clear_times_out() {
-    let control = control(&fake(Silent::ConfigGet).await);
+    let device = fake(Behaviour {
+        silent: Silent::ConfigGet,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("tour clear", control.clear_tour(3)).await;
     assert_window("tour clear", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_ptz_move_times_out() {
-    let control = control(&fake(Silent::PtzControl).await);
+    let device = fake(Behaviour {
+        silent: Silent::PtzControl,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed(
         "ptz move",
         control.move_ptz(Lens::Bottom, 0.5, 0.0, 0.0, Duration::from_millis(100)),
@@ -183,40 +252,108 @@ async fn a_silent_ptz_move_times_out() {
 
 #[tokio::test]
 async fn a_silent_white_light_read_times_out() {
-    let control = control(&fake(Silent::ConfigGet).await);
+    let device = fake(Behaviour {
+        silent: Silent::ConfigGet,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("white light", control.white_light(None)).await;
     assert_window("white light", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_picture_flip_read_times_out() {
-    let control = control(&fake(Silent::ConfigGet).await);
+    let device = fake(Behaviour {
+        silent: Silent::ConfigGet,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("picture flip", control.picture_flip(None, None)).await;
     assert_window("picture flip", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_record_mode_read_times_out() {
-    let control = control(&fake(Silent::ConfigGet).await);
+    let device = fake(Behaviour {
+        silent: Silent::ConfigGet,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("record mode", control.record_mode(None)).await;
     assert_window("record mode", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_snapshot_times_out() {
-    let control = control(&fake(Silent::Snap).await);
+    let device = fake(Behaviour {
+        silent: Silent::Snap,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("snapshot", control.snapshot()).await;
     assert_window("snapshot", outcome, elapsed);
 }
 
 #[tokio::test]
 async fn a_silent_logout_keeps_the_answer_the_device_already_gave() {
-    let control = control(&fake(Silent::Logout).await);
+    let device = fake(Behaviour {
+        silent: Silent::Logout,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
     let (outcome, elapsed) = timed("snapshot with a silent logout", control.snapshot()).await;
     let picture = outcome.expect("the answer that arrived before the logout is kept");
     assert_eq!(picture, vec![0xff, 0xd8, 0xff, 0x00, 0x01]);
     assert!(
         elapsed < OUTER,
         "the silent logout held the answer for {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_ptz_move_whose_hold_outlives_the_window_still_stops_the_motor() {
+    let device = fake(Behaviour::default()).await;
+    let control = control(&device.address, WINDOW);
+    let (outcome, elapsed) = timed(
+        "ptz move with a hold past the window",
+        control.move_ptz(Lens::Bottom, 0.5, 0.0, 0.0, HOLD),
+    )
+    .await;
+    assert!(
+        outcome.is_ok(),
+        "a hold longer than the window kept the move from finishing: {:?}",
+        outcome.err()
+    );
+    assert_eq!(
+        device.ptz_frames.load(Ordering::SeqCst),
+        2,
+        "the start and the stop both have to reach the camera"
+    );
+    assert!(
+        elapsed >= HOLD && elapsed < OUTER,
+        "the move took {elapsed:?}, expected at least {HOLD:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tour_write_fails_closed_when_its_listing_times_out() {
+    let device = fake(Behaviour {
+        listing_delay: Duration::from_millis(450),
+        write_ret: 103,
+        ..Behaviour::default()
+    })
+    .await;
+    let control = control(&device.address, WINDOW);
+    let (outcome, elapsed) = timed("tour clear with a late listing", control.clear_tour(3)).await;
+    assert_window("tour clear with a late listing", outcome, elapsed);
+    assert_eq!(
+        device.ptz_frames.load(Ordering::SeqCst),
+        0,
+        "a write must not go out on channel 0 after its listing timed out"
     );
 }

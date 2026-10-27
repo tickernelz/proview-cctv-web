@@ -826,13 +826,17 @@ impl DeviceControl for DvripControl {
             connection.tour_listing(),
         )
         .await;
-        let locate = call_within(
-            "ptz locate read",
-            &self.address,
-            self.window,
-            connection.ptz_locate(),
-        )
-        .await;
+        let locate = if listing.is_ok() {
+            call_within(
+                "ptz locate read",
+                &self.address,
+                self.window,
+                connection.ptz_locate(),
+            )
+            .await
+        } else {
+            Ok(None)
+        };
         let _ = connection.logout_within(self.window).await;
         let (lines, presets) = listing?;
         Ok(TourState {
@@ -897,7 +901,7 @@ impl DeviceControl for DvripControl {
     async fn add_tour_point(&self, tour: i64, preset: i64, index: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
         let channel = tour_line_channel(&mut connection, tour, &self.address, self.window)
-            .await
+            .await?
             .unwrap_or(0);
         let result = call_within(
             "ptz tour point add",
@@ -913,7 +917,7 @@ impl DeviceControl for DvripControl {
     async fn clear_tour(&self, tour: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
         let channel = tour_line_channel(&mut connection, tour, &self.address, self.window)
-            .await
+            .await?
             .unwrap_or(0);
         let result = call_within(
             "ptz tour clear",
@@ -944,7 +948,7 @@ impl DeviceControl for DvripControl {
         let result = call_within(
             "ptz move",
             &self.address,
-            self.window,
+            self.window.saturating_add(hold),
             connection.ptz_step(pan, tilt, hold),
         )
         .await;
@@ -1085,14 +1089,15 @@ async fn tour_line_channel(
     tour: i64,
     address: &str,
     window: Duration,
-) -> Option<usize> {
-    let (lines, _) = call_within("tour listing", address, window, connection.tour_listing())
-        .await
-        .ok()?;
-    lines
-        .iter()
-        .find(|line| line.id == tour)
-        .map(|line| line.channel)
+) -> Result<Option<usize>, ControlError> {
+    match call_within("tour listing", address, window, connection.tour_listing()).await {
+        Ok((lines, _)) => Ok(lines
+            .iter()
+            .find(|line| line.id == tour)
+            .map(|line| line.channel)),
+        Err(error @ ControlError::Timeout { .. }) => Err(error),
+        Err(_) => Ok(None),
+    }
 }
 
 fn flip_capability(
