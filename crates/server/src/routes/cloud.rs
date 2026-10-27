@@ -60,6 +60,11 @@ fn fail(status: Status, message: impl Into<String>) -> Failure {
     )
 }
 
+fn cloud_failure(error: &CloudError) -> Failure {
+    tracing::warn!(%error, "cloud call failed");
+    fail(status_for(error), error.to_string())
+}
+
 fn status_for(error: &CloudError) -> Status {
     match error {
         CloudError::Rejected(_) => Status::BadRequest,
@@ -99,7 +104,7 @@ async fn captcha(state: &State<CloudState>) -> Result<Json<Captcha>, Failure> {
         .captcha()
         .await
         .map(Json)
-        .map_err(|error| fail(status_for(&error), error.to_string()))
+        .map_err(|error| cloud_failure(&error))
 }
 
 #[derive(Deserialize)]
@@ -136,7 +141,7 @@ async fn login(
             body.code_token.trim(),
         )
         .await
-        .map_err(|error| fail(status_for(&error), error.to_string()))?;
+        .map_err(|error| cloud_failure(&error))?;
     let id = new_session_id();
     state.sessions.put(id.clone(), session);
     cookies.add_private(
@@ -174,7 +179,7 @@ async fn profile(
         .profile(&session)
         .await
         .map(Json)
-        .map_err(|error| fail(status_for(&error), error.to_string()))
+        .map_err(|error| cloud_failure(&error))
 }
 
 #[get("/cloud/devices")]
@@ -188,7 +193,7 @@ async fn devices(
         .devices_with_status(&session)
         .await
         .map(Json)
-        .map_err(|error| fail(status_for(&error), error.to_string()))
+        .map_err(|error| cloud_failure(&error))
 }
 
 #[get("/cloud/device-caps?<sn>")]
@@ -197,7 +202,7 @@ async fn device_caps(state: &State<CloudState>, sn: String) -> Result<Json<AppCa
         .caps
         .req_caps(&sn, &REQUESTED_CAPS)
         .await
-        .map_err(|error| fail(status_for(&error), error.to_string()))?;
+        .map_err(|error| cloud_failure(&error))?;
     if !caps.is_known() {
         return Err(fail(
             Status::NotFound,
