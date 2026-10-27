@@ -598,6 +598,23 @@ impl Connection {
             })
     }
 
+    async fn setting_block_within(
+        &mut self,
+        name: &'static str,
+        window: std::time::Duration,
+    ) -> Result<Value, SettingsError> {
+        match tokio::time::timeout(window, self.setting_block(name)).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.discard_late_replies().await;
+                Err(SettingsError::Slow {
+                    block: name,
+                    detail: "the read before the write never came".to_string(),
+                })
+            }
+        }
+    }
+
     async fn put_block(&mut self, name: &'static str, value: &Value) -> Result<(), SettingsError> {
         let mut body = json!({
             "Name": name,
@@ -681,7 +698,7 @@ impl Connection {
         fields: &[String],
         write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
-        let before = self.setting_block(name).await?;
+        let before = self.setting_block_within(name, write.window()).await?;
         let backup = backup_file(name, &before, write.dir())?;
         let read_back = match self.commit_block(name, &desired, write.window()).await {
             Ok(value) => value,
@@ -732,13 +749,18 @@ impl Connection {
         }
     }
 
-    pub async fn encode_limits(&mut self) -> EncodeLimits {
-        let reply = self
-            .request(
-                msg::ABILITY,
-                json!({ "Name": "EncodeCapability", "SessionID": format!("0x{:08X}", self.session()) }),
-            )
-            .await;
+    pub async fn encode_limits(&mut self, window: std::time::Duration) -> EncodeLimits {
+        let body =
+            json!({ "Name": "EncodeCapability", "SessionID": format!("0x{:08X}", self.session()) });
+        let reply = match tokio::time::timeout(window, self.request(msg::ABILITY, body)).await {
+            Ok(reply) => reply,
+            Err(_) => {
+                self.discard_late_replies().await;
+                return EncodeLimits {
+                    max_bitrate: Some(EncodeLimits::APP_MAX_BITRATE),
+                };
+            }
+        };
         let block = match reply {
             Ok(value) => value
                 .get("EncodeCapability")
@@ -767,9 +789,11 @@ impl Connection {
         patch: &EncodePatch,
         write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
-        let limits = self.encode_limits().await;
+        let limits = self.encode_limits(write.window()).await;
         patch.validate(limits)?;
-        let before = self.setting_block(ENCODE_BLOCK).await?;
+        let before = self
+            .setting_block_within(ENCODE_BLOCK, write.window())
+            .await?;
         let mut desired = before.clone();
         let (_, prefix) = first_entry(&before);
         let base = format!("{prefix}{}.Video", stream.key());
@@ -833,7 +857,7 @@ impl Connection {
     ) -> Result<Vec<WriteReport>, SettingsError> {
         let mut reports = Vec::new();
         if patch.dns.is_some() || patch.spare_dns.is_some() {
-            let before = self.setting_block(DNS_BLOCK).await?;
+            let before = self.setting_block_within(DNS_BLOCK, write.window()).await?;
             let mut desired = before.clone();
             let (_, prefix) = first_entry(&before);
             let mut fields = Vec::new();
@@ -899,7 +923,10 @@ impl Connection {
             .setting_block(GENERAL_BLOCK)
             .await
             .ok()
-            .and_then(|value| text(&value, "OverWrite"));
+            .and_then(|value| {
+                let (entry, _) = first_entry(&value);
+                text(entry, "OverWrite")
+            });
         let record_mode = self
             .setting_block(RECORD_BLOCK)
             .await
@@ -921,7 +948,9 @@ impl Connection {
         mode: OverwriteMode,
         write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
-        let before = self.setting_block(GENERAL_BLOCK).await?;
+        let before = self
+            .setting_block_within(GENERAL_BLOCK, write.window())
+            .await?;
         let mut desired = before.clone();
         let (_, prefix) = first_entry(&before);
         let key = format!("{prefix}OverWrite");
@@ -941,7 +970,9 @@ impl Connection {
         mode: super::control::RecordMode,
         write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
-        let before = self.setting_block(RECORD_BLOCK).await?;
+        let before = self
+            .setting_block_within(RECORD_BLOCK, write.window())
+            .await?;
         let mut desired = before.clone();
         let (_, prefix) = first_entry(&before);
         let key = format!("{prefix}RecordMode");

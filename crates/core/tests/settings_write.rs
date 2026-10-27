@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use proview_core::dvrip::client::Connection;
 use proview_core::dvrip::frame::Header;
-use proview_core::dvrip::settings::{EncodePatch, NetworkPatch, Stream, WriteWindow};
+use proview_core::dvrip::settings::{EncodeLimits, EncodePatch, NetworkPatch, Stream, WriteWindow};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -14,6 +14,8 @@ enum Behaviour {
     Ignore,
     SilentFirstSet,
     SilentApplyFirst,
+    SilentAbility,
+    SilentFirstGet,
     Drift,
 }
 
@@ -33,6 +35,7 @@ struct Fake {
     writes: Mutex<Vec<(String, Value)>>,
     behaviour: Behaviour,
     sets: Mutex<usize>,
+    gets: Mutex<usize>,
 }
 
 impl Fake {
@@ -42,6 +45,7 @@ impl Fake {
             writes: Mutex::new(Vec::new()),
             behaviour,
             sets: Mutex::new(0),
+            gets: Mutex::new(0),
         })
     }
 
@@ -112,6 +116,24 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                 proview_core::dvrip::msg::CONFIG_GET
                 | proview_core::dvrip::msg::SYSTEM_INFO
                 | proview_core::dvrip::msg::ABILITY => {
+                    if fake.behaviour == Behaviour::SilentAbility
+                        && header.id == proview_core::dvrip::msg::ABILITY
+                    {
+                        continue;
+                    }
+                    if fake.behaviour == Behaviour::SilentFirstGet
+                        && header.id == proview_core::dvrip::msg::CONFIG_GET
+                    {
+                        let first = {
+                            let mut gets = fake.gets.lock().unwrap();
+                            let first = *gets == 0;
+                            *gets += 1;
+                            first
+                        };
+                        if first {
+                            continue;
+                        }
+                    }
                     let block = fake.block(&name).unwrap_or(Value::Null);
                     let mut reply = json!({ "Ret": if block.is_null() { 607 } else { 100 }, "SessionID": "0x00000000" });
                     if !block.is_null() {
@@ -503,6 +525,8 @@ async fn an_overwrite_block_shaped_as_an_array_is_written_through_its_entry() {
     assert_eq!(report.fields[0].after, json!("StopRecord"));
     let writes = fake.writes.lock().unwrap().clone();
     assert_eq!(writes[0].1[0]["OverWrite"], json!("StopRecord"));
+    let state = connection.storage_state().await.unwrap();
+    assert_eq!(state.overwrite.as_deref(), Some("StopRecord"));
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
@@ -542,7 +566,9 @@ async fn a_bitrate_above_the_device_capability_is_refused_before_any_write() {
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
     let window = write_window(&dir);
-    let limits = connection.encode_limits().await;
+    let limits = connection
+        .encode_limits(std::time::Duration::from_secs(2))
+        .await;
     assert_eq!(limits.max_bitrate, Some(2048));
     let error = connection
         .write_encode(
@@ -570,6 +596,95 @@ async fn a_bitrate_above_the_device_capability_is_refused_before_any_write() {
         .await
         .unwrap();
     assert!(!accepted.reverted);
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_capability_read_that_never_answers_writes_with_the_static_cap() {
+    let fake = Fake::new(Behaviour::SilentAbility);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let window = short_window(&dir);
+    let report = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        connection.write_encode(
+            Stream::Main,
+            &EncodePatch {
+                bitrate: Some(8192),
+                ..EncodePatch::default()
+            },
+            &window,
+        ),
+    )
+    .await
+    .expect("the capability read must not hold the write")
+    .unwrap();
+    assert!(!report.reverted);
+    assert!(report.matched());
+    assert_eq!(fake.writes.lock().unwrap().len(), 1);
+    let refused = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        connection.write_encode(
+            Stream::Main,
+            &EncodePatch {
+                bitrate: Some(EncodeLimits::APP_MAX_BITRATE + 1),
+                ..EncodePatch::default()
+            },
+            &window,
+        ),
+    )
+    .await
+    .expect("the capability read must not hold the check")
+    .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains(&format!("outside 1..{}", EncodeLimits::APP_MAX_BITRATE)),
+        "{refused}"
+    );
+    assert_eq!(
+        fake.writes.lock().unwrap().len(),
+        1,
+        "the refused patch wrote nothing"
+    );
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_read_before_the_write_that_never_answers_stops_before_any_write() {
+    let fake = Fake::new(Behaviour::SilentFirstGet);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let window = short_window(&dir);
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        connection.write_encode(
+            Stream::Main,
+            &EncodePatch {
+                fps: Some(15),
+                ..EncodePatch::default()
+            },
+            &window,
+        ),
+    )
+    .await
+    .expect("the read before the write must not hang")
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("did not answer inside the write window"),
+        "{error}"
+    );
+    assert_eq!(
+        fake.writes.lock().unwrap().len(),
+        0,
+        "nothing is written without the copy"
+    );
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
