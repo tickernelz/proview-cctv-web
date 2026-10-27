@@ -17,7 +17,7 @@ jobs:
   boot-arm64:
     name: boot arm64 emulator and install an arm64 app
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -49,7 +49,8 @@ jobs:
           arch: arm64-v8a
           profile: pixel_6
           disable-animations: true
-          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -writable-system
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect
           script: |
             set -euo pipefail
             adb root
