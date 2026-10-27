@@ -1,12 +1,20 @@
+#[path = "routes/apmode.rs"]
+pub mod apmode;
+
 #[path = "routes/cloud.rs"]
 pub mod cloud;
+
+#[path = "routes/cloud_bind.rs"]
+pub mod cloud_bind;
 
 use std::time::Duration;
 
 use proview_core::config::Config;
 use proview_core::device::ControlError;
 use proview_core::live::{LiveMode, StreamKey};
-use proview_core::provider::{self, Device, Provider, ProviderError, Router, StreamTicket};
+use proview_core::provider::{
+    self, CloudPath, Device, Provider, ProviderError, Router, StreamTicket,
+};
 use proview_core::session::{self, Store};
 use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
@@ -17,10 +25,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::ModeStore;
 
+pub mod audio;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, style_css, tokens_css, font, media_clip]
+    routes![index, app_js, account_js, talk_js, style_css, tokens_css, font, media_clip]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -30,6 +39,7 @@ pub fn api() -> Vec<rocket::route::Route> {
         me,
         devices,
         stream,
+        cloud_path,
         probe_device,
         rtsp_probe,
         health,
@@ -37,11 +47,16 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(cloud_bind::api())
+    .chain(apmode::routes())
     .collect()
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
     routes![ws_live]
+        .into_iter()
+        .chain(audio::routes())
+        .collect()
 }
 
 #[get("/")]
@@ -52,6 +67,16 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/account.js")]
+fn account_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/account.js"))
+}
+
+#[get("/talk.js")]
+fn talk_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/talk.js"))
 }
 
 #[get("/tokens.css")]
@@ -141,6 +166,14 @@ fn status_for(err: &ProviderError) -> Status {
         ProviderError::Misconfigured(_) => Status::NotImplemented,
         _ => Status::BadGateway,
     }
+}
+
+pub(crate) fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
+    let id = session_id(cookies)?;
+    store
+        .get(&id)
+        .map(|_| ())
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
 }
 
 pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
@@ -388,6 +421,24 @@ async fn stream(
     let high = quality.as_deref() != Some("sub");
     router
         .stream(&vendor, &device, channel.unwrap_or(1), high)
+        .await
+        .map(Json)
+        .map_err(|e| fail(status_for(&e), e.to_string()))
+}
+
+#[get("/cloud-path?<device>")]
+async fn cloud_path(
+    device: String,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    modes: &State<ModeStore>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<CloudPath>, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    let router = Router::new(cfg, modes.mode_for(Some(&id)));
+    router
+        .cloud_path(&vendor, &device)
         .await
         .map(Json)
         .map_err(|e| fail(status_for(&e), e.to_string()))

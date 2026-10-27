@@ -1,6 +1,7 @@
+use super::rps as rps_client;
 use super::{
-    Alarm, Device, DeviceSettings, Provider, ProviderError, ProviderSource, Recording, StreamKind,
-    StreamTicket, VendorSession,
+    p2p, Alarm, CloudPath, Device, DeviceSettings, Provider, ProviderError, ProviderSource,
+    Recording, StreamKind, StreamTicket, VendorSession,
 };
 use crate::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
 use crate::cloud::status::{self, StatusClient, STATUS_HOST};
@@ -99,6 +100,77 @@ impl Provider for CloudProvider {
             .collect())
     }
 
+    async fn cloud_path(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<CloudPath, ProviderError> {
+        let token = self.token(session)?;
+        let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        let Some(entry) = devices.iter().find(|entry| entry.uuid == device.trim()) else {
+            return Err(ProviderError::UnknownDevice(device.to_string()));
+        };
+        let rps = entry
+            .extra
+            .get("rps")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let state = match self
+            .status
+            .query(&entry.uuid, &status::auth_code_of(entry))
+            .await
+        {
+            Ok(state) => state,
+            Err(error) => status::unchecked(error.to_string()),
+        };
+        let mut report = CloudPath {
+            online: state.online,
+            detail: state.summary(),
+            ..CloudPath::default()
+        };
+        if rps.is_empty() {
+            report.detail = format!("{} (the device list carries no rps id)", report.detail);
+            return Ok(report);
+        }
+        let Some((host, port)) = state.access_server() else {
+            report.detail = format!("{} (no cluster reported an access server)", report.detail);
+            return Ok(report);
+        };
+        report.access = Some(format!("{host}:{port}"));
+
+        let client_token = rps_client::client_token();
+        let session_id = rps_client::session_id();
+        let request = p2p::agent_request(
+            &rps,
+            &client_token,
+            &entry.uuid,
+            p2p::AGENT_SERVICE_MEDIA,
+            &session_id,
+            p2p::AGENT_STEP_MEDIA,
+        );
+        let agent = match rps_client::AccessClient::new()
+            .assign(&host, port, &request)
+            .await
+        {
+            Ok(agent) => agent,
+            Err(error) => {
+                report.relay_error = Some(error.to_string());
+                report.detail = format!("{} (agent assignment failed)", report.detail);
+                return Ok(report);
+            }
+        };
+        report.agent = Some(format!("{}:{}", agent.host, agent.port));
+        let frame = p2p::handshake_frame(&rps, &client_token, &entry.uuid, &session_id);
+        let outcome = rps_client::open(&agent, &frame)
+            .await
+            .map(|tunnel| tunnel.reply)
+            .map_err(|error| error.to_string());
+        apply_relay(&mut report, outcome);
+        Ok(report)
+    }
+
     async fn stream(
         &self,
         _session: &VendorSession,
@@ -151,5 +223,75 @@ impl Provider for CloudProvider {
         Err(ProviderError::NotImplemented(
             "cloud device settings need the CSS config envelope, which is not solved yet",
         ))
+    }
+}
+
+pub fn apply_relay(report: &mut CloudPath, outcome: Result<p2p::RelayReply, String>) {
+    match outcome {
+        Ok(reply) if reply.accepted() => {
+            report.relay_accepted = true;
+            report.dest_ip = Some(reply.dest_ip.clone());
+            report.mtu = Some(reply.mtu.clone());
+            report.detail = format!(
+                "{} (relay accepted the session for {} at mtu {})",
+                report.detail, reply.dest_ip, reply.mtu
+            );
+        }
+        Ok(reply) => {
+            report.relay_error = Some(format!("ErrorNum {}", reply.error_num));
+            report.detail = format!(
+                "{} (relay refused the session, ErrorNum {})",
+                report.detail, reply.error_num
+            );
+        }
+        Err(error) => {
+            report.relay_error = Some(error);
+            report.detail = format!("{} (relay handshake failed)", report.detail);
+        }
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn reply(error_num: &str) -> p2p::RelayReply {
+        p2p::RelayReply {
+            error_num: error_num.to_string(),
+            dest_ip: "203.0.113.9".to_string(),
+            mtu: "1400".to_string(),
+        }
+    }
+
+    #[test]
+    fn an_accepted_relay_is_not_reported_as_an_error() {
+        let mut report = CloudPath {
+            detail: "cloud status online".to_string(),
+            ..CloudPath::default()
+        };
+        apply_relay(&mut report, Ok(reply("200")));
+        assert!(report.relay_accepted);
+        assert_eq!(report.relay_error, None);
+        assert_eq!(report.dest_ip.as_deref(), Some("203.0.113.9"));
+        assert_eq!(report.mtu.as_deref(), Some("1400"));
+        assert!(report.detail.contains("relay accepted the session"));
+    }
+
+    #[test]
+    fn a_refused_relay_is_reported_with_its_code() {
+        let mut report = CloudPath::default();
+        apply_relay(&mut report, Ok(reply("400")));
+        assert!(!report.relay_accepted);
+        assert_eq!(report.relay_error.as_deref(), Some("ErrorNum 400"));
+        assert!(report.detail.contains("relay refused the session"));
+    }
+
+    #[test]
+    fn a_failed_handshake_is_reported_as_such() {
+        let mut report = CloudPath::default();
+        apply_relay(&mut report, Err("connection refused".to_string()));
+        assert!(!report.relay_accepted);
+        assert_eq!(report.relay_error.as_deref(), Some("connection refused"));
+        assert!(report.detail.contains("relay handshake failed"));
     }
 }

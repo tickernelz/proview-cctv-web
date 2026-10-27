@@ -315,23 +315,19 @@ impl Connection {
         Err(DvrError::NoReply)
     }
 
-    pub async fn login_monitor(&mut self, user: &str, password: &str) -> Result<Value, DvrError> {
+    pub async fn login_token(&mut self, token: &str, communicate_key: &str) -> Result<Value, DvrError> {
         let body = json!({
-            "EncryptType": "MD5",
-            "LoginType": "DVRIP-Web",
-            "PassWord": sofia_hash(password),
-            "UserName": user,
+            "EncryptType": "TOKEN",
+            "LoginType": "DVRIP-FutureHome",
+            "UserName": token,
+            "PassWord": "",
+            "CommunicateKey": communicate_key,
         });
         let mut payload =
             serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
         payload.push(0);
-        self.send_frame_on(
-            super::msg::MONITOR_CHANNEL,
-            false,
-            super::msg::LOGIN,
-            &payload,
-        )
-        .await?;
+        self.send_frame_on(super::msg::MONITOR_CHANNEL, false, super::msg::LOGIN, &payload)
+            .await?;
         let (_, reply) = self.recv().await?;
         parse_json(&reply)
     }
