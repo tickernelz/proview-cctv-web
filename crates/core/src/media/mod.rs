@@ -1,4 +1,5 @@
 pub mod audio;
+pub mod dhav;
 pub mod fmp4;
 pub mod h264;
 pub mod hevc;
