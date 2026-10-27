@@ -697,17 +697,25 @@ impl Connection {
         tilt: f32,
         hold: std::time::Duration,
     ) -> Result<(), DvrError> {
-        let direction = PtzDirection::from_velocity(pan, tilt).ok_or(DvrError::Rejected {
+        let (direction, step) = ptz_step_of(pan, tilt).ok_or(DvrError::Rejected {
             ret: 208,
             reason: "a ptz move needs a pan or tilt velocity",
         })?;
-        let magnitude = pan.abs().max(tilt.abs()).clamp(0.0, 1.0);
-        let step = (magnitude * 8.0).round().max(1.0) as u8;
         self.ptz_command(direction, step, 65535).await?;
         tokio::time::sleep(hold).await;
         self.ptz_command(direction, step, -1).await?;
         Ok(())
     }
+
+    pub async fn ptz_stop(&mut self, direction: PtzDirection, step: u8) -> Result<(), DvrError> {
+        self.ptz_command(direction, step, -1).await.map(|_| ())
+    }
+}
+
+pub fn ptz_step_of(pan: f32, tilt: f32) -> Option<(PtzDirection, u8)> {
+    let direction = PtzDirection::from_velocity(pan, tilt)?;
+    let magnitude = pan.abs().max(tilt.abs()).clamp(0.0, 1.0);
+    Some((direction, (magnitude * 8.0).round().max(1.0) as u8))
 }
 
 #[cfg(test)]

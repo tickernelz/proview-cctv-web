@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
@@ -13,11 +14,22 @@ use tokio::net::{TcpListener, TcpStream};
 
 const WINDOW_MS: &str = "300";
 const OUTER: Duration = Duration::from_secs(8);
+const ACK_DELAY: Duration = Duration::from_millis(700);
+const PTZ_START: i64 = 65535;
+const PTZ_STOP: i64 = -1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     Everything,
     SilentAfterLogin,
+    SlowStartAck,
+}
+
+#[derive(Clone, Copy)]
+struct PtzFrame {
+    preset: i64,
+    step: u8,
+    at: Instant,
 }
 
 fn data_dir() -> PathBuf {
@@ -48,14 +60,58 @@ fn config(device: &str) -> proview_core::config::Config {
 }
 
 async fn fake(answer: Answer) -> String {
+    fake_with_frames(answer).await.0
+}
+
+async fn fake_with_frames(answer: Answer) -> (String, Arc<Mutex<Vec<PtzFrame>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
+    let frames = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::clone(&frames);
     tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
-            tokio::spawn(serve(socket, answer));
+            tokio::spawn(serve(socket, answer, Arc::clone(&log)));
         }
     });
-    address
+    (address, frames)
+}
+
+fn ptz_frame_of(body: &[u8]) -> Option<PtzFrame> {
+    let mut end = body.len();
+    while end > 0 && matches!(body[end - 1], 0 | b'\n' | b'\r') {
+        end -= 1;
+    }
+    let value = serde_json::from_slice::<Value>(&body[..end]).ok()?;
+    let parameter = value.get("OPPTZControl")?.get("Parameter")?;
+    Some(PtzFrame {
+        preset: parameter.get("Preset")?.as_i64()?,
+        step: parameter.get("Step")?.as_u64()? as u8,
+        at: Instant::now(),
+    })
+}
+
+async fn wait_for_frame(
+    frames: &Arc<Mutex<Vec<PtzFrame>>>,
+    preset: i64,
+    limit: Duration,
+) -> PtzFrame {
+    let deadline = Instant::now() + limit;
+    loop {
+        let found = frames
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|frame| frame.preset == preset)
+            .copied();
+        if let Some(frame) = found {
+            return frame;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no frame with Preset {preset} arrived inside {limit:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn frame(header: &Header, payload: &[u8]) -> Vec<u8> {
@@ -117,7 +173,7 @@ fn talking_reply(header: &Header, name: Option<&str>) -> Vec<u8> {
     }
 }
 
-async fn serve(mut socket: TcpStream, answer: Answer) {
+async fn serve(mut socket: TcpStream, answer: Answer, frames: Arc<Mutex<Vec<PtzFrame>>>) {
     loop {
         let mut header_bytes = [0u8; HEADER_LEN];
         if socket.read_exact(&mut header_bytes).await.is_err() {
@@ -132,8 +188,17 @@ async fn serve(mut socket: TcpStream, answer: Answer) {
             return;
         }
         let name = requested_name(&body);
+        let mut delay = Duration::ZERO;
+        if header.id == msg::PTZ_CONTROL {
+            if let Some(frame) = ptz_frame_of(&body) {
+                if answer == Answer::SlowStartAck && frame.preset == PTZ_START {
+                    delay = ACK_DELAY;
+                }
+                frames.lock().unwrap().push(frame);
+            }
+        }
         let out = match answer {
-            Answer::Everything => talking_reply(&header, name.as_deref()),
+            Answer::Everything | Answer::SlowStartAck => talking_reply(&header, name.as_deref()),
             Answer::SilentAfterLogin if header.id == msg::LOGIN => {
                 reply(&header, &json!({ "Ret": 100, "SessionID": "0x11223344" }))
             }
@@ -142,6 +207,9 @@ async fn serve(mut socket: TcpStream, answer: Answer) {
                 return;
             }
         };
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         if socket.write_all(&out).await.is_err() {
             return;
         }
@@ -213,6 +281,41 @@ async fn a_silent_device_times_every_control_read_out() {
         assert_eq!(status, Status::GatewayTimeout, "{path}: {body}");
         assert!(body.contains("did not answer inside"), "{path}: {body}");
     }
+}
+
+#[tokio::test]
+async fn a_ptz_move_whose_start_ack_outlives_the_window_still_stops_the_motor() {
+    let (address, frames) = fake_with_frames(Answer::SlowStartAck).await;
+    let client = client(&address).await;
+    let path = "/api/device/controls/ptz?lens=bottom&pan=0.5&hold_ms=100";
+    let started = Instant::now();
+    let response = tokio::time::timeout(OUTER, client.post(path).dispatch())
+        .await
+        .unwrap_or_else(|_| panic!("{path} never answered inside {OUTER:?}"));
+    let answered = Instant::now();
+    let status = response.status();
+    let body = response.into_string().await.unwrap_or_default();
+    assert_eq!(status, Status::GatewayTimeout, "{path}: {body}");
+    assert!(body.contains("did not answer inside"), "{path}: {body}");
+
+    let start = frames
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|frame| frame.preset == PTZ_START)
+        .copied()
+        .expect("the start frame reached the camera");
+    let stop = wait_for_frame(&frames, PTZ_STOP, Duration::from_secs(3)).await;
+    assert_eq!(
+        stop.step, start.step,
+        "the stop has to repeat the step the start used"
+    );
+    println!(
+        "start ack delayed {ACK_DELAY:?}, 504 after {:?}, stop frame {:?} after the 504 and {:?} after the start",
+        answered - started,
+        stop.at - answered,
+        stop.at - start.at
+    );
 }
 
 #[tokio::test]

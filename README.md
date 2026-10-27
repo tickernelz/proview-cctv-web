@@ -124,7 +124,8 @@ clear it in the view.
 Device control (ONVIF for movement and presets, DVRIP for settings and
 snapshots) is served under `/api/device/controls`: the capability report lists
 every feature per lens with the device wording that backs it, `ptz` moves the
-lower lens with an explicit timeout, and `snapshot`, `light`, `flip` and
+lower lens with an explicit timeout and still sends the stop on a fresh
+connection when the start misses that timeout, and `snapshot`, `light`, `flip` and
 `record` read or write the DVRIP settings. `GET /api/device/controls/settings`
 returns the read-only ONVIF device, encoder, imaging and network view.
 

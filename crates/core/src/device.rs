@@ -7,7 +7,9 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::dvrip::client::Connection as DvripConnection;
-use crate::dvrip::control::{PtzLocate, RecordMode, TourLine, WhiteLightMode};
+use crate::dvrip::control::{
+    ptz_step_of, PtzDirection, PtzLocate, RecordMode, TourLine, WhiteLightMode,
+};
 use crate::model::PtzSource;
 use crate::onvif::{self, Client as OnvifClient, OnvifError};
 
@@ -657,6 +659,49 @@ where
     }
 }
 
+fn stop_ptz_detached(control: &DvripControl, pan: f32, tilt: f32) {
+    let Some((direction, step)) = ptz_step_of(pan, tilt) else {
+        return;
+    };
+    let control: DvripControl = control.clone();
+    tokio::spawn(async move {
+        let started = Instant::now();
+        match send_ptz_stop(&control, direction, step).await {
+            Ok(()) => tracing::warn!(
+                device = %control.address,
+                step,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "a ptz move that failed sent its stop on a fresh connection"
+            ),
+            Err(error) => tracing::error!(
+                device = %control.address,
+                step,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                %error,
+                "a ptz move failed and its stop did not go out"
+            ),
+        }
+    });
+}
+
+async fn send_ptz_stop(
+    control: &DvripControl,
+    direction: PtzDirection,
+    step: u8,
+) -> Result<(), String> {
+    let mut connection = control.session().await.map_err(|error| error.to_string())?;
+    let result = call_within(
+        "ptz stop",
+        &control.address,
+        control.window,
+        connection.ptz_stop(direction, step),
+    )
+    .await;
+    let _ = connection.logout_within(control.window).await;
+    result.map_err(|error| error.to_string())
+}
+
+#[derive(Clone)]
 pub struct DvripControl {
     address: String,
     user: String,
@@ -952,7 +997,14 @@ impl DeviceControl for DvripControl {
             connection.ptz_step(pan, tilt, hold),
         )
         .await;
-        let _ = connection.logout_within(self.window).await;
+        let timed_out = matches!(result, Err(ControlError::Timeout { .. }));
+        if !timed_out {
+            let _ = connection.logout_within(self.window).await;
+        }
+        drop(connection);
+        if result.is_err() {
+            stop_ptz_detached(self, pan, tilt);
+        }
         result
     }
 
