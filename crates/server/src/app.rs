@@ -69,12 +69,29 @@ pub fn build_with_state(
     modes: ModeStore,
     settings: crate::settings::SettingsStore,
 ) -> rocket::Rocket<rocket::Build> {
+    build_with_state_and_accounts(
+        figment,
+        config,
+        modes,
+        settings,
+        crate::routes::cloud_bind::AccountStore::from_env(),
+    )
+}
+
+pub fn build_with_state_and_accounts(
+    figment: Figment,
+    config: Config,
+    modes: ModeStore,
+    settings: crate::settings::SettingsStore,
+    accounts: crate::routes::cloud_bind::AccountStore,
+) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
         .manage(Store::new())
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .manage(crate::routes::cloud::CloudState::new())
+        .manage(accounts)
         .manage(settings)
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
@@ -106,7 +123,9 @@ pub async fn serve_with_state(
 ) -> Result<ServerHandle, Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
-    let rig = build_with_state(figment(&opts, port), config, modes, settings);
+    let accounts = crate::routes::cloud_bind::AccountStore::load(opts.data_dir.as_deref());
+    let rig =
+        build_with_state_and_accounts(figment(&opts, port), config, modes, settings, accounts);
     let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
     let address = SocketAddr::new(

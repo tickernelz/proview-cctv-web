@@ -108,7 +108,9 @@ pub struct Calibration {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Curve {
-    Equidistant { max_theta_deg: f32 },
+    Equidistant {
+        max_theta_deg: f32,
+    },
     Table {
         radii: Vec<f64>,
         start_deg: f64,
@@ -157,7 +159,9 @@ impl Curve {
         match self {
             Self::Equidistant { max_theta_deg } => max_theta_deg.to_radians(),
             Self::Table {
-                radii, start_deg, step_deg,
+                radii,
+                start_deg,
+                step_deg,
             } => (start_deg + (radii.len() - 1) as f64 * step_deg).to_radians() as f32,
         }
     }
@@ -176,8 +180,7 @@ impl Curve {
                 let target = radius_px as f64;
                 let last = radii[radii.len() - 1];
                 if target >= last {
-                    return ((start_deg + (radii.len() - 1) as f64 * step_deg).to_radians())
-                        as f32;
+                    return ((start_deg + (radii.len() - 1) as f64 * step_deg).to_radians()) as f32;
                 }
                 let upper = radii.partition_point(|entry| *entry <= target);
                 let index = upper.saturating_sub(1).min(radii.len() - 2);
@@ -458,7 +461,10 @@ impl Map {
             for column in 0..width {
                 let u = (column as f32 + 0.5) / width as f32;
                 let direction = Direction::from_equirect(u, v).pitched(pitch);
-                sources.push(lens.pixel(direction).filter(|(px, py)| lens.inside(*px, *py)));
+                sources.push(
+                    lens.pixel(direction)
+                        .filter(|(px, py)| lens.inside(*px, *py)),
+                );
             }
         }
         Self {
@@ -880,7 +886,10 @@ mod tests {
             assert!((u - (0.25 - bearing_deg / 360.0)).abs() < 1.0e-4, "u {u}");
             assert!((v - (0.5 + 60.0 / 180.0)).abs() < 1.0e-4, "v {v}");
         }
-        assert!(measured[0] > measured[1], "handedness flipped: {measured:?}");
+        assert!(
+            measured[0] > measured[1],
+            "handedness flipped: {measured:?}"
+        );
     }
 
     #[test]

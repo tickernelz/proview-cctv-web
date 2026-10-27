@@ -1,3 +1,4 @@
+pub mod apmode;
 pub mod cloud;
 pub mod config;
 pub mod device;

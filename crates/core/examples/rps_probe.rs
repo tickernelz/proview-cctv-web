@@ -64,7 +64,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("access   {access_host}:{access_port}");
 
     let session = rps::session_id();
-    let token = rps::client_token();
+    let token = match env("PROVIEW_CLIENT_TOKEN") {
+        value if value.is_empty() => rps::client_token(),
+        value => value,
+    };
+    eprintln!(
+        "token    {} (persistent={})",
+        token,
+        env("PROVIEW_CLIENT_TOKEN").len() > 0
+    );
     let body = p2p::agent_request(
         &rps_id,
         &token,
@@ -108,17 +116,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let started = Instant::now();
     connection.claim_monitor(0, "Main").await?;
-    match connection.login_monitor(&device_user, &device_pass).await {
-        Ok(reply) => eprintln!(
-            "monlogin {:.2}s ret={} reply={}",
-            started.elapsed().as_secs_f64(),
-            reply
-                .get("Ret")
-                .and_then(|value| value.as_i64())
-                .unwrap_or(-1),
-            reply
-        ),
-        Err(error) => eprintln!("monlogin failed: {error:?}"),
+    if let Some(token) = std::env::var("PROVIEW_DEVICE_TOKEN")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
+        match connection.login_token(token.trim(), "").await {
+            Ok(reply) => eprintln!("tokenlogin ret={:?} reply={}", reply.get("Ret"), reply),
+            Err(error) => eprintln!("tokenlogin failed: {error:?}"),
+        }
     }
     for index in 0..6 {
         let (header, payload) = match tokio::time::timeout(

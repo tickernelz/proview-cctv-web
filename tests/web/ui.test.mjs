@@ -1,6 +1,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startServer, startBrowser, signIn, DUAL_LENS_CLIP } from './cdp.mjs';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { startServer, startBrowser, signIn, DUAL_LENS_CLIP, fakeTalkDevice, toneWave } from './cdp.mjs';
 
 const DEVICES = [
   { id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 },
@@ -20,9 +23,12 @@ const TALK_CAPS = {
 let server;
 let browser;
 
+let tone;
+
 before(async () => {
+  tone = toneWave(join(tmpdir(), 'proview-talk-tone.wav'));
   server = await startServer(DEVICES, { clips: CLIPS });
-  browser = await startBrowser();
+  browser = await startBrowser(['--use-file-for-fake-audio-capture=' + tone]);
 });
 
 after(async () => {
@@ -130,18 +136,50 @@ test('? opens the keyboard list without moving focus out of reach, Escape closes
   }
 });
 
-test('holding T talks with a live microphone level, releasing stops the microphone', async () => {
-  const page = await open({ intercept: TALK_CAPS });
+test('holding T carries the microphone to the camera speaker', async () => {
+  const device = await fakeTalkDevice();
+  const talking = await startServer(DEVICES, {
+    clips: CLIPS,
+    env: { PROVIEW_DEVICE_HOST: '127.0.0.1:' + device.port, PROVIEW_DEVICE_PASS: 'hunter2' },
+  });
+  const page = await browser.page({ intercept: TALK_CAPS });
   try {
+    await signIn(page, talking.base);
+    await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the first camera to play', 20000);
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait("document.getElementById('talk').classList.contains('talk-on')", 'talk to start');
-    await page.wait("Number(document.getElementById('level').dataset.level) > 0", 'the microphone level to move');
     assert.match(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone is open/);
+    await page.wait("Number(document.getElementById('level').dataset.level) > 0", 'the microphone level to move');
+    await page.wait("window.proviewTalk.state().chunks >= 25", 'a second of microphone audio to go up', 15000);
     await page.key('t', 'up');
     await page.wait("!document.getElementById('talk').classList.contains('talk-on')", 'talk to stop');
     assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
     assert.doesNotMatch(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone/);
+    const frames = device.frames();
+    assert.ok(frames.length > 15, 'frames reached the camera: ' + frames.length);
+    assert.equal(frames[0].id, 1432);
+    assert.equal(frames[0].header, '000001fa0e024001');
+    assert.ok(frames.some((frame) => frame.silent === false), 'at least one frame carries audio');
+  } finally {
+    await page.close();
+    await talking.stop();
+    device.close();
+  }
+});
+
+test('Talk says why it cannot open when the camera is not reachable', async () => {
+  const page = await open({ intercept: TALK_CAPS });
+  try {
+    await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
+    await page.key('t', 'down');
+    await page.wait(
+      "document.getElementById('control-status').textContent.includes('did not open')",
+      'the server reason',
+    );
+    assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);
+    assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
+    await page.key('t', 'up');
   } finally {
     await page.close();
   }

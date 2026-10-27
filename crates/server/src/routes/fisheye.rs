@@ -365,7 +365,12 @@ fn fixture_frame() -> Result<&'static RgbFrame, Failure> {
     FRAME
         .get_or_init(|| RgbFrame::from_ppm(FIXTURE_BYTES))
         .as_ref()
-        .ok_or_else(|| fail(Status::InternalServerError, "embedded fixture is not a binary PPM"))
+        .ok_or_else(|| {
+            fail(
+                Status::InternalServerError,
+                "embedded fixture is not a binary PPM",
+            )
+        })
 }
 
 fn encode_bmp(frame: &RgbFrame) -> Vec<u8> {

@@ -238,3 +238,71 @@ export async function signIn(page, base) {
   await page.goto(base + '/?signed-in#live');
   await page.wait("!document.getElementById('watch').hidden", 'the Live screen');
 }
+
+export async function fakeTalkDevice() {
+  const frames = [];
+  const server = createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    let reply = 0;
+    const answer = (id, body) => {
+      const payload = Buffer.concat([Buffer.from(JSON.stringify(body), 'utf8'), Buffer.from([0])]);
+      const header = Buffer.alloc(20);
+      header[0] = 0xff;
+      header.writeUInt32LE(0x141, 4);
+      header.writeUInt32LE(++reply, 8);
+      header.writeUInt16LE(id, 14);
+      header.writeUInt32LE(payload.length, 16);
+      socket.write(Buffer.concat([header, payload]));
+    };
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      for (;;) {
+        if (buffer.length < 20) return;
+        const length = buffer.readUInt32LE(16);
+        if (buffer.length < 20 + length) return;
+        const id = buffer.readUInt16LE(14);
+        const body = buffer.subarray(20, 20 + length);
+        buffer = buffer.subarray(20 + length);
+        if (id === 1432) {
+          frames.push({
+            id,
+            header: body.subarray(0, 8).toString('hex'),
+            silent: body.subarray(8).every((byte) => byte === 0xd5),
+          });
+        }
+        if (id === 1000) answer(1000, { Ret: 100, SessionID: '0x00000141' });
+        if (id === 1434) answer(1434, { Ret: 100, Name: 'OPTalk' });
+      }
+    });
+  });
+  await new Promise((done) => server.listen(0, '127.0.0.1', done));
+  return {
+    port: server.address().port,
+    frames: () => frames,
+    close: () => server.close(),
+  };
+}
+
+export function toneWave(path, { seconds = 3, hz = 1000, rate = 48000 } = {}) {
+  const samples = rate * seconds;
+  const data = Buffer.alloc(samples * 2);
+  for (let index = 0; index < samples; index += 1) {
+    data.writeInt16LE(Math.round(Math.sin((2 * Math.PI * hz * index) / rate) * 16384), index * 2);
+  }
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + data.length, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(rate, 24);
+  header.writeUInt32LE(rate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(data.length, 40);
+  writeFileSync(path, Buffer.concat([header, data]));
+  return path;
+}
