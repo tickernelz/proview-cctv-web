@@ -788,6 +788,95 @@ What that leaves, in order of cost: the constructor that stores the key
 because the code that stores `0x1f40830` was not located), or a different
 encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
 
+### 4C.13 The media channel cipher, recovered and proven on a live session
+
+4C.10 and 4C.12 left the cipher open because they looked for it through OpenSSL's
+entry points and through the AES vtable; both are the wrong handle. The cipher is
+reached through the class's own exported methods, and the key for msgid 1000 is a
+constant inside the library.
+
+**The primitive.** `MNetSDK::CDataEncDecAES` (`vtable 0x1f40830`, vptr
+`0x1f40840`) delegates to `XAES::Encrypt128` `0xacabe4`, which is
+`AES_set_encrypt_key(key, 128, ks)` followed by `AES_cbc_encrypt(in, out, len, ks,
+iv, 1)` over a 64-byte zeroed stack block, so the IV is **16 zero bytes** and there
+is **no PKCS#7**: the output is the input zero-padded to a 16-byte multiple,
+length `(len + 15) & ~15`. `XData` frames are then wrapped by
+`CDataEncDecAES::EncData` `0xf2e1d8`, which copies the 20-byte DVRIP header
+unchanged, replaces the body with `base64(ciphertext)`, and sets the header length
+to `1 + base64len`. `NotEncryptMsgID` (`this+0x40`, read from the ctor's JSON
+config) is the skip list. The receive side is `DecData` `0xf2e464` ->
+`XAES::Decrypt128_Base64` `0xacb934`.
+
+**The key for msgid 1000 is a vendor constant.** `CProtocolNetIP::InitMsg`
+`0xf22b80` at `0xf23184` loads `.rodata 0x51b456` and passes it to
+`CDataEncDecAES::AESEncData(XData*, char const*)` `0xf23358`. The 16 bytes at that
+address are the ASCII string **`dashoiahfarqdasr`**. That is why the device can
+answer the `OPMonitor` claim with ciphertext and the client can read it: both sides
+already hold it.
+
+**Measured, not inferred.** A live cloud-P2P session on 2026-10-27 under the qemu
+harness with a prologue-patch hook over `XAES::Encrypt128`,
+`XAES::Decrypt128_Base64` and `AES_set_encrypt_key`, tcpdump on TCP 6611, ordered by
+capture timestamp:
+
+| t (s) | msgid | ch | dir | wire body | plaintext |
+|---|---|---|---|---|---|
+| 0.044 | 1413 | 99 | client | 206 B JSON | `OPMonitor Claim`, `RandomStrA 0k83`, `SessionID 0x000001869f` |
+| 0.081 | 1414 | 0 | device | 961 base64 chars | 720 B ciphertext -> **720 B** JSON |
+| 0.122 | 1000 | 99 | client | 513 base64 chars | 384 B ciphertext -> **375 B** (374 B JSON + NUL) |
+| 0.216 | 1001 | 0 | device | 128 B plaintext | `Ret:100`, `SessionID 0x000000ab` |
+
+The hook prints the key on the way in, so the pairing is not a guess:
+
+```
+[enc128] #1 plainlen=375
+[enc128] key len=16 hex=646173686f6961686661727164617372 txt=dashoiahfarqdasr
+```
+
+The 1414 body decrypts with the same constant:
+`{ "Bits" : 1024, "DataEncryptionType" : { "AES" : true, "AESV2" : true, "VEKEY1" :
+true }, "EncryptAlgo" : "RSA_V1.5", "LoginEncryptionType" : { "MD5" : true, "NONE" :
+true, "RSA" : true, "TOKEN" : true }, "NotEncryptMsgID" : [ 1000, 1001, 1008, 1009,
+1010, 1011, 1050, 1054, 1412, 1413, 1414, 1422, 1424, 1425, 1426, 1432, 1433, 1434,
+1435, 1449, 1522, 1572, 1576, 1580, 1582, 1645, 2062, 2063, 2123, 2140, 3016, 3502 ],
+"PublicKey" : "91670C27…081FF,010001", "Ret" : 100 }`. The login body decrypts to
+`{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"F0+7ghjHWzNsktOE",
+"PassWord":"","CommunicateKey":"8B917648…D8E8E3AB"}` — 374 bytes plus the protocol's
+NUL, zero-padded to 384, which is exactly `base64 512 chars + NUL = 513` on the wire.
+
+**The same constant decrypts the vendor app, not only the harness.** The owner's
+PCAPdroid capture of the real application (`PCAPdroid_27_Okt_21_18_10.pcap`, 23.6 MB,
+sha256 `9574b835456653709edd0a3073a2b3957e78b244123bae84d3c71f52e1612398`,
+21:18:10-21:22:20) holds one more media-channel pair on
+`10.215.173.1:54100 -> 162.128.66.214:6611`: claim `1413/99`, reply `1414` of 961
+base64 characters, and a `1000/99` login whose body is **577** bytes on the wire. Both
+frames open with the same key: the reply is byte-identical to the harness capture
+(the device sends one fixed JSON, so a constant key and a zero IV make the ciphertext
+constant too), and the 432-byte login plaintext is the same login JSON with one extra
+field, `"User-Agent":"Funv1.2.2c-And-wR5qH796Ky8D03r"`. That rules out the reading that
+the harness produced an artefact of its own environment.
+
+**The session key is not that constant.** Everything after the login rides a second
+cipher whose 16-char key the client generates locally (`OS::RandString`) and hands to
+the device in `CommunicateKey`: 256 hex characters = 128 bytes = RSA-1024, matching
+`"Bits" : 1024` and the 128-byte modulus in `PublicKey`, produced by `RSAV15()`
+`0xf25e38` and logged by the ctor at `ProtocolNetIP.cpp:2710`. In the run above that
+key was `Os1B8U5VJ2LE2ubx`, visible on msgid 1020, 1360, 1410 and 1006.
+
+`crates/core/src/media/dhav.rs` implements the envelope, the cipher and the DHAV
+frame split (`DHAV` magic, `u16` little-endian length at offset 5), with the captured
+bodies as test vectors: the login decrypts to the JSON above, and re-encrypting that
+plaintext reproduces the captured 384 bytes byte for byte.
+
+**Still open.** The video payload is msgid 1412 in 328-byte and 8192-byte bodies and
+does **not** use this envelope: no `DHAV` magic, no H.264 start code at offset 0, and
+no hit from AES-128/256 in CBC, CFB, OFB or CTR over seven candidate keys
+(`VEKEY1`, `VEKEY1[..16]`, `VEKEY1[..32]`, `SHA1(VEKEY1)[..16]`,
+`SHA1(SHA1(VEKEY1))[..16]`, `MD5(VEKEY1)`, the constant, the session key). What the
+run does show is the lever: `OPMonitor Start` carries
+`"VEKEY1":"pR1loLP0Ss2IUTI427DtE348II5Xx3IeUFtRdtM39Kc0a6h5eB9x0D9OL5GOwtfh"`, a
+64-character key that the device acknowledges in `1411` before the first `1412`.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -812,7 +901,11 @@ encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).
 4. Answered: RTSP 554 with Digest auth; paths and handshake are in section 8.
-5. P2P media channel details.
+5. The P2P media channel cipher is answered in 4C.13 for the control frames
+   (AES-128-CBC, zero IV, base64, vendor constant `dashoiahfarqdasr` on msgid
+   1000). What remains is the video payload itself: msgid 1412 bodies resist
+   every key derivation tested against `VEKEY1`, so that stream is the next
+   change rather than a protocol gap.
 
 ## 6. DVRIP transport as implemented here
 

@@ -5,6 +5,22 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- Media channel cipher. `crates/core/src/media/dhav.rs` speaks the envelope the
+  vendor SDK and the camera use on msgid 1000: AES-128-CBC with a 16-byte zero
+  IV, zero padding instead of PKCS#7, base64 in the body, DVRIP header kept.
+  The msgid-1000 key is the constant `dashoiahfarqdasr` at `.rodata 0x51b456`,
+  which is why the `OPMonitor` claim reply can be read before any exchange.
+  Proven on a live session: the captured 384-byte login frame decrypts to its
+  374-byte JSON and re-encrypts to the same 384 bytes; the 720-byte claim reply
+  decrypts to the capability JSON with the device's RSA public key. The same key
+  opens the vendor app's own capture (577-byte login body, 432-byte plaintext),
+  and the claim ciphertext is byte-identical between the two. `docs/protocol.md`
+  4C.13 carries the addresses and the measurements.
+
 ## 0.3.2 — 2026-10-27
 
 ### Added
