@@ -8,18 +8,39 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Behaviour {
+    Honour,
+    Ignore,
+    SilentFirstSet,
+    Drift,
+}
+
+fn drift_to_thirteen(value: &mut Value) {
+    if let Some(first) = value.get_mut(0) {
+        if let Some(video) = first
+            .get_mut("MainFormat")
+            .and_then(|format| format.get_mut("Video"))
+        {
+            video["FPS"] = json!(13);
+        }
+    }
+}
+
 struct Fake {
     blocks: Mutex<Vec<(String, Value)>>,
     writes: Mutex<Vec<(String, Value)>>,
-    honour_writes: bool,
+    behaviour: Behaviour,
+    sets: Mutex<usize>,
 }
 
 impl Fake {
-    fn new(honour_writes: bool) -> Arc<Self> {
+    fn new(behaviour: Behaviour) -> Arc<Self> {
         Arc::new(Self {
             blocks: Mutex::new(Vec::new()),
             writes: Mutex::new(Vec::new()),
-            honour_writes,
+            behaviour,
+            sets: Mutex::new(0),
         })
     }
 
@@ -101,10 +122,25 @@ async fn device(fake: Arc<Fake>) -> (Connection, tokio::task::JoinHandle<()>) {
                         .lock()
                         .unwrap()
                         .push((name.clone(), value.clone()));
-                    if fake.honour_writes {
-                        let mut blocks = fake.blocks.lock().unwrap();
-                        blocks.retain(|(key, _)| key != &name);
-                        blocks.push((name.clone(), value));
+                    let index = {
+                        let mut sets = fake.sets.lock().unwrap();
+                        let index = *sets;
+                        *sets += 1;
+                        index
+                    };
+                    match fake.behaviour {
+                        Behaviour::SilentFirstSet if index == 0 => continue,
+                        Behaviour::Ignore => {}
+                        Behaviour::Drift if index > 0 => {}
+                        _ => {
+                            let mut stored = value.clone();
+                            if fake.behaviour == Behaviour::Drift {
+                                drift_to_thirteen(&mut stored);
+                            }
+                            let mut blocks = fake.blocks.lock().unwrap();
+                            blocks.retain(|(key, _)| key != &name);
+                            blocks.push((name.clone(), stored));
+                        }
                     }
                     write_frame(
                         &mut socket,
@@ -141,7 +177,7 @@ fn backups() -> PathBuf {
 }
 
 fn encode_block(fps: i64, bitrate: i64) -> Value {
-    json!({
+    json!([{
         "MainFormat": {
             "VideoEnable": true,
             "Video": {
@@ -163,7 +199,7 @@ fn encode_block(fps: i64, bitrate: i64) -> Value {
                 "Resolution": "640*360"
             }
         }
-    })
+    }])
 }
 
 fn network_block() -> Value {
@@ -180,7 +216,7 @@ fn network_block() -> Value {
 
 #[tokio::test]
 async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
-    let fake = Fake::new(true);
+    let fake = Fake::new(Behaviour::Honour);
     fake.seed("Simplify.Encode", encode_block(12, 1536));
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
@@ -201,7 +237,7 @@ async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
     let fps = report
         .fields
         .iter()
-        .find(|field| field.field == "MainFormat.Video.FPS")
+        .find(|field| field.field == "0.MainFormat.Video.FPS")
         .unwrap();
     assert_eq!(fps.before, json!(12));
     assert_eq!(fps.requested, json!(15));
@@ -213,7 +249,7 @@ async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
     let saved: Value =
         serde_json::from_str(&std::fs::read_to_string(&report.backup).unwrap()).unwrap();
     assert_eq!(saved["block"], "Simplify.Encode");
-    assert_eq!(saved["value"]["MainFormat"]["Video"]["FPS"], json!(12));
+    assert_eq!(saved["value"][0]["MainFormat"]["Video"]["FPS"], json!(12));
     assert_eq!(fake.replies(), 1);
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
@@ -221,7 +257,7 @@ async fn a_write_that_reads_back_keeps_the_new_value_and_saves_the_old_one() {
 
 #[tokio::test]
 async fn a_write_the_device_does_not_hold_is_put_back_from_the_saved_copy() {
-    let fake = Fake::new(false);
+    let fake = Fake::new(Behaviour::Ignore);
     fake.seed("Simplify.Encode", encode_block(12, 1536));
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
@@ -244,22 +280,26 @@ async fn a_write_the_device_does_not_hold_is_put_back_from_the_saved_copy() {
     assert!(report.restored.iter().all(|field| field.matches));
     let writes = fake.writes.lock().unwrap().clone();
     assert_eq!(writes.len(), 2, "one write and one revert");
-    assert_eq!(writes[1].1["MainFormat"]["Video"]["FPS"], json!(12));
+    assert_eq!(writes[1].1[0]["MainFormat"]["Video"]["FPS"], json!(12));
     assert_eq!(connection.encode_state().await.unwrap().main.fps, Some(12));
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
-async fn a_network_write_touches_only_the_named_field_and_never_echoes_credentials() {
-    let fake = Fake::new(true);
+async fn a_network_write_only_touches_the_dns_block() {
+    let fake = Fake::new(Behaviour::Honour);
     fake.seed("NetWork.NetCommon", network_block());
+    fake.seed(
+        "NetWork.NetDNS",
+        json!({ "Address": "192.168.0.1", "SpareAddress": "8.8.8.8" }),
+    );
     let (mut connection, handle) = device(fake.clone()).await;
     let dir = backups();
     let reports = connection
         .write_network(
             &NetworkPatch {
-                gateway: Some("192.168.0.2".to_string()),
+                dns: Some("1.1.1.1".to_string()),
                 ..NetworkPatch::default()
             },
             &dir,
@@ -268,25 +308,25 @@ async fn a_network_write_touches_only_the_named_field_and_never_echoes_credentia
         .unwrap();
     assert_eq!(reports.len(), 1);
     assert!(!reports[0].reverted);
+    assert_eq!(reports[0].block, "NetWork.NetDNS");
     assert_eq!(reports[0].fields.len(), 1);
-    assert_eq!(reports[0].fields[0].field, "GateWay");
+    assert_eq!(reports[0].fields[0].field, "Address");
     assert_eq!(reports[0].fields[0].before, json!("192.168.0.1"));
-    assert_eq!(reports[0].fields[0].after, json!("192.168.0.2"));
-    let written = &fake.writes.lock().unwrap()[0].1;
-    assert_eq!(written["HostIP"], json!("192.168.0.100"));
-    assert_eq!(written["GateWay"], json!("192.168.0.2"));
-    assert_eq!(reports[0].written["Password"], json!("<redacted>"));
-    assert_eq!(reports[0].written["UserName"], json!("<redacted>"));
+    assert_eq!(reports[0].fields[0].after, json!("1.1.1.1"));
+    let writes = fake.writes.lock().unwrap().clone();
+    assert_eq!(writes[0].0, "NetWork.NetDNS");
+    assert_eq!(writes[0].1["Address"], json!("1.1.1.1"));
+    assert_eq!(writes[0].1["SpareAddress"], json!("8.8.8.8"));
     let saved: Value =
         serde_json::from_str(&std::fs::read_to_string(&reports[0].backup).unwrap()).unwrap();
-    assert_eq!(saved["value"]["GateWay"], json!("192.168.0.1"));
+    assert_eq!(saved["value"]["Address"], json!("192.168.0.1"));
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
 async fn storage_reads_the_card_the_overwrite_rule_and_the_record_mode() {
-    let fake = Fake::new(true);
+    let fake = Fake::new(Behaviour::Honour);
     fake.seed(
         "StorageInfo",
         json!({
@@ -319,7 +359,7 @@ async fn storage_reads_the_card_the_overwrite_rule_and_the_record_mode() {
 
 #[tokio::test]
 async fn a_record_mode_write_lands_on_the_first_record_entry() {
-    let fake = Fake::new(true);
+    let fake = Fake::new(Behaviour::Honour);
     fake.seed(
         "Record",
         json!([{ "RecordMode": "ConfigRecord", "PreRecord": 0 }]),
@@ -342,6 +382,81 @@ async fn a_record_mode_write_lands_on_the_first_record_entry() {
             .as_deref(),
         Some("ManualRecord")
     );
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_dhcp_block_shaped_as_an_array_still_reads_the_state() {
+    let fake = Fake::new(Behaviour::Honour);
+    fake.seed("NetWork.NetCommon", network_block());
+    fake.seed(
+        "NetWork.NetDHCP",
+        json!([{ "Enable": true, "Interface": "eth0" }]),
+    );
+    fake.seed(
+        "NetWork.NetDNS",
+        json!([{ "Address": "192.168.0.1", "SpareAddress": "8.8.8.8" }]),
+    );
+    let (mut connection, handle) = device(fake.clone()).await;
+    let state = connection.network_state().await.unwrap();
+    assert_eq!(state.host_ip.as_deref(), Some("192.168.0.100"));
+    assert_eq!(state.dhcp, Some(true));
+    assert_eq!(state.dns.as_deref(), Some("192.168.0.1"));
+    assert_eq!(state.spare_dns.as_deref(), Some("8.8.8.8"));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn a_device_that_never_answers_the_write_gets_the_copy_put_back() {
+    std::env::set_var("PROVIEW_SETTINGS_TIMEOUT_MS", "300");
+    let fake = Fake::new(Behaviour::SilentFirstSet);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let error = connection
+        .write_encode(
+            Stream::Main,
+            &EncodePatch {
+                fps: Some(10),
+                ..EncodePatch::default()
+            },
+            &dir,
+        )
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("config-backup-simplify-encode"), "{text}");
+    let writes = fake.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 2, "the write and then the copy going back");
+    assert_eq!(writes[1].1[0]["MainFormat"]["Video"]["FPS"], json!(12));
+    assert_eq!(connection.encode_state().await.unwrap().main.fps, Some(12));
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn a_revert_the_device_ignores_is_reported_as_a_failed_revert() {
+    std::env::set_var("PROVIEW_SETTINGS_TIMEOUT_MS", "300");
+    let fake = Fake::new(Behaviour::Drift);
+    fake.seed("Simplify.Encode", encode_block(12, 1536));
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let error = connection
+        .write_encode(
+            Stream::Main,
+            &EncodePatch {
+                fps: Some(10),
+                ..EncodePatch::default()
+            },
+            &dir,
+        )
+        .await
+        .unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("automatic revert failed"), "{text}");
+    assert!(text.contains("config-backup-simplify-encode"), "{text}");
+    assert!(text.contains("FPS reads 13 instead of 12"), "{text}");
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }

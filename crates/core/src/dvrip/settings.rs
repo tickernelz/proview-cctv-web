@@ -33,11 +33,31 @@ pub enum SettingsError {
         path: String,
         detail: String,
     },
+    Slow {
+        block: &'static str,
+        detail: String,
+    },
+    WriteFailed {
+        block: String,
+        backup: String,
+        detail: String,
+    },
     RevertFailed {
         block: String,
         backup: String,
         detail: String,
     },
+}
+
+const IO_TIMEOUT_MS_ENV: &str = "PROVIEW_SETTINGS_TIMEOUT_MS";
+
+fn io_timeout() -> std::time::Duration {
+    std::env::var(IO_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(std::time::Duration::from_millis)
+        .unwrap_or_else(|| std::time::Duration::from_secs(20))
 }
 
 impl From<DvrError> for SettingsError {
@@ -57,6 +77,17 @@ impl std::fmt::Display for SettingsError {
             SettingsError::Backup { path, detail } => {
                 write!(f, "could not write the pre-write copy at {path}: {detail}")
             }
+            SettingsError::Slow { block, detail } => {
+                write!(f, "{block} did not answer inside the write window: {detail}")
+            }
+            SettingsError::WriteFailed {
+                block,
+                backup,
+                detail,
+            } => write!(
+                f,
+                "{block} failed after the copy was saved ({detail}); the pre-write value was put back, and the copy is at {backup}"
+            ),
             SettingsError::RevertFailed {
                 block,
                 backup,
@@ -70,6 +101,15 @@ impl std::fmt::Display for SettingsError {
 }
 
 impl std::error::Error for SettingsError {}
+
+static NULL_BLOCK: Value = Value::Null;
+
+fn first_entry(block: &Value) -> (&Value, &'static str) {
+    match block {
+        Value::Array(items) => (items.first().unwrap_or(&NULL_BLOCK), "0."),
+        _ => (block, ""),
+    }
+}
 
 fn number(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|item| {
@@ -190,6 +230,20 @@ impl WriteReport {
     }
 }
 
+fn describe(changes: &[FieldChange]) -> String {
+    let drift: Vec<String> = changes
+        .iter()
+        .filter(|change| !change.matches)
+        .map(|change| {
+            format!(
+                "{} reads {} instead of {}",
+                change.field, change.after, change.requested
+            )
+        })
+        .collect();
+    drift.join("; ")
+}
+
 fn compare(
     fields: &[String],
     prior: &Value,
@@ -232,11 +286,36 @@ fn slug(name: &str) -> String {
         .collect()
 }
 
-fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, SettingsError> {
-    fs::create_dir_all(dir).map_err(|error| SettingsError::Backup {
+fn private_dir(dir: &Path) -> Result<(), SettingsError> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir).map_err(|error| SettingsError::Backup {
         path: dir.display().to_string(),
         detail: error.to_string(),
-    })?;
+    })
+}
+
+fn private_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, SettingsError> {
+    private_dir(dir)?;
     let at_ms = stamp();
     let path = dir.join(format!("config-backup-{}-{at_ms}.json", slug(name)));
     let body = json!({
@@ -248,22 +327,18 @@ fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, Setting
         path: path.display().to_string(),
         detail: error.to_string(),
     })?;
-    fs::write(&path, text).map_err(|error| SettingsError::Backup {
+    let mut file = private_file(&path).map_err(|error| SettingsError::Backup {
         path: path.display().to_string(),
         detail: error.to_string(),
     })?;
-    keep_private(&path);
+    std::io::Write::write_all(&mut file, text.as_bytes()).map_err(|error| {
+        SettingsError::Backup {
+            path: path.display().to_string(),
+            detail: error.to_string(),
+        }
+    })?;
     Ok(path)
 }
-
-#[cfg(unix)]
-fn keep_private(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn keep_private(_path: &Path) {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stream {
@@ -308,7 +383,8 @@ pub struct VideoFormat {
 
 impl VideoFormat {
     fn read(block: &Value, format: &str) -> Self {
-        let video = at(block, &format!("{format}.Video"))
+        let (entry, _) = first_entry(block);
+        let video = at(entry, &format!("{format}.Video"))
             .cloned()
             .unwrap_or(Value::Null);
         Self {
@@ -354,26 +430,26 @@ impl EncodePatch {
             });
         }
         if let Some(fps) = self.fps {
-            if !(1..=60).contains(&fps) {
+            if fps < 1 {
                 return Err(SettingsError::Invalid {
                     field: "fps",
-                    detail: format!("{fps} is outside 1..60"),
+                    detail: format!("{fps} is not a frame rate"),
                 });
             }
         }
         if let Some(bitrate) = self.bitrate {
-            if !(16..=65536).contains(&bitrate) {
+            if bitrate < 1 {
                 return Err(SettingsError::Invalid {
                     field: "bitrate",
-                    detail: format!("{bitrate} kbps is outside 16..65536"),
+                    detail: format!("{bitrate} is not a bitrate"),
                 });
             }
         }
         if let Some(gop) = self.gop {
-            if !(1..=250).contains(&gop) {
+            if gop < 1 {
                 return Err(SettingsError::Invalid {
                     field: "gop",
-                    detail: format!("{gop} is outside 1..250"),
+                    detail: format!("{gop} is not a keyframe interval"),
                 });
             }
         }
@@ -446,20 +522,13 @@ pub struct NetworkState {
 
 #[derive(Debug, Clone, Default)]
 pub struct NetworkPatch {
-    pub dhcp: Option<bool>,
     pub dns: Option<String>,
     pub spare_dns: Option<String>,
-    pub gateway: Option<String>,
-    pub submask: Option<String>,
 }
 
 impl NetworkPatch {
     pub fn empty(&self) -> bool {
-        self.dhcp.is_none()
-            && self.dns.is_none()
-            && self.spare_dns.is_none()
-            && self.gateway.is_none()
-            && self.submask.is_none()
+        self.dns.is_none() && self.spare_dns.is_none()
     }
 }
 
@@ -509,6 +578,47 @@ impl Connection {
         Ok(())
     }
 
+    async fn commit_block(
+        &mut self,
+        name: &'static str,
+        value: &Value,
+    ) -> Result<Value, SettingsError> {
+        tokio::time::timeout(io_timeout(), self.put_block(name, value))
+            .await
+            .map_err(|_| SettingsError::Slow {
+                block: name,
+                detail: "the write frame was sent and the device never acknowledged it".to_string(),
+            })??;
+        tokio::time::timeout(io_timeout(), self.setting_block(name))
+            .await
+            .map_err(|_| SettingsError::Slow {
+                block: name,
+                detail: "the read-back after the write never came".to_string(),
+            })?
+    }
+
+    async fn roll_back(
+        &mut self,
+        name: &'static str,
+        before: &Value,
+        backup: &Path,
+        cause: SettingsError,
+    ) -> SettingsError {
+        let backup = backup.display().to_string();
+        match self.commit_block(name, before).await {
+            Ok(_) => SettingsError::WriteFailed {
+                block: name.to_string(),
+                backup,
+                detail: cause.to_string(),
+            },
+            Err(error) => SettingsError::RevertFailed {
+                block: name.to_string(),
+                backup,
+                detail: format!("{cause}; the revert then failed: {error}"),
+            },
+        }
+    }
+
     pub async fn write_setting(
         &mut self,
         name: &'static str,
@@ -517,10 +627,11 @@ impl Connection {
         backup_dir: &Path,
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(name).await?;
-        let (desired, fields) = (desired, fields);
         let backup = backup_file(name, &before, backup_dir)?;
-        self.put_block(name, &desired).await?;
-        let read_back = self.setting_block(name).await?;
+        let read_back = match self.commit_block(name, &desired).await {
+            Ok(value) => value,
+            Err(error) => return Err(self.roll_back(name, &before, &backup, error).await),
+        };
         let compared = compare(fields, &before, &desired, &read_back);
         if compared.iter().all(|field| field.matches) {
             return Ok(WriteReport {
@@ -533,21 +644,27 @@ impl Connection {
                 restored: Vec::new(),
             });
         }
-        let revert = async {
-            self.put_block(name, &before).await?;
-            self.setting_block(name).await
-        }
-        .await;
-        match revert {
-            Ok(restored_block) => Ok(WriteReport {
-                block: name.to_string(),
-                backup: backup.display().to_string(),
-                fields: compared,
-                written: redact(&desired),
-                read_back: redact(&read_back),
-                reverted: true,
-                restored: compare(fields, &before, &before, &restored_block),
-            }),
+        match self.commit_block(name, &before).await {
+            Ok(restored_block) => {
+                let restored = compare(fields, &before, &before, &restored_block);
+                let drift = describe(&restored);
+                if !drift.is_empty() {
+                    return Err(SettingsError::RevertFailed {
+                        block: name.to_string(),
+                        backup: backup.display().to_string(),
+                        detail: format!("the copy was written back but {drift}"),
+                    });
+                }
+                Ok(WriteReport {
+                    block: name.to_string(),
+                    backup: backup.display().to_string(),
+                    fields: compared,
+                    written: redact(&desired),
+                    read_back: redact(&read_back),
+                    reverted: true,
+                    restored,
+                })
+            }
             Err(error) => Err(SettingsError::RevertFailed {
                 block: name.to_string(),
                 backup: backup.display().to_string(),
@@ -574,30 +691,29 @@ impl Connection {
         patch.validate()?;
         let before = self.setting_block(ENCODE_BLOCK).await?;
         let mut desired = before.clone();
-        let base = stream.key();
+        let (_, prefix) = first_entry(&before);
+        let base = format!("{prefix}{}.Video", stream.key());
         let mut fields = Vec::new();
         {
-            let video = slot(&mut desired, &format!("{base}.Video")).ok_or_else(|| {
-                SettingsError::Missing {
-                    block: ENCODE_BLOCK,
-                    path: format!("{base}.Video"),
-                }
+            let video = slot(&mut desired, &base).ok_or_else(|| SettingsError::Missing {
+                block: ENCODE_BLOCK,
+                path: base.clone(),
             })?;
             if let Some(fps) = patch.fps {
                 video["FPS"] = json!(fps);
-                fields.push(format!("{base}.Video.FPS"));
+                fields.push(format!("{base}.FPS"));
             }
             if let Some(bitrate) = patch.bitrate {
                 video["BitRate"] = json!(bitrate);
-                fields.push(format!("{base}.Video.BitRate"));
+                fields.push(format!("{base}.BitRate"));
             }
             if let Some(gop) = patch.gop {
                 video["GOP"] = json!(gop);
-                fields.push(format!("{base}.Video.GOP"));
+                fields.push(format!("{base}.GOP"));
             }
             if let Some(resolution) = patch.resolution.as_deref() {
                 video["Resolution"] = json!(resolution.trim());
-                fields.push(format!("{base}.Video.Resolution"));
+                fields.push(format!("{base}.Resolution"));
             }
         }
         self.write_setting(ENCODE_BLOCK, desired, &fields, backup_dir)
@@ -606,20 +722,26 @@ impl Connection {
 
     pub async fn network_state(&mut self) -> Result<NetworkState, SettingsError> {
         let block = self.setting_block(NETWORK_BLOCK).await?;
-        let dhcp = self
-            .setting_block(DHCP_BLOCK)
-            .await
-            .ok()
-            .and_then(|value| boolean(&value, "Enable"));
+        let (common, _) = first_entry(&block);
+        let dhcp = self.setting_block(DHCP_BLOCK).await.ok().and_then(|value| {
+            let (entry, _) = first_entry(&value);
+            boolean(entry, "Enable")
+        });
         let dns = self.setting_block(DNS_BLOCK).await.ok();
         Ok(NetworkState {
-            host_ip: text(&block, "HostIP"),
-            submask: text(&block, "SubMask"),
-            gateway: text(&block, "GateWay"),
-            mac: text(&block, "MAC"),
+            host_ip: text(common, "HostIP"),
+            submask: text(common, "SubMask"),
+            gateway: text(common, "GateWay"),
+            mac: text(common, "MAC"),
             dhcp,
-            dns: dns.as_ref().and_then(|value| text(value, "Address")),
-            spare_dns: dns.as_ref().and_then(|value| text(value, "SpareAddress")),
+            dns: dns.as_ref().and_then(|value| {
+                let (entry, _) = first_entry(value);
+                text(entry, "Address")
+            }),
+            spare_dns: dns.as_ref().and_then(|value| {
+                let (entry, _) = first_entry(value);
+                text(entry, "SpareAddress")
+            }),
             block: redact(&block),
         })
     }
@@ -630,46 +752,33 @@ impl Connection {
         backup_dir: &Path,
     ) -> Result<Vec<WriteReport>, SettingsError> {
         let mut reports = Vec::new();
-        if let Some(enable) = patch.dhcp {
-            let before = self.setting_block(DHCP_BLOCK).await?;
-            let mut desired = before.clone();
-            desired["Enable"] = json!(enable);
-            reports.push(
-                self.write_setting(DHCP_BLOCK, desired, &["Enable".to_string()], backup_dir)
-                    .await?,
-            );
-        }
         if patch.dns.is_some() || patch.spare_dns.is_some() {
             let before = self.setting_block(DNS_BLOCK).await?;
             let mut desired = before.clone();
+            let (_, prefix) = first_entry(&before);
             let mut fields = Vec::new();
             if let Some(address) = patch.dns.as_deref() {
-                desired["Address"] = json!(address.trim());
-                fields.push("Address".to_string());
+                let key = format!("{prefix}Address");
+                if let Some(entry) = slot(&mut desired, &key) {
+                    *entry = json!(address.trim());
+                    fields.push(key);
+                }
             }
             if let Some(address) = patch.spare_dns.as_deref() {
-                desired["SpareAddress"] = json!(address.trim());
-                fields.push("SpareAddress".to_string());
+                let key = format!("{prefix}SpareAddress");
+                if let Some(entry) = slot(&mut desired, &key) {
+                    *entry = json!(address.trim());
+                    fields.push(key);
+                }
+            }
+            if fields.is_empty() {
+                return Err(SettingsError::Missing {
+                    block: DNS_BLOCK,
+                    path: "Address".to_string(),
+                });
             }
             reports.push(
                 self.write_setting(DNS_BLOCK, desired, &fields, backup_dir)
-                    .await?,
-            );
-        }
-        if patch.gateway.is_some() || patch.submask.is_some() {
-            let before = self.setting_block(NETWORK_BLOCK).await?;
-            let mut desired = before.clone();
-            let mut fields = Vec::new();
-            if let Some(gateway) = patch.gateway.as_deref() {
-                desired["GateWay"] = json!(gateway.trim());
-                fields.push("GateWay".to_string());
-            }
-            if let Some(submask) = patch.submask.as_deref() {
-                desired["SubMask"] = json!(submask.trim());
-                fields.push("SubMask".to_string());
-            }
-            reports.push(
-                self.write_setting(NETWORK_BLOCK, desired, &fields, backup_dir)
                     .await?,
             );
         }
@@ -751,21 +860,17 @@ impl Connection {
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(RECORD_BLOCK).await?;
         let mut desired = before.clone();
+        let (_, prefix) = first_entry(&before);
+        let key = format!("{prefix}RecordMode");
         {
-            let entry =
-                slot(&mut desired, "0.RecordMode").ok_or_else(|| SettingsError::Missing {
-                    block: RECORD_BLOCK,
-                    path: "0.RecordMode".to_string(),
-                })?;
+            let entry = slot(&mut desired, &key).ok_or_else(|| SettingsError::Missing {
+                block: RECORD_BLOCK,
+                path: key.clone(),
+            })?;
             *entry = json!(mode.wire());
         }
-        self.write_setting(
-            RECORD_BLOCK,
-            desired,
-            &["0.RecordMode".to_string()],
-            backup_dir,
-        )
-        .await
+        self.write_setting(RECORD_BLOCK, desired, &[key], backup_dir)
+            .await
     }
 }
 
@@ -867,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn patches_outside_the_device_range_are_refused_before_any_write() {
+    fn empty_and_negative_patches_are_refused_before_any_write() {
         let patch = EncodePatch {
             fps: Some(0),
             ..EncodePatch::default()
@@ -877,7 +982,7 @@ mod tests {
             Err(SettingsError::Invalid { field: "fps", .. })
         ));
         let patch = EncodePatch {
-            bitrate: Some(999_999),
+            bitrate: Some(-4),
             ..EncodePatch::default()
         };
         assert!(matches!(
@@ -887,6 +992,14 @@ mod tests {
                 ..
             })
         ));
+        let patch = EncodePatch {
+            bitrate: Some(999_999),
+            ..EncodePatch::default()
+        };
+        assert!(
+            patch.validate().is_ok(),
+            "a large value is the device's call; the read-back and the revert enforce it"
+        );
         let empty = EncodePatch::default().validate();
         assert!(matches!(
             empty,

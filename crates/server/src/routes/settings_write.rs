@@ -18,7 +18,6 @@ use super::{fail, session_id, Failure};
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
-        device_settings_js,
         encode_read,
         encode_write,
         network_read,
@@ -50,6 +49,8 @@ fn settings_failure(error: SettingsError) -> Failure {
         SettingsError::Invalid { .. } => Status::BadRequest,
         SettingsError::Missing { .. } => Status::NotImplemented,
         SettingsError::Backup { .. } => Status::InternalServerError,
+        SettingsError::Slow { .. } => Status::GatewayTimeout,
+        SettingsError::WriteFailed { .. } => Status::BadGateway,
         SettingsError::RevertFailed { .. } => Status::Conflict,
         SettingsError::Device(proview_core::dvrip::client::DvrError::Rejected { ret, .. }) => {
             match ret {
@@ -127,6 +128,7 @@ pub struct WriteBody {
     pub reverted: bool,
     pub stream: Option<String>,
     pub reports: Vec<proview_core::dvrip::settings::WriteReport>,
+    pub errors: Vec<String>,
     pub encode: Option<proview_core::dvrip::settings::EncodeState>,
     pub storage: Option<proview_core::dvrip::settings::StorageState>,
 }
@@ -161,6 +163,7 @@ async fn encode_write(
         reverted,
         stream: Some(stream.label().to_string()),
         reports: vec![report],
+        errors: Vec::new(),
         encode,
         storage: None,
     };
@@ -214,25 +217,39 @@ async fn network_write(
     cookies: &CookieJar<'_>,
 ) -> Result<(Status, Json<WriteBody>), Failure> {
     signed_in(store, cookies)?;
-    if let Some(ip) = query.ip.as_deref().filter(|value| !value.trim().is_empty()) {
+    let moved = [
+        ("ip", query.ip.as_deref()),
+        (
+            "dhcp",
+            query.dhcp.map(|value| if value { "on" } else { "off" }),
+        ),
+        ("gateway", query.gateway.as_deref()),
+        ("submask", query.submask.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(field, value)| {
+        value
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| format!("{field}={value}"))
+    })
+    .collect::<Vec<_>>();
+    if !moved.is_empty() {
         return Err(fail(
             Status::Conflict,
             format!(
-                "a new address ({ip}) would move the camera off the address this app reaches; the read-back and the automatic revert both run over that address, so the write is refused and the device keeps its address"
+                "{} would change how this app reaches the camera, and both the read-back and the automatic revert run over that path; the write is refused and the device keeps its route (DNS stays writable)",
+                moved.join(", ")
             ),
         ));
     }
     let patch = NetworkPatch {
-        dhcp: query.dhcp,
         dns: query.dns.clone(),
         spare_dns: query.spare_dns.clone(),
-        gateway: query.gateway.clone(),
-        submask: query.submask.clone(),
     };
     if patch.empty() {
         return Err(fail(
             Status::BadRequest,
-            "name at least one of dhcp, dns, spare_dns, gateway or submask",
+            "name dns and/or spare_dns; the address, dhcp, gateway and submask are refused because the revert travels over them",
         ));
     }
     let mut connection = session(cfg).await?;
@@ -242,6 +259,7 @@ async fn network_write(
         .map_err(settings_failure)?;
     let _ = connection.logout().await;
     let reverted = reports.iter().any(|report| report.reverted);
+    let errors = Vec::new();
     let status = if reverted {
         Status::Conflict
     } else {
@@ -255,6 +273,7 @@ async fn network_write(
             reverted,
             stream: None,
             reports,
+            errors,
             encode: None,
             storage: None,
         }),
@@ -318,38 +337,37 @@ async fn storage_write(
     }
     let mut connection = session(cfg).await?;
     let mut reports = Vec::new();
+    let mut errors = Vec::new();
     if let Some(mode) = overwrite {
-        reports.push(
-            connection
-                .write_overwrite(mode, &backup_dir())
-                .await
-                .map_err(settings_failure)?,
-        );
+        match connection.write_overwrite(mode, &backup_dir()).await {
+            Ok(report) => reports.push(report),
+            Err(error) => errors.push(error.to_string()),
+        }
     }
     if let Some(mode) = record {
-        reports.push(
-            connection
-                .write_record_mode(mode, &backup_dir())
-                .await
-                .map_err(settings_failure)?,
-        );
+        match connection.write_record_mode(mode, &backup_dir()).await {
+            Ok(report) => reports.push(report),
+            Err(error) => errors.push(error.to_string()),
+        }
     }
     let storage = connection.storage_state().await.ok();
     let _ = connection.logout().await;
     let reverted = reports.iter().any(|report| report.reverted);
-    let status = if reverted {
-        Status::Conflict
-    } else {
+    let status = if errors.is_empty() && !reverted {
         Status::Ok
+    } else {
+        Status::Conflict
     };
+    let ok = errors.is_empty() && !reverted;
     Ok((
         status,
         Json(WriteBody {
-            ok: !reverted,
+            ok,
             backend: "dvrip",
             reverted,
             stream: None,
             reports,
+            errors,
             encode: None,
             storage,
         }),

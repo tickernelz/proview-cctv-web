@@ -111,8 +111,11 @@ const deviceSettings = (() => {
 
   const renderReports = (container, body) => {
     const reports = (body && body.reports) || [];
+    const errors = (body && body.errors) || [];
     container.replaceChildren(...reports.map(reportTable));
-    if (body && body.reverted) {
+    if (errors.length) {
+      status(errors.join(' / '), true);
+    } else if (body && body.reverted) {
       status('The write did not hold and was reverted; the device keeps its previous values.', true);
     } else if (reports.length) {
       status('Read back after the write and kept.');
