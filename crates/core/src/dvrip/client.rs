@@ -81,6 +81,53 @@ pub struct LoginOk {
     pub alive_interval: Option<u32>,
 }
 
+fn monitor_random() -> String {
+    crate::provider::rps::random_lower(4)
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn claim_monitor_frames_the_message_like_the_capture() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let accepted = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut header = [0u8; super::super::HEADER_LEN];
+            socket.read_exact(&mut header).await.expect("header");
+            let decoded = Header::decode(&header).expect("header decodes");
+            let mut body = vec![0u8; decoded.length as usize];
+            socket.read_exact(&mut body).await.expect("body");
+            (decoded, body)
+        });
+
+        let stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("connect");
+        let mut connection = Connection::from_stream(stream);
+        connection
+            .claim_monitor(0, "Main")
+            .await
+            .expect("claim sends");
+
+        let (header, body) = accepted.await.expect("reader");
+        assert_eq!(header.id, super::super::msg::MONITOR);
+        assert_eq!(header.channel, super::super::msg::MONITOR_CHANNEL);
+        assert!(!header.end, "the claim keeps the end bit clear");
+        assert_eq!(body.last(), Some(&0), "the claim body ends with a NUL");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body[..body.len() - 1]).expect("claim json");
+        assert_eq!(parsed["Name"], "OPMonitor");
+        assert_eq!(parsed["OPMonitor"]["Action"], "Claim");
+        assert_eq!(parsed["OPMonitor"]["Parameter"]["TransMode"], "TCP");
+        assert_eq!(parsed["SessionID"], format!("0x{:08x}", header.session));
+    }
+}
+
 pub struct Connection {
     stream: TcpStream,
     session: u32,
@@ -151,6 +198,15 @@ impl Connection {
         })
     }
 
+    pub fn from_stream(stream: TcpStream) -> Self {
+        stream.set_nodelay(true).ok();
+        Self {
+            stream,
+            session: 0,
+            sequence: 0,
+        }
+    }
+
     pub fn session(&self) -> u32 {
         self.session
     }
@@ -161,12 +217,22 @@ impl Connection {
     }
 
     async fn send_frame(&mut self, id: u16, body: &[u8]) -> std::io::Result<()> {
+        self.send_frame_on(0, true, id, body).await
+    }
+
+    async fn send_frame_on(
+        &mut self,
+        channel: u8,
+        end: bool,
+        id: u16,
+        body: &[u8],
+    ) -> std::io::Result<()> {
         let sequence = self.next_sequence();
         let header = Header {
             session: self.session,
             sequence,
-            channel: 0,
-            end: true,
+            channel,
+            end,
             id,
             length: body.len() as u32,
         };
@@ -204,6 +270,34 @@ impl Connection {
         Ok((header, body))
     }
 
+    pub async fn claim_monitor(&mut self, channel: u8, stream: &str) -> Result<(), DvrError> {
+        let body = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Claim",
+                "Parameter": {
+                    "Channel": channel,
+                    "CombinMode": "CONNECT_ALL",
+                    "StreamType": stream,
+                    "TransMode": "TCP",
+                },
+            },
+            "DHParameter": { "RandomStrA": monitor_random() },
+            "SessionID": format!("0x{:08x}", self.session),
+        });
+        let mut payload =
+            serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        payload.push(0);
+        self.send_frame_on(
+            super::msg::MONITOR_CHANNEL,
+            false,
+            super::msg::MONITOR,
+            &payload,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn request(&mut self, id: u16, body: Value) -> Result<Value, DvrError> {
         self.send_json(id, &body).await?;
         self.await_reply(8).await
@@ -219,6 +313,27 @@ impl Connection {
             }
         }
         Err(DvrError::NoReply)
+    }
+
+    pub async fn login_monitor(&mut self, user: &str, password: &str) -> Result<Value, DvrError> {
+        let body = json!({
+            "EncryptType": "MD5",
+            "LoginType": "DVRIP-Web",
+            "PassWord": sofia_hash(password),
+            "UserName": user,
+        });
+        let mut payload =
+            serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
+        payload.push(0);
+        self.send_frame_on(
+            super::msg::MONITOR_CHANNEL,
+            false,
+            super::msg::LOGIN,
+            &payload,
+        )
+        .await?;
+        let (_, reply) = self.recv().await?;
+        parse_json(&reply)
     }
 
     pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, DvrError> {

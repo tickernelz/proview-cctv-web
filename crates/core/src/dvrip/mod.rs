@@ -21,4 +21,6 @@ pub mod msg {
     pub const TALK_CLAIM: u16 = 1434;
     pub const TIME_QUERY: u16 = 1452;
     pub const SNAP: u16 = 1560;
+    pub const MONITOR: u16 = 0x0585;
+    pub const MONITOR_CHANNEL: u8 = 99;
 }

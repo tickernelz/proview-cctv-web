@@ -85,6 +85,15 @@ jobs:
           args: "--release -p proview-server"
           strip: true
 
+      - name: Strawberry Perl and NASM for the vendored OpenSSL build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Strawberry\perl\bin\perl.exe')) { choco install strawberryperl -y --no-progress }
+          if (-not (Get-Command nasm -ErrorAction SilentlyContinue)) { choco install nasm -y --no-progress }
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "OPENSSL_SRC_PERL=C:\\Strawberry\\perl\\bin\\perl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build with cargo (native runners)
         if: ${{ !matrix.use_cross }}
         shell: bash
@@ -217,6 +226,15 @@ jobs:
       - name: Install tauri cli
         run: cargo install tauri-cli --version "^2.0" --locked
 
+      - name: Strawberry Perl and NASM for the vendored OpenSSL build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'C:\Strawberry\perl\bin\perl.exe')) { choco install strawberryperl -y --no-progress }
+          if (-not (Get-Command nasm -ErrorAction SilentlyContinue)) { choco install nasm -y --no-progress }
+          "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "OPENSSL_SRC_PERL=C:\\Strawberry\\perl\\bin\\perl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build bundles
         shell: bash
         run: cargo tauri build ${{ matrix.args }}

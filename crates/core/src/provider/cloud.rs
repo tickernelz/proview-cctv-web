@@ -3,11 +3,13 @@ use super::{
     StreamTicket, VendorSession,
 };
 use crate::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
+use crate::cloud::status::{self, StatusClient, STATUS_HOST};
 use crate::cloud::CloudError;
 use crate::config::Config;
 
 pub struct CloudProvider {
     client: EnvelopeClient,
+    status: StatusClient,
     device_user: String,
     device_pass: String,
 }
@@ -20,6 +22,7 @@ impl CloudProvider {
     pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
         Self {
             client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
+            status: StatusClient::new(STATUS_HOST),
             device_user: cfg.device_user.clone(),
             device_pass: cfg.device_pass.clone(),
         }
@@ -70,9 +73,29 @@ impl Provider for CloudProvider {
     async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
         let token = self.token(session)?;
         let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        let mut pending = tokio::task::JoinSet::new();
+        for (index, device) in devices.iter().enumerate() {
+            let status = self.status.clone();
+            let serial = device.uuid.clone();
+            let code = device.auth_code();
+            pending.spawn(async move {
+                let state = status.query(&serial, &code).await;
+                (index, state)
+            });
+        }
+        let mut states = vec![None; devices.len()];
+        while let Some(joined) = pending.join_next().await {
+            if let Ok((index, state)) = joined {
+                states[index] = Some(match state {
+                    Ok(value) => value,
+                    Err(error) => status::unchecked(error.to_string()),
+                });
+            }
+        }
         Ok(devices
             .iter()
-            .map(|device| device.to_provider(false))
+            .enumerate()
+            .map(|(index, device)| device.to_provider(states[index].as_ref()))
             .collect())
     }
 

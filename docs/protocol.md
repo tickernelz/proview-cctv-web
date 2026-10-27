@@ -307,6 +307,501 @@ Three are present in the SDK. In order of implementation cost:
    top. This is the expensive one; nothing here should be attempted before
    1 and 2 are exhausted.
 
+## 4A. Cloud device status (pub-status, `/v1/status/third`)
+
+`IXMCloud::GetDevsStatus` (`libFunSDK.so` @ `0xf54a24`) builds a JSON
+envelope and POSTs it to the status cluster; the URL template is
+`%s://%s:%d/%s` (strings `0x4efa47`/`0x58f47f` for the scheme, `0x58f4d7`
+for the template) with the path `v1/status/third` (`0x4ae3e8`), and the
+message types are `MSG_STATUS_MULTIQUERY_REQ` (`0x5028e6`) and
+`MSG_STATUS_LOCALQUERY_REQ` (`0x49d43f`). The object keys read from the code
+are `StatusProtocol` (`0x4946a8`), `Header` (`0x5871e0`), `Body`
+(`0x519d7e`), and per entry `SerialNumber` (`0x5094ed`), `AuthCode`
+(`0x575917`) and `Manufacturer` (`0x59199a`).
+
+Request, as sent by `crates/core/src/cloud/status.rs`:
+
+```
+POST http://pub-status.secu100.net:<7700-7706>/v1/status/third
+Content-Type: application/json
+
+{"StatusProtocol":{
+  "Header":{"Version":"1.0","CSeq":"1","MessageType":"MSG_STATUS_MULTIQUERY_REQ"},
+  "Body":[{"SerialNumber":"<serial>","AuthCode":"<device code>"}]}}
+```
+
+Reply, measured on 2026-10-27 09:35 UTC for `7f92970ddf5282743hrc`:
+
+```
+{"StatusProtocol":{
+  "Body":[{"WanIP":"103.85.122.66","SerialNumber":"7f92970ddf5282743hrc",
+           "ServerPort":"8765","Status":"Online","ServerIP":"110.239.85.50","NatType":"0"}],
+  "Header":{"ErrorNum":"200","ErrorString":"Success OK","Version":"1.0","CSeq":"1",
+            "MessageType":"MSG_STATUS_MULTIQUERY_RSP"}}}
+```
+
+`ServerPort` arrives as a string on 7703 and on 7705; the parser accepts both
+shapes. Port 7705 also carries `DeviceType`, `DevicePort` and `KcpEnable`.
+
+### 4A.1 The ports are separate clusters, and that is the whole bug
+
+Measured in one run, same serial, same request:
+
+| port | answer | payload |
+|---|---|---|
+| 7700 | Offline | — |
+| 7701 | Offline | — |
+| 7702 | Offline | — |
+| 7703 | **Online** | `WanIP 103.85.122.66`, `ServerIP 110.239.85.50:8765`, `NatType 0` |
+| 7704 | Offline (3.0 s) | — |
+| 7705 | **Online** | `WanIP 103.85.122.66`, `ServerIP 110.239.87.207:6510`, `DeviceType Camera` |
+| 7706 | Offline | — |
+
+`WanIP` equals `lastWanIp` from the session-free caps call for the same
+serial, which is an independent confirmation that the online rows describe
+this device. A reader that asks a single cluster therefore reports "offline"
+for a camera that is online, which is exactly what the desktop app showed.
+The implementation queries every port concurrently and treats the device as
+online if any cluster says `Online`.
+
+### 4A.2 What `AuthCode` is worth
+
+The account device list (`msdlistCode`) carries per-device `css`, `dss`,
+`tps`, `rps`, `p2P` and `pms` ids; `status.rs` sends the `css` id as
+`AuthCode`. Measured bounds on 7703: any non-empty code is answered with the
+device's real status, and an unknown serial, or a serial this cluster does not
+know, is refused with `ErrorNum 400 "all dev ac is invalid"`. So the serial and
+the cluster carry the identity, and the code is not a secret that gates the
+answer. The refusal is still used as a signal: when no port returns a
+`Status` the app reports "cloud status unknown" with the vendor's reason
+instead of claiming offline.
+
+### 4A.3 What the app exposes
+
+`GET /api/devices` answers `online`, `online_status` (the vendor string),
+`online_checked_at` (epoch ms) and `online_detail` (cluster port, WAN IP and
+relay endpoint, or the reason the status could not be read). The live screen
+blocks on a known offline status only; an unknown status lets the stream be
+attempted and shows the stream's own error.
+
+## 4B. What the cloud can and cannot stream (measured 2026-10-27)
+
+Three mechanisms exist in the SDK; only one of them delivers **live** video, and
+the other two were probed against the live services today.
+
+### 4B.1 CSS HLS is cloud-storage playback, not live
+
+`CloudMediaSearchCssHls` (`0xaff748`) builds a `CssCenter` envelope:
+
+```
+{"CssCenter":{
+  "Header":{"Version":"1.0","MessageType":"MSG_GET_CSS_HLS_REQ"},
+  "Body":{"SerialNumber":…,"AuthCode":…,"UserId":…,"MAUserId":…,
+          "StartTime":"YYYY-MM-DD HH:MM:SS","StopTime":…,"Channel":"1"}}}
+```
+
+The keys were read from the binary (`0x49274f` CssCenter, `0x4cef8c`
+MSG_GET_CSS_HLS_REQ, `0x5094ed` SerialNumber, `0x575917` AuthCode, `0x55c9ab`
+UserId, `0x49b977` MAUserId, `0x57e4dc` StartTime, `0x4bda55` StopTime,
+`0x56d469` Channel).
+
+Posted to `http://access-css.secu100.net:6614/` with the account's device row
+and the `userId` from `msdlistCode`, the gateway answers:
+
+```
+{"CssCenter":{"Header":{"ErrorNum":"403","ErrorString":"Dev Not Open Cloud Storage", …}}}
+```
+
+`Body` must be an object; an array answers `402 invalid sn`, and `Sn` instead of
+`SerialNumber` is also `402`. So this endpoint is the **cloud-storage search**
+(the recording list) and this camera has no cloud storage plan. It cannot serve
+live.
+
+### 4B.2 The DSS HLS host wants a signed playlist
+
+`http://pub-dss-hls.secu100.net:8080/hls/<sn>/<a>/<b>/<name>.m3u8` answers
+`403` for every unsigned shape tried and `400` for the shorter ones; the host is
+alive on 8080 and 8180. The URL template in the SDK is
+`%s://%s:%d/hls/%s/%s/%s/%s.m3u8` with a companion
+`%s://%s:%d/hls/stop/%s/%s/%s/%d`, so the query string carries the signature.
+Nothing in the account session produces that signature yet.
+
+### 4B.3 Live is the P2P media channel
+
+The app's live player does not use a URL. `MediaPlayByURL`/`MediaPlayM3u8ByUrl`
+are only reached from the recording players (`ua/c.smali`, `va/a.smali`, both
+log lines say `RecordPlayer`), while live uses `FunSDK.MediaPlay` after a device
+connection. The transport behind that call is the SDK's own stack:
+`CNetServerP2P`, `CNetXMP2P::NatConnect`, `CNetTransport`, `CDataEncDecAES`
+and `CMediaChannel`, with `rps` over UDP+KCP.
+
+The status reply of section 4A gives the endpoints that stack uses: 7703 says
+`ServerIP 110.239.85.50:8765`, 7705 says `110.239.87.207:6510` with
+`DevicePort 34567`. Those are the relay and device ports the app dials.
+
+Next step for this milestone is to drive the SDK harness (`re/sdk_login.sh`
+machinery, `harness12.c`) through `MediaPlay` with a packet capture on the
+host, so the wire format is recorded once and the Rust client can be checked
+against it byte for byte.
+
+### 4B.4 The JF cloud device page is the camera's ActiveX web UI
+
+`cloud.jufenginfo.com` does serve the device over the cloud: a device login
+(`cloud_device_macLogin_main`, status 1200) frames `/cloud/video/index.jsp`,
+and that page loads 105 KB of the camera's own web client ("NETSuveillance
+WEB"). Its scripts (`config.js`, `m.js`, `English.js`, fetched with the same
+session) reference only `http://xmsecu.com:8080/ocx/New_Active.exe` and
+`NewActive.exe`: the live view is a Windows ActiveX control. The portal is an
+HTTP proxy to the camera's embedded web server, not a video relay, so it cannot
+stream to a browser and is not a fourth media path.
+
+## 4C. The P2P wire, as the phone and the SDK actually speak it (2026-10-27)
+
+Captured from the owner's phone with PCAPdroid while the real app played live,
+and cross-checked with a host capture of the SDK harness in the qemu chroot.
+Two captures, two independent clients, same shape.
+
+### 4C.1 Relay discovery is one UDP exchange on 8765
+
+The client sends a 4-byte frame to a relay on UDP `8765`:
+
+```
+12 20 f0 05
+```
+
+and gets back a list:
+
+```
+12 20 f1 05 | 03 00 00 00 | "159.138.100.133\0" 55 00 00 00
+                          | "159.138.101.123\0" 45 00 00 00
+                          | "110.239.71.224\0"  00 00 00 00
+```
+
+`0x1220` is the magic, `0xf005` asks for the relay set, `0xf105` answers with a
+count and one NUL-terminated IPv4 per entry plus a trailing u32. The same
+exchange appears in the SDK harness capture from this box, so the sequence is
+not phone-specific.
+
+### 4C.2 The relay tunnel is TCP 6611 with a base64 handshake
+
+The phone's live video is one TCP flow: **9.5 MB downstream in 17 s to
+`162.128.66.154:6611`** (~4.5 Mbit/s), no TLS. The first client payload is
+base64 text:
+
+```
+aaaaaaaa-1a1b397d2:c_6kjkfw65cvzl39rjrno8yc0j:7f92970ddf5282743hrc:cy7cimmp5
+```
+
+i.e. `<rps id>:<client session id>:<device serial>:<client token>`, where the
+first field is the `rps` value the account device list already carries. The
+relay answers base64 JSON plus a 4-byte trailer:
+
+```
+{"ErrorNum":"200","DestIP":"103.85.122.66","MTU":"1400"}XXEE
+```
+
+`DestIP` is the device's WAN address, the same `103.85.122.66` the status
+clusters and the caps call report.
+
+### 4C.3 Inside the tunnel it is plain DVRIP
+
+After the handshake the flow carries DVRIP frames, starting with
+`ff 01 00 00` and the usual session/sequence/channel/type/length fields. Two
+examples from the capture, payload text included:
+
+```
+ff010000 9f860100 10000000 6300 85000000
+  {"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Parameter":{"Channel":0,...
+ff010000 2f000000 18000000 0000 e903 80000000
+  { "AliveInterval" : 30, "ChannelNum" : 1, "DeviceType " : "IPC", "ExtraChannel" : 0
+```
+
+`OPMonitor` is the SDK's device-monitor claim and the second frame is the
+device's own configuration answer, both familiar shapes from the DVRIP work in
+`crates/core/src/dvrip`. That is the opening for this project: the media
+channel is DVRIP over the relay tunnel, so the existing DVRIP client can carry
+live once the relay handshake and the framing differences are implemented.
+
+### 4C.5 The device address query, and what a replay does not do
+
+Right before the media connect the phone asks the relay set for the device's
+current address on UDP `8777`:
+
+```
+15 20 00 b0 | "7f92970ddf5282743hrc\0"
+15 20 01 b0 | 01 00 00 00 | serial\0 | zeros | "110.239.85.50\0" | zeros |
+              3d 22 00 00 | 00 00 00 00 | 02 00 00 00
+```
+
+`0x1520` is the magic here, `0x00b0` asks by serial and `0x01b0` answers with
+the device's relay `110.239.85.50` and port `0x223d` = 8765.
+
+The 8777 query also answers this box, so it is not phone-specific:
+
+```
+send 152000b0 + "7f92970ddf5282743hrc\0"  -> 140 bytes
+recv 152001b0 01000000 "7f92970ddf5282743hrc\0" ... "110.239.85.50\0" ... 3d220000 00000000 02000000
+```
+
+The reply names the relay the device sits on right now (`110.239.85.50`, then
+`0x223d` = 8765, then `2`), but the phone's media flow went to a different
+host on 6611, so the mapping from this reply to the media endpoint is still
+open: the trailing values are the candidate fields.
+
+Replaying the phone's exact 136-byte media handshake from this box against
+`162.128.66.154:6611` - and the same text with CRLF or base64-decoded - gets
+no reply at all, while the TCP connect itself succeeds. So the relay only
+answers a client it has just associated through the query path. The next step
+is to drive 4C.1/4C.5 from one socket lifetime and then handshake, which is
+what the SDK does inside a single `DevLogin`.
+
+### 4C.6 The relay address comes from the RPS agent, and live plays from this box
+
+The SDK harness (`re/qemu/harness12.c`, mode `live`) plays live from this box:
+one run pulled **12 MB in 90 s** from `162.128.66.64:6611` (host capture of the
+run: TCP conversation `172.23.199.41:48500 <-> 162.128.66.64:6611`, 10845
+inbound segments, 13 MB total).
+
+The SDK log names the whole chain, file and line included:
+
+```
+agent_session: session_id = aporjw9z96js0jin0qludar0yird3g8e,
+               access_ip = 110.239.87.207, access_port = 6510,
+               uuid = 7f92970ddf5282743hrc, dest_port = 34567, svr_type = RpsAV
+agent create socket (110.239.87.207, 6510)
+agent_session, set_agent_server, get tcp port addr: 162.128.66.64:6611
+agent create socket (162.128.66.64, 6611)
+```
+
+So the media relay is **assigned per session by the RPS access server**, dialled
+on the `ServerIP:ServerPort` the status cluster already reports: cluster 7705
+says `110.239.87.207` with `DevicePort 34567`, and the access port is 6510.
+That is why replaying the phone's handshake against `162.128.66.154:6611` was
+never answered (4C.5): the tunnel only serves a client the RPS has just
+registered, and 8777/7999 only hand out the 8765 discovery relays.
+
+Our own client's handshake on the assigned agent, straight from that capture:
+
+```
+-> base64 aaaaaaaa-1a1b2f27d:c_v4w9y...:7f92970ddf5282743hrc:<token>
+<- base64 {"ErrorNum":"200","DestIP":"103.85.122.66","MTU":"1400"} + "XXEE"
+```
+
+Immediately after it: `ff010000 ... {"Name":"OPMonitor","OPMonitor":{"Action":"Claim",...}}`,
+the device's `{"AliveInterval":30,"ChannelNum":1,"DeviceType ":"IPC",...}` answer,
+then the media stream in the same DVRIP envelope the LAN path already parses.
+
+What is still missing is the body of the 6510 conversation: it is TLS 1.3 and
+the SDK links OpenSSL statically, so an `LD_PRELOAD` of `SSL_read`/`SSL_write`
+does not interpose (measured: zero hook hits across a full live run). The next
+measurement is an inline hook at the `SSL_write` symbol address inside the
+harness process, which returns both bodies unchanged.
+
+### 4C.7 The RPS access server is HTTP inside TLS, and answers AgentProtocol JSON
+
+Captured in plaintext from the SDK harness with an inline hook at the `SSL_write`
+symbol address (`LD_PRELOAD` cannot interpose: the SDK links OpenSSL statically,
+measured as zero hook hits). The RPS access endpoint takes an HTTP request on the
+raw port the status cluster reports, `POST /` with `Host: 110.239.87.207`:
+
+```json
+{"AgentProtocol":{"Body":{"Authcode":"aaaaaaaa-1a1b2f27d","ClientToken":"c_1yy07itliajqv91mz6249eet","DestPort":"34567","Encrypt":"1","ProtocolMode":"tcp","SerialNumber":"7f92970ddf5282743hrc","ServiceType":"RpsCmd","SessionId":"04yebeay8cpxqwob4ze5u7y0iev07ffo","Step":"0"},"Header":{"MessageType":"MSG_CLI_NEED_CON_REQ","Version":"1.0"}}}
+```
+
+and answers `Content-Type: text/plain`:
+
+```json
+{"AgentProtocol":{"Body":{"AgentServerIp":"162.128.64.50","AgentServerLanIp":"10.210.0.2","AgentServerDNS":"162.128.64.50","AgentServerPort":"6611","ProtocolMode":"tcp"},"Header":{"CSeq":"3","Version":"1.0","MessageType":"MSG_CLI_NEED_CON_RSP","ErrorNum":"200","ErrorString":"Success OK"}}}
+```
+
+Two requests go out, one per channel: `ServiceType "RpsCmd"` with `Step "0"`, and
+`ServiceType "RpsAV"` with `Step "8"`. Each carries its own `SessionId` and each is
+answered with a different agent (`162.128.64.50` and `162.128.66.81` in this run);
+the media tunnel is the one named by the `RpsAV` answer. `ClientToken` is a client
+side value of the shape `c_` plus 25 lowercase alphanumerics, and `Authcode` is the
+device's `rps` id from the account device list.
+
+The tunnel handshake carries that same state, and both frames end with `XXEE`:
+
+```
+base64("<Authcode>:<ClientToken>:<SerialNumber>:<RpsAV SessionId>") + "XXEE"
+```
+
+Measured in one run: `RpsAV` answered `SessionId y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`,
+and the 136-byte frame that reached `162.128.66.103:6611` decoded to
+`aaaaaaaa-1a1b397d2:c_rpftjva4cpy4aphg09y083ya:7f92970ddf5282743hrc:y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`.
+`crates/core/src/provider/p2p.rs` now builds both frames and parses the reply;
+four tests pin them to those captured strings.
+
+### 4C.7.1 What the access hop exposes, and why verification is off
+
+The access server presents a self-signed certificate (`O=Internet Widgits Pty Ltd`,
+RSA-1024, SHA-1, TLS 1.3) and OpenSSL refuses it with `Verify return code: 66
+(EE certificate key too weak)`, before any policy of ours runs. `provider/rps.rs`
+therefore posts with `SslVerifyMode::NONE`, scoped to that one private helper:
+one host, one port, one request per session.
+
+Turning verification off here adds no capability to an on-path attacker. The
+host it dials comes from the status reply fetched over plain HTTP
+(`crates/core/src/cloud/status.rs`), so an attacker who can rewrite that reply
+already picks the destination. What actually crosses the hop is `Authcode`
+(the device `rps` id), `ClientToken`, `SerialNumber` and `SessionId` — the same
+four values the 6611 handshake then sends as plain base64.
+
+The exposure worth naming is different: DVRIP inside the relay is plaintext, and
+the credentials `examples/rps_probe` sends are the LAN ones (Sofia hash), which
+are as good as the password itself, while the vendor SDK sends an AES login
+instead (4C.9 `AESEncrypt:1`). **Boundary for the next change:** `stream()` must
+not put a plaintext Sofia login on the relay; if the AES login cannot be
+reproduced, that is a design decision to take with the board rather than a
+default.
+
+### 4C.8 DVRIP over the tunnel: login works, the media channel wants the encrypted exchange
+
+Over the tunnel opened in 4C.7, plain DVRIP behaves as it does on the LAN up to
+a point. Measured from this box with `examples/rps_probe`, whole chain in one
+process and no vendor binary:
+
+```
+login    0.28s
+devices  0.06s name=Pintu keluar masuk rps=aaaaaaaa-1a1b397d2
+status   4.00s online=true
+access   110.239.87.207:6510
+agent    0.09s 162.128.64.68:6611
+tunnel   0.02s error=200 dest=103.85.122.66 mtu=1400 accepted=true
+dvrip    0.03s session=160 type=Some("IPC") channels=Some(1)
+frame0   0.11s id=0x0586 len=67 {"Name":"OPMonitor","Ret":100,"SessionID":"0x000000…
+```
+
+The `OPMonitor` claim is accepted (`Ret 100`) when it is framed the way the SDK
+frames it: message id `0x0585`, **channel 99**, end bit clear, body terminated by
+a NUL instead of the newline the other JSON messages use, and carrying the
+connection's own `SessionID` plus a fresh `DHParameter.RandomStrA`.
+
+What does not happen yet is the media itself. In the SDK capture the same claim
+is answered with a base64 body that decodes to 720 bytes of high-entropy binary
+(printable ratio 0.37) and is followed by a client frame with message id
+`1000`, channel 99, and 384 bytes of the same shape: that pair is the DHAV key
+exchange, and our claim (which the device answers in plaintext) never reaches it.
+So the remaining work in this milestone is that exchange, not the transport.
+
+### 4C.9 The media channel: client frames are AES, device frames are plaintext
+
+Captured again on 2026-10-27 with the camera unreachable from this box (TCP 554
+and 34567 closed, ICMP 100% loss), so the whole exchange is cloud-only. Both
+directions of the tunnel, parsed past the handshake:
+
+```
+client -> relay  0x0585 ch=99  {"Name":"OPMonitor","Action":"Claim",... "RandomStrA":"o1yR","SessionID":"0x000001869f"}
+relay  -> client 0x0586 ch=0   961 bytes, base64 of 720 bytes of binary
+client -> relay  0x03e8 ch=99  513 bytes, base64 of 384 bytes (encrypted login)
+relay  -> client 0x03e9 ch=0   128 bytes, plaintext {"AliveInterval":30,...,"Ret":100,"SessionID":"0x00000098"}
+client -> relay  0x03fc/0x0550/0x0412/0x0582  89-321 byte base64 control messages
+```
+
+So the asymmetry is the useful part: everything the client sends after the claim
+is ciphertext, and the device's `1001` answer is plaintext. The SDK logs the
+parameters it uses (`ProtocolNetIP.cpp:1293`):
+
+```
+NewLoginPTL[Communicate:0,AESEncrypt:1,DevNetType:1,User:<device user>,PwdLen:<n>,
+             Token:<16 chars, the same in every run>,Pid:,RandomStrLen:4/0,
+             PwdAppendRandomStr:0,TokenAppendRandomStr:0]
+```
+
+That token is **identical in all thirteen harness runs** recorded in `sdk.log`,
+hours apart and on different relays, so it is stable material rather than
+something the claim reply hands out. Direct tries with it as an AES-128 key, with
+`md5`/SHA derivations of it, and with the account `AdminToken` (and XOR
+combinations) do not open the 720-byte claim reply, so the key derivation is
+still unproven.
+
+Next measurement, already tooled: the harness already interposes at an exported
+symbol by patching its prologue, so the same trick on the statically linked
+`AES_set_encrypt_key`/`EVP_EncryptUpdate` yields the exact key and plaintext the
+SDK feeds the cipher, which settles the derivation instead of guessing it.
+
+### 4C.10 Where the media key hides: not OpenSSL's AES, and not a simple derivation
+
+Two negative results that narrow it, both from a harness run with the inline
+hook extended over the AES entry points (`AES_set_encrypt_key`, `AES_cbc_encrypt`,
+`EVP_EncryptUpdate`) besides `SSL_write`:
+
+1. Every `AES_set_encrypt_key` the run hits is 32 bytes of session material and
+   belongs to TLS record encryption; `AES_cbc_encrypt` is never called at all.
+   So the media login does not go through the OpenSSL primitives the SDK exports.
+2. A crib attack on the client's 384-byte media login (73 candidate keys:
+   `md5`/`SHA-256` over every pair of token, `RandomStrA`, password, password
+   hash and serial, plus the raw token, each under ECB and CBC with three IV
+   choices) produces no `OPLogin` plaintext.
+
+The binary explains why: `libFunSDK` carries its own class for this,
+`MNetSDK::CDataEncDecAES` (`EncData`/`DecData`/`AESEncData`), with RTTI for it in
+the library but no exported symbol, so neither `LD_PRELOAD` nor a lookup by name
+reaches it.
+
+Next measurement: recover the vtable through the RTTI structures the library
+does publish (`_ZTVN7MNetSDK14CDataEncDecAESE` is present as a name string), then
+patch `EncData` the same way `SSL_write` was patched and log the key and the
+plaintext it is handed. That settles the derivation instead of guessing it.
+
+### 4C.11 A plaintext login on the media channel is accepted and still does not stream
+
+Three orderings were tried from this box with the camera unreachable on the LAN,
+all over the tunnel of 4C.7, and none produced a media frame:
+
+1. `OPMonitor` claim, then wait. Answer: `{"Name":"OPMonitor","Ret":100}`, and
+   nothing else inside six seconds.
+2. Claim, then a **plaintext** login on the same channel 99 (message id 1000, end
+   bit clear, body NUL-terminated, the same JSON the LAN path sends). Answer:
+   `{"Name":"OPMonitor","Ret":100,"SessionID":"0x00000100"}` — accepted, a new
+   session id handed back — and still no frame.
+3. Claim, login, then a second claim. Answer: `Ret 117` (device error), and the
+   following control read is refused with `Ret 103`.
+
+So the device treats the plaintext login as a session but only streams to a client
+that has done the encrypted login of 4C.9: the SDK's own capture shows ciphertext
+on every client frame after the claim and media arriving right behind its `1000`
+login. Claiming twice also poisons the channel, which is why the sequence has to be
+built once and in order.
+
+That makes the encrypted login the single gate for live video, and 4C.10 records
+what has already been ruled out about its key.
+
+### 4C.12 The media cipher is not the CDataEncDecAES object we can reach
+
+The RTTI for `MNetSDK::CDataEncDecAES` does lead to its vtable without symbols:
+the type name sits at `.rodata` `0x5b3177`, the only relocation whose addend is
+that address is at `0x1f40898` (so its typeinfo starts at `0x1f40890`), and the
+only relocation whose addend is `0x1f40890` is at `0x1f40838` — which puts the
+vtable at **`0x1f40830`**, with `D1`/`D0` at `+0x10`/`+0x18` and five slots
+after them (`0xf2e1cc`-range destructors, then `0xf2e1d8`, `0xf228a4`,
+`0xf228bc`, `0xf2e464`, `0xf2e704`).
+
+Patching those five slots at runtime inside the harness (data patch, base from
+`dl_iterate_phdr`) and running a full live session produced **zero calls**: no
+slot fired even once. So the media login is not encrypted through this object in
+this code path, and hooking it cannot yield the key.
+
+What that leaves, in order of cost: the constructor that stores the key
+(`CDataEncDecAES(char const*, int, void const*, int)`, address still unknown
+because the code that stores `0x1f40830` was not located), or a different
+encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
+
+### 4C.4 What that means for the implementation
+
+1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
+   is the RPS access server (`110.239.87.207:6510` on the test camera). The UDP
+   8765 discovery list is **not** part of this path — the agent is assigned per
+   session, not looked up (4C.6).
+2. `POST /` on that host with the `AgentProtocol` request of 4C.7, `ServiceType
+   RpsAV`, and read `AgentServerIp`/`AgentServerPort` from the answer.
+3. `tcp <agent>:6611` → base64 `<rps>:<client token>:<serial>:<RpsAV SessionId>`
+   plus `XXEE` → base64 JSON with `ErrorNum 200` and `MTU`.
+4. DVRIP over the tunnel: login with the device credentials and the `OPMonitor`
+   claim (4C.8). The `rps` id comes from `msdlistCode`, so no new account call is
+   needed; the media frames themselves still need the encrypted login of 4C.9.
+
 ## 5. Open items
 
 1. ~~The CSS request envelope for account login~~ — answered for the SDK path in
