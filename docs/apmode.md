@@ -48,15 +48,22 @@ number is stored as the message id by `CConfigAPDev::Start_Wifi`
 | `CConfigAPDev::Start_Wifi` | `0xb28218` | memcpy of the 284-byte `SDK_NetWifiConfig` to `this+0x610`, reads `SystemInfo` and `NetWork.Wifi`, 8000 ms |
 | `CConfigAPDev::OnMsg` | `0xb2960c` | merges the answer and writes `NetWork.Wifi` back, 2000 ms |
 | `CConfigAPDev::ThreadWork_XMSend` | `0xb289a4` | starts the datagram transmitter |
-| `xmmulticastconfigsend` / `xmconfigsend` | `0xf6ad3c` / `0xf6be90` | build one packet, send it |
+| `xmmulticastconfigsend` | `0xf6ad3c` | builds one packet and sends it; the only sender the app reaches |
+| `xmmulticastconfigsend2` / `xmconfigsend` | `0xf6b2c4` / `0xf6be90` | the sibling branches, chosen by `this+560..563` |
 | `parseWifiInfo` | `0xf6a9ec` | reads `S:`, `P:`, `T:` out of the info string |
-| `concrete_package` | `0xf6d828` | builds the 1300-byte packet |
-| `xmbroadcastconfigsend` | `0xf6e164` | the socket loop: one datagram per symbol |
+| `concrete_package` | `0xf6d828` | builds the word array |
+| `xmbroadcastconfigsend` | `0xf6e164` | a test helper: its only caller is `xtest_broadcastSend` (`0xf6e55c`), which nothing calls |
+| `xmconfigstop` | `0xf6c910` | clears the global stop flag at `0x2075ad0` |
 
 `CConfigAPDev` also runs `Work_ap_net_wifi_cfg` (`0xb2b8e4`), which calls
 `SearchDevicesBySn` (`0xb2b558`) -> `CDeviceBase::SearchDevices` (`0xb7e6e4`)
 and hands the device to `OnConfigApDev` (`0xb29c90`). That is the LAN search of
 `192.168.10.1` again, used to know when the camera leaves AP mode.
+
+The datagram branch is the one the app takes: the app's cancel and result paths
+call `DevStopWifiConfig`, which clears the `xmconfigstop` flag the send loop
+reads, and the sender it starts is `xmmulticastconfigsend`. The
+`xmbroadcastconfigsend` variant is test scaffolding in the vendor build.
 
 ## 3. Transport A — DVRIP config write
 
@@ -99,31 +106,6 @@ string, not as an empty field.
 
 ## 4. Transport B — UDP symbol stream
 
-The path for a camera that is not reachable by IP yet. Look at
-`xmbroadcastconfigsend`:
-
-```
-socket(AF_INET, SOCK_DGRAM, 0)                     0xf6e314
-setsockopt(SOL_SOCKET=1, SO_BROADCAST=6, 1, 4)     0xf6e330
-sin_family = AF_INET                               0xf6e2fc
-sin_port   = 0x411f stored as raw bytes -> 8001     0xf6e300
-sin_addr   = 0xffffffff (255.255.255.255)          0xf6e308
-sendto(sock, &packet[352], length = packet_word[i]) 0xf6e46c
-usleep(1000)                                       0xf6e47c
-sendto(sock, &packet[352], 500)   once per round    0xf6e4e8
-usleep(100000)                    between rounds     0xf6e4f4
-rounds < 50                       while the run flag is set   0xf6e3a4
-```
-
-`xmmulticastconfigsend` (`0xf6ad3c`) does the same but takes the destination
-from an `ip:` key inside the info string (`Info_GetValue(info, "ip:", buf)` at
-`0xf6adc8`, `inet_addr` at `0xf6adec`), which is the multicast/unicast variant;
-the port and the packet are identical.
-
-So one logical message is **one datagram per symbol**, and the datagram's
-**length** is the symbol. Content is the packet window at offset 352, which the
-receiver can read but does not need in order to parse the length.
-
 ### 4.1 The record the symbols carry
 
 `concrete_package` builds a record in a stack buffer (`0xf6d8f4`-`0xf6dc04`)
@@ -137,7 +119,7 @@ and then encodes it, three bytes at a time:
 | 3 | 1 | passphrase length |
 | 4 | ssid_len | SSID bytes |
 | 4+ssid_len | psk_len | passphrase bytes |
-| … | 1 | fourth octet of the destination IP (`cfg+195`, loaded at `0xf6dacc`) |
+| … | 1 | fourth octet of the `ip:` value in the info string, `0` when the key is absent (`0xf6dacc`, fed from `0xf6afe4`/`0xf6b04c`) |
 | … | 2 | 16-bit sum of every byte above, little endian (`0xf6daf8`-`0xf6db74`) |
 
 Device-side limits are visible in the same struct: SSID 34 bytes
@@ -145,47 +127,85 @@ Device-side limits are visible in the same struct: SSID 34 bytes
 
 ### 4.2 Encoding
 
-The packet is 1300 bytes, read as 650 little-endian `u16` words.
+Each group of three record bytes becomes eight 16-bit symbols, and every symbol
+carries its own position: the slot constant (`0x80`, `0x88`, `0x90`, `0x98`,
+`0xa0`, `0xa8`, `0xb0`, `0xb8` at `0xf6dc2c`, `0xf6dc54`, `0xf6dc80`,
+`0xf6dce8`, `0xf6dd18`, `0xf6dd48`, `0xf6ddb0`, `0xf6dde0`) is combined with
+the group's word index shifted left three (`orr w9, w9, w12, lsl #3`, where
+`w12 = (i*8)/3 = 8g` from the `umull` at `0xf6dbac`):
 
 ```
-words[0..3]  = 0x0514   three times            (0xf6d904-0xf6d918)
-for each group g of three record bytes, in order:
-    if 8*g == 32:  emit 0x0515 three times      (0xf6dbc4-0xf6dc04)
-    V = b0 | b1 << 8 | b2 << 16                 (partial last group: zero bytes)
-    for k in 0..8:  emit 0x80 + 8*g + ((V >> 3*k) & 7)
+words[0..3] = 0x0514 three times                       (0xf6d904-0xf6d918)
+for every full group g of three bytes:
+    if 8g == 32:  emit 0x0515 three times              (0xf6dbc4-0xf6dc04)
+    V = b0 | b1 << 8 | b2 << 16
+    for k in 0..8:  emit 0x80 + 8k + 64g + ((V >> 3k) & 7)
+tail, only when the record length is not a multiple of three (0xf6de18-0xf6df94):
+    one byte  -> three symbols, two bytes -> six symbols, no 0x0515 check
 ```
 
-The three `0x0514` words are the packet tag, `0x0515` marks the word-32
-boundary, and `0x80` is the first symbol. A short record therefore produces a
-short word list and the rest of the 1300 bytes stays zero; `concrete_package`
-returns the number of words it wrote and the sender stops there.
+The word count is computed, not counted: `3 + off + (8L + 2) / 3`, where `off`
+is `3` when a boundary marker was emitted and `0` otherwise
+(`0xf6dfa0`-`0xf6dfc8`).
 
-Worked example, SSID `CAM-LAB`, passphrase `rahasia123`:
+Worked example, SSID `CAM-LAB`, passphrase `rahasia123` (record 24 bytes):
 
 | Quantity | Value |
 |---|---|
-| record | 24 bytes (`18 41 07 0a …` + `ff` + checksum) |
-| groups | 8 |
-| words | 70 = 3 tag + 8x8 data + 3 boundary |
-| datagrams per round | 71 (70 symbols + the 500-byte trailer) |
-| wall clock per round | about 570 ms (71 ms of sends + 100 ms of gap) |
+| groups | 8, no tail |
+| words | 70 |
+| first eight symbols | `80 8b 94 98 a4 ae b1 b8` |
+| boundary marker | packet words 35..37 (`0x0515` three times) |
+| largest symbol | `0x278` |
+
+A 10-byte record gives 30 symbols and no marker; a 14-byte record gives 41 and
+no marker; 23 bytes give 68 with one marker; 47 bytes give 132.
+
+### 4.3 The sender
+
+`xmmulticastconfigsend` (`0xf6ad3c`) prepares one socket and repeats until
+`xmconfigstop` clears the global flag at `0x2075ad0`:
+
+```
+socket(AF_INET, SOCK_DGRAM, 0)                       0xf6af54
+setsockopt(SOL_SOCKET=1, SO_BROADCAST=6, 1, 4)       0xf6af7c
+sin_family = AF_INET, sin_port = 0x411f (8001)       0xf6af3c, 0xf6af40
+sin_addr   = 0xffffffff, written once                0xf6af4c
+per round, per word i:
+    sendto(sock, payload, words[i], 0, &broadcast, 16)   0xf6b178
+    usleep(20000)                                        0xf6b18c
+    if 51 ms passed since the last 500-byte send:
+        sendto(sock, payload, 500, 0, &broadcast, 16)     0xf6b228
+per round:
+    usleep(5000)                                          0xf6b26c
+```
+
+The destination never changes: the `ip:` value in the info string is read
+(`0xf6adec`, `inet_addr`) but ends up only in the record's fourth octet, while
+`sin_addr` stays `0xffffffff` from `0xf6af4c`. The 25000 ms constant at
+`0xf6b0a4` is stored and never compared, so the loop is bounded by the stop
+flag alone; there is no round cap.
+
+The datagram payload is a 2048-byte stack buffer at `sp+0x41c`: zeroed
+(`0xf6ae40`), the first ten bytes set to `0x65` (`'e'`, `0xf6ae74`), then the
+info string copied in at offset ten with a 512-byte limit (`0xf6ae90`). A
+datagram of length `n` therefore carries those first `n` bytes: ten `'e'`,
+then `S:<ssid>P:<password>ip:<address>`, then zeros. Our implementation sends
+exactly that buffer prefix.
 
 ## 5. What the physical test still has to settle
 
 Written into the parity row as the open step, because this project may not
 execute the vendor binary and has no camera in AP mode on this box:
 
-1. Whether the AP-mode firmware decodes the symbol stream purely from datagram
-   length, or also reads the payload window. Our transmitter sends both, so only
-   a camera can tell us whether the payload is load bearing.
-2. Whether the camera accepts the DVRIP write before its access point is joined
-   by another client, or only after (the app joins the AP first and then logs in).
-3. Whether the boundary marker repeats for records longer than 12 groups. The
-   binary compares the written word index to 32 exactly once (`0xf6dbbc`,
-   `subs w8, w8, #0x20`), so the implementation reproduces that literal
-   behaviour instead of guessing a repeating block.
-4. Timing tolerance: 1 ms per symbol and 100 ms per round are the SDK's values,
-   not a measured minimum.
+1. Whether the AP-mode firmware decodes the stream purely from datagram length,
+   or also parses the payload text.
+2. Whether the camera accepts the DVRIP write before another client joins its
+   access point, or only after (the app joins the AP first and then logs in).
+3. What the `0x0515` triple at body word 32 means, and whether records long
+   enough to pass it twice behave as the literal single check suggests.
+4. Timing tolerance: 20 ms per symbol, a 500-byte datagram whenever 51 ms have
+   passed, and 5 ms between rounds are the SDK's values, not a measured minimum.
 
 ## 6. Physical test steps
 
@@ -198,18 +218,20 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
    Wi-Fi adapter; the AP is what we are provisioning through.
 3. Run the server, sign in, and ask for the plan:
    `POST /api/apmode/plan {"ssid":"<home>","password":"<key>"}`. It answers the
-   record in hex, the word count, and the datagram count. Expected for a
-   7-character SSID and a 10-character key: 24-byte record, 70 words,
+   record size, the symbol count and the per-round totals. Expected for a
+   7-character SSID and a 10-character key: 24-byte record, 70 symbols,
    71 datagrams per round.
 4. `POST /api/apmode/provision {"ssid":"<home>","password":"<key>","mode":"dvrip"}`.
-   Expected: `ret 100` from message 1040 and `read_back true` when the camera
-   echoes the SSID. This is the whole provisioning step on a camera that is
-   reachable.
-5. If the DVRIP path is refused, run `"mode":"broadcast"` with
-   `"target":"255.255.255.255"` and 50 rounds; the call blocks for about 28 s.
-   Watch the camera's LED: a successful receive usually stops the AP broadcast.
-6. Bring the laptop back to the home network. The camera should join it within
-   a minute, appear in the LAN search, and answer DVRIP on its new address.
+   Expected: `ret 100` from message 1040, `read_back true` when the camera
+   echoes the SSID, and `elapsed_ms` under the 3 s connect plus 2 s request
+   budget. This is the whole provisioning step on a camera that is reachable.
+5. If the DVRIP path is refused, run `"mode":"broadcast"` and poll
+   `GET /api/apmode/provision`: about 1.41 s per round (70 symbols at 20 ms plus
+   the 5 ms round gap), roughly 27 five-hundred-byte datagrams per round. Stop it
+   with `DELETE /api/apmode/provision`. Watch the camera's LED: a successful
+   receive usually stops the AP broadcast.
+6. Bring the laptop back to the home network. The camera should join it within a
+   minute, appear in the LAN search, and answer DVRIP on its new address.
 7. Record in the issue: which mode worked, the `ret` value, the time from the
    last datagram to the camera joining, and the new address.
 
@@ -219,18 +241,26 @@ Until step 7 has been run on real hardware the parity row stays `partial`.
 
 | Route | Body | Answer |
 |---|---|---|
-| `POST /api/apmode/plan` | `{ssid, password, target?, rounds?}` | record, word count, datagram counts, no traffic |
-| `POST /api/apmode/provision` | `{ssid, password, host?, target?, mode?, rounds?}` | DVRIP `ret` and read-back, or the datagram and byte totals |
+| `POST /api/apmode/plan` | `{ssid, password}` | record size, symbol count, per-round totals; no traffic and no credential echo |
+| `POST /api/apmode/provision` | `{ssid, password, mode?, device_password?, rounds?}` | DVRIP `ret`/`read_back`/`elapsed_ms` or its error, plus the broadcast run status |
+| `GET /api/apmode/provision` | — | rounds, datagrams, bytes, elapsed, error, whether it is still running |
+| `DELETE /api/apmode/provision` | — | asks the sender to stop at the next symbol (the app's `DevStopWifiConfig`) |
 
-`mode` is `both` (default), `dvrip` or `broadcast`. `host` defaults to
-`192.168.10.1:34567`, `target` to `255.255.255.255`, `rounds` to 50. Both
-routes need a signed-in session, like every other control route.
+The target is fixed: DVRIP `192.168.10.1:34567` as `admin` with an empty
+password unless `device_password` is given, and UDP `255.255.255.255:8001`.
+Nothing in the body can point the server at another host, and the configured
+home-camera password is never used here. `mode` is `both` (default), `dvrip` or
+`broadcast`; in `both` a DVRIP failure is reported and the datagram run still
+starts, because either transport is enough for the camera. One run at a time:
+a second `POST` while a run is sending answers `409`. The sender also stops
+itself after 180 s.
 
-Verification commands (core only, no camera):
+Verification commands (no camera needed):
 
 ```
-cargo test -p proview-core --lib apmode
-cargo test -p proview-server --test api apmode
+~/re/proview-cctv/build-slot.sh cargo test -p proview-core --lib apmode
+~/re/proview-cctv/build-slot.sh cargo test -p proview-server --lib apmode
+~/re/proview-cctv/build-slot.sh cargo test -p proview-server --test api apmode
 ```
 
 ## 8. Re-checking the evidence
@@ -238,8 +268,8 @@ cargo test -p proview-server --test api apmode
 ```
 aarch64-linux-gnu-objdump -d --start-address=0xf6d828 --stop-address=0xf6e164 \
   ~/re/proview-cctv/native/arm64-v8a/libFunSDK.so      # concrete_package
-aarch64-linux-gnu-objdump -d --start-address=0xf6e2f4 --stop-address=0xf6e510 \
-  ~/re/proview-cctv/native/arm64-v8a/libFunSDK.so      # the socket loop
+aarch64-linux-gnu-objdump -d --start-address=0xf6ad3c --stop-address=0xf6b2c4 \
+  ~/re/proview-cctv/native/arm64-v8a/libFunSDK.so      # xmmulticastconfigsend
 aarch64-linux-gnu-objdump -d --start-address=0xb28218 --stop-address=0xb283a8 \
   ~/re/proview-cctv/native/arm64-v8a/libFunSDK.so      # Start_Wifi
 ```

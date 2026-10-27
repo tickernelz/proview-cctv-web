@@ -325,13 +325,21 @@ fn apmode_routes_require_a_session() {
     let provision = client
         .post("/api/apmode/provision")
         .header(ContentType::JSON)
-        .body(json!({ "ssid": "CAM", "password": "", "mode": "broadcast" }).to_string())
+        .body(json!({ "ssid": "CAM", "password": "", "mode": "dvrip" }).to_string())
         .dispatch();
     assert_eq!(provision.status(), Status::Unauthorized);
+    assert_eq!(
+        client.get("/api/apmode/provision").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        client.delete("/api/apmode/provision").dispatch().status(),
+        Status::Unauthorized
+    );
 }
 
 #[test]
-fn the_apmode_plan_names_the_record_and_the_datagram_count_without_sending() {
+fn the_apmode_plan_names_the_payload_size_without_sending_anything() {
     let client = client();
     assert_eq!(sign_in(&client), Status::Ok);
     let response = client
@@ -344,70 +352,46 @@ fn the_apmode_plan_names_the_record_and_the_datagram_count_without_sending() {
     assert_eq!(body["record_bytes"], 24);
     assert_eq!(body["words"], 70);
     assert_eq!(body["datagrams_per_round"], 71);
-    assert_eq!(body["packet_bytes"], 1300);
     assert_eq!(body["trailer_bytes"], 500);
-    assert_eq!(body["rounds"], 50);
-    assert!(body["record_hex"].as_str().unwrap().starts_with("1841070a"));
-    assert!(body["info"]
-        .as_str()
-        .unwrap()
-        .starts_with("S:CAM-LABP:rahasia123ip:255.255.255.255"));
+    assert_eq!(body["symbol_gap_ms"], 20);
+    assert_eq!(body["round_gap_ms"], 5);
+    assert!(body["datagram_bytes_per_round"].as_u64().unwrap() > 70 * 0x80);
+    assert!(body.get("info").is_none());
+    assert!(body.get("record_hex").is_none());
 }
 
 #[test]
-fn an_empty_ssid_is_refused_before_any_socket_is_opened() {
+fn an_empty_ssid_or_an_unknown_mode_is_refused_before_any_socket_is_opened() {
     let client = client();
     assert_eq!(sign_in(&client), Status::Ok);
-    let response = client
+    let empty = client
         .post("/api/apmode/plan")
         .header(ContentType::JSON)
         .body(json!({ "ssid": "  ", "password": "x" }).to_string())
         .dispatch();
-    assert_eq!(response.status(), Status::BadRequest);
-    assert!(body(response)["message"]
+    assert_eq!(empty.status(), Status::BadRequest);
+    assert!(body(empty)["message"]
         .as_str()
         .unwrap()
         .contains("ssid is required"));
+    let mode = client
+        .post("/api/apmode/provision")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "", "mode": "carrier-pigeon" }).to_string())
+        .dispatch();
+    assert_eq!(mode.status(), Status::BadRequest);
 }
 
 #[test]
-fn provisioning_one_round_puts_every_symbol_on_the_wire() {
-    let receiver = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
-    receiver
-        .set_read_timeout(Some(std::time::Duration::from_millis(300)))
-        .unwrap();
-    let port = receiver.local_addr().unwrap().port();
+fn stopping_a_run_that_was_never_started_is_a_not_found() {
     let client = client();
     assert_eq!(sign_in(&client), Status::Ok);
-    let response = client
-        .post("/api/apmode/provision")
-        .header(ContentType::JSON)
-        .body(
-            json!({
-                "ssid": "CAM-LAB",
-                "password": "rahasia123",
-                "mode": "broadcast",
-                "target": "127.0.0.1",
-                "port": port,
-                "rounds": 1
-            })
-            .to_string(),
-        )
-        .dispatch();
-    assert_eq!(response.status(), Status::Ok);
-    let body = body(response);
-    assert_eq!(body["broadcast"]["datagrams"], 71);
-    assert_eq!(body["broadcast"]["port"], port);
-    assert_eq!(body["skipped"][0], "dvrip");
-
-    let mut buffer = [0u8; 2048];
-    let mut lengths = Vec::new();
-    while let Ok((size, _)) = receiver.recv_from(&mut buffer) {
-        lengths.push(size);
-    }
-    assert_eq!(lengths.len(), 71);
-    assert!(lengths
-        .iter()
-        .all(|n| (0x80usize..0x100).contains(n) || *n == 1300 || *n == 1301 || *n == 500));
-    assert_eq!(lengths.iter().filter(|n| **n == 500).count(), 1);
+    assert_eq!(
+        client.get("/api/apmode/provision").dispatch().status(),
+        Status::NotFound
+    );
+    assert_eq!(
+        client.delete("/api/apmode/provision").dispatch().status(),
+        Status::NotFound
+    );
 }

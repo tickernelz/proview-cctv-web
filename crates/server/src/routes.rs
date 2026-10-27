@@ -168,6 +168,14 @@ fn status_for(err: &ProviderError) -> Status {
     }
 }
 
+pub(crate) fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
+    let id = session_id(cookies)?;
+    store
+        .get(&id)
+        .map(|_| ())
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
+}
+
 pub(crate) fn session_id(cookies: &CookieJar<'_>) -> Result<String, Failure> {
     cookies
         .get_private("pvw_session")
