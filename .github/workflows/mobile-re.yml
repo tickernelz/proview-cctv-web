@@ -76,9 +76,11 @@ jobs:
 
       - name: Boot the emulator
         id: boot
+        timeout-minutes: 12
         run: |
           set -uo pipefail
           ADB="${ANDROID_HOME}/platform-tools/adb"
+          adbq() { perl -e 'alarm shift; exec @ARGV' 10 "${ADB}" "$@"; }
           mkdir -p .mobile
           boot() {
             local name="$1"
@@ -96,7 +98,7 @@ jobs:
                 echo "::endgroup::"
                 return 1
               fi
-              if [ "$("${ADB}" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+              if [ "$(adbq -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
                 echo "booted with ${name} after ${waited}s"
                 echo "::endgroup::"
                 return 0
@@ -107,19 +109,18 @@ jobs:
             echo "no boot after ${BOOT_TIMEOUT}s; last log lines:"
             tail -25 "${log}"
             kill "${pid}" 2>/dev/null || true
+            wait "${pid}" 2>/dev/null || true
             echo "::endgroup::"
             return 1
           }
           if boot hvf; then
             echo "accelerator=hvf" >> "$GITHUB_OUTPUT"
-          elif boot tcg -accel off -qemu -accel tcg; then
-            echo "accelerator=tcg" >> "$GITHUB_OUTPUT"
           else
             echo "accelerator=none" >> "$GITHUB_OUTPUT"
-            echo "::error::no accelerator booted the ${SYSTEM_IMAGE_ABI} image on $(uname -m); see .mobile/emulator-*.log"
+            echo "::error::the ${SYSTEM_IMAGE_ABI} image did not boot on $(uname -m); see .mobile/emulator-hvf.log"
             exit 1
           fi
-          echo "abi=$("${ADB}" -s emulator-5554 shell getprop ro.product.cpu.abi | tr -d '\r')" >> "$GITHUB_OUTPUT"
+          echo "abi=$(adbq -s emulator-5554 shell getprop ro.product.cpu.abi | tr -d '\r')" >> "$GITHUB_OUTPUT"
 
       - name: Install and launch the arm64 app
         if: steps.boot.outputs.accelerator != 'none'
@@ -147,10 +148,15 @@ jobs:
           ADB="${ANDROID_HOME}/platform-tools/adb"
           adbq() { perl -e 'alarm shift; exec @ARGV' 60 "${ADB}" "$@" 2>/dev/null || true; }
           mkdir -p .mobile
-          { adbq devices -l; adbq logcat -d | tail -2000; } > .mobile/logcat.txt
-          adbq shell getprop > .mobile/getprop.txt
+          abi=""
+          adbq devices -l > .mobile/logcat.txt
+          if grep -q "emulator-5554" .mobile/logcat.txt; then
+            adbq logcat -d | tail -2000 >> .mobile/logcat.txt
+            adbq shell getprop > .mobile/getprop.txt
+            abi="$(adbq shell getprop ro.product.cpu.abi | tr -d '\r')"
+          fi
           printf 'runner_arch=%s\nemulator_abi=%s\naccelerator=%s\n' \
-            "$(uname -m)" "$(adbq shell getprop ro.product.cpu.abi | tr -d '\r')" \
+            "$(uname -m)" "${abi}" \
             "${{ steps.boot.outputs.accelerator || 'unknown' }}" > .mobile/result.txt
           cat .mobile/result.txt
 

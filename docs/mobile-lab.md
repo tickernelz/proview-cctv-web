@@ -41,11 +41,12 @@ Measured 2026-10-27 on `macos-15` (image `macos-15-arm64/20260907.0337`,
   explanation.
 
 So `.github/workflows/mobile-re.yml` keeps running on `macos-15` as the probe that
-would notice a change: it installs api 33 `google_apis` `arm64-v8a`, boots in two
-attempts (HVF, then HVF with the TCG accelerator), prints the emulator's own log the
-moment the process dies, and fails in about two minutes instead of polling for ten.
-Every run uploads `host.txt`, `emulator-*.log` and `result.txt`, so a future
-host that does boot records its own `arm64-v8a` ABI without a code change.
+would notice a change: it installs api 33 `google_apis` `arm64-v8a`, boots once with
+HVF, prints the emulator's own log the moment the process dies, and fails in about
+two minutes instead of polling for ten. Every adb call is bounded by an alarm and the
+log step only queries a device that `adb devices` lists. Every run uploads
+`host.txt`, `emulator-hvf.log` and `result.txt`, so a future host that does boot
+records its own `arm64-v8a` ABI without a code change.
 
 To get the payload running today the job needs a host with a working hypervisor:
 a self-hosted Apple Silicon Mac with `runs-on: [self-hosted, macOS, ARM64]`, or the
