@@ -6,10 +6,11 @@ desktop instead of a phone.
 
 Current release: **v0.3.0** (`CHANGELOG.md` carries what changed). Status: a
 working server and desktop app with configuration in the app itself. Live video
-from a LAN camera works end to end. The vendor cloud account login is **not**
-integrated: it is proven inside the vendor SDK by an out-of-tree harness, and
-that harness cannot ship here (see "Cloud account login" below).
-`docs/protocol.md` records exactly what is proven and what is not.
+from a LAN camera works end to end. The vendor cloud account login **ships
+here**: email + password is sealed in the signed v3 envelope from Rust
+(`crates/core/src/cloud/envelope.rs`) and the account's device list follows it
+(see "Cloud account login" below). `docs/protocol.md` records exactly what is
+proven and what is not.
 
 ## What works today
 
@@ -28,8 +29,8 @@ that harness cannot ship here (see "Cloud account login" below).
 | Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
 | Provider seam (cloud / local / fixture) | works: the same UI over the vendor cloud, a camera on the LAN, or recorded sample data |
 | Fixture provider (no camera, no account) | works, opt-in (`PROVIEW_PROVIDER=fixture`); the default provider is the vendor cloud |
-| Vendor cloud account login | not in the app; proven in the vendor SDK by a harness, see below |
-| Device list from the vendor cloud | not implemented; the share list is reachable but its path signature is per request |
+| Vendor cloud account login | works: `POST /api/login` seals email + password in the signed v3 envelope from Rust and answers an `accessToken`; no vendor binary is involved |
+| Device list from the vendor cloud | works: `GET /api/devices` returns the account's devices after that login (`msdlistCode`); `401` until signed in |
 
 The server never sends a vendor token to the browser: the browser holds only an
 opaque `pvw_session` cookie, and every vendor call happens server side.
@@ -68,25 +69,33 @@ offers a **Restart the app** button for those, a server says to restart the
 process. Keys read per request apply as soon as they are saved.
 `docs/settings.md` lists every key, the precedence rule and the API.
 
-## Cloud account login: proven in the SDK, not shipped
+## Cloud account login: the signed v3 envelope, in this repository
 
 The vendor app logs in with email + password through `libFunSDK.so`
 (`XM_Video_Login_XMAccount`), not through the v2 portal this repository talks
-to. Running that SDK out of tree (qemu-bionic harness, `ZHA-3932`) proves the
-shape:
+to. That library cannot be redistributed, so the envelope was read out of it on
+2026-10-27 and reimplemented in Rust: no vendor binary, chroot or emulator is
+needed at run time, and none of it is in this repository or in a release. What
+the login does:
 
-- email + password → an `accessToken` (JWT, HS256, 30 days) — observed;
+- email + password → an `accessToken` (JWT, HS256, 30 days);
 - the platform exchange on `boss22-api.xmcsrv.net` answers `code 2000` with a
-  device token — observed;
+  device token;
 - signed calls go to `<host>/v3/<tsid>/<sig>.rs` with `tsid` = `0000003` plus
   epoch milliseconds and a 32-hex `sig`; the body is 96 lowercase hex
   characters, i.e. API-encrypted 28 bytes (12 random + 4-byte timestamp +
-  12-char seed), and that path needs no `UniqueCode` header.
+  12-char seed), and that path needs no `UniqueCode` header;
+- the device list follows on `msdlistCode` and carries the account's devices.
 
-It is not in this repository and not in the app: the harness needs the vendor
-`libFunSDK.so` and an ARM chroot, costs ~65 s per login, and none of that can be
-redistributed. Roughly: the envelope is understood, the integration is not
-done. `docs/protocol.md` section 3A has the details.
+`POST /api/login` with `{"email","password"}` runs those steps and answers
+`{"ok":true,...}`; `GET /api/devices` then lists the devices and `GET /api/me`
+reports the account. The app's platform identity is set under Settings,
+Configuration, Cloud (`PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`,
+`PROVIEW_APP_SECRET`); without it the login fails with a notice that names those
+keys. The product path measured 0.30–0.39 s for sign-in plus device list,
+against 65 s for the out-of-tree emulator the derivation used
+(`docs/performance.md`). `docs/protocol.md` sections 3A and 3B carry the
+derivation and the shipped implementation.
 
 ## Live view from a LAN camera
 

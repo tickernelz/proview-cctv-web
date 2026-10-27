@@ -40,7 +40,9 @@ job fetches its payload at run time and verifies it by hash:
    `XMAccountAPI::IXMAccount::XM_Video_Login_XMAccount` (0xf3fc2c) and
    `GetServerDSNAndPort`, which yields the ALC host, the encrypted query and the
    `Set-Cookie` from inside the process. No pinning to defeat, no TLS to break.
-3. That supersedes the out-of-tree qemu-bionic harness described in
-   `protocol.md` section 3A for anything that needs the network: the harness
-   answers the login envelope today but cannot ship, and the emulator route is
-   reproducible in CI instead of a manual phone capture.
+3. That complements the in-tree client: the account login and the device list
+   already ship (`crates/core/src/cloud/envelope.rs`, `protocol.md` 3B), so the
+   emulator route is for the media path — live view over the cloud, playback and
+   PTZ — which is still unimplemented. The emulator route is reproducible in CI
+   instead of a manual phone capture, and the out-of-tree qemu-bionic harness of
+   `protocol.md` section 3A stays a reference for how the envelope was learned.

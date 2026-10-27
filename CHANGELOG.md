@@ -65,6 +65,33 @@ behind it is `docs/design/redesign-v1/proview-redesign-v1.pdf`.
   gap; every control is at least 36×36 px, 44 px under `pointer: coarse`;
   `prefers-reduced-motion` turns the motion tokens to 0.
 
+## 0.2.6 — 2026-10-27
+
+Cloud account login, in Rust, from `main`.
+
+### Added
+
+- The signed v3 cloud envelope ships: `crates/core/src/cloud/envelope.rs`
+  reproduces the vendor `GetEncryptStr` scramble, the per-request `tsid` and
+  `sig`, the AES-128-ECB body key and the sealed reply, and
+  `crates/core/src/provider/cloud.rs` drives it end to end — email + password →
+  `accessToken` → platform exchange → device token → device list. `POST
+  /api/login` and `GET /api/devices` are the routes that use it.
+- `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and `PROVIEW_APP_SECRET` under
+  Settings, Configuration, Cloud, with the missing-key notice naming all three.
+- `crates/core/tests/envelope.rs` and `fixtures/cloud-envelope.json` pin the
+  derivation to the 27 `GetEncryptStr` rows captured from the vendor library and
+  to one captured login body.
+
+### Changed
+
+- `protocol.md` sections 3A and 3B record the derivation and the shipped client,
+  `performance.md` adds the per-step cloud login numbers, and `settings.md`
+  lists the three identity keys.
+- README status, `cloud-app-surface.md`, `parity.md`, `providers.md` and
+  `mobile-lab.md` say the login is implemented and exercised here, instead of
+  "proven in the vendor SDK by an out-of-tree harness".
+
 ## 0.2.5 — 2026-10-27
 
 ### Fixed

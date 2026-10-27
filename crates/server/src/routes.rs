@@ -135,7 +135,7 @@ pub(crate) fn fail_code(status: Status, code: &'static str, message: impl Into<S
 
 fn status_for(err: &ProviderError) -> Status {
     match err {
-        ProviderError::BadCredentials => Status::Unauthorized,
+        ProviderError::BadCredentials | ProviderError::Expired => Status::Unauthorized,
         ProviderError::UnknownDevice(_) => Status::NotFound,
         ProviderError::NotImplemented(_) => Status::NotImplemented,
         ProviderError::Misconfigured(_) => Status::NotImplemented,

@@ -7,13 +7,15 @@ use serde_json::json;
 use super::digest::digest_of;
 use super::types::{
     user_message, Captcha, CloudDevice, CloudProfile, CloudSession, DeviceStatus, Envelope,
-    CODE_TOKEN_EXPIRED,
+    CODE_BAD_CREDENTIALS, CODE_TOKEN_EXPIRED,
 };
 
 #[derive(Debug, thiserror::Error)]
 pub enum CloudError {
     #[error("{0}")]
     Rejected(String),
+    #[error("email or password is wrong")]
+    Credentials,
     #[error("session expired; sign in again")]
     Expired,
     #[error("cloud is not reachable: {0}")]
@@ -206,6 +208,9 @@ fn guard(envelope: Envelope) -> CloudResult<Envelope> {
 fn classify(code: i32, vendor: Option<&str>) -> CloudError {
     if code == CODE_TOKEN_EXPIRED {
         return CloudError::Expired;
+    }
+    if code == CODE_BAD_CREDENTIALS {
+        return CloudError::Credentials;
     }
     CloudError::Rejected(user_message(code, vendor))
 }

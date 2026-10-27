@@ -14,6 +14,8 @@ pub use router::{Notice, Resolution, Router};
 pub enum ProviderError {
     #[error("invalid credentials")]
     BadCredentials,
+    #[error("session expired; sign in again")]
+    Expired,
     #[error("vendor endpoint not reachable: {0}")]
     Unreachable(String),
     #[error("vendor protocol not implemented yet: {0}")]
@@ -141,9 +143,20 @@ pub struct DeviceSettings {
     pub audio: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VendorSession {
     pub account: String,
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for VendorSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VendorSession")
+            .field("account", &self.account)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[async_trait::async_trait]
