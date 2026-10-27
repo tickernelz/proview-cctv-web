@@ -32,6 +32,7 @@ pub struct TalkReport {
     pub frames: u64,
     pub bytes: u64,
     pub chunks: u64,
+    pub dropped: u64,
     pub seconds: f64,
     pub frames_per_second: f64,
     pub claim_ms: u64,
@@ -220,6 +221,7 @@ fn report(talk: &TalkSession, meter: &Meter, input_rate: u32) -> TalkReport {
         frames: stats.frames,
         bytes: stats.bytes,
         chunks: meter.chunks,
+        dropped: stats.dropped,
         seconds: stats.seconds,
         frames_per_second: if stats.seconds > 0.0 {
             stats.frames as f64 / stats.seconds

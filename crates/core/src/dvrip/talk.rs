@@ -16,6 +16,8 @@ pub const RATE_INDEX_8000: u8 = 2;
 pub const PACKET_BYTES: usize = audio::FRAME_SAMPLES;
 
 const REPLY_WAIT: Duration = Duration::from_secs(5);
+const MAX_FRAMES_PER_SECOND: f64 = 30.0;
+const BURST_FRAMES: f64 = 5.0;
 const LOGIN_WAIT: Duration = Duration::from_secs(8);
 const READ_LIMIT: usize = 64 * 1024;
 
@@ -321,6 +323,11 @@ impl TalkSession {
         }
         let mut sent = 0;
         for chunk in alaw.chunks(PACKET_BYTES) {
+            let due = MAX_FRAMES_PER_SECOND * self.opened.elapsed().as_secs_f64() + BURST_FRAMES;
+            if self.frames as f64 + 1.0 > due {
+                self.dropped += 1;
+                continue;
+            }
             let mut payload = chunk.to_vec();
             if payload.len() < PACKET_BYTES {
                 audio::pad_to_frame(&mut payload, PACKET_BYTES);
@@ -539,6 +546,51 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_flood_is_capped_near_realtime_and_counted() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let (_, _) = read_frame(&mut socket).await;
+            let reply = serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0x1" })).unwrap();
+            let header = Header {
+                session: 1,
+                sequence: 1,
+                channel: 0,
+                end: false,
+                id: msg::LOGIN,
+                length: reply.len() as u32,
+            };
+            socket.write_all(&header.encode()).await.unwrap();
+            socket.write_all(&reply).await.unwrap();
+            let (_, _) = read_frame(&mut socket).await;
+            let reply = serde_json::to_vec(&json!({ "Ret": 100 })).unwrap();
+            let header = Header {
+                session: 1,
+                sequence: 2,
+                channel: 0,
+                end: false,
+                id: msg::TALK_CLAIM,
+                length: reply.len() as u32,
+            };
+            socket.write_all(&header.encode()).await.unwrap();
+            socket.write_all(&reply).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
+
+        let mut link = TalkLink::connect(&address.to_string()).await.expect("link");
+        link.login("admin", "hunter").await.expect("login");
+        let mut session = TalkSession::open(link, None).await.expect("open");
+        let flood = vec![audio::SILENCE; PACKET_BYTES * 20];
+        let sent = session.send_alaw(&flood).await.expect("send");
+        let stats = session.stats();
+        assert_eq!(sent, BURST_FRAMES as usize);
+        assert_eq!(stats.frames, sent as u64);
+        assert_eq!(stats.dropped, 20 - sent as u64);
+        server.await.expect("server");
     }
 
     #[tokio::test]
