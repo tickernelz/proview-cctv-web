@@ -444,6 +444,17 @@ machinery, `harness12.c`) through `MediaPlay` with a packet capture on the
 host, so the wire format is recorded once and the Rust client can be checked
 against it byte for byte.
 
+### 4B.4 The JF cloud device page is the camera's ActiveX web UI
+
+`cloud.jufenginfo.com` does serve the device over the cloud: a device login
+(`cloud_device_macLogin_main`, status 1200) frames `/cloud/video/index.jsp`,
+and that page loads 105 KB of the camera's own web client ("NETSuveillance
+WEB"). Its scripts (`config.js`, `m.js`, `English.js`, fetched with the same
+session) reference only `http://xmsecu.com:8080/ocx/New_Active.exe` and
+`NewActive.exe`: the live view is a Windows ActiveX control. The portal is an
+HTTP proxy to the camera's embedded web server, not a video relay, so it cannot
+stream to a browser and is not a fourth media path.
+
 ## 5. Open items
 
 1. ~~The CSS request envelope for account login~~ — answered for the SDK path in
