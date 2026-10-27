@@ -1274,9 +1274,10 @@ device over the vendor relay. In the other direction the device streams its own
 audio back while the claim is open: a 90 s session left 743,328 bytes unread in
 the kernel receive queue, about 8.8 kB/s or 25 frames of 348 bytes a second. The
 build now drains and counts that stream (`inbound_bytes`, `inbound_frames` in the
-report) instead of letting it fill the queue, but it does not play it. What is
-still unproven is acoustic: whether the camera speaker plays what it receives
-needs a person standing next to it.
+report) instead of letting it fill the queue, but it does not play it. The owner confirmed the
+acoustic leg on 2026-10-27 16:14Z by hearing the test tone from the camera during
+a talk run. Inbound audio arrives on `1433`, not `1432`: 328-byte frames (8-byte
+header plus 320 A-law bytes) at 25 a second, 77,952 bytes in an 8.96 s session.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second
