@@ -28,7 +28,7 @@
     const field = document.createElement('div');
     field.className = 'field';
     field.innerHTML =
-      '<label style="display:flex;gap:8px;align-items:center;font-size:var(--t-14)"><input id="remember-account" type="checkbox" style="height:16px;width:16px"> <span>Remember this account on this machine</span></label>' +
+      '<label style="display:flex;gap:8px;align-items:center;font-size:var(--t-14)"><input id="remember-account" type="checkbox" style="height:16px;width:16px"> <span>Remember this account in this browser</span></label>' +
       '<p class="hint" id="remember-note" hidden></p>';
     const submit = el('login-submit');
     form.insertBefore(field, submit || null);
@@ -61,17 +61,21 @@
   }
 
   async function restore() {
+    let state = null;
     try {
-      const state = await call('/api/account/remembered');
-      const email = el('email');
-      if (email && state.email && !email.value) {
-        email.value = state.email;
-      }
-      if (state.email && !state.restored) {
-        setNote('The remembered session for ' + state.email + ' expired. Sign in again to continue.');
-      }
+      state = await call('/api/account/remembered');
     } catch (error) {
-      /* the sign-in screen still works without the remembered account */
+      state = null;
+    }
+    if (!state || !state.email) {
+      return;
+    }
+    const email = el('email');
+    if (email && !email.value) {
+      email.value = state.email;
+    }
+    if (!state.restored) {
+      setNote('The remembered session for ' + state.email + ' expired. Sign in again to continue.');
     }
   }
 
@@ -162,11 +166,7 @@
           el('add-pass').value = '';
           report(reply);
         } catch (error) {
-          status(
-            error.code === 'device_credentials'
-              ? 'Not added: the camera refused that username and password. Check the label on the camera.'
-              : 'Not added: ' + error.message,
-          );
+          status('Not added: ' + error.message);
         } finally {
           button.disabled = false;
         }

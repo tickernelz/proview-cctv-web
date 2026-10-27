@@ -2,11 +2,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use serde::Deserialize;
 
-use super::client::{CloudError, CloudResult};
+use super::client::classify;
+use super::client::CloudError;
 use super::envelope::{
     open, seal, signed_request, url_encode, EnvelopeClient, Identity, SIGNED_VERSION,
 };
-use super::types::{user_message, Envelope, CODE_OK, CODE_OK_LEGACY};
+use super::types::{Envelope, CODE_OK, CODE_OK_LEGACY};
 
 pub const ADD_DEVICE_OK: i32 = CODE_OK;
 pub const ADD_DEVICE_ALREADY: i32 = 4101;
@@ -48,6 +49,18 @@ impl AddDevice {
     }
 }
 
+#[derive(Debug)]
+pub enum BindFailure {
+    Vendor { code: i32, message: String },
+    Cloud(CloudError),
+}
+
+impl BindFailure {
+    pub fn expired(&self) -> bool {
+        matches!(self, BindFailure::Cloud(CloudError::Expired))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindStatus {
     Bound,
@@ -66,7 +79,10 @@ impl BindReport {
     pub fn message(&self) -> String {
         match self.status {
             BindStatus::Bound => format!("{} is now on this account", self.serial),
-            BindStatus::AlreadyBound => format!("{} was already on this account", self.serial),
+            BindStatus::AlreadyBound => format!(
+                "the cloud reports {} is already on the account; the camera password was not checked",
+                self.serial
+            ),
         }
     }
 }
@@ -102,15 +118,19 @@ impl BindClient {
         Self::new(client.identity().clone(), client.base().to_string())
     }
 
-    pub async fn add_device(&self, access: &str, request: &AddDevice) -> CloudResult<BindReport> {
+    pub async fn add_device(
+        &self,
+        access: &str,
+        request: &AddDevice,
+    ) -> Result<BindReport, BindFailure> {
         if !self.identity.is_complete() {
-            return Err(CloudError::Malformed(
+            return Err(BindFailure::Cloud(CloudError::Malformed(
                 super::envelope::MISSING_CLOUD_IDENTITY.to_string(),
-            ));
+            )));
         }
         let counter = self.counter.fetch_add(1, Ordering::Relaxed) % 9_999_999 + 1;
         let signed = signed_request(&self.identity, counter, super::envelope::now_millis());
-        let body = seal(&signed.key, &request.form())?;
+        let body = seal(&signed.key, &request.form()).map_err(BindFailure::Cloud)?;
         let url = format!(
             "{}/mdadd/{SIGNED_VERSION}/{}/{}.rs",
             self.base, signed.tsid, signed.sig
@@ -126,24 +146,27 @@ impl BindClient {
             .body(body)
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| BindFailure::Cloud(CloudError::Unreachable(error.to_string())))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| BindFailure::Cloud(CloudError::Unreachable(error.to_string())))?;
         if !status.is_success() {
-            return Err(CloudError::Unreachable(format!("mdadd HTTP {status}")));
+            return Err(BindFailure::Cloud(CloudError::Unreachable(format!(
+                "mdadd HTTP {status}"
+            ))));
         }
-        let plain = if text.trim().chars().all(|value| value.is_ascii_hexdigit())
-            && !text.trim().is_empty()
+        let plain = if !text.trim().is_empty()
+            && text.trim().chars().all(|value| value.is_ascii_hexdigit())
         {
-            open(&signed.key, &text)?
+            open(&signed.key, &text).map_err(BindFailure::Cloud)?
         } else {
             text
         };
-        let envelope: Envelope = serde_json::from_str(&plain)
-            .map_err(|error| CloudError::Malformed(format!("mdadd: {error}")))?;
+        let envelope: Envelope = serde_json::from_str(&plain).map_err(|error| {
+            BindFailure::Cloud(CloudError::Malformed(format!("mdadd: {error}")))
+        })?;
         match envelope.code {
             ADD_DEVICE_OK | CODE_OK_LEGACY => Ok(BindReport {
                 status: BindStatus::Bound,
@@ -157,23 +180,24 @@ impl BindClient {
                 vendor_code: envelope.code,
                 vendor_message: envelope.msg.unwrap_or_default(),
             }),
-            ADD_DEVICE_USER_FAILED => Err(CloudError::Credentials),
-            other => Err(CloudError::Rejected(user_message(
-                other,
-                envelope.msg.as_deref(),
-            ))),
+            ADD_DEVICE_USER_FAILED => Err(BindFailure::Vendor {
+                code: envelope.code,
+                message: envelope.msg.unwrap_or_default(),
+            }),
+            other => Err(BindFailure::Cloud(classify(other, envelope.msg.as_deref()))),
         }
     }
 
-    pub async fn remove_device(&self, access: &str, serial: &str) -> CloudResult<i32> {
+    pub async fn remove_device(&self, access: &str, serial: &str) -> Result<i32, BindFailure> {
         if !self.identity.is_complete() {
-            return Err(CloudError::Malformed(
+            return Err(BindFailure::Cloud(CloudError::Malformed(
                 super::envelope::MISSING_CLOUD_IDENTITY.to_string(),
-            ));
+            )));
         }
         let counter = self.counter.fetch_add(1, Ordering::Relaxed) % 9_999_999 + 1;
         let signed = signed_request(&self.identity, counter, super::envelope::now_millis());
-        let body = seal(&signed.key, &format!("uuid={}", url_encode(serial)))?;
+        let body = seal(&signed.key, &format!("uuid={}", url_encode(serial)))
+            .map_err(BindFailure::Cloud)?;
         let url = format!(
             "{}/mdrm/{SIGNED_VERSION}/{}/{}.rs",
             self.base, signed.tsid, signed.sig
@@ -189,31 +213,33 @@ impl BindClient {
             .body(body)
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| BindFailure::Cloud(CloudError::Unreachable(error.to_string())))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| BindFailure::Cloud(CloudError::Unreachable(error.to_string())))?;
         if !status.is_success() {
-            return Err(CloudError::Unreachable(format!("mdrm HTTP {status}")));
+            return Err(BindFailure::Cloud(CloudError::Unreachable(format!(
+                "mdrm HTTP {status}"
+            ))));
         }
         let plain = if !text.trim().is_empty()
             && text.trim().chars().all(|value| value.is_ascii_hexdigit())
         {
-            open(&signed.key, &text)?
+            open(&signed.key, &text).map_err(BindFailure::Cloud)?
         } else {
             text
         };
         let envelope: Envelope = serde_json::from_str(&plain)
-            .map_err(|error| CloudError::Malformed(format!("mdrm: {error}")))?;
+            .map_err(|error| BindFailure::Cloud(CloudError::Malformed(format!("mdrm: {error}"))))?;
         if envelope.code == CODE_OK || envelope.code == CODE_OK_LEGACY {
             return Ok(envelope.code);
         }
-        Err(CloudError::Rejected(user_message(
-            envelope.code,
-            envelope.msg.as_deref(),
-        )))
+        Err(BindFailure::Vendor {
+            code: envelope.code,
+            message: envelope.msg.unwrap_or_default(),
+        })
     }
 
     pub async fn vendor_sign_out(&self, access: &str) -> SignOutReply {
@@ -290,14 +316,13 @@ fn key_shift(index: usize) -> u32 {
     key[index % key.len()] as u32
 }
 
-fn shift_char(value: u8, index: usize, forward: bool) -> u8 {
+fn shift_char(value: u8, index: usize, forward: bool) -> Option<u8> {
     let shift = key_shift(index);
-    let (base, modulus) = if value.is_ascii_digit() {
-        (b'0', 10u32)
-    } else if value.is_ascii_lowercase() {
-        (b'a', 26)
-    } else {
-        (b'A', 26)
+    let (base, modulus) = match value {
+        b'0'..=b'9' => (b'0', 10u32),
+        b'a'..=b'z' => (b'a', 26),
+        b'A'..=b'Z' => (b'A', 26),
+        _ => return None,
     };
     let amount = if modulus == 10 {
         shift % 10
@@ -310,7 +335,7 @@ fn shift_char(value: u8, index: usize, forward: bool) -> u8 {
     } else {
         (offset + modulus - amount) % modulus
     };
-    base + moved as u8
+    Some(base + moved as u8)
 }
 
 fn to62(value: u32) -> String {
@@ -375,7 +400,7 @@ pub fn encode_qr_blob(plain: &str, offset: u32) -> String {
     let mut out: Vec<u8> = packed
         .bytes()
         .enumerate()
-        .map(|(index, value)| shift_char(value, index, true))
+        .map(|(index, value)| shift_char(value, index, true).unwrap_or(value))
         .collect();
     out.push(QR_CODEC_MARK as u8);
     String::from_utf8(out).unwrap_or_default()
@@ -414,7 +439,7 @@ pub fn decode_qr_blob(encoded: &str) -> Option<String> {
         .bytes()
         .enumerate()
         .map(|(index, value)| shift_char(value, index, false))
-        .collect();
+        .collect::<Option<Vec<u8>>>()?;
     let packed = std::str::from_utf8(&unshifted).ok()?;
     for last_single in [false, true] {
         let digits = match unpack_digits(packed, last_single) {
@@ -510,7 +535,7 @@ fn unwrap_share_link(payload: &str) -> String {
     payload.to_string()
 }
 
-fn serial_ok(serial: &str) -> bool {
+pub fn serial_ok(serial: &str) -> bool {
     let length = serial.len();
     (8..=32).contains(&length) && serial.bytes().all(|value| value.is_ascii_alphanumeric())
 }
@@ -539,8 +564,15 @@ pub fn parse_qr(payload: &str) -> Result<QrDevice, QrError> {
         return Err(QrError::Empty);
     }
     let candidate = unwrap_share_link(trimmed);
-    let text = decode_qr_blob(&candidate).unwrap_or(candidate);
+    let text = match decode_qr_blob(&candidate) {
+        Some(value) => value,
+        None if candidate.contains(',') || candidate.trim_start().starts_with('{') => candidate,
+        None => return Err(QrError::NotQr),
+    };
     let text = text.trim();
+    if text.is_empty() {
+        return Err(QrError::NotQr);
+    }
     if text.starts_with('{') {
         let fields: ShareFields = serde_json::from_str(text).map_err(|_| QrError::NotQr)?;
         let serial = fields.dev_id.or(fields.dev_id_camel).unwrap_or_default();
@@ -681,6 +713,37 @@ mod tests {
             parse_qr("{\"pwd\":\"x\"}"),
             Err(QrError::BadSerial(_))
         ));
+    }
+
+    #[test]
+    fn a_payload_with_characters_outside_the_codec_alphabet_fails_instead_of_panicking() {
+        assert_eq!(decode_qr_blob("a b/z"), None);
+        assert_eq!(decode_qr_blob("see https://x.test/a b-z"), None);
+        assert!(matches!(
+            parse_qr("see https://x.test/a b-z"),
+            Err(QrError::NotQr)
+        ));
+        assert!(matches!(
+            parse_qr("sn,admin,passz"),
+            Err(QrError::BadSerial(_))
+        ));
+    }
+
+    #[test]
+    fn a_blob_shaped_payload_that_does_not_decode_is_never_read_as_a_serial() {
+        let payload = "AASN000000000777z";
+        assert_eq!(decode_qr_blob(payload), None);
+        assert_eq!(parse_qr(payload), Err(QrError::NotQr));
+    }
+
+    #[test]
+    fn serial_validation_covers_the_bounds_the_routes_rely_on() {
+        assert!(serial_ok("AASN000000000001"));
+        assert!(serial_ok("7f92970ddf5282743hrc"));
+        assert!(!serial_ok("no"));
+        assert!(!serial_ok(""));
+        assert!(!serial_ok("AASN 0000 0001"));
+        assert!(!serial_ok(&"a".repeat(33)));
     }
 
     #[test]

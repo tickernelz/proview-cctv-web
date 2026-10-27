@@ -1319,9 +1319,10 @@ Vectors produced by the shipped library under the bionic harness (qemu-user,
 | `7f92970ddf5282743hrc` | 0 | `vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz` |
 | `AASN000000000001,,,2,1793109504` | 312 | `8DIC0Ga40A1eX8C9dG2M9oV1B1yX9A0gH9L9pX1UAh3KBJ9KYI0CDw9A0KI9L9pv1VqV3Lbtz` |
 
-`EncDevInfo` replaces a `admin` login name with an empty field and appends
-`time(0)` as the fifth column, which is why the vendor blob for the real camera
-decodes to `7f92970ddf5282743hrc,,TestPass1,0,1793109504`.
+`EncDevInfo` replaces an `admin` login name with an empty field and appends
+`time(0)` as the fifth column, which is why the vendor blob for the real serial
+with a harness password decodes to `7f92970ddf5282743hrc,,TestPass1,0,1793109504`
+(`TestPass1` is the input in `re/qemu/harness_qr.c`, not the camera password).
 
 ### 10D.3 Sign-out
 

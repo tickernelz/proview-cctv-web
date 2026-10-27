@@ -12,7 +12,7 @@ pub use bind::{
     decode_qr_blob, encode_qr_blob, parse_qr, AddDevice, BindClient, BindReport, BindStatus,
     QrDevice, QrError, SignOutReply,
 };
-pub use client::{CloudClient, CloudError, CloudResult};
+pub use client::{classify, CloudClient, CloudError, CloudResult};
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
 pub use envelope::{
     body_key, claims, open, scramble, seal, signature, signed_request, url_encode, Claims,
