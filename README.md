@@ -42,7 +42,11 @@ email:    fixture@example.invalid
 password: fixture-password
 ```
 
-To point it at the real cloud:
+Configuration can be exported, and it can also be set in the app: the Settings view
+writes `settings.json` in the data directory and applies it on save, so nothing has to be
+exported by hand. `docs/settings.md` lists every key, the precedence and the API.
+
+To point it at the real cloud without the app UI:
 
 ```sh
 export PROVIEW_PROVIDER=proview
