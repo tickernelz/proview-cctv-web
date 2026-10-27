@@ -738,6 +738,41 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_value_wins_over_the_baked_one() {
+        let built = Identity::new("built-uuid", "built-key", "built-secret");
+        let full = Identity::layered(
+            Identity::new("env-uuid", "env-key", "env-secret"),
+            built.clone(),
+        );
+        assert_eq!(full.uuid, "env-uuid");
+        assert_eq!(full.app_key, "env-key");
+        assert_eq!(full.app_secret, "env-secret");
+
+        let partial = Identity::layered(Identity::new("env-uuid", "", "  "), built.clone());
+        assert_eq!(partial.uuid, "env-uuid");
+        assert_eq!(partial.app_key, "built-key");
+        assert_eq!(partial.app_secret, "built-secret");
+
+        let empty = Identity::layered(Identity::default(), built);
+        assert_eq!(empty.uuid, "built-uuid");
+        assert!(empty.is_complete());
+    }
+
+    #[tokio::test]
+    async fn login_without_any_identity_names_the_documentation() {
+        let client = EnvelopeClient::with_base(Identity::default(), "http://127.0.0.1:9");
+        match client.login_envelope("a@b.c", "secret").await {
+            Err(CloudError::Malformed(message)) => {
+                assert_eq!(message, MISSING_CLOUD_IDENTITY);
+                assert!(message.contains("without a cloud identity"));
+                assert!(message.contains("docs/cloud-app-surface.md"));
+                assert!(!message.contains("PROVIEW_APP_"));
+            }
+            other => panic!("expected the missing-identity refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn debug_never_prints_the_platform_keys() {
         let identity = Identity::new("uuid-value", "key-value", "secret-value");
         let text = format!("{identity:?}");
