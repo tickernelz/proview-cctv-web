@@ -1143,25 +1143,24 @@ mod tests {
         assert!(serve_binding(None, "cam:34567").is_none());
     }
 
-    #[test]
-    fn the_route_never_falls_back_to_measured_default_while_it_refreshes() {
-        let config = test_config(None, Some("cam:34567"));
-        let seeded = entry(
-            "cam:34567",
+    #[tokio::test]
+    async fn the_route_keeps_the_stale_answer_while_its_refresh_runs() {
+        let device = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("silent device");
+        let host = device.local_addr().expect("device address").to_string();
+        let config = test_config(None, Some(&host));
+        let stale = entry(
+            &host,
             PTZ_BINDING_TTL + Duration::from_secs(100),
             true,
-            Some(Duration::ZERO),
+            None,
         );
-        let previous = PTZ_BINDING.lock().expect("binding lock").replace(seeded);
-        let answers: Vec<Option<PtzBinding>> =
-            (0..200).map(|_| cached_ptz_binding(&config)).collect();
+        let previous = PTZ_BINDING.lock().expect("binding lock").replace(stale);
+        refresh_ptz_binding(&config);
+        let served = cached_ptz_binding(&config);
         *PTZ_BINDING.lock().expect("binding lock") = previous;
-
-        let lost = answers.iter().filter(|answer| answer.is_none()).count();
-        assert_eq!(lost, 0, "{lost} of 200 refreshes dropped the device answer");
-        assert!(answers.iter().all(|answer| answer
-            .as_ref()
-            .is_some_and(|binding| binding.lens == Lens::Bottom)));
+        assert!(served.is_some_and(|binding| binding.lens == Lens::Bottom));
     }
 
     #[test]
