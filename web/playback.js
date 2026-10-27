@@ -15,6 +15,8 @@
     init: false,
     bytes: 0,
     status: {},
+    windowSec: 60,
+    objectUrl: null,
     startedAt: 0,
     frameAt: null,
   };
@@ -39,6 +41,13 @@
     const mm = String(Math.floor(whole / 60)).padStart(2, '0');
     const ss = String(whole % 60).padStart(2, '0');
     return mm + ':' + ss;
+  }
+
+  function today() {
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return now.getFullYear() + '-' + month + '-' + day;
   }
 
   function secondsBetween(begin, end) {
@@ -81,7 +90,11 @@
     const parts = [];
     if (state.status.openMs !== undefined) parts.push('tunnel ' + (state.status.openMs / 1000).toFixed(2) + 's');
     if (state.status.primeMs !== undefined) parts.push('prime ' + (state.status.primeMs / 1000).toFixed(2) + 's');
-    if (state.status.fps) parts.push(state.status.fps + ' fps');
+    if (state.status.fps) {
+      const settled = state.status.fpsSettled === false ? ' (not settled)' : '';
+      parts.push(state.status.fps + ' fps' + settled);
+    }
+    if (state.status.codec) parts.push(state.status.codec);
     if (state.frameAt !== null) {
       parts.push('first frame ' + (state.frameAt / 1000).toFixed(2) + 's');
     } else if (state.stats && state.stats.firstFrameMs !== null && state.stats.firstFrameMs !== undefined) {
@@ -89,6 +102,10 @@
     }
     if (state.bytes) parts.push(mb(state.bytes));
     if (state.stats && state.stats.framesWritten) parts.push(state.stats.framesWritten + ' frames out');
+    if (state.status.windowSec) {
+      const window = 'window ' + state.status.windowSec + 's';
+      parts.push(state.stats && state.stats.capped ? window + ' (capped)' : window);
+    }
     return parts.join(' · ');
   }
 
@@ -118,6 +135,10 @@
   }
 
   function stop() {
+    if (state.objectUrl) {
+      URL.revokeObjectURL(state.objectUrl);
+      state.objectUrl = null;
+    }
     if (state.socket) {
       state.socket.onclose = null;
       state.socket.close();
@@ -171,7 +192,8 @@
     state.frameAt = null;
     const media = new MediaSource();
     state.media = media;
-    video.src = URL.createObjectURL(media);
+    state.objectUrl = URL.createObjectURL(media);
+    video.src = state.objectUrl;
     media.addEventListener(
       'sourceopen',
       () => {
@@ -197,7 +219,8 @@
           '&name=' + encodeURIComponent(file.name) +
           '&begin=' + encodeURIComponent(file.begin) +
           '&end=' + encodeURIComponent(file.end) +
-          '&start=' + Math.round(offset);
+          '&start=' + Math.round(offset) +
+          '&window=' + (state.windowSec || 60);
         const socket = new WebSocket(scheme + '://' + location.host + '/ws/playback?' + query);
         socket.binaryType = 'arraybuffer';
         state.socket = socket;
@@ -273,7 +296,7 @@
   async function loadFiles() {
     if (!state.device) return;
     const day = el('pb-day');
-    const date = day && day.value ? day.value : new Date().toISOString().slice(0, 10);
+    const date = day && day.value ? day.value : today();
     setStatus('asking the device for its file list…');
     try {
       const body = await api(
@@ -315,7 +338,7 @@
     const day = document.createElement('input');
     day.type = 'date';
     day.id = 'pb-day';
-    day.value = new Date().toISOString().slice(0, 10);
+    day.value = today();
     day.addEventListener('change', () => loadFiles());
     const select = document.createElement('select');
     select.id = 'pb-device';

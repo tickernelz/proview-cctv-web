@@ -75,15 +75,16 @@ pub struct PlaybackFile {
     pub disk: Option<u64>,
 }
 
-fn parse_size(raw: &str) -> u64 {
+fn parse_kilobytes(raw: &str) -> u64 {
     let trimmed = raw.trim();
-    match trimmed
+    let kilobytes = match trimmed
         .strip_prefix("0x")
         .or_else(|| trimmed.strip_prefix("0X"))
     {
         Some(hex) => u64::from_str_radix(hex, 16).unwrap_or(0),
         None => trimmed.parse().unwrap_or(0),
-    }
+    };
+    kilobytes.saturating_mul(1024)
 }
 
 fn text(item: &Value, key: &str) -> String {
@@ -110,7 +111,7 @@ pub fn parse_files(reply: &Value) -> Vec<PlaybackFile> {
                 name,
                 begin: text(item, "BeginTime"),
                 end: text(item, "EndTime"),
-                bytes: parse_size(&text(item, "FileLength")),
+                bytes: parse_kilobytes(&text(item, "FileLength")),
                 disk: item.get("DiskNo").and_then(Value::as_u64),
             })
         })
@@ -591,75 +592,26 @@ pub fn access_unit(record: &Record) -> Vec<Vec<u8>> {
         .collect()
 }
 
+pub fn codec_of(nals: &[Vec<u8>]) -> Option<crate::media::Codec> {
+    for nal in nals {
+        let byte = *nal.first()?;
+        let hevc_type = (byte >> 1) & 0x3f;
+        if hevc_type == 32 || hevc_type == 33 {
+            return Some(crate::media::Codec::H265);
+        }
+    }
+    for nal in nals {
+        let byte = *nal.first()?;
+        let h264_type = byte & 0x1f;
+        if h264_type == 7 || h264_type == 5 {
+            return Some(crate::media::Codec::H264);
+        }
+    }
+    None
+}
+
 pub fn is_video(record: &Record) -> bool {
     matches!(record.kind, RecordKind::Key | RecordKind::Delta)
-}
-
-pub struct FrameRate {
-    pub per_second: f64,
-    frames: usize,
-    first_stamp: Option<u32>,
-    last_stamp: Option<u32>,
-    settled: bool,
-}
-
-impl Default for FrameRate {
-    fn default() -> Self {
-        Self {
-            per_second: 25.0,
-            frames: 0,
-            first_stamp: None,
-            last_stamp: None,
-            settled: false,
-        }
-    }
-}
-
-impl FrameRate {
-    pub fn observed(record: &Record) -> Option<Self> {
-        if record.kind != RecordKind::Key {
-            return None;
-        }
-        let mut rate = Self::default();
-        rate.observe(record);
-        Some(rate)
-    }
-
-    pub fn settled(&self) -> bool {
-        self.settled
-    }
-
-    pub fn observe(&mut self, record: &Record) {
-        if !is_video(record) {
-            return;
-        }
-        if self.settled {
-            self.frames += 1;
-            return;
-        }
-        if let Some(stamp) = record.stamp {
-            match self.first_stamp {
-                None => {
-                    self.first_stamp = Some(stamp);
-                    self.frames = 1;
-                    return;
-                }
-                Some(first) if stamp > first => {
-                    let seconds = f64::from(stamp - first);
-                    let per_second = self.frames as f64 / seconds;
-                    if (1.0..=60.0).contains(&per_second) {
-                        self.per_second = per_second;
-                        self.settled = true;
-                    }
-                    self.last_stamp = Some(stamp);
-                    self.frames += 1;
-                    return;
-                }
-                _ => {}
-            }
-        }
-        self.frames += 1;
-    }
 }
 
 impl Session {
@@ -736,6 +688,121 @@ pub fn shift(timestamp: &str, seconds: u32) -> Option<String> {
         (rest % 3_600) / 60,
         rest % 60
     ))
+}
+
+pub fn stamp_seconds(raw: u32) -> Option<i64> {
+    let second = i64::from(raw & 0x3f);
+    let minute = i64::from((raw >> 6) & 0x3f);
+    let hour = i64::from((raw >> 12) & 0x1f);
+    let day = i64::from((raw >> 17) & 0x1f);
+    let month = i64::from((raw >> 22) & 0xf);
+    let year = i64::from((raw >> 26) & 0x3f) + 2000;
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        return None;
+    }
+    Some(
+        days_from_civil(year, month as u32, day as u32) * 86_400
+            + hour * 3_600
+            + minute * 60
+            + second,
+    )
+}
+
+const STANDARD_RATES: [f64; 11] = [1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0];
+const SETTLE_KEYS: usize = 4;
+const SETTLE_SPAN: i64 = 9;
+const SNAP_TOLERANCE: f64 = 0.15;
+
+fn snap_rate(measured: f64) -> f64 {
+    let nearest = STANDARD_RATES.iter().copied().min_by(|left, right| {
+        (measured - left)
+            .abs()
+            .partial_cmp(&(measured - right).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    match nearest {
+        Some(candidate) if (measured - candidate).abs() / candidate <= SNAP_TOLERANCE => candidate,
+        _ => measured,
+    }
+}
+
+pub struct FrameRate {
+    pub per_second: f64,
+    frames: usize,
+    keys: usize,
+    first: Option<i64>,
+    span: i64,
+    settled: bool,
+}
+
+impl Default for FrameRate {
+    fn default() -> Self {
+        Self {
+            per_second: 25.0,
+            frames: 0,
+            keys: 0,
+            first: None,
+            span: 0,
+            settled: false,
+        }
+    }
+}
+
+impl FrameRate {
+    pub fn settled(&self) -> bool {
+        self.settled
+    }
+
+    pub fn keys(&self) -> usize {
+        self.keys
+    }
+
+    pub fn span_seconds(&self) -> i64 {
+        self.span
+    }
+
+    pub fn frames(&self) -> usize {
+        self.frames
+    }
+
+    pub fn observe(&mut self, record: &Record) {
+        if !is_video(record) {
+            return;
+        }
+        if self.settled {
+            return;
+        }
+        let seconds = record.stamp.and_then(stamp_seconds);
+        match (self.first, seconds) {
+            (None, Some(seconds)) => {
+                self.first = Some(seconds);
+                self.keys = 1;
+                self.frames = 1;
+            }
+            (None, None) => {}
+            (Some(first), Some(seconds)) if seconds > first => {
+                self.frames += 1;
+                self.keys += 1;
+                let span = seconds - first;
+                if self.keys >= SETTLE_KEYS && span >= SETTLE_SPAN {
+                    let measured = (self.frames.saturating_sub(1)) as f64 / span as f64;
+                    if (1.0..=60.0).contains(&measured) {
+                        self.per_second = snap_rate(measured);
+                        self.span = span;
+                        self.settled = true;
+                    }
+                }
+            }
+            _ => {
+                self.frames += 1;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -851,27 +918,117 @@ mod tests {
         assert_eq!(nals[2][0] >> 1 & 0x3f, 34);
     }
 
-    #[test]
-    fn the_frame_rate_settles_on_the_measured_gop() {
-        let mut rate = FrameRate::default();
+    fn packed(year: i64, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> u32 {
+        ((year - 2000) as u32) << 26 | month << 22 | day << 17 | hour << 12 | minute << 6 | second
+    }
+
+    fn feed(rate: &mut FrameRate, stamp: Option<u32>, deltas: usize) {
         let mut reader = MediaReader::new();
         reader.push(&key_record(&hex("000000014001")));
         let mut key = reader.next_record().expect("key");
-        key.stamp = Some(100);
+        key.stamp = stamp;
         rate.observe(&key);
-        for _ in 0..35 {
+        for _ in 0..deltas {
             let mut reader = MediaReader::new();
             reader.push(&delta_record(&hex("000000010201")));
             let delta = reader.next_record().expect("delta");
             rate.observe(&delta);
         }
+    }
+
+    #[test]
+    fn the_stamp_is_packed_calendar_time_not_seconds() {
+        let raw = packed(2026, 10, 25, 22, 24, 7);
+        assert_eq!(raw, 1_790_141_959);
+        let expected = days_from_civil(2026, 10, 25) * 86_400 + 22 * 3_600 + 24 * 60 + 7;
+        assert_eq!(expected, 1_792_967_047);
+        assert_eq!(stamp_seconds(raw), Some(expected));
+        assert_eq!(stamp_seconds(packed(2026, 0, 25, 22, 24, 7)), None);
+        assert_eq!(
+            shift("2026-10-24 20:55:00", 123).as_deref(),
+            Some("2026-10-24 20:57:03")
+        );
+    }
+
+    #[test]
+    fn the_keyframe_parameter_sets_identify_the_codec() {
         let mut reader = MediaReader::new();
-        reader.push(&key_record(&hex("000000014001")));
-        let mut next = reader.next_record().expect("key");
-        next.stamp = Some(103);
-        rate.observe(&next);
+        let body = hex("0000000140010c01ffff0160000000014201010160000000014401c0f183");
+        reader.push(&key_record(&body));
+        let key = reader.next_record().expect("record");
+        assert_eq!(
+            codec_of(&access_unit(&key)),
+            Some(crate::media::Codec::H265)
+        );
+
+        let mut reader = MediaReader::new();
+        let body = hex("000000016742001e95a814016e9b808080a0000003002000000f12200000000168ce3c80");
+        reader.push(&key_record(&body));
+        let key = reader.next_record().expect("record");
+        assert_eq!(
+            codec_of(&access_unit(&key)),
+            Some(crate::media::Codec::H264)
+        );
+    }
+
+    #[test]
+    fn the_frame_rate_ignores_the_second_that_the_packed_stamp_rounds() {
+        let mut rate = FrameRate::default();
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 0)), 36);
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 3)), 36);
+        assert!(!rate.settled());
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 6)), 36);
+        assert!(!rate.settled());
+        feed(&mut rate, Some(packed(2026, 10, 24, 20, 55, 9)), 0);
         assert!(rate.settled());
-        assert!((rate.per_second - 12.0).abs() < 0.01, "{}", rate.per_second);
+        assert!(
+            (rate.per_second - 12.0).abs() < 0.001,
+            "{}",
+            rate.per_second
+        );
+    }
+
+    #[test]
+    fn the_frame_rate_matches_a_real_gop_of_thirty_six_frames() {
+        let mut rate = FrameRate::default();
+        for (index, second) in [0u32, 3, 6, 9].into_iter().enumerate() {
+            feed(&mut rate, Some(packed(2026, 10, 24, 10, 34, second)), 35);
+            if index == 0 {
+                assert_eq!(rate.frames(), 36);
+            }
+        }
+        assert!(rate.settled());
+        assert!(
+            (rate.per_second - 12.0).abs() < 0.001,
+            "{}",
+            rate.per_second
+        );
+        assert_eq!(rate.span_seconds(), 9);
+    }
+
+    #[test]
+    fn the_frame_rate_survives_a_minute_and_an_hour_boundary() {
+        let mut minute = FrameRate::default();
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 54)), 36);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 55, 57)), 36);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 56, 0)), 36);
+        feed(&mut minute, Some(packed(2026, 10, 24, 20, 56, 3)), 0);
+        assert!(
+            (minute.per_second - 12.0).abs() < 0.001,
+            "{}",
+            minute.per_second
+        );
+
+        let mut hour = FrameRate::default();
+        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 54)), 36);
+        feed(&mut hour, Some(packed(2026, 10, 24, 20, 59, 57)), 36);
+        feed(&mut hour, Some(packed(2026, 10, 24, 21, 0, 0)), 36);
+        feed(&mut hour, Some(packed(2026, 10, 24, 21, 0, 3)), 0);
+        assert!(
+            (hour.per_second - 12.0).abs() < 0.001,
+            "{}",
+            hour.per_second
+        );
     }
 
     #[test]
@@ -917,6 +1074,17 @@ mod tests {
     }
 
     #[test]
+    fn the_file_length_is_kilobytes_and_matches_a_whole_file_transfer() {
+        let reply: Value = serde_json::from_str(
+            r#"{"Name":"OPFileQuery","OPFileQuery":[{"BeginTime":"2026-10-24 10:34:00","EndTime":"2026-10-24 10:40:00","FileLength":"0x0000A3E8","FileName":"/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264"}],"Ret":100}"#,
+        )
+        .expect("json");
+        let files = parse_files(&reply);
+        assert_eq!(files[0].bytes, 41_960 * 1024);
+        assert_eq!(files[0].bytes, 42_967_040);
+    }
+
+    #[test]
     fn a_file_list_parses_the_fields_the_device_sends() {
         let reply: Value = serde_json::from_str(
             r#"{"Name":"OPFileQuery","OPFileQuery":[{"BeginTime":"2026-10-24 20:45:00","DiskNo":0,"EndTime":"2026-10-24 20:50:00","FileLength":"0x000082d5","FileName":"/idea0/2026-10-24/001/20.45.00-20.50.00[R][@176d][0].h264","SerialNo":0}],"Ret":100}"#,
@@ -924,7 +1092,7 @@ mod tests {
         .expect("json");
         let files = parse_files(&reply);
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].bytes, 0x82d5);
+        assert_eq!(files[0].bytes, 0x82d5 * 1024);
         assert_eq!(files[0].begin, "2026-10-24 20:45:00");
         assert_eq!(files[0].disk, Some(0));
     }

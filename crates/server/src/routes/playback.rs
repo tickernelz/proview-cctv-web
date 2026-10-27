@@ -1,15 +1,17 @@
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
 use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
 use proview_core::cloud::MISSING_CLOUD_IDENTITY;
 use proview_core::config::Config;
 use proview_core::dvrip::playback::{
-    access_unit, is_video, shift, FrameRate, MediaReader, PlaybackFile, RecordKind, Session,
+    access_unit, codec_of, is_video, shift, FrameRate, MediaReader, PlaybackFile, RecordKind,
+    Session, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
+use proview_core::media::Codec;
 use proview_core::provider::{p2p, rps, VendorSession};
 use proview_core::session::Store;
 use proview_core::source::{Fmp4Splitter, Piece};
@@ -25,7 +27,11 @@ use tokio::process::Command;
 use crate::routes::{fail, restore, session_id, Failure};
 
 const RANGE_WAIT: Duration = Duration::from_secs(8);
-const KEY_GRACE: usize = 96;
+const PRIME_WAIT: Duration = Duration::from_secs(8);
+const DEFAULT_WINDOW: u32 = 60;
+const MIN_WINDOW: u32 = 5;
+const MAX_WINDOW: u32 = 600;
+const KEY_GRACE: usize = 240;
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![files, script]
@@ -69,8 +75,22 @@ pub async fn files(
     if device.contains('/') || device.contains("..") {
         return Err(fail(Status::BadRequest, "invalid device id"));
     }
-    let begin = begin.unwrap_or_else(|| "2026-10-24 00:00:00".to_string());
-    let end = end.unwrap_or_else(|| "2026-10-25 00:00:00".to_string());
+    let begin = begin
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            fail(
+                Status::BadRequest,
+                "begin is required as 'YYYY-MM-DD HH:MM:SS' in device time",
+            )
+        })?;
+    let end = end
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            fail(
+                Status::BadRequest,
+                "end is required as 'YYYY-MM-DD HH:MM:SS' in device time",
+            )
+        })?;
     let channel = channel.unwrap_or(0);
     let kind = kind.unwrap_or_else(|| "h264".to_string());
     let started = Instant::now();
@@ -177,9 +197,17 @@ struct WatchQuery {
     begin: String,
     end: String,
     start: Option<u32>,
+    window: Option<u32>,
 }
 
-fn ffmpeg(fps: f64) -> Command {
+fn demuxer(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "h264",
+        Codec::H265 => "hevc",
+    }
+}
+
+fn ffmpeg(codec: Codec, fps: Option<f64>) -> Command {
     let binary = std::env::var("PROVIEW_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
     let mut command = Command::new(binary);
     command.args([
@@ -193,9 +221,12 @@ fn ffmpeg(fps: f64) -> Command {
         "-analyzeduration",
         "0",
         "-f",
-        "hevc",
-        "-framerate",
-        &format!("{fps:.3}"),
+        demuxer(codec),
+    ]);
+    if let Some(fps) = fps {
+        command.args(["-framerate", &format!("{fps:.3}")]);
+    }
+    command.args([
         "-i",
         "pipe:0",
         "-c:v",
@@ -222,7 +253,8 @@ fn ffmpeg(fps: f64) -> Command {
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     command
 }
 
@@ -244,7 +276,7 @@ fn text_frame(payload: serde_json::Value) -> ws::Message {
     ws::Message::Text(payload.to_string())
 }
 
-#[get("/ws/playback?<device>&<channel>&<name>&<begin>&<end>&<start>")]
+#[get("/ws/playback?<device>&<channel>&<name>&<begin>&<end>&<start>&<window>")]
 #[allow(clippy::too_many_arguments)]
 pub fn watch(
     ws: ws::WebSocket,
@@ -254,6 +286,7 @@ pub fn watch(
     begin: String,
     end: String,
     start: Option<u32>,
+    window: Option<u32>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
@@ -270,12 +303,17 @@ pub fn watch(
         begin,
         end,
         start,
+        window,
     };
     let config = cfg.inner().clone();
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
             let channel = params.channel.unwrap_or(0);
             let from = params.start.unwrap_or(0);
+            let window = params
+                .window
+                .unwrap_or(DEFAULT_WINDOW)
+                .clamp(MIN_WINDOW, MAX_WINDOW);
             let file = PlaybackFile {
                 name: params.name.clone(),
                 begin: shift(&params.begin, from).unwrap_or_else(|| params.begin.clone()),
@@ -334,6 +372,7 @@ pub fn watch(
             let mut pending: Vec<Vec<u8>> = Vec::new();
             let mut key_frames = 0usize;
             let mut video = 0usize;
+            let mut codec = None;
             let mut first_key = Instant::now();
             let mut priming = true;
             while priming {
@@ -358,12 +397,16 @@ pub fn watch(
                         return Ok(());
                     }
                 };
+                if record.id != PLAYBACK_DATA {
+                    continue;
+                }
                 reader.push(&record.payload);
                 while let Some(frame) = reader.next_record() {
                     if frame.kind == RecordKind::Key {
                         key_frames += 1;
                         if key_frames == 1 {
                             first_key = Instant::now();
+                            codec = codec_of(&access_unit(&frame));
                         }
                     }
                     let mut bytes = Vec::new();
@@ -373,25 +416,33 @@ pub fn watch(
                         pending.push(bytes);
                     }
                 }
-                if key_frames >= 2 && rate.settled() {
+                if rate.settled() && key_frames >= 3 {
                     priming = false;
                 }
-                if video >= KEY_GRACE || first_key.elapsed() > Duration::from_secs(4) {
+                if video >= KEY_GRACE || first_key.elapsed() > PRIME_WAIT {
                     priming = false;
                 }
             }
 
-            if key_frames == 0 {
-                let _ = stream
-                    .send(text_frame(serde_json::json!({
-                        "type": "error",
-                        "message": "the device streamed no keyframe inside the priming window",
-                    })))
-                    .await;
-                return Ok(());
-            }
-            let fps = rate.per_second;
-            let mut child = match ffmpeg(fps).spawn() {
+            let codec = match codec {
+                Some(codec) => codec,
+                None => {
+                    let message = if key_frames == 0 {
+                        "the device streamed no keyframe inside the priming window"
+                    } else {
+                        "the keyframe carried no parameter sets, so the codec is unknown"
+                    };
+                    let _ = stream
+                        .send(text_frame(serde_json::json!({
+                            "type": "error",
+                            "message": message,
+                        })))
+                        .await;
+                    return Ok(());
+                }
+            };
+            let fps = rate.settled().then_some(rate.per_second);
+            let mut child = match ffmpeg(codec, fps).spawn() {
                 Ok(child) => child,
                 Err(error) => {
                     let _ = stream
@@ -411,32 +462,60 @@ pub fn watch(
                 Some(stdout) => stdout,
                 None => return Ok(()),
             };
-            let stderr = child.stderr.take();
+            let stderr = child.stderr.take().map(|mut handle| {
+                tokio::spawn(async move {
+                    let mut tail = String::new();
+                    let mut chunk = [0u8; 2048];
+                    while let Ok(read) = handle.read(&mut chunk).await {
+                        if read == 0 {
+                            break;
+                        }
+                        tail.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                        if tail.len() > 4096 {
+                            tail = tail.chars().skip(tail.chars().count() - 2048).collect();
+                        }
+                    }
+                    tail
+                })
+            });
             let _ = stream
                 .send(text_frame(serde_json::json!({
                     "type": "status",
                     "message": "transcoding the clip",
-                    "fps": (fps * 1000.0).round() / 1000.0,
+                    "codec": demuxer(codec),
+                    "fps": fps.map(|value| (value * 1000.0).round() / 1000.0),
+                    "fpsSettled": rate.settled(),
+                    "keySpan": rate.span_seconds(),
                     "primedFrames": video,
                     "primedKeys": key_frames,
                     "primeMs": queued.elapsed().as_millis() as u64,
+                    "windowSec": window,
                 })))
                 .await;
 
             let primed = pending;
             let stop_file = file.clone();
+            let window_frames = (f64::from(window) * fps.unwrap_or(25.0)).ceil() as usize;
             let pump = tokio::spawn(async move {
                 for frame in primed {
                     if stdin.write_all(&frame).await.is_err() {
-                        return video;
+                        return (video, false);
                     }
                 }
                 let mut written = 0usize;
+                let mut capped = false;
                 loop {
+                    if written >= window_frames {
+                        capped = true;
+                        break;
+                    }
                     let record = match session.frame(Duration::from_secs(10)).await {
                         Ok(Some(record)) => record,
                         _ => break,
                     };
+                    if record.id != PLAYBACK_DATA {
+                        continue;
+                    }
                     reader.push(&record.payload);
                     let mut keep = true;
                     while let Some(frame) = reader.next_record() {
@@ -455,7 +534,7 @@ pub fn watch(
                 }
                 let _ = stdin.shutdown().await;
                 let _ = session.stop(&stop_file, channel).await;
-                written
+                (written, capped)
             });
 
             let mut splitter = Fmp4Splitter::new();
@@ -463,11 +542,24 @@ pub fn watch(
             let mut init_sent = false;
             let mut sent = 0u64;
             let mut first_frame: Option<u64> = None;
-            loop {
-                let read = match stdout.read(&mut buffer).await {
-                    Ok(0) => break,
-                    Ok(read) => read,
-                    Err(_) => break,
+            let mut closed_by_client = false;
+            'relay: loop {
+                let read = tokio::select! {
+                    biased;
+                    incoming = stream.next() => {
+                        match incoming {
+                            None | Some(Err(_)) | Some(Ok(ws::Message::Close(_))) => {
+                                closed_by_client = true;
+                                break 'relay;
+                            }
+                            Some(Ok(_)) => continue,
+                        }
+                    }
+                    read = stdout.read(&mut buffer) => match read {
+                        Ok(0) => break,
+                        Ok(read) => read,
+                        Err(_) => break,
+                    },
                 };
                 for piece in splitter.push(&buffer[..read]) {
                     let payload = match piece {
@@ -488,42 +580,47 @@ pub fn watch(
                         .await
                         .is_err()
                     {
-                        break;
+                        closed_by_client = true;
+                        break 'relay;
                     }
                 }
             }
-            let written = pump.await.unwrap_or(0);
-            let status = child.try_wait();
+            drop(stdout);
+            let _ = child.start_kill();
+            let mut pump = pump;
+            let (written, capped) =
+                match tokio::time::timeout(Duration::from_secs(2), &mut pump).await {
+                    Ok(Ok(result)) => result,
+                    _ => {
+                        pump.abort();
+                        let _ = pump.await;
+                        (0, false)
+                    }
+                };
+            let _ = child.wait().await;
             if let Some(stderr) = stderr {
-                let mut text = String::new();
-                let mut handle = stderr;
-                use tokio::io::AsyncReadExt as _;
-                let mut chunk = [0u8; 2048];
-                while let Ok(read) = handle.read(&mut chunk).await {
-                    if read == 0 {
-                        break;
+                if let Ok(tail) = stderr.await {
+                    if !tail.trim().is_empty() {
+                        tracing::warn!(detail = %tail.trim(), "playback ffmpeg reported");
                     }
-                    text.push_str(&String::from_utf8_lossy(&chunk[..read]));
-                    if text.len() > 2048 {
-                        break;
-                    }
-                }
-                if !text.trim().is_empty() {
-                    tracing::warn!(detail = %text.trim(), "playback ffmpeg reported");
                 }
             }
-            let _ = stream
-                .send(text_frame(serde_json::json!({
-                    "type": "stats",
-                    "init": init_sent,
-                    "framesWritten": written,
-                    "bytes": sent,
-                    "firstFrameMs": first_frame,
-                    "fps": (fps * 1000.0).round() / 1000.0,
-                    "exit": status.ok().flatten().and_then(|status| status.code()),
-                })))
-                .await;
-            let _ = child.kill().await;
+            if !closed_by_client {
+                let _ = stream
+                    .send(text_frame(serde_json::json!({
+                        "type": "stats",
+                        "init": init_sent,
+                        "framesWritten": written,
+                        "bytes": sent,
+                        "firstFrameMs": first_frame,
+                        "fps": fps.map(|value| (value * 1000.0).round() / 1000.0),
+                        "fpsSettled": rate.settled(),
+                        "codec": demuxer(codec),
+                        "windowSec": window,
+                        "capped": capped,
+                    })))
+                    .await;
+            }
             Ok(())
         })
     }))

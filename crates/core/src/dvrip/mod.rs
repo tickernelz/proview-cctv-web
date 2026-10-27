@@ -2,8 +2,8 @@ pub mod client;
 pub mod control;
 pub mod crypto;
 pub mod frame;
-pub mod talk;
 pub mod playback;
+pub mod talk;
 
 pub const MAGIC: u8 = 0xff;
 pub const HEADER_LEN: usize = 20;

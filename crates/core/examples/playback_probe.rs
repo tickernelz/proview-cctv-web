@@ -24,6 +24,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         value => value,
     };
     let frames_wanted: usize = env("PROVIEW_FRAMES").parse().unwrap_or(48);
+    let whole = !env("PROVIEW_WHOLE").is_empty();
+    let pick = env("PROVIEW_PICK");
     let seek: u32 = env("PROVIEW_SEEK").parse().unwrap_or(0);
     if account.is_empty() || password.is_empty() || serial.is_empty() {
         return Err("set PROVIEW_EMAIL, PROVIEW_PASSWORD and PROVIEW_DEVICE_SERIAL".into());
@@ -104,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let started = Instant::now();
-    let files = connection.files(0, &begin, &end, &kind).await?;
+    let mut files = connection.files(0, &begin, &end, &kind).await?;
     let total: u64 = files.iter().map(|file| file.bytes).sum();
     eprintln!(
         "files    {:.2}s count={} bytes={total}",
@@ -115,7 +117,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("window   {} .. {}", first.begin, last.end);
         eprintln!("first    {} {}", first.name, first.bytes);
     }
-    let mut file = match files.last() {
+    if pick == "largest" {
+        files.sort_by_key(|file| std::cmp::Reverse(file.bytes));
+    }
+    if let Some(chosen) = files.first() {
+        eprintln!("chosen   {} {} bytes", chosen.name, chosen.bytes);
+    }
+    let mut file = match if pick == "largest" {
+        files.first()
+    } else {
+        files.last()
+    } {
         Some(file) => file.clone(),
         None => return Ok(()),
     };
@@ -140,13 +152,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = MediaReader::new();
     let mut rate = FrameRate::default();
     let mut records = 0usize;
+    let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut deltas_since_key = 0usize;
     let mut key_stamps: Vec<u32> = Vec::new();
     let mut sink = Vec::new();
     let mut frames = 0usize;
     let mut bytes = 0usize;
     let started = Instant::now();
     let mut first_byte = None;
-    while frames < frames_wanted {
+    while frames < frames_wanted || whole {
         match connection.frame(Duration::from_secs(8)).await? {
             Some(media) => {
                 if first_byte.is_none() {
@@ -161,9 +175,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reader.push(&media.payload);
                 while let Some(record) = reader.next_record() {
                     records += 1;
+                    if record.kind == proview_core::dvrip::playback::RecordKind::Key {
+                        if let Some(seconds) = record
+                            .stamp
+                            .and_then(proview_core::dvrip::playback::stamp_seconds)
+                        {
+                            eprintln!(
+                                "gop      key {seconds} after {deltas_since_key} deltas frames={} keys={} settled={} fps={:.3}",
+                                rate.frames(),
+                                rate.keys(),
+                                rate.settled(),
+                                rate.per_second
+                            );
+                        }
+                        deltas_since_key = 0;
+                    } else if record.kind == proview_core::dvrip::playback::RecordKind::Delta {
+                        deltas_since_key += 1;
+                    }
+                    *kinds.entry(format!("{:?}", record.kind)).or_insert(0) += 1;
                     rate.observe(&record);
                     if let Some(stamp) = record.stamp {
-                        if key_stamps.len() < 4 {
+                        if whole || key_stamps.len() < 4 {
                             key_stamps.push(stamp);
                         }
                     }
@@ -200,16 +232,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         first_byte,
         started.elapsed().as_secs_f64()
     );
+    eprintln!("kinds    {kinds:?}");
     eprintln!(
-        "records  {records} skipped={} fps={:.3} settled={} key_stamps={:?}",
+        "records  {records} skipped={} fps={:.3} settled={} span={} keys={} key_stamps={:?}",
         reader.skipped(),
         rate.per_second,
         rate.settled(),
+        rate.span_seconds(),
+        rate.keys(),
         key_stamps
     );
     if !dump.is_empty() {
         std::fs::write(&dump, &sink)?;
         eprintln!("dump     {dump} {} bytes", sink.len());
+    }
+    if whole {
+        eprintln!(
+            "whole    bytes={bytes} wall={:.2}s keys={} first_key={} last_key={}",
+            started.elapsed().as_secs_f64(),
+            key_stamps.len(),
+            key_stamps
+                .first()
+                .map(|stamp| proview_core::dvrip::playback::stamp_seconds(*stamp).unwrap_or(0))
+                .unwrap_or(0),
+            key_stamps
+                .last()
+                .map(|stamp| proview_core::dvrip::playback::stamp_seconds(*stamp).unwrap_or(0))
+                .unwrap_or(0)
+        );
     }
     let _ = connection.stop(&file, 0).await;
     Ok(())
