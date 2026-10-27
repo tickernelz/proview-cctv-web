@@ -208,7 +208,6 @@ async fn login(
 fn logout(state: &State<CloudState>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
     if let Some(cookie) = cookies.get_private(COOKIE) {
         state.sessions.remove(cookie.value());
-        state.forget_devices(cookie.value());
         cookies.remove_private(cookie);
     }
     Json(StatusBody {

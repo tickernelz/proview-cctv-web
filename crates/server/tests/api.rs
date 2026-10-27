@@ -312,3 +312,107 @@ fn live_stats_needs_a_session_and_starts_empty() {
     assert_eq!(body["active_streams"], 0);
     assert_eq!(body["streams"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn the_tour_routes_are_mounted_and_refuse_an_anonymous_caller() {
+    let client = client();
+    assert_eq!(
+        client.get("/api/device/controls/tour").dispatch().status(),
+        Status::Unauthorized
+    );
+    for uri in [
+        "/api/device/controls/tour/start?tour=1",
+        "/api/device/controls/tour/stop?tour=1",
+        "/api/device/controls/tour/add?tour=1&preset=1",
+        "/api/device/controls/tour/clear?tour=1",
+    ] {
+        assert_eq!(
+            client.post(uri).dispatch().status(),
+            Status::Unauthorized,
+            "{uri}"
+        );
+    }
+}
+
+#[test]
+fn apmode_routes_require_a_session() {
+    let client = client();
+    let plan = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "" }).to_string())
+        .dispatch();
+    assert_eq!(plan.status(), Status::Unauthorized);
+    let provision = client
+        .post("/api/apmode/provision")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "", "mode": "dvrip" }).to_string())
+        .dispatch();
+    assert_eq!(provision.status(), Status::Unauthorized);
+    assert_eq!(
+        client.get("/api/apmode/provision").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        client.delete("/api/apmode/provision").dispatch().status(),
+        Status::Unauthorized
+    );
+}
+
+#[test]
+fn the_apmode_plan_names_the_payload_size_without_sending_anything() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM-LAB", "password": "rahasia123" }).to_string())
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body = body(response);
+    assert_eq!(body["record_bytes"], 24);
+    assert_eq!(body["words"], 70);
+    assert_eq!(body["datagrams_per_round"], 71);
+    assert_eq!(body["trailer_bytes"], 500);
+    assert_eq!(body["symbol_gap_ms"], 20);
+    assert_eq!(body["round_gap_ms"], 5);
+    assert!(body["datagram_bytes_per_round"].as_u64().unwrap() > 70 * 0x80);
+    assert!(body.get("info").is_none());
+    assert!(body.get("record_hex").is_none());
+}
+
+#[test]
+fn an_empty_ssid_or_an_unknown_mode_is_refused_before_any_socket_is_opened() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let empty = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "  ", "password": "x" }).to_string())
+        .dispatch();
+    assert_eq!(empty.status(), Status::BadRequest);
+    assert!(body(empty)["message"]
+        .as_str()
+        .unwrap()
+        .contains("ssid is required"));
+    let mode = client
+        .post("/api/apmode/provision")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "", "mode": "carrier-pigeon" }).to_string())
+        .dispatch();
+    assert_eq!(mode.status(), Status::BadRequest);
+}
+
+#[test]
+fn stopping_a_run_that_was_never_started_is_a_not_found() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    assert_eq!(
+        client.get("/api/apmode/provision").dispatch().status(),
+        Status::NotFound
+    );
+    assert_eq!(
+        client.delete("/api/apmode/provision").dispatch().status(),
+        Status::NotFound
+    );
+}

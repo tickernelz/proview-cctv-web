@@ -175,27 +175,32 @@ async fn lookup(
     if !plain_token(serial) {
         return Err(fail(Status::BadRequest, "that is not a device serial"));
     }
-    let devices = match state.cached_devices(session) {
-        Some(devices) => devices,
-        None => {
-            let devices = state
-                .envelope()
-                .device_list(token)
-                .await
-                .map_err(|error| vendor_failure(&error))?;
-            state.keep_devices(session, &devices);
-            devices
-        }
-    };
+    let cached = state.cached_devices(session);
+    if let Some(found) = cached
+        .as_ref()
+        .and_then(|devices| find_device(devices, serial))
+    {
+        return Ok(found);
+    }
+    let devices = state
+        .envelope()
+        .device_list(token)
+        .await
+        .map_err(|error| vendor_failure(&error))?;
+    state.keep_devices(session, &devices);
+    find_device(&devices, serial).ok_or_else(|| {
+        fail(
+            Status::NotFound,
+            format!("{serial} is not a device on this account"),
+        )
+    })
+}
+
+fn find_device(devices: &[CloudDevice], serial: &str) -> Option<CloudDevice> {
     devices
-        .into_iter()
+        .iter()
         .find(|device| device.uuid.eq_ignore_ascii_case(serial))
-        .ok_or_else(|| {
-            fail(
-                Status::NotFound,
-                format!("{serial} is not a device on this account"),
-            )
-        })
+        .cloned()
 }
 
 fn auth_codes(device: &CloudDevice) -> Vec<String> {
@@ -235,7 +240,7 @@ async fn query(
         .clamp(1, proview_core::cloud::alarm::PAGE_LIMIT);
     let client = state.alarms();
     let mut last = CloudError::Rejected("the alarm centre refused every auth code".to_string());
-    for (index, code) in codes.into_iter().enumerate() {
+    for code in codes {
         let request = AlarmQuery {
             serial: device.uuid.clone(),
             auth_code: code,
@@ -247,16 +252,17 @@ async fn query(
         };
         match client.list(&request).await {
             Ok(page) => return Ok(page),
-            Err(CloudError::Rejected(reason)) if index + 1 < AUTH_KEYS.len() => {
-                if !reason.to_lowercase().contains("authcode") {
-                    return Err(vendor_failure(&CloudError::Rejected(reason)));
-                }
+            Err(CloudError::Rejected(reason)) if is_authcode_refusal(&reason) => {
                 last = CloudError::Rejected(reason);
             }
             Err(error) => return Err(vendor_failure(&error)),
         }
     }
     Err(vendor_failure(&last))
+}
+
+fn is_authcode_refusal(reason: &str) -> bool {
+    reason.to_lowercase().contains("authcode")
 }
 
 fn object_name(object: &str) -> Result<String, Failure> {
@@ -360,6 +366,13 @@ mod tests {
             assert!(json.get(key).is_some(), "{key} missing from {json}");
         }
         assert!(json.get("poll_seconds").is_none());
+    }
+
+    #[test]
+    fn only_an_authcode_refusal_moves_to_the_next_code() {
+        assert!(is_authcode_refusal("check authcode failed (400)"));
+        assert!(!is_authcode_refusal("do_alarm_query invalid args (400)"));
+        assert!(!is_authcode_refusal("cloud is not reachable: timed out"));
     }
 
     #[test]
