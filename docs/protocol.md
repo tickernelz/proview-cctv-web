@@ -768,6 +768,26 @@ built once and in order.
 That makes the encrypted login the single gate for live video, and 4C.10 records
 what has already been ruled out about its key.
 
+### 4C.12 The media cipher is not the CDataEncDecAES object we can reach
+
+The RTTI for `MNetSDK::CDataEncDecAES` does lead to its vtable without symbols:
+the type name sits at `.rodata` `0x5b3177`, the only relocation whose addend is
+that address is at `0x1f40898` (so its typeinfo starts at `0x1f40890`), and the
+only relocation whose addend is `0x1f40890` is at `0x1f40838` — which puts the
+vtable at **`0x1f40830`**, with `D1`/`D0` at `+0x10`/`+0x18` and five slots
+after them (`0xf2e1cc`-range destructors, then `0xf2e1d8`, `0xf228a4`,
+`0xf228bc`, `0xf2e464`, `0xf2e704`).
+
+Patching those five slots at runtime inside the harness (data patch, base from
+`dl_iterate_phdr`) and running a full live session produced **zero calls**: no
+slot fired even once. So the media login is not encrypted through this object in
+this code path, and hooking it cannot yield the key.
+
+What that leaves, in order of cost: the constructor that stores the key
+(`CDataEncDecAES(char const*, int, void const*, int)`, address still unknown
+because the code that stores `0x1f40830` was not located), or a different
+encryption object entirely, or the `CProtocolNetIP` layer that builds the login.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
