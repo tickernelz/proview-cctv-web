@@ -226,7 +226,6 @@ export async function startBrowser(extraArgs = []) {
         close: () => send('Target.closeTarget', { targetId }),
       };
     },
-    send,
     async close() {
       socket.close();
       await ended(child);
