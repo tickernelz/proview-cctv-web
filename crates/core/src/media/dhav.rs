@@ -21,6 +21,16 @@ impl MediaCipher {
         Self::new(&MEDIA_CHANNEL_KEY)
     }
 
+    pub fn from_text(key: &str) -> Option<Self> {
+        let bytes = key.as_bytes();
+        if bytes.len() != BLOCK {
+            return None;
+        }
+        let mut block = [0u8; BLOCK];
+        block.copy_from_slice(bytes);
+        Some(Self::new(&block))
+    }
+
     pub fn encrypt(&self, plain: &[u8]) -> Vec<u8> {
         let padded = plain.len().div_ceil(BLOCK) * BLOCK;
         let mut out = vec![0u8; padded];
