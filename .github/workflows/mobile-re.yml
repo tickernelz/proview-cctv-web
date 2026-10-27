@@ -1,0 +1,81 @@
+name: mobile-re
+
+on:
+  workflow_dispatch:
+    inputs:
+      vendor_archive_url:
+        description: Optional zip with the arm64 split APKs (base + config.arm64_v8a)
+        required: false
+      vendor_archive_sha256:
+        description: SHA256 of that zip, required with the URL
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  boot-arm64:
+    name: boot arm64 emulator and install an arm64 app
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the payload
+        env:
+          VENDOR_URL: ${{ inputs.vendor_archive_url }}
+          VENDOR_SHA: ${{ inputs.vendor_archive_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .mobile
+          if [ -n "${VENDOR_URL}" ]; then
+            echo "payload=vendor" >> "$GITHUB_ENV"
+            curl -fsSL "${VENDOR_URL}" -o .mobile/payload.zip
+            printf '%s  %s\n' "${VENDOR_SHA}" .mobile/payload.zip | shasum -a 256 -c -
+            unzip -q .mobile/payload.zip -d .mobile/splits
+            ls -l .mobile/splits
+          else
+            echo "payload=termux" >> "$GITHUB_ENV"
+            curl -fsSL -o .mobile/termux-arm64.apk \
+              https://github.com/termux/termux-app/releases/download/v0.118.3/termux-app_v0.118.3+github-debug_arm64-v8a.apk
+            ls -l .mobile/termux-arm64.apk
+          fi
+
+      - name: Boot the emulator and install
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: arm64-v8a
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-audio -no-boot-anim -no-snapshot -writable-system
+          script: |
+            set -euo pipefail
+            adb root
+            adb wait-for-device
+            echo "abi=$(adb shell getprop ro.product.cpu.abi)"
+            if [ "${payload}" = "vendor" ]; then
+              adb install-multiple -r .mobile/splits/*.apk
+              adb shell pm list packages | grep -F com.proview.cctv
+              adb shell monkey -p com.proview.cctv -c android.intent.category.LAUNCHER 1
+            else
+              adb install -r .mobile/termux-arm64.apk
+              adb shell pm list packages | grep -F com.termux
+              adb shell dumpsys package com.termux | grep -F primaryCpuAbi
+            fi
+            sleep 10
+            adb shell dumpsys activity activities | grep -E "mResumedActivity|topResumedActivity" | head -3
+
+      - name: Collect logs
+        if: always()
+        run: |
+          adb logcat -d > .mobile/logcat.txt 2>/dev/null || true
+          adb shell getprop > .mobile/getprop.txt 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mobile-re-${{ github.run_id }}
+          path: .mobile/*.txt
+          if-no-files-found: ignore
