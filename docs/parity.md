@@ -15,12 +15,12 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Cloud account login | `com.xworld.activity.login.*`, `IXMAccount::AccountLogin`, `XM_Video_Login_XMAccount` | blocked | request shape known (`POST /webservice/app/user/logInByAccount`, cookie session); CSS JSON envelope + password digest not solved |
+| Cloud account login | `com.xworld.activity.login.*`, `IXMAccount::AccountLogin`, `XM_Video_Login_XMAccount` | blocked | the vendor SDK harness (ZHA-3932) proves email + password → `accessToken`, the platform exchange and the signed `/v3/<tsid>/<sig>.rs` envelope; it needs `libFunSDK.so` + an aarch64 chroot and cannot ship, so the app has no login. The v2 portal envelope and password digest remain unsolved for our own client. See `protocol.md` 3A |
 | Session kept server side | design | done | private `pvw_session` cookie → in-memory vendor session; vendor token never reaches the browser |
 | Session expiry handling | design | partial | server expires and returns 401; UI shows the error but does not re-prompt silently |
 | Remember account | `SplashActivity`, `loginExist`, `savePwdToken` strings | blocked | needs the flow in the previous rows |
 | Logout | `IXMAccount::AccountUnBindingWX`, `/webservice/app/user/logOut` | partial | local logout works; vendor-side logout call not wired |
-| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | the app fetches it from a certificate-pinned host (`pub-dscn.secu100.net`) and from `as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs`, whose path signature is per request; see `cloud-app-surface.md` |
+| Device list | `DeviceFragment`, `com.xworld.data.GroupDeviceListResp`, `IXMAccount::GetDevList` | blocked | the app fetches it from a certificate-pinned host (`pub-dscn.secu100.net`) and from `as-ams.jftechws.com/mdsharemylist/v1/<tsid>/<sig>.rs`, whose path signature is per request; the SDK harness does read the list (`msdlistCode`, `InitDevInfo`) but only inside the vendor library. See `cloud-app-surface.md` and `protocol.md` 3A |
 | Device online status | `pub-status.secu100.net:7700-7706`, `IXMCloud::GetDevsStatus` | blocked | same cloud blocker |
 | Device identity and capabilities by serial | iOS capture 2026-10-27: `POST https://caps.xmcsrv.net/api/asMsgQ` `{"method":"reqCaps","body":{"caps":[…],"sn":…}}` with no session | done | `GET /api/cloud/device-caps?sn=<serial>` over `cloud::app::CapsClient`: model, hardware id, firmware, `lastWanIp` and the capability block; empty serial 400, unknown serial 404. See `cloud-app-surface.md` |
 
@@ -28,8 +28,8 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in release `nightly-1` (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
-| Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; release `nightly-1` carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
+| Self-hosted HTTP server | `crates/server`, `--listen` | done | 8 target binaries in every tag release, `v0.2.4` included (linux gnu/musl x86_64+aarch64, windows msvc x86_64+aarch64, macOS x86_64+aarch64) |
+| Native desktop shell (Tauri 2) | `src-tauri/` | done | CI builds it on ubuntu-22.04, windows-latest, macos-latest; each tag release carries msi/nsis, dmg (x64/arm64/universal), AppImage/deb/rpm |
 | Installer signing | — | blocked | no Apple Developer or Windows signing certificate (decision 2026-10-26); artefacts ship unsigned with `SHA256SUMS` |
 | Desktop app run on a real desktop | — | blocked | built and linked in CI, never launched on a graphical session; needs a person to click through |
 | Vendor-credential storage in OS keychain | requirement | partial | `src-tauri/src/keychain.rs` stores one JSON blob per profile through `keyring` (macOS Keychain, Windows Credential Manager, Secret Service), read at startup and writable with `proview-desktop --store-credentials`; the CLI round trip is exercised, the desktop window is not |
@@ -102,9 +102,11 @@ not is listed as `blocked` with the missing input.
 
 ## Blockers, consolidated
 
-1. **Account login envelope** — `CssCenter` JSON message type and body for
-   `logInByAccount`, plus the password digest. Everything in “Platform core” and
-   most of the cloud rows depend on this one fact.
+1. **Account login without the vendor library** — the envelope itself is proven
+   (signed `/v3/<tsid>/<sig>.rs`, `protocol.md` 3A), but producing the per-request
+   `sig` and the encrypted body needs key material that only lives in
+   `libFunSDK.so`. Everything in “Platform core” and most of the cloud rows depend
+   on a client that can do it without the vendor library.
 2. **Device transport** — RTSP (554) or DVRIP (34567) reachability to the
    camera, or the P2P path (`xmnat` + `rps`/KCP). Live view, playback, PTZ and
    audio all sit behind it.

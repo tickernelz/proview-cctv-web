@@ -1,8 +1,9 @@
 # Video support per webview
 
-The app decodes H.264 in fragmented MP4 as the primary path, delivered over
-HTTP today and over a binary WebSocket once the live transport lands. H.265 is
-detected at runtime and reported, never assumed.
+The app decodes H.264 in fragmented MP4 delivered over a binary WebSocket into
+MediaSource, and offers a second transport that hands HEVC access units to
+WebCodecs when the webview has it. H.265 is detected at runtime and reported,
+never assumed. Recorded clips still travel over HTTP.
 
 | Webview | Platform | H.264 fMP4 | H.265 | Notes |
 |---|---|---|---|---|

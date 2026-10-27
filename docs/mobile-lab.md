@@ -40,5 +40,7 @@ job fetches its payload at run time and verifies it by hash:
    `XMAccountAPI::IXMAccount::XM_Video_Login_XMAccount` (0xf3fc2c) and
    `GetServerDSNAndPort`, which yields the ALC host, the encrypted query and the
    `Set-Cookie` from inside the process. No pinning to defeat, no TLS to break.
-3. That supersedes the qemu-bionic harness of `notes/08` for anything that needs
-   the network, and it is reproducible in CI instead of a manual phone capture.
+3. That supersedes the out-of-tree qemu-bionic harness described in
+   `protocol.md` section 3A for anything that needs the network: the harness
+   answers the login envelope today but cannot ship, and the emulator route is
+   reproducible in CI instead of a manual phone capture.

@@ -97,6 +97,25 @@ cargo build --release -p proview-server
 The endpoint is metadata, not a frame path: calling it per device selection does
 not move the numbers in the tables above.
 
+## Settings API (measured 2026-10-27, release `v0.2.4`)
+
+`GET /api/settings` builds its answer from the static field table and the
+process environment; the file is read once at startup, so the call never touches
+the frame path. Measured on the shipped
+`proview-server-x86_64-unknown-linux-gnu` binary from `v0.2.4`, empty data
+directory, 20 fields, loopback:
+
+| Metric | Value |
+|---|---|
+| `GET /api/settings`, three runs | 0.49 ms / 0.50 ms / 0.44 ms |
+| `POST /api/settings`, one key | one staged write plus rename of a file under 1 KB |
+
+Reproduce:
+
+```sh
+for i in 1 2 3; do curl -s -o /dev/null -w '%{time_total}\n' http://127.0.0.1:8787/api/settings; done
+```
+
 ## Stream 2 live transports (measured 2026-10-26, `feat/stream2`)
 
 Same camera as above (PROVIEW IPC, `192.168.0.100`, main stream 2304×2592

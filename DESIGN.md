@@ -166,14 +166,31 @@ name. It is the answer to "why am I looking at this picture", so it never
 guesses: before a ticket exists it says `ticket pending`, and after a failure it
 says `Stream failed`.
 
-**Settings.** Appearance, connection, playback defaults and a server check
-panel. Connection reads `GET /api/config/mode` and writes it back with
-`POST /api/config/mode`; when the chosen mode cannot be served the server's own
-fallback notice is shown verbatim, prefixed with "Fallback:". The checks call
+**Settings.** Appearance, connection, playback defaults, configuration and a
+server check panel. Connection reads `GET /api/config/mode` and writes it back
+with `POST /api/config/mode`; when the chosen mode cannot be served the server's
+own fallback notice is shown verbatim, prefixed with "Fallback:". The checks call
 `/api/health`, `/api/me`, `/api/device/rtsp` and `/api/stream` and print the
 real status, including a refused camera address. Display preferences live in
 `localStorage`; the page never claims to have changed server state it did not
 change.
+
+**Configuration.** One fieldset per group (Cloud, Local network, Server,
+Streaming, Advanced), each field a label, its control and one line of hint — the
+hint carries the example or the consequence, never a second label. A key read
+once at startup says "needs restart" inside its label, so the marker travels
+with the field instead of living in a legend two screens away. Saving sends only
+what changed, and the apply row appears under the buttons only when a saved key
+needed a restart: the desktop shows **Restart the app**, a server says to restart
+the process, because a control that cannot work is worse than a sentence. Secret
+fields render empty with "stored, type to replace" as the placeholder; nothing
+reads a stored secret back into the page.
+
+**Settings before sign-in.** The same screen opens from the sign-in form, where
+no session exists yet. In that mode the shell drops the device rail and the Live
+and Grid links, the account chip and sign-out are absent, and `Back to sign in`
+takes the top-right place the account chip normally holds. The screen has to be
+complete without a session: this is the first thing a new install sees.
 
 **Lens roles.** The moving lens pans and tilts from the app; the fixed lens is
 aimed by turning the housing by hand. The picker labels each lens by role —

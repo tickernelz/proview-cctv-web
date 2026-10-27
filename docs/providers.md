@@ -6,7 +6,7 @@ recordings and settings.
 
 | Provider | Default | Transport | What it can do today |
 |---|---|---|---|
-| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | portal account login is unsolved, and the app's own login is behind a pinned host. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md` |
+| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | the app's account login is proven in the vendor SDK (ZHA-3932, `protocol.md` 3A) but not integrated: it needs `libFunSDK.so` + an aarch64 chroot. The v2 portal login is implemented and answers; the white-label account rejects it. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md` |
 | `local` | opt-in | LAN: DVRIP 34567, RTSP 554, HTTP 80 | RTSP `DESCRIBE` with Digest works against a real IPC; DVRIP login returns `ret 203` |
 
 ## Selection rules
@@ -76,7 +76,7 @@ Camera: single IP camera (IPC) at `192.168.0.100`, not a DVR/NVR.
 | TCP 554 (RTSP) | open, banner `H264DVR 1.0` (the OEM RTSP server name, also used on IPCs) |
 | `DESCRIBE /` without credentials | `401`, Digest realm `b891e7cc20b4a341` |
 | `DESCRIBE /` with Digest credentials | `200`, SDP: `m=video 0 RTP/AVP 98`, `a=rtpmap:98 H265/90000`, `a=framerate:25`, `m=audio 0 RTP/AVP 8`, `a=rtpmap:8 PCMA/8000` |
-| DVRIP login (`LoginType: DVRIP-Web`) | `ret 203` — credentials rejected; hash scheme for this firmware unsolved |
+| DVRIP login (`LoginType: DVRIP-Web`) | `Ret: 100`, `SessionID 0x00000017`, `DeviceType "IPC "`, `ChannelNum 1` with the vendor "sofia" 8-character hash. A login sent before the random-then-hash exchange is answered `Ret: 203`, which is where the early `ret 203` report came from |
 
 This camera offers **H.265 only** on both `stream=0` and `stream=1`, with G.711
 A-law audio. Consequences for the live path:
@@ -90,8 +90,14 @@ A-law audio. Consequences for the live path:
 
 ## Credential handling
 
-- Credentials live in the OS keychain (desktop) or the operator's secret store
-  (server). They are never written into a URL, a log line, or a capture.
+- Credentials never appear in a URL, a log line or a capture.
+- Desktop: the OS keychain (see below) holds the camera login for interactive
+  sign-in. Server: nothing is stored unless the operator saves it in Settings,
+  and then the camera password is written to `settings.json` in the data
+  directory — file permissions are the whole protection there, so point
+  `PROVIEW_DATA_DIR` at a directory only the service user can read.
+- A secret is written once and never read back: `GET /api/settings` reports
+  `set: true` and `value: null` for it.
 - `src-tauri/src/keychain.rs` stores one JSON blob per profile under service
   `proview-cctv` through `keyring` (macOS Keychain, Windows Credential Manager,
   Secret Service on Linux). Profiles default to `default` and are named by

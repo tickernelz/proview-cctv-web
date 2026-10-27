@@ -49,6 +49,13 @@ this call, i.e. inside that host's window. Inference (not proven): the minting
 request lives on the pinned `pub-dscn` connection, so the login envelope is behind
 certificate pinning.
 
+That gap was closed a different way on 2026-10-27: the vendor's own
+`libFunSDK.so` was run out of tree and the login envelope fell out of it
+(email + password → `accessToken`, the platform exchange, and the signed
+`/v3/<tsid>/<sig>.rs` path with a 96-hex AES body). `protocol.md` section 3A
+records it. It is a reference, not a shipped client: the SDK cannot be
+redistributed and the harness takes ~65 s per login.
+
 ## 3. Device list
 
 ```
@@ -126,11 +133,19 @@ Proved: host set; the identifiers above; the mall token exchange and its JWT cla
 layout; the share-list envelope; the unauthenticated `asMsgQ` caps call and the
 unauthenticated `appCaps` calls; that no call to `api.xmeye.net` happens at all.
 
-Not proved: how the JWT is minted, the device-list call itself, and any streaming or
-playback path. All three sit behind `pub-dscn.secu100.net`, which stayed tunnelled
+Not proved *from this capture*: how the JWT is minted, the device-list call itself,
+and any streaming or playback path. All three sit behind `pub-dscn.secu100.net`, which stayed tunnelled
 while every other vendor host decrypted, i.e. pinning rather than a missing
 proxying rule. Reaching it needs a jailbroken/hooked client or static work on the
 Mach-O, not another proxy export.
+
+Proved *since*, by running the vendor SDK out of tree (`protocol.md` section 3A,
+ZHA-3932): email + password yields the `accessToken`, the platform exchange on
+`boss22-api.xmcsrv.net` answers `code 2000`, login mode returns `msdlistCode`, and
+the signed envelope is `POST /v3/<tsid>/<sig>.rs` with `tsid` = `0000003` + epoch
+ms, a 32-hex per-request `sig`, a 96-hex body (AES over 12 random + 4-byte
+timestamp + 12-char seed) and no `UniqueCode` header. Still out of reach without
+the vendor library: producing that `sig` ourselves, and the media path.
 
 ## 8. What this project can use now
 
@@ -146,4 +161,7 @@ Mach-O, not another proxy export.
 2. `appCaps` as a cheap reachability and feature-flag probe for the cloud hosts.
 3. The portal path of section 10 stays as it is: the app's login is a different
    mechanism and does not make the v2 portal captcha/login any more solved.
+4. The SDK harness of `protocol.md` section 3A is a reference only. It needs
+   `libFunSDK.so`, an aarch64 chroot and ~65 s per login; none of that can ship
+   in a public repository, so the app still has no cloud account login.
 

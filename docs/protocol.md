@@ -90,6 +90,51 @@ Reply paths seen in the binary: `CssCenter/Header/ErrorNum`,
 `AlarmCenter/Header/*`, `CfgProtocol/Header/ErrorNum`,
 `StatusProtocol/Header/ErrorNum`, `Shadow/Header/ErrorNum`.
 
+## 3A. The signed cloud envelope, proven through the vendor SDK (2026-10-27)
+
+The vendor SDK runs out of tree: `libFunSDK.so` (arm64, 33,983,560 B) inside an
+aarch64 rootfs on qemu-user, chrooted, with a small stub library for the Android
+and JNI symbols it imports. `re/sdk_login.sh` (ZHA-3932, not in this repository)
+drives three steps and prints each result:
+
+1. **email + password → `accessToken`.** The SDK writes `loginparams.txt`; the
+   token is a JWT, HS256, `iss: rss`, `type: com`, 30-day `exp`, carrying `appKey`
+   and a hashed `account` claim. Observed on every run that reached this step.
+2. **Platform exchange.** `POST https://boss22-api.xmcsrv.net/account/userToken/login`
+   → `{"code":2000,"msg":"success", …}` with a device token.
+3. **Device list.** Login mode returns `msdlistCode`; `sdk.log` then carries
+   `InitDevInfo[...]` rows.
+
+Cost: about 65 s per login on this workstation (qemu, no KVM for this guest).
+
+The signed request shape, read from the SDK and from the harness traffic:
+
+```
+POST https://<host>/v3/<tsid>/<sig>.rs
+Accept: */*
+Accept-Charset: utf-8
+Accept-Encoding: gzip
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 96
+
+body: 96 lowercase hex characters
+```
+
+- `tsid` is 20 digits: the literal `0000003` followed by epoch milliseconds
+  (observed `0000003179372026023`).
+- `sig` is 32 hex characters derived per request, so a captured path cannot be
+  replayed. The mix of path, timestamp and key material that produces it was not
+  reimplemented outside the SDK; only its shape is known.
+- The 96 hex characters are the API-encrypted form of 28 bytes: 12 random bytes,
+  a 4-byte timestamp and a 12-character seed. The key stays inside the SDK.
+- This path carries **no** `UniqueCode` header. The `91000 Need UniqueCode`
+  refusal belongs to requests that arrive unsigned.
+
+Not in this repository: the SDK, the chroot, and the application key material the
+harness passes in. None of it is redistributable, and the server in this
+repository has no login integration — the harness proves the envelope, it does
+not ship a client.
+
 ## 4. Media paths
 
 Three are present in the SDK. In order of implementation cost:
@@ -108,7 +153,10 @@ Three are present in the SDK. In order of implementation cost:
 
 ## 5. Open items
 
-1. The CSS request envelope for account login (message type, body shape, digest).
+1. ~~The CSS request envelope for account login~~ — answered for the SDK path in
+   section 3A (signed `/v3/<tsid>/<sig>.rs` envelope, proven in the vendor SDK);
+   what is still open is a client that can produce it without the vendor library,
+   and the v2 portal's own captcha/login.
 2. `sign` / `sn` derivation for `/reqToken`.
 3. The discovery call that maps an application id to the live host:port set
    (`GetServerDSNAndPort`, `pub-cfg`).

@@ -34,9 +34,35 @@ Settings view and returned by `GET /api/settings`.
 3. Secret values (`PROVIEW_DEVICE_PASS`, `ROCKET_SECRET_KEY`) are never returned: the
    API reports `set: true` and `value: null`. An empty input leaves a stored secret
    alone; sending an empty string for a non-secret key clears it.
-4. The view opens from the sign-in screen (`Settings` under the form), so the cloud host,
-   the camera address and the camera password can be set before anyone can sign in. In
-   that mode the Live and Grid tabs stay hidden until a session exists.
+4. The view opens from the sign-in screen (`Settings` under the form), so the cloud
+   address, the camera address and the camera password can be set before anyone can
+   sign in. In that mode the Live and Grid tabs stay hidden, the device rail is not
+   drawn, and `Back to sign in` returns to the form.
+5. `ROCKET_SECRET_KEY` is the one value a release build cannot take from the
+   file on a first run: Rocket refuses to boot without it, so set it once in the
+   environment (or in `settings.json` before the first start). Afterwards the
+   view shows it as set and lets you replace it.
+6. The file is plain JSON, so its directory is the protection: create the data
+   directory 0700 and let only the service user own it. The desktop build keeps the
+   interactive camera login in the OS keychain instead; there the order is keychain,
+   then environment, then `settings.json`.
+
+## What the view shows
+
+Each key carries a plain label and one sentence of hint, and the two select keys
+show words rather than identifiers:
+
+| Key | Label | Options shown |
+|---|---|---|
+| `PROVIEW_PROVIDER` | Provider | Vendor cloud, This network, Built-in sample data |
+| `PROVIEW_MODE` | Default mode | Cloud account, This network, Built-in sample data |
+
+Labels are otherwise the thing itself — "Cloud address", "Camera address", "Camera
+video address", "Camera control address", "Camera user", "Camera password",
+"Sign-in lifetime", "Server address", "ffmpeg program", "Movement channel", "Lens
+features", "Sample data folder", "Credential profile", "Data folder", "Sign-in
+cookie secret". No message the app shows names a `PROVIEW_*` variable; a missing
+value says which screen owns it.
 
 ## Keys
 
