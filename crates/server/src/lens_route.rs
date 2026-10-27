@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
 use proview_core::config::Config;
+use proview_core::device::{cached_ptz_binding, refresh_ptz_binding, Lens};
 use proview_core::lens::{frame_size_from_sps, FrameSize, FrameSizeSource, LensCapabilities};
 use proview_core::media::nal::split_annexb;
-use proview_core::model::{LensStreamInfo, LensView, LensViewRequest};
+use proview_core::model::{LensStreamInfo, LensView, LensViewRequest, PtzBindingView};
 use proview_core::provider::VendorSession;
 use proview_core::rtsp::RtspSession;
 use proview_core::session::Store;
@@ -195,12 +196,21 @@ async fn lens_view(
     }
     let capabilities =
         LensCapabilities::from_flag_list(&std::env::var(CAPABILITIES_ENV).unwrap_or_default());
+    refresh_ptz_binding(config);
+    let binding = cached_ptz_binding(config).map(|binding| PtzBindingView {
+        lens: match binding.lens {
+            Lens::Top => 0,
+            _ => 1,
+        },
+        evidence: binding.evidence,
+    });
     Ok(Json(LensView::build(LensViewRequest {
         device_id: &device,
         channel,
         streams,
         capabilities,
         ptz: declared_ptz_lens(),
+        ptz_binding: binding,
     })))
 }
 

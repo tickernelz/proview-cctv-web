@@ -315,7 +315,11 @@ impl Connection {
         Err(DvrError::NoReply)
     }
 
-    pub async fn login_token(&mut self, token: &str, communicate_key: &str) -> Result<Value, DvrError> {
+    pub async fn login_token(
+        &mut self,
+        token: &str,
+        communicate_key: &str,
+    ) -> Result<Value, DvrError> {
         let body = json!({
             "EncryptType": "TOKEN",
             "LoginType": "DVRIP-FutureHome",
@@ -326,8 +330,13 @@ impl Connection {
         let mut payload =
             serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
         payload.push(0);
-        self.send_frame_on(super::msg::MONITOR_CHANNEL, false, super::msg::LOGIN, &payload)
-            .await?;
+        self.send_frame_on(
+            super::msg::MONITOR_CHANNEL,
+            false,
+            super::msg::LOGIN,
+            &payload,
+        )
+        .await?;
         let (_, reply) = self.recv().await?;
         parse_json(&reply)
     }
@@ -421,51 +430,9 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fake::{connect, json_reply, serve};
     use super::*;
     use tokio::net::TcpListener;
-
-    async fn serve(replies: Vec<Vec<u8>>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut seen = Vec::new();
-            for reply in replies {
-                let mut header_bytes = [0u8; super::super::HEADER_LEN];
-                if socket.read_exact(&mut header_bytes).await.is_err() {
-                    break;
-                }
-                let header = Header::decode(&header_bytes).unwrap();
-                let mut body = vec![0u8; header.length as usize];
-                socket.read_exact(&mut body).await.unwrap();
-                seen.push(String::from_utf8_lossy(&body).into_owned());
-
-                let response = Header {
-                    session: 0x1122_3344,
-                    sequence: header.sequence,
-                    channel: 0,
-                    end: true,
-                    id: header.id.wrapping_add(1),
-                    length: reply.len() as u32,
-                };
-                socket.write_all(&response.encode()).await.unwrap();
-                socket.write_all(&reply).await.unwrap();
-            }
-            seen
-        });
-        (format!("{addr}"), handle)
-    }
-
-    fn json_reply(value: Value) -> Vec<u8> {
-        let mut payload = value.to_string().into_bytes();
-        payload.push(b'\n');
-        payload.push(0);
-        payload
-    }
-
-    async fn connect(address: &str) -> Connection {
-        Connection::connect(address).await.unwrap()
-    }
 
     #[test]
     fn session_ids_parse_from_hex_or_decimal() {
