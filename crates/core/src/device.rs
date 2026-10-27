@@ -1054,7 +1054,12 @@ mod tests {
         }
     }
 
-    fn entry(host: &str, age: Duration, answered: bool, probing_ago: Option<Duration>) -> BindingEntry {
+    fn entry(
+        host: &str,
+        age: Duration,
+        answered: bool,
+        probing_ago: Option<Duration>,
+    ) -> BindingEntry {
         BindingEntry {
             at: Instant::now() - age,
             host: host.to_string(),
@@ -1080,7 +1085,12 @@ mod tests {
 
     #[test]
     fn a_probe_in_flight_blocks_the_next_one_until_it_is_overdue() {
-        let running = entry("cam:34567", Duration::from_secs(0), false, Some(Duration::ZERO));
+        let running = entry(
+            "cam:34567",
+            Duration::from_secs(0),
+            false,
+            Some(Duration::ZERO),
+        );
         assert!(probing(&running));
         let overdue = entry(
             "cam:34567",
