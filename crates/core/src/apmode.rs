@@ -183,15 +183,23 @@ pub fn wifi_config(existing: Option<&Value>, creds: &Credentials) -> Value {
     wifi["Enable"] = json!(true);
     wifi["SSID"] = json!(creds.ssid);
     wifi["Keys"] = json!(creds.password);
-    wifi["EncrypType"] = json!(if secured { "WPA2" } else { "OPEN" });
-    wifi["Auth"] = json!(if secured { "AES" } else { "NONE" });
+    if wifi.get("EncrypType").and_then(Value::as_str).is_none() {
+        wifi["EncrypType"] = json!(if secured { "WPA2" } else { "OPEN" });
+    }
+    if wifi.get("Auth").and_then(Value::as_str).is_none() {
+        wifi["Auth"] = json!(if secured { "AES" } else { "NONE" });
+    }
     wifi
 }
 
 pub fn wifi_block(config: &Value) -> Option<Value> {
     config
-        .get("NetWork")
-        .and_then(|section| section.get("Wifi"))
+        .get(CONFIG_NAME)
+        .or_else(|| {
+            config
+                .get("NetWork")
+                .and_then(|section| section.get("Wifi"))
+        })
         .cloned()
         .filter(Value::is_object)
 }
@@ -401,6 +409,34 @@ mod tests {
         );
         assert_eq!(open["EncrypType"], "OPEN");
         assert_eq!(open["Auth"], "NONE");
+    }
+
+    #[test]
+    fn the_block_keeps_the_cipher_and_auth_names_the_firmware_already_uses() {
+        let existing = json!({
+            "SSID": "lab",
+            "EncrypType": "AES+TKIP",
+            "Auth": "WPA2PSK",
+            "Keys": "old",
+            "NetType": "Infra",
+            "Enable": true,
+        });
+        let merged = wifi_config(Some(&existing), &credentials());
+        assert_eq!(merged["EncrypType"], "AES+TKIP");
+        assert_eq!(merged["Auth"], "WPA2PSK");
+        assert_eq!(merged["SSID"], "CAM-LAB");
+        assert_eq!(merged["Keys"], "rahasia123");
+        assert_eq!(merged["NetType"], "Infra");
+    }
+
+    #[test]
+    fn the_block_is_read_from_the_flat_key_before_the_nested_one() {
+        let flat =
+            json!({ "Name": "NetWork.Wifi", "Ret": 100, "NetWork.Wifi": { "SSID": "flat" } });
+        assert_eq!(wifi_block(&flat).unwrap()["SSID"], "flat");
+        let nested = json!({ "Ret": 100, "NetWork": { "Wifi": { "SSID": "nested" } } });
+        assert_eq!(wifi_block(&nested).unwrap()["SSID"], "nested");
+        assert!(wifi_block(&json!({ "Ret": 100 })).is_none());
     }
 
     #[test]

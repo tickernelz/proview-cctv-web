@@ -12,7 +12,7 @@ use rocket::serde::json::Json;
 use rocket::tokio::time::timeout as deadline;
 use rocket::State;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::{fail, signed_in, Failure};
 
@@ -489,11 +489,14 @@ async fn apply_dvrip(
         _ => None,
     };
     let wifi = apmode::wifi_config(existing.as_ref(), creds);
-    let body = json!({
-        "Name": apmode::CONFIG_NAME,
-        "SessionID": format!("0x{:08X}", connection.session()),
-        "NetWork": { "Wifi": wifi },
-    });
+    let mut body = serde_json::Map::new();
+    body.insert("Name".to_string(), json!(apmode::CONFIG_NAME));
+    body.insert(
+        "SessionID".to_string(),
+        json!(format!("0x{:08X}", connection.session())),
+    );
+    body.insert(apmode::CONFIG_NAME.to_string(), wifi);
+    let body = Value::Object(body);
     match deadline(request_timeout, connection.request(msg::CONFIG_SET, body)).await {
         Err(_) => {
             report.error = Some(format!(

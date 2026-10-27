@@ -74,7 +74,7 @@ TCP 192.168.10.1:34567
   login            user "admin", password "" on a camera that was just reset
   read             {"Name":"NetWork.Wifi","SessionID":"0x…"}          message 1042
   write            {"Name":"NetWork.Wifi","SessionID":"0x…",
-                    "NetWork":{"Wifi":{ … }}}                          message 1040, 2000 ms
+                    "NetWork.Wifi":{ … }}                              message 1040, 2000 ms
   answer           Ret 100, and the app reports through callback 5127
 ```
 
@@ -103,6 +103,30 @@ empty password (`SearchDevApActivity.V8`, `com.basic.b.n(st_5_loginPsw, "")`).
 DVRIP itself hashes the password before sending it (sofia hash, section 6 of
 `docs/protocol.md`), so an empty password is sent as the hash of the empty
 string, not as an empty field.
+
+### 3.1 Measured on a real IPC (2026-10-27, 192.168.0.100:34567)
+
+The camera on the owner's LAN, firmware `V5.01.R02.G51A07F3.10010.346732.S.ONVIF
+21.06`, proves the shape this implementation uses:
+
+| Step | Result |
+|---|---|
+| login `admin` + device password | `Ret 100`, session 563-570, `DeviceType "IPC"`, one channel, 21-31 ms |
+| read `NetWork.Wifi` | `Ret 100` in 163-170 ms, reply keys `Name`, `Ret`, `SessionID`, **`NetWork.Wifi`** — a flat key, not a nested `NetWork.Wifi` object |
+| block on that firmware | `EncrypType "AES+TKIP"`, `Auth "WPA2PSK"`, `NetType "Infra"`, `KeyType 1`, `Enable true` |
+| write the same block back, flat shape | `Ret 100` in 201 ms |
+| read back | identical block: SSID, cipher, auth and passphrase length unchanged |
+
+Two consequences the code follows: the read is parsed from the flat
+`NetWork.Wifi` key first (nested accepted as a fallback), and a write keeps the
+`EncrypType`/`Auth` names the firmware already has. The vendor's `WPA2`/`AES`
+and `OPEN`/`NONE` strings are used only when the field is absent, because a
+camera that says `AES+TKIP`/`WPA2PSK` would otherwise be rewritten into terms
+its firmware does not use.
+
+The run took a backup of the read reply first, replayed it unchanged, compared
+the read-back, and would have written the backup again on any mismatch. It did
+not change the camera's network settings.
 
 ## 4. Transport B — UDP symbol stream
 
@@ -193,10 +217,22 @@ datagram of length `n` therefore carries those first `n` bytes: ten `'e'`,
 then `S:<ssid>P:<password>ip:<address>`, then zeros. Our implementation sends
 exactly that buffer prefix.
 
-## 5. What the physical test still has to settle
+## 5. What the physical test still has to settle, and why this box cannot
 
-Written into the parity row as the open step, because this project may not
-execute the vendor binary and has no camera in AP mode on this box:
+The DVRIP half is measured on hardware (section 3.1). The datagram half needs a
+client that has **joined the camera's own access point**, and this workstation
+cannot do that:
+
+| Measurement | Value |
+|---|---|
+| network interfaces | `lo`, `eth0` 172.23.199.41/20, `tailscale0`, docker bridges — **no `wlan*` device** |
+| `192.168.10.1:34567` (AP-mode camera) | connection timeout after **4008 ms** |
+| `192.168.10.1:80` | connection timeout after **4008 ms** |
+| the reachable camera `192.168.0.100` | `34567` open in 6 ms, `554` open in 6 ms |
+
+So the remaining step needs a host with a Wi-Fi adapter next to the camera, not
+a decision: there is no interface to join `XM-…` with, and the AP address is
+not routed from here. What that test has to settle:
 
 1. Whether the AP-mode firmware decodes the stream purely from datagram length,
    or also parses the payload text.
@@ -224,7 +260,10 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
 4. `POST /api/apmode/provision {"ssid":"<home>","password":"<key>","mode":"dvrip"}`.
    Expected: `ret 100` from message 1040, `read_back true` when the camera
    echoes the SSID, and `elapsed_ms` under the 3 s connect plus 2 s request
-   budget. This is the whole provisioning step on a camera that is reachable.
+   budget. On a reachable IPC this path is already measured: 163-170 ms for the
+   read, 201 ms for the write, `Ret 100` and an identical read-back
+   (section 3.1). What is not yet measured is the write **through the camera's
+   own access point**, which is what step 2 sets up.
 5. If the DVRIP path is refused, run `"mode":"broadcast"` and poll
    `GET /api/apmode/provision`: about 1.41 s per round (70 symbols at 20 ms plus
    the 5 ms round gap), roughly 27 five-hundred-byte datagrams per round. Stop it
