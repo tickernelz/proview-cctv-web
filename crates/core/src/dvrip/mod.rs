@@ -5,6 +5,7 @@ pub mod crypto;
 pub(crate) mod fake;
 pub mod frame;
 pub mod playback;
+pub mod settings;
 pub mod talk;
 
 pub const MAGIC: u8 = 0xff;

@@ -37,6 +37,7 @@ use crate::config::ModeStore;
 
 pub mod audio;
 pub mod control;
+pub mod settings_write;
 
 #[path = "routes/recordings.rs"]
 pub mod recordings;
@@ -55,7 +56,8 @@ pub fn files() -> Vec<rocket::route::Route> {
         tokens_css,
         font,
         media_clip,
-        crate::routes::playback::script
+        crate::routes::playback::script,
+        settings_write::device_settings_js
     ]
 }
 
@@ -82,6 +84,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(cloud_bind::api())
     .chain(device_admin::routes())
     .chain(apmode::routes())
+    .chain(settings_write::routes())
     .collect()
 }
 
