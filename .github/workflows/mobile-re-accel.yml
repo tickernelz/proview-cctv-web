@@ -1,9 +1,6 @@
 name: mobile-re-accel
 
 on:
-  push:
-    branches:
-      - fix/zha3926-mobile-emulator-boot
   workflow_dispatch:
 
 permissions:
