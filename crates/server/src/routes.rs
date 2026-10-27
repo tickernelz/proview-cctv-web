@@ -4,8 +4,14 @@ pub mod apmode;
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
+#[path = "routes/grid.rs"]
+pub mod grid;
+
 #[path = "routes/cloud_bind.rs"]
 pub mod cloud_bind;
+
+#[path = "routes/playback.rs"]
+pub mod playback;
 
 use std::time::Duration;
 
@@ -29,7 +35,18 @@ pub mod audio;
 pub mod control;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, app_js, account_js, talk_js, style_css, tokens_css, font, media_clip]
+    routes![
+        index,
+        app_js,
+        account_js,
+        talk_js,
+        grid_js,
+        style_css,
+        tokens_css,
+        font,
+        media_clip,
+        crate::routes::playback::script
+    ]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -43,17 +60,19 @@ pub fn api() -> Vec<rocket::route::Route> {
         probe_device,
         rtsp_probe,
         health,
-        crate::stream::stats
+        crate::stream::stats,
+        crate::routes::playback::files
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(grid::routes())
     .chain(cloud_bind::api())
     .chain(apmode::routes())
     .collect()
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
-    routes![ws_live]
+    routes![ws_live, crate::routes::playback::watch]
         .into_iter()
         .chain(audio::routes())
         .collect()
@@ -67,6 +86,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/grid.js")]
+fn grid_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/grid.js"))
 }
 
 #[get("/account.js")]
