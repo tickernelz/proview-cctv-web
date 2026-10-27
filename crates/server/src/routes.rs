@@ -5,6 +5,9 @@ pub mod apmode;
 pub mod cloud;
 pub mod device_admin;
 
+#[path = "routes/fisheye.rs"]
+pub mod fisheye;
+
 #[path = "routes/grid.rs"]
 pub mod grid;
 
@@ -42,6 +45,7 @@ pub fn files() -> Vec<rocket::route::Route> {
     routes![
         index,
         app_js,
+        fisheye_js,
         account_js,
         talk_js,
         grid_js,
@@ -71,6 +75,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(fisheye::api())
     .chain(recordings::routes())
     .chain(grid::routes())
     .chain(cloud_bind::api())
@@ -94,6 +99,11 @@ fn index() -> RawHtml<&'static str> {
 #[get("/app.js")]
 fn app_js() -> RawJavaScript<&'static str> {
     RawJavaScript(include_str!("../../../web/app.js"))
+}
+
+#[get("/fisheye.js")]
+fn fisheye_js() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../web/fisheye.js"))
 }
 
 #[get("/grid.js")]

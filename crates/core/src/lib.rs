@@ -3,6 +3,7 @@ pub mod cloud;
 pub mod config;
 pub mod device;
 pub mod dvrip;
+pub mod fisheye;
 pub mod lens;
 pub mod live;
 pub mod media;
