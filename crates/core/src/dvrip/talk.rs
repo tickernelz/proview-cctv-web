@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
@@ -202,7 +203,11 @@ impl TalkLink {
                 .checked_duration_since(Instant::now())
                 .filter(|left| !left.is_zero())
                 .ok_or(TalkError::NoReply(wait))?;
-            self.fill(left.min(Duration::from_millis(500))).await?;
+            match self.fill(left.min(Duration::from_millis(500))).await {
+                Ok(()) => {}
+                Err(TalkError::NoReply(_)) => {}
+                Err(other) => return Err(other),
+            }
         }
     }
 
@@ -332,13 +337,17 @@ async fn read_loop(
     pending: Vec<u8>,
     bytes: Arc<AtomicU64>,
     frames: Arc<AtomicU64>,
+    audio: Option<Sender<(u16, Vec<u8>)>>,
 ) {
     {
         let mut buffer = pending;
         let mut chunk = [0u8; READ_LIMIT];
         loop {
-            while take_frame(&mut buffer).is_some() {
+            while let Some((header, body)) = take_frame(&mut buffer) {
                 frames.fetch_add(1, Ordering::Relaxed);
+                if let Some(sink) = audio.as_ref() {
+                    let _ = sink.try_send((header.id, body));
+                }
             }
             match reader.read(&mut chunk).await {
                 Ok(0) => break,
@@ -353,7 +362,15 @@ async fn read_loop(
 }
 
 impl TalkSession {
-    pub async fn open(mut link: TalkLink, channel: Option<u8>) -> Result<Self, TalkError> {
+    pub async fn open(link: TalkLink, channel: Option<u8>) -> Result<Self, TalkError> {
+        Self::open_with_audio(link, channel, None).await
+    }
+
+    pub async fn open_with_audio(
+        mut link: TalkLink,
+        channel: Option<u8>,
+        audio: Option<Sender<(u16, Vec<u8>)>>,
+    ) -> Result<Self, TalkError> {
         let session = link.session_id();
         let claim = talk_body("Claim", channel, &session);
         let started = Instant::now();
@@ -381,6 +398,7 @@ impl TalkSession {
             pending,
             inbound_bytes.clone(),
             inbound_frames.clone(),
+            audio,
         ));
         Ok(Self {
             writer,

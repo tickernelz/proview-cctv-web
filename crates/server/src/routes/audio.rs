@@ -173,6 +173,12 @@ async fn ws_talk(
     let token = vendor.token.clone();
     let user = cfg.device_user.clone();
     let password = cfg.device_pass.clone();
+    if password.trim().is_empty() {
+        return Err(fail(
+            Status::ServiceUnavailable,
+            "PROVIEW_DEVICE_PASS is empty, so the camera login would fail and the device locks the source IP after repeated attempts; set the camera password first",
+        ));
+    }
     let (mut link, path) = open_link(cfg, token.as_deref(), device.as_deref()).await?;
 
     Ok(ws.channel(move |mut stream| {
