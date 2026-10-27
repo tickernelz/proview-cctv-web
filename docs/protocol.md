@@ -633,6 +633,35 @@ and the 136-byte frame that reached `162.128.66.103:6611` decoded to
 `crates/core/src/provider/p2p.rs` now builds both frames and parses the reply;
 four tests pin them to those captured strings.
 
+### 4C.8 DVRIP over the tunnel: login works, the media channel wants the encrypted exchange
+
+Over the tunnel opened in 4C.7, plain DVRIP behaves as it does on the LAN up to
+a point. Measured from this box with `examples/rps_probe`, whole chain in one
+process and no vendor binary:
+
+```
+login    0.28s
+devices  0.06s name=Pintu keluar masuk rps=aaaaaaaa-1a1b397d2
+status   4.00s online=true
+access   110.239.87.207:6510
+agent    0.09s 162.128.64.68:6611
+tunnel   0.02s error=200 dest=103.85.122.66 mtu=1400 accepted=true
+dvrip    0.03s session=160 type=Some("IPC") channels=Some(1)
+frame0   0.11s id=0x0586 len=67 {"Name":"OPMonitor","Ret":100,"SessionID":"0x000000…
+```
+
+The `OPMonitor` claim is accepted (`Ret 100`) when it is framed the way the SDK
+frames it: message id `0x0585`, **channel 99**, end bit clear, body terminated by
+a NUL instead of the newline the other JSON messages use, and carrying the
+connection's own `SessionID` plus a fresh `DHParameter.RandomStrA`.
+
+What does not happen yet is the media itself. In the SDK capture the same claim
+is answered with a base64 body that decodes to 720 bytes of high-entropy binary
+(printable ratio 0.37) and is followed by a client frame with message id
+`1000`, channel 99, and 384 bytes of the same shape: that pair is the DHAV key
+exchange, and our claim (which the device answers in plaintext) never reaches it.
+So the remaining work in this milestone is that exchange, not the transport.
+
 ### 4C.4 What that means for the implementation
 
 1. `udp 8765` → `0x1220/f005` for the relay set (cache it; it changes).
