@@ -1,4 +1,5 @@
 pub mod app;
+pub mod attributes;
 pub mod bind;
 pub mod client;
 pub mod digest;
@@ -8,6 +9,7 @@ pub mod status;
 pub mod types;
 
 pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTED_CAPS};
+pub use attributes::{AttributeClient, AttributeStore, DeviceAttributes, Organisation};
 pub use bind::{
     decode_qr_blob, encode_qr_blob, parse_qr, AddDevice, BindClient, BindReport, BindStatus,
     QrDevice, QrError, SignOutReply,
