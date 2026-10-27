@@ -47,7 +47,10 @@ pub fn decode_sample(byte: u8) -> i16 {
 }
 
 pub fn encode(samples: &[i16]) -> Vec<u8> {
-    samples.iter().map(|sample| encode_sample(*sample)).collect()
+    samples
+        .iter()
+        .map(|sample| encode_sample(*sample))
+        .collect()
 }
 
 pub fn decode(payload: &[u8]) -> Vec<i16> {
@@ -142,7 +145,10 @@ mod tests {
             );
             let error = (i32::from(decoded) - i32::from(value)).abs();
             let bound = if value.abs() > 16384 { 512 } else { 260 };
-            assert!(error <= bound, "error {error} too large at {value}: {decoded}");
+            assert!(
+                error <= bound,
+                "error {error} too large at {value}: {decoded}"
+            );
             previous = decoded;
             step += 4111;
         }

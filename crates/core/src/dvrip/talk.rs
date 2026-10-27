@@ -72,7 +72,8 @@ pub fn talk_body(action: &str, channel: Option<u8>, session: &str) -> Value {
 }
 
 pub fn frame_delay(sent: u64, elapsed: Duration) -> Option<Duration> {
-    let due = Duration::from_secs_f64(sent as f64 * PACKET_BYTES as f64 / audio::SAMPLE_RATE as f64);
+    let due =
+        Duration::from_secs_f64(sent as f64 * PACKET_BYTES as f64 / audio::SAMPLE_RATE as f64);
     due.checked_sub(elapsed)
 }
 
@@ -361,9 +362,7 @@ mod tests {
         (parsed, body.to_vec())
     }
 
-    async fn read_frame(
-        socket: &mut TcpStream,
-    ) -> (Header, Vec<u8>) {
+    async fn read_frame(socket: &mut TcpStream) -> (Header, Vec<u8>) {
         let mut header = [0u8; super::super::HEADER_LEN];
         socket.read_exact(&mut header).await.expect("header");
         let parsed = Header::decode(&header).expect("decodes");
@@ -407,7 +406,10 @@ mod tests {
 
     #[test]
     fn pacing_returns_none_once_the_stream_is_late() {
-        assert_eq!(frame_delay(0, Duration::from_millis(0)), Some(Duration::from_millis(0)));
+        assert_eq!(
+            frame_delay(0, Duration::from_millis(0)),
+            Some(Duration::from_millis(0))
+        );
         let late = frame_delay(1, Duration::from_millis(80));
         assert!(late.is_none());
         let ahead = frame_delay(2, Duration::from_millis(0)).expect("due");
@@ -425,7 +427,8 @@ mod tests {
             let parsed = json_of(&login_body);
             assert_eq!(parsed["EncryptType"], "MD5");
             assert_eq!(parsed["PassWord"], sofia_hash("hunter"));
-            let reply = serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0xdeadbeef" })).unwrap();
+            let reply =
+                serde_json::to_vec(&json!({ "Ret": 100, "SessionID": "0xdeadbeef" })).unwrap();
             let header = Header {
                 session: 0xdeadbeef,
                 sequence: 1,
@@ -572,7 +575,10 @@ mod tests {
             let (data, body) = read_frame(&mut socket).await;
             assert_eq!(data.id, msg::TALK_DATA);
             assert_eq!(body.len(), 8 + PACKET_BYTES);
-            assert_eq!(&body[8 + 100..], &vec![audio::SILENCE; PACKET_BYTES - 100][..]);
+            assert_eq!(
+                &body[8 + 100..],
+                &vec![audio::SILENCE; PACKET_BYTES - 100][..]
+            );
         });
 
         let mut link = TalkLink::connect(&address.to_string()).await.expect("link");

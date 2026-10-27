@@ -52,9 +52,7 @@ fn wav_samples(path: &str) -> Result<Vec<i16>, Box<dyn std::error::Error>> {
     Err(format!("{path} carries no data chunk").into())
 }
 
-async fn relay_link(
-    serial_filter: Option<&str>,
-) -> Result<TalkLink, Box<dyn std::error::Error>> {
+async fn relay_link(serial_filter: Option<&str>) -> Result<TalkLink, Box<dyn std::error::Error>> {
     let identity = Identity::resolve();
     if !identity.is_complete() {
         return Err(MISSING_CLOUD_IDENTITY.into());
@@ -67,7 +65,10 @@ async fn relay_link(
     let client = EnvelopeClient::new(identity);
     let started = Instant::now();
     let tokens = client.login_envelope(&account, &password).await?;
-    eprintln!("cloud    login {:.0} ms", started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "cloud    login {:.0} ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
 
     let started = Instant::now();
     let devices = client.device_list(&tokens.access).await?;
@@ -204,7 +205,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         TalkLink::connect(&host).await?
     };
     let mut link = link;
-    eprintln!("connect  {:.1} ms", started.elapsed().as_secs_f64() * 1000.0);
+    eprintln!(
+        "connect  {:.1} ms",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
     let started = Instant::now();
     link.login(&user, &pass).await?;
     eprintln!(
