@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::digest::digest_of;
@@ -350,5 +350,95 @@ mod tests {
     fn login_token_is_read_from_the_envelope_root() {
         let parsed = envelope(json!({ "code": CODE_OK, "accessToken": "tok-9" }));
         assert_eq!(parsed.token(), Some("tok-9"));
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudPath {
+    pub online: bool,
+    pub access: Option<String>,
+    pub agent: Option<String>,
+    pub relay_error: Option<String>,
+    pub dest_ip: Option<String>,
+    pub mtu: Option<String>,
+    pub detail: String,
+}
+
+impl CloudClient {
+    pub async fn cloud_path(&self, session: &CloudSession, serial: &str) -> CloudResult<CloudPath> {
+        let serial = serial.trim();
+        let devices = self.devices(session).await?;
+        let device = devices
+            .iter()
+            .find(|device| device.uuid == serial)
+            .ok_or_else(|| CloudError::Rejected(format!("{serial} is not on this account")))?;
+        let rps = device
+            .extra
+            .get("rps")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if rps.is_empty() {
+            return Err(CloudError::Rejected(
+                "the device list carries no rps id for this device".to_string(),
+            ));
+        }
+        let status = super::status::StatusClient::new(super::status::STATUS_HOST)
+            .query(&device.uuid, &super::status::auth_code_of(device))
+            .await?;
+        let mut report = CloudPath {
+            online: status.online,
+            detail: status.summary(),
+            ..CloudPath::default()
+        };
+        let Some((host, port)) = status.access_server() else {
+            report.detail = format!("{} (no cluster reported an access server)", report.detail);
+            return Ok(report);
+        };
+        report.access = Some(format!("{host}:{port}"));
+
+        let client_token = crate::provider::rps::client_token();
+        let session_id = crate::provider::rps::session_id();
+        let request = crate::provider::p2p::agent_request(
+            &rps,
+            &client_token,
+            &device.uuid,
+            crate::provider::p2p::AGENT_SERVICE_MEDIA,
+            &session_id,
+            crate::provider::p2p::AGENT_STEP_MEDIA,
+        );
+        let agent = match crate::provider::rps::AccessClient::new()
+            .assign(&host, port, &request)
+            .await
+        {
+            Ok(agent) => agent,
+            Err(error) => {
+                report.relay_error = Some(error.to_string());
+                report.detail = format!("{} (agent assignment failed)", report.detail);
+                return Ok(report);
+            }
+        };
+        report.agent = Some(format!("{}:{}", agent.host, agent.port));
+
+        let frame =
+            crate::provider::p2p::handshake_frame(&rps, &client_token, &device.uuid, &session_id);
+        match crate::provider::rps::open(&agent, &frame).await {
+            Ok(tunnel) => {
+                report.relay_error = Some(format!("ErrorNum {}", tunnel.reply.error_num));
+                report.dest_ip = Some(tunnel.reply.dest_ip.clone());
+                report.mtu = Some(tunnel.reply.mtu.clone());
+                report.detail = format!(
+                    "{} (relay accepted the session for {} at mtu {})",
+                    report.detail, tunnel.reply.dest_ip, tunnel.reply.mtu
+                );
+            }
+            Err(error) => {
+                report.relay_error = Some(error.to_string());
+                report.detail = format!("{} (relay handshake failed)", report.detail);
+            }
+        }
+        Ok(report)
     }
 }

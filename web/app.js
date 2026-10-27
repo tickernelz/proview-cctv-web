@@ -871,6 +871,25 @@ function tick() {
 
 window.setInterval(tick, 1000);
 
+async function cloudPathDetail(deviceId) {
+  try {
+    const path = await api('/api/cloud/device-path?sn=' + encodeURIComponent(deviceId));
+    const parts = [];
+    if (path.access) {
+      parts.push('access server ' + path.access);
+    }
+    if (path.agent) {
+      parts.push('agent ' + path.agent);
+    }
+    if (path.relayError) {
+      parts.push('relay ' + path.relayError);
+    }
+    return parts.join(', ');
+  } catch (error) {
+    return '';
+  }
+}
+
 function explainStreamError(error) {
   if (error.status === 501) {
     return 'Live video is not wired yet: the device transport is still being built, so there is no frame to show.';
@@ -1778,7 +1797,14 @@ async function requestStream() {
     if (sessionLost(error)) {
       return;
     }
-    setStage('error', { text: explainStreamError(error), code: error.message });
+    let text = explainStreamError(error);
+    if (error.status === 501 && camera.device) {
+      const detail = await cloudPathDetail(camera.device.id);
+      if (detail) {
+        text += ' Cloud reach: ' + detail + '.';
+      }
+    }
+    setStage('error', { text, code: error.message });
     console.error('stream request failed', error);
   }
 }

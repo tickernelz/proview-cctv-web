@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use proview_core::cloud::{
-    new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudProfile,
+    new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudPath, CloudProfile,
     CloudSessions, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
@@ -197,6 +197,21 @@ async fn devices(
         .map_err(|error| cloud_failure(&error))
 }
 
+#[get("/cloud/device-path?<sn>")]
+async fn device_path(
+    state: &State<CloudState>,
+    cookies: &CookieJar<'_>,
+    sn: String,
+) -> Result<Json<CloudPath>, Failure> {
+    let session = restore(state, cookies)?;
+    state
+        .client
+        .cloud_path(&session, &sn)
+        .await
+        .map(Json)
+        .map_err(|error| cloud_failure(&error))
+}
+
 #[get("/cloud/device-caps?<sn>")]
 async fn device_caps(state: &State<CloudState>, sn: String) -> Result<Json<AppCaps>, Failure> {
     let caps = state
@@ -221,6 +236,7 @@ pub fn api() -> Vec<rocket::route::Route> {
         logout,
         profile,
         devices,
+        device_path,
         device_caps
     ]
 }

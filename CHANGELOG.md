@@ -5,6 +5,17 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## 0.3.3 — unreleased
+
+### Added
+
+- `GET /api/cloud/device-path?sn=<serial>` reports what the cloud path can reach
+  for one device today: the access server the status cluster names, the media
+  agent the RPS answers with, and the relay handshake result. The live screen
+  calls it when the stream is not wired and prints that line, so "not wired" no
+  longer hides whether the relay itself is reachable. It also makes the relay
+  transport part of the shipped binary, which the 0.3.2 binaries did not carry.
+
 ## 0.3.2 — 2026-10-27
 
 ### Added
