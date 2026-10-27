@@ -11,9 +11,9 @@ permissions:
 
 jobs:
   tcg:
-    name: can software acceleration boot the arm64 image
+    name: qemu tcg accelerator on an arm64 image
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Install the image and create an AVD
         run: |
@@ -24,46 +24,27 @@ jobs:
           set -o pipefail
           echo no | "${ANDROID_HOME}/cmdline-tools/latest/bin/avdmanager" create avd --force -n probe --package "system-images;android-33;google_apis;arm64-v8a" --device pixel
 
-      - name: Try -accel off
+      - name: Run with -qemu -accel tcg
         run: |
-          set -uo pipefail
-          ADB_DIR="${ANDROID_HOME}/platform-tools"
-          "${ANDROID_HOME}/emulator/emulator" -port 5554 -avd probe -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -accel off > accel-off.log 2>&1 &
-          EMU=$!
-          for i in $(seq 1 30); do
-            sleep 5
-            kill -0 $EMU 2>/dev/null || { echo "emulator exited after $((i*5))s"; break; }
-            if "${ADB_DIR}/adb" -s emulator-5554 get-state 2>/dev/null | grep -q device; then echo "device up after $((i*5))s"; break; fi
-          done
-          echo "=== accel-off.log"
-          cat accel-off.log
-          echo "=== adb devices"
-          "${ADB_DIR}/adb" devices -l || true
-          for i in $(seq 1 60); do
-            b=$("${ADB_DIR}/adb" -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-            [ "$b" = "1" ] && { echo "boot_completed after $((i*5))s extra"; break; }
-            sleep 5
-          done
-          "${ADB_DIR}/adb" -s emulator-5554 shell getprop ro.product.cpu.abi 2>/dev/null || true
-          kill $EMU 2>/dev/null || true
-
-      - name: Try -qemu -accel tcg
-        run: |
-          set -uo pipefail
-          "${ANDROID_HOME}/emulator/emulator" -port 5556 -avd probe -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -qemu -accel tcg > accel-tcg.log 2>&1 &
+          ADB="${ANDROID_HOME}/platform-tools/adb"
+          "${ANDROID_HOME}/emulator/emulator" -port 5554 -avd probe -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -accel off -qemu -accel tcg > tcg.log 2>&1 &
           EMU=$!
           for i in $(seq 1 24); do
             sleep 5
             kill -0 $EMU 2>/dev/null || { echo "emulator exited after $((i*5))s"; break; }
+            if "${ADB}" -s emulator-5554 get-state 2>/dev/null | grep -q device; then echo "device up after $((i*5))s"; break; fi
           done
-          echo "=== accel-tcg.log"
-          cat accel-tcg.log
-          "${ANDROID_HOME}/platform-tools/adb" devices -l || true
+          echo "=== tcg.log tail"
+          tail -12 tcg.log
+          echo "=== tcg.log errors"
+          grep -nE "HVF|tcg|TCG|ERROR|FATAL|accelerator|panic" tcg.log | head -20 || true
+          "${ADB}" devices -l || true
           kill $EMU 2>/dev/null || true
+          exit 0
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: accel-${{ github.run_id }}
+          name: tcg-${{ github.run_id }}
           path: "*.log"
           if-no-files-found: warn
