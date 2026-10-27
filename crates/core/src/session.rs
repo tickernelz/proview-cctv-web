@@ -42,6 +42,16 @@ impl Store {
         }
     }
 
+    pub fn remove_where<F>(&self, predicate: F) -> usize
+    where
+        F: Fn(&VendorSession) -> bool,
+    {
+        let mut guard = self.inner.lock().expect("session store poisoned");
+        let before = guard.len();
+        guard.retain(|_, entry| !predicate(&entry.session));
+        before - guard.len()
+    }
+
     pub fn remove(&self, id: &str) {
         self.inner
             .lock()
@@ -56,4 +66,29 @@ pub fn new_id() -> String {
     (0..32)
         .map(|_| format!("{:x}", rng.gen_range(0u8..16)))
         .collect()
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+
+    fn session(token: &str) -> VendorSession {
+        VendorSession {
+            account: "a@b.c".to_string(),
+            token: Some(token.to_string()),
+        }
+    }
+
+    #[test]
+    fn removes_every_session_that_carries_the_same_token() {
+        let store = Store::new();
+        store.put("one".to_string(), session("t1"), Duration::from_secs(60));
+        store.put("two".to_string(), session("t1"), Duration::from_secs(60));
+        store.put("three".to_string(), session("t2"), Duration::from_secs(60));
+        let removed = store.remove_where(|entry| entry.token.as_deref() == Some("t1"));
+        assert_eq!(removed, 2);
+        assert!(store.get("one").is_none());
+        assert!(store.get("two").is_none());
+        assert!(store.get("three").is_some());
+    }
 }

@@ -222,7 +222,7 @@ fn guard(envelope: Envelope) -> CloudResult<Envelope> {
     Err(classify(envelope.code, envelope.msg.as_deref()))
 }
 
-fn classify(code: i32, vendor: Option<&str>) -> CloudError {
+pub fn classify(code: i32, vendor: Option<&str>) -> CloudError {
     if code == CODE_TOKEN_EXPIRED {
         return CloudError::Expired;
     }
