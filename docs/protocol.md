@@ -1087,6 +1087,22 @@ The 64-character `VEKEY1` is fresh every session: the capture tree under
 sample), which matches the static reading of `NewMediaControlPTL` at `0xf28c1c`: the
 client picks it and hands it in through `SNetMediaControlParam`.
 
+### 4C.19 The login body is not encrypted with the session key
+
+The control frames of 4C.18 open with AES-128-CBC under the session key. The
+**login** frame (0x03e8, 384 bytes) from the same run and the same key does not:
+it decrypts to binary noise, not JSON. So the login carries its own cipher, one
+layer below the session key.
+
+That explains the `Ret 117` every command gets after a token login with our
+sealed key (4C.15, milestone 20): the device never reaches the state where it
+would accept channel-0 commands, because the login it received was not the login
+it expects.
+
+Next measurement: hook the AES setup that runs for message 1000 — the earlier
+hook showed `AES_set_encrypt_key` firing with 32-byte keys during a live session,
+which is a candidate for this login cipher.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
