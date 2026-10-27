@@ -103,6 +103,119 @@ async function api(path, options = {}) {
   return body;
 }
 
+let settingsInitial = new Map();
+
+function settingsInputId(key) {
+  return 'setting-' + key.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
+}
+
+function setSettingsStatus(message, bad = false) {
+  const box = el('settings-status');
+  box.textContent = message || '';
+  box.dataset.bad = bad ? 'true' : 'false';
+}
+
+function renderSettings(view) {
+  const host = el('settings-fields');
+  host.textContent = '';
+  settingsInitial = new Map();
+  const groups = new Map();
+  for (const field of view.fields) {
+    if (!groups.has(field.group)) groups.set(field.group, []);
+    groups.get(field.group).push(field);
+  }
+  for (const [group, fields] of groups) {
+    const box = document.createElement('fieldset');
+    box.className = 'choice settings-fieldset';
+    const legend = document.createElement('legend');
+    legend.textContent = group;
+    box.append(legend);
+    for (const field of fields) {
+      const id = settingsInputId(field.key);
+      const wrap = document.createElement('div');
+      wrap.className = 'settings-field';
+      const label = document.createElement('label');
+      label.setAttribute('for', id);
+      label.textContent = field.label + (field.restart ? ' (restart)' : '');
+      wrap.append(label);
+      let input;
+      if (field.kind === 'select') {
+        input = document.createElement('select');
+        for (const option of field.options) {
+          const item = document.createElement('option');
+          item.value = option;
+          item.textContent = option;
+          input.append(item);
+        }
+        input.value = field.value || field.options[0] || '';
+      } else {
+        input = document.createElement('input');
+        input.type = field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text';
+        if (field.kind === 'secret') {
+          input.placeholder = field.set ? 'stored, type to replace' : 'not set';
+          input.autocomplete = 'new-password';
+          input.value = '';
+        } else {
+          input.value = field.value || '';
+        }
+      }
+      input.id = id;
+      input.dataset.key = field.key;
+      input.dataset.secret = field.secret ? 'true' : 'false';
+      wrap.append(input);
+      if (field.hint) {
+        const hint = document.createElement('p');
+        hint.className = 'field-note compact';
+        hint.textContent = field.hint;
+        wrap.append(hint);
+      }
+      box.append(wrap);
+      settingsInitial.set(field.key, { secret: field.secret, set: field.set, value: input.value });
+    }
+    host.append(box);
+  }
+}
+
+async function loadSettings() {
+  const status = el('settings-status');
+  if (status) setSettingsStatus('Loading…');
+  try {
+    const view = await api('/api/settings');
+    renderSettings(view);
+    setSettingsStatus(view.path ? 'Loaded from ' + view.path : 'No settings file yet; values below come from the environment.');
+  } catch (error) {
+    setSettingsStatus('Could not read the settings: ' + error.message, true);
+  }
+}
+
+async function saveSettings() {
+  const payload = {};
+  for (const input of document.querySelectorAll('#settings-fields input, #settings-fields select')) {
+    const key = input.dataset.key;
+    const secret = input.dataset.secret === 'true';
+    const initial = settingsInitial.get(key) || { secret, set: false, value: '' };
+    const value = input.value;
+    if (secret && value === '') continue;
+    if (!secret && value === initial.value) continue;
+    payload[key] = value;
+  }
+  if (Object.keys(payload).length === 0) {
+    setSettingsStatus('Nothing changed.');
+    return;
+  }
+  const button = el('settings-save');
+  setBusy(button, true);
+  try {
+    const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
+    renderSettings(view);
+    setSettingsStatus('Saved ' + Object.keys(payload).length + ' setting(s). Restart the app for the ones marked (restart).');
+  } catch (error) {
+    setSettingsStatus('Could not save: ' + error.message, true);
+  } finally {
+    setBusy(button, false);
+  }
+}
+
 function resolveTheme() {
   const chosen = state.prefs.theme;
   if (chosen === 'light' || chosen === 'dark') {
@@ -166,6 +279,9 @@ function setView(name, options = {}) {
     startGrid();
   } else {
     stopGrid();
+  }
+  if (next === 'settings') {
+    loadSettings();
   }
   if (changed && options.focus !== false && state.view) {
     el(next + '-title').focus({ preventScroll: true });
@@ -1705,6 +1821,8 @@ el('signout').addEventListener('click', async () => {
   await loadMode();
 });
 
+el('settings-save').addEventListener('click', () => saveSettings());
+el('settings-reload').addEventListener('click', () => loadSettings());
 el('refresh').addEventListener('click', () => {
   loadDevices();
 });

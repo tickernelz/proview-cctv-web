@@ -55,31 +55,58 @@ pub fn build_with_modes(
     config: Config,
     modes: ModeStore,
 ) -> rocket::Rocket<rocket::Build> {
+    build_with_state(
+        figment,
+        config,
+        modes,
+        crate::settings::SettingsStore::load(None),
+    )
+}
+
+pub fn build_with_state(
+    figment: Figment,
+    config: Config,
+    modes: ModeStore,
+    settings: crate::settings::SettingsStore,
+) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
         .manage(Store::new())
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .manage(crate::routes::cloud::CloudState::new())
+        .manage(settings)
         .mount("/", crate::routes::files())
         .mount("/api", crate::routes::api())
         .mount("/api", crate::config::routes())
         .mount("/api", crate::lens_route::routes())
         .mount("/api", crate::routes::cloud::api())
+        .mount("/api", crate::settings::routes())
         .mount("/", crate::routes::live())
 }
 
 pub async fn serve(opts: ServeOptions) -> Result<ServerHandle, Box<rocket::Error>> {
-    serve_with(opts, Config::from_env()).await
+    let settings = crate::settings::SettingsStore::load(opts.data_dir.as_deref());
+    settings.apply_env();
+    serve_with_state(opts, Config::from_env(), settings).await
 }
 
 pub async fn serve_with(
     opts: ServeOptions,
     config: Config,
 ) -> Result<ServerHandle, Box<rocket::Error>> {
+    let settings = crate::settings::SettingsStore::load(opts.data_dir.as_deref());
+    serve_with_state(opts, config, settings).await
+}
+
+pub async fn serve_with_state(
+    opts: ServeOptions,
+    config: Config,
+    settings: crate::settings::SettingsStore,
+) -> Result<ServerHandle, Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
-    let rig = build_with_modes(figment(&opts, port), config, modes);
+    let rig = build_with_state(figment(&opts, port), config, modes, settings);
     let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
     let address = SocketAddr::new(
