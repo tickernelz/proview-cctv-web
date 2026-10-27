@@ -10,6 +10,7 @@ src-tauri/gen/schemas
 .env.*
 secrets/
 cloud-identity.env
+device-groups.json
 recordings/
 captures/
 fixtures/*.h264

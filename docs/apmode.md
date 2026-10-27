@@ -74,7 +74,7 @@ TCP 192.168.10.1:34567
   login            user "admin", password "" on a camera that was just reset
   read             {"Name":"NetWork.Wifi","SessionID":"0x…"}          message 1042
   write            {"Name":"NetWork.Wifi","SessionID":"0x…",
-                    "NetWork":{"Wifi":{ … }}}                          message 1040, 2000 ms
+                    "NetWork.Wifi":{ … }}                              message 1040, 2000 ms
   answer           Ret 100, and the app reports through callback 5127
 ```
 
@@ -89,20 +89,56 @@ and from the strings at `0x4b5780` `EncrypType`, `0x4bdafc` `KeyType`,
 | `Enable` | take the wireless interface up |
 | `SSID` | home network name |
 | `Keys` | passphrase, clear text on this transport |
-| `EncrypType` | `WPA2` when the passphrase is non-empty, `OPEN` otherwise |
-| `Auth` | `AES` when the passphrase is non-empty, `NONE` otherwise |
+| `Auth` | `WPA2` when the passphrase is non-empty, `OPEN` otherwise |
+| `EncrypType` | `AES` when the passphrase is non-empty, `NONE` otherwise |
 | `NetType`, `Channel`, `HostIP`, `Submask`, `GateWay`, `KeyType` | kept from the read |
 
-The `WPA2`/`OPEN` and `AES`/`NONE` pair comes from `CConfigAPDev::OnMsg`:
-`0xb298b0` writes `WPA2` (`0x5097e2`) and `AES` (`0x5097e7`) into the two
-string members when the stored passphrase length is at least one, and
-`0xb298e4` writes `OPEN` (`0x4e7c24`) and `NONE` (`0x4d70e9`) when it is zero.
+Which member takes which value is read from the object's own constructor,
+not from the order of the string table: `CConfigAPDev` builds
+`JsonObj::NetWork_Wifi` at `this+0x2d0` (`0xb26e64`, `bl 0xb271ac`), and that
+constructor names member `+0x40` `Auth` (`0xb271ec`, string `0x56d880`) and
+member `+0x108` `EncrypType` (`0xb2723c`, string `0x4b5780`). `OnMsg` then writes
+`this+0x310` (= `0x2d0+0x40`) and `this+0x3d8` (= `0x2d0+0x108`):
+
+| passphrase | `Auth` (`+0x310`) | `EncrypType` (`+0x3d8`) |
+|---|---|---|
+| at least one character | `WPA2` (`0xb298ac`, string `0x5097e2`) | `AES` (`0xb298c0`, string `0x5097e7`) |
+| empty | `OPEN` (`0xb298d8`, string `0x4e7c24`) | `NONE` (`0xb298ec`, string `0x4d70e9`) |
+
+The camera measured in 3.1 agrees: `EncrypType "AES+TKIP"` is the cipher name and
+`Auth "WPA2PSK"` the authentication mode.
 
 Login detail: on a factory-reset camera the SDK logs in with `admin` and an
 empty password (`SearchDevApActivity.V8`, `com.basic.b.n(st_5_loginPsw, "")`).
 DVRIP itself hashes the password before sending it (sofia hash, section 6 of
 `docs/protocol.md`), so an empty password is sent as the hash of the empty
 string, not as an empty field.
+
+### 3.1 Measured on a real IPC (2026-10-27, 192.168.0.100:34567)
+
+The camera on the owner's LAN, firmware `V5.01.R02.G51A07F3.10010.346732.S.ONVIF
+21.06`, proves the shape this implementation uses:
+
+| Step | Result |
+|---|---|
+| login `admin` + device password | `Ret 100`, session 563-570, `DeviceType "IPC"`, one channel, 21-31 ms |
+| read `NetWork.Wifi` | `Ret 100` in 163-170 ms, reply keys `Name`, `Ret`, `SessionID`, **`NetWork.Wifi`** — a flat key, not a nested `NetWork.Wifi` object |
+| block on that firmware | `EncrypType "AES+TKIP"`, `Auth "WPA2PSK"`, `NetType "Infra"`, `KeyType 1`, `Enable true` |
+| write the same block back, flat shape | `Ret 100` in 201 ms |
+| read back | identical block: SSID, cipher, auth and passphrase length unchanged |
+
+Two consequences the code follows: the read is parsed from the flat
+`NetWork.Wifi` key first (nested accepted as a fallback), and a write keeps the
+`EncrypType`/`Auth` names the firmware already has **only while the request
+stays in the same class**. An empty passphrase writes `Auth "OPEN"` and
+`EncrypType "NONE"`, a secured request against an open block writes
+`Auth "WPA2"` and `EncrypType "AES"`, and a camera that already says
+`AES+TKIP`/`WPA2PSK` keeps those names because rewriting them would move it to
+terms its firmware does not use.
+
+The run took a backup of the read reply first, replayed it unchanged, compared
+the read-back, and would have written the backup again on any mismatch. It did
+not change the camera's network settings.
 
 ## 4. Transport B — UDP symbol stream
 
@@ -171,12 +207,12 @@ socket(AF_INET, SOCK_DGRAM, 0)                       0xf6af54
 setsockopt(SOL_SOCKET=1, SO_BROADCAST=6, 1, 4)       0xf6af7c
 sin_family = AF_INET, sin_port = 0x411f (8001)       0xf6af3c, 0xf6af40
 sin_addr   = 0xffffffff, written once                0xf6af4c
-per round, per word i:
+per round, per word i (loop 0xf6b0e0 with the counter at [sp+0x40]):
     sendto(sock, payload, words[i], 0, &broadcast, 16)   0xf6b178
     usleep(20000)                                        0xf6b18c
-    if 51 ms passed since the last 500-byte send:
+after the last symbol of the round (0xf6b1a8, reached only when the counter passes the word count):
+    if 51 ms passed since the last 500-byte send (0xf6b1cc, subs #0x33):
         sendto(sock, payload, 500, 0, &broadcast, 16)     0xf6b228
-per round:
     usleep(5000)                                          0xf6b26c
 ```
 
@@ -193,10 +229,22 @@ datagram of length `n` therefore carries those first `n` bytes: ten `'e'`,
 then `S:<ssid>P:<password>ip:<address>`, then zeros. Our implementation sends
 exactly that buffer prefix.
 
-## 5. What the physical test still has to settle
+## 5. What the physical test still has to settle, and why this box cannot
 
-Written into the parity row as the open step, because this project may not
-execute the vendor binary and has no camera in AP mode on this box:
+The DVRIP half is measured on hardware (section 3.1). The datagram half needs a
+client that has **joined the camera's own access point**, and this workstation
+cannot do that:
+
+| Measurement | Value |
+|---|---|
+| network interfaces | `lo`, `eth0` 172.23.199.41/20, `tailscale0`, docker bridges — **no `wlan*` device** |
+| `192.168.10.1:34567` (AP-mode camera) | connection timeout after **4008 ms** |
+| `192.168.10.1:80` | connection timeout after **4008 ms** |
+| the reachable camera `192.168.0.100` | `34567` open in 6 ms, `554` open in 6 ms |
+
+So the remaining step needs a host with a Wi-Fi adapter next to the camera, not
+a decision: there is no interface to join `XM-…` with, and the AP address is
+not routed from here. What that test has to settle:
 
 1. Whether the AP-mode firmware decodes the stream purely from datagram length,
    or also parses the payload text.
@@ -219,15 +267,21 @@ Ten minutes, one camera, one laptop on the same Wi-Fi:
 3. Run the server, sign in, and ask for the plan:
    `POST /api/apmode/plan {"ssid":"<home>","password":"<key>"}`. It answers the
    record size, the symbol count and the per-round totals. Expected for a
-   7-character SSID and a 10-character key: 24-byte record, 70 symbols,
-   71 datagrams per round.
+   7-character SSID and a 10-character key: 24-byte record, 70 symbols and
+   `datagrams_per_round 71` — the 70 symbols plus one 500-byte trailer that the
+   sender emits after the last symbol of every round.
 4. `POST /api/apmode/provision {"ssid":"<home>","password":"<key>","mode":"dvrip"}`.
    Expected: `ret 100` from message 1040, `read_back true` when the camera
-   echoes the SSID, and `elapsed_ms` under the 3 s connect plus 2 s request
-   budget. This is the whole provisioning step on a camera that is reachable.
+   echoes the SSID, and `elapsed_ms` inside the budget that is actually
+   enforced: a 3 s connect timeout, up to four requests at 2 s each (login,
+   read, write, read-back) and one more for logout, so **about 11 s worst
+   case** and 0.4-1 s when the camera answers. On a reachable IPC this path is already measured: 163-170 ms for the
+   read, 201 ms for the write, `Ret 100` and an identical read-back
+   (section 3.1). What is not yet measured is the write **through the camera's
+   own access point**, which is what step 2 sets up.
 5. If the DVRIP path is refused, run `"mode":"broadcast"` and poll
    `GET /api/apmode/provision`: about 1.41 s per round (70 symbols at 20 ms plus
-   the 5 ms round gap), roughly 27 five-hundred-byte datagrams per round. Stop it
+   the 5 ms round gap and one 500-byte trailer after the last symbol). Stop it
    with `DELETE /api/apmode/provision`. Watch the camera's LED: a successful
    receive usually stops the AP broadcast.
 6. Bring the laptop back to the home network. The camera should join it within a
@@ -245,6 +299,15 @@ Until step 7 has been run on real hardware the parity row stays `partial`.
 | `POST /api/apmode/provision` | `{ssid, password, mode?, device_password?, rounds?}` | DVRIP `ret`/`read_back`/`elapsed_ms` or its error, plus the broadcast run status |
 | `GET /api/apmode/provision` | — | rounds, datagrams, bytes, elapsed, error, whether it is still running |
 | `DELETE /api/apmode/provision` | — | asks the sender to stop at the next symbol (the app's `DevStopWifiConfig`) |
+
+Limits the caller can hit:
+
+| Limit | Value |
+|---|---|
+| SSID / passphrase | 34 / 132 bytes (`ApError::SsidTooLong`, `PasswordTooLong`) |
+| record per packet | `MAX_WORDS` 186 symbols, i.e. an SSID plus passphrase of about 60 bytes; longer credentials answer `ApError::RecordTooLong` at plan time |
+| one run at a time | a second `POST` while a run is sending answers `409` |
+| run length | `rounds` or the 180 s ceiling, which is about 127 rounds at the app's timing |
 
 The target is fixed: DVRIP `192.168.10.1:34567` as `admin` with an empty
 password unless `device_password` is given, and UDP `255.255.255.255:8001`.
