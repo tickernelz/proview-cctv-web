@@ -312,3 +312,102 @@ fn live_stats_needs_a_session_and_starts_empty() {
     assert_eq!(body["active_streams"], 0);
     assert_eq!(body["streams"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn apmode_routes_require_a_session() {
+    let client = client();
+    let plan = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "" }).to_string())
+        .dispatch();
+    assert_eq!(plan.status(), Status::Unauthorized);
+    let provision = client
+        .post("/api/apmode/provision")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM", "password": "", "mode": "broadcast" }).to_string())
+        .dispatch();
+    assert_eq!(provision.status(), Status::Unauthorized);
+}
+
+#[test]
+fn the_apmode_plan_names_the_record_and_the_datagram_count_without_sending() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "CAM-LAB", "password": "rahasia123" }).to_string())
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body = body(response);
+    assert_eq!(body["record_bytes"], 24);
+    assert_eq!(body["words"], 70);
+    assert_eq!(body["datagrams_per_round"], 71);
+    assert_eq!(body["packet_bytes"], 1300);
+    assert_eq!(body["trailer_bytes"], 500);
+    assert_eq!(body["rounds"], 50);
+    assert!(body["record_hex"].as_str().unwrap().starts_with("1841070a"));
+    assert!(body["info"]
+        .as_str()
+        .unwrap()
+        .starts_with("S:CAM-LABP:rahasia123ip:255.255.255.255"));
+}
+
+#[test]
+fn an_empty_ssid_is_refused_before_any_socket_is_opened() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client
+        .post("/api/apmode/plan")
+        .header(ContentType::JSON)
+        .body(json!({ "ssid": "  ", "password": "x" }).to_string())
+        .dispatch();
+    assert_eq!(response.status(), Status::BadRequest);
+    assert!(body(response)["message"]
+        .as_str()
+        .unwrap()
+        .contains("ssid is required"));
+}
+
+#[test]
+fn provisioning_one_round_puts_every_symbol_on_the_wire() {
+    let receiver = std::net::UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+    receiver
+        .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+        .unwrap();
+    let port = receiver.local_addr().unwrap().port();
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client
+        .post("/api/apmode/provision")
+        .header(ContentType::JSON)
+        .body(
+            json!({
+                "ssid": "CAM-LAB",
+                "password": "rahasia123",
+                "mode": "broadcast",
+                "target": "127.0.0.1",
+                "port": port,
+                "rounds": 1
+            })
+            .to_string(),
+        )
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body = body(response);
+    assert_eq!(body["broadcast"]["datagrams"], 71);
+    assert_eq!(body["broadcast"]["port"], port);
+    assert_eq!(body["skipped"][0], "dvrip");
+
+    let mut buffer = [0u8; 2048];
+    let mut lengths = Vec::new();
+    while let Ok((size, _)) = receiver.recv_from(&mut buffer) {
+        lengths.push(size);
+    }
+    assert_eq!(lengths.len(), 71);
+    assert!(lengths
+        .iter()
+        .all(|n| (0x80usize..0x100).contains(n) || *n == 1300 || *n == 1301 || *n == 500));
+    assert_eq!(lengths.iter().filter(|n| **n == 500).count(), 1);
+}

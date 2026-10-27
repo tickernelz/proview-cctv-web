@@ -1,3 +1,6 @@
+#[path = "routes/apmode.rs"]
+pub mod apmode;
+
 #[path = "routes/cloud.rs"]
 pub mod cloud;
 
@@ -45,6 +48,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .into_iter()
     .chain(control::routes())
     .chain(cloud_bind::api())
+    .chain(apmode::routes())
     .collect()
 }
 
