@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use proview_core::cloud::{
-    new_session_id, AppCaps, CapsClient, Captcha, CloudClient, CloudError, CloudProfile,
-    CloudSessions, EnvelopeClient, Identity, REQUESTED_CAPS,
+    new_session_id, AlarmClient, AppCaps, CapsClient, Captcha, CloudClient, CloudDevice,
+    CloudError, CloudProfile, CloudSessions, EnvelopeClient, Identity, REQUESTED_CAPS,
 };
 use proview_core::provider::Device;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -19,8 +19,11 @@ pub struct CloudState {
     caps: CapsClient,
     sessions: CloudSessions,
     envelope: EnvelopeClient,
-    mobile: Mutex<HashMap<String, String>>,
+    alarms: AlarmClient,
+    devices: Mutex<HashMap<String, (Instant, Vec<CloudDevice>)>>,
 }
+
+pub(crate) const DEVICE_CACHE_TTL: Duration = Duration::from_secs(60);
 
 impl CloudState {
     pub fn new() -> Self {
@@ -33,7 +36,8 @@ impl CloudState {
             caps: CapsClient::from_env(),
             sessions: CloudSessions::new(Duration::from_secs(ttl)),
             envelope: EnvelopeClient::new(Identity::resolve()),
-            mobile: Mutex::new(HashMap::new()),
+            alarms: AlarmClient::from_env(),
+            devices: Mutex::new(HashMap::new()),
         }
     }
 
@@ -45,19 +49,26 @@ impl CloudState {
         &self.envelope
     }
 
-    pub(crate) fn mobile_token(&self, id: &str) -> Option<String> {
-        self.mobile.lock().ok()?.get(id).cloned()
+    pub(crate) fn alarms(&self) -> &AlarmClient {
+        &self.alarms
     }
 
-    pub(crate) fn keep_mobile(&self, id: &str, token: String) {
-        if let Ok(mut map) = self.mobile.lock() {
-            map.insert(id.to_string(), token);
+    pub(crate) fn cached_devices(&self, session: &str) -> Option<Vec<CloudDevice>> {
+        let mut guard = self.devices.lock().ok()?;
+        guard.retain(|_, (seen, _)| seen.elapsed() < DEVICE_CACHE_TTL);
+        guard.get(session).map(|(_, devices)| devices.clone())
+    }
+
+    pub(crate) fn keep_devices(&self, session: &str, devices: &[CloudDevice]) {
+        if let Ok(mut guard) = self.devices.lock() {
+            guard.retain(|_, (seen, _)| seen.elapsed() < DEVICE_CACHE_TTL);
+            guard.insert(session.to_string(), (Instant::now(), devices.to_vec()));
         }
     }
 
-    pub(crate) fn forget_mobile(&self, id: &str) {
-        if let Ok(mut map) = self.mobile.lock() {
-            map.remove(id);
+    pub(crate) fn forget_devices(&self, session: &str) {
+        if let Ok(mut guard) = self.devices.lock() {
+            guard.remove(session);
         }
     }
 }
@@ -171,12 +182,6 @@ async fn login(
         .map_err(|error| cloud_failure(&error))?;
     let id = new_session_id();
     state.sessions.put(id.clone(), session);
-    match state.envelope.login_envelope(email, &body.password).await {
-        Ok(tokens) => state.keep_mobile(&id, tokens.access),
-        Err(error) => {
-            tracing::warn!(%error, "the mobile cloud identity is unavailable; alarms stay off")
-        }
-    }
     cookies.add_private(
         Cookie::build((COOKIE, id))
             .http_only(true)
@@ -193,7 +198,7 @@ async fn login(
 fn logout(state: &State<CloudState>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
     if let Some(cookie) = cookies.get_private(COOKIE) {
         state.sessions.remove(cookie.value());
-        state.forget_mobile(cookie.value());
+        state.forget_devices(cookie.value());
         cookies.remove_private(cookie);
     }
     Json(StatusBody {

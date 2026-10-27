@@ -1,22 +1,17 @@
-use proview_core::cloud::new_session_id;
-use proview_core::cloud::{
-    AlarmClient, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError,
-};
-use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
-use rocket::response::content::RawJavaScript;
+use proview_core::cloud::{AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError};
+use proview_core::session::Store;
+use rocket::http::{ContentType, CookieJar, Status};
 use rocket::serde::json::Json;
-use rocket::serde::json::Json as JsonBody;
 use rocket::State;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-use super::cloud::{cloud_failure, fail, session_id, CloudState, StatusBody};
+use super::cloud::{status_for, CloudState};
+use crate::routes::{fail, restore, session_id, Failure};
 
 pub const AUTH_KEYS: [&str; 6] = ["pms", "css", "dss", "tps", "rps", "p2P"];
-pub const ALARM_COOKIE: &str = "pvw_alarm";
-
-type Failure = (Status, Json<StatusBody>);
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlarmList {
     pub serial: String,
     pub name: String,
@@ -29,54 +24,7 @@ pub struct AlarmList {
 }
 
 pub fn routes() -> Vec<rocket::route::Route> {
-    routes![list, picture, connect, disconnect]
-}
-
-#[derive(Deserialize)]
-pub struct ConnectBody {
-    email: String,
-    password: String,
-}
-
-#[post("/cloud/alarms/session", data = "<body>")]
-pub async fn connect(
-    body: JsonBody<ConnectBody>,
-    state: &State<CloudState>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<StatusBody>, Failure> {
-    let email = body.email.trim();
-    if email.is_empty() || body.password.is_empty() {
-        return Err(fail(Status::BadRequest, "email and password are required"));
-    }
-    let tokens = state
-        .envelope()
-        .login_envelope(email, &body.password)
-        .await
-        .map_err(|error| cloud_failure(&error))?;
-    let id = new_session_id();
-    state.keep_mobile(&id, tokens.access);
-    cookies.add_private(
-        Cookie::build((ALARM_COOKIE, id))
-            .http_only(true)
-            .same_site(SameSite::Strict)
-            .build(),
-    );
-    Ok(Json(StatusBody {
-        ok: true,
-        message: "the alarm centre is connected".to_string(),
-    }))
-}
-
-#[post("/cloud/alarms/signout")]
-pub fn disconnect(state: &State<CloudState>, cookies: &CookieJar<'_>) -> Json<StatusBody> {
-    if let Some(cookie) = cookies.get_private(ALARM_COOKIE) {
-        state.forget_mobile(cookie.value());
-        cookies.remove_private(cookie);
-    }
-    Json(StatusBody {
-        ok: true,
-        message: "the alarm centre is disconnected".to_string(),
-    })
+    routes![list, picture]
 }
 
 pub fn files() -> Vec<rocket::route::Route> {
@@ -84,23 +32,24 @@ pub fn files() -> Vec<rocket::route::Route> {
 }
 
 #[get("/alarms.js")]
-fn alarms_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../../web/alarms.js"))
+fn alarms_js() -> rocket::response::content::RawJavaScript<&'static str> {
+    rocket::response::content::RawJavaScript(include_str!("../../../../web/alarms.js"))
 }
 
-#[get("/cloud/alarms?<sn>&<start>&<end>&<hours>&<limit>")]
+#[get("/cloud/alarms?<sn>&<start>&<end>&<limit>")]
 pub async fn list(
     sn: String,
     start: Option<String>,
     end: Option<String>,
-    hours: Option<i64>,
     limit: Option<u32>,
     state: &State<CloudState>,
+    store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<AlarmList>, Failure> {
-    let token = alarm_token(state, cookies)?;
-    let device = lookup(state, &token, sn.trim()).await?;
-    let page = query(&device, window(start, end, hours), limit).await?;
+    let session_id = session_id(cookies)?;
+    let token = cloud_token(store, &session_id)?;
+    let device = lookup(state, &session_id, &token, sn.trim()).await?;
+    let page = query(state, &device, window(start, end), limit).await?;
     Ok(Json(AlarmList {
         serial: device.uuid.clone(),
         name: device.display_name().to_string(),
@@ -118,43 +67,65 @@ pub async fn picture(
     sn: String,
     object: String,
     state: &State<CloudState>,
+    store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<(ContentType, Vec<u8>), Failure> {
-    let token = alarm_token(state, cookies)?;
-    let device = lookup(state, &token, sn.trim()).await?;
-    let picture = AlarmClient::from_env()
-        .picture(&device.uuid, &auth_code(&device), object.trim())
+    let session_id = session_id(cookies)?;
+    let token = cloud_token(store, &session_id)?;
+    let device = lookup(state, &session_id, &token, sn.trim()).await?;
+    let name = object_name(&object)?;
+    let picture = state
+        .alarms()
+        .picture(&device.uuid, &auth_code(&device), &name)
         .await
-        .map_err(|error| cloud_failure(&error))?;
+        .map_err(|error| vendor_failure(&error))?;
     Ok((ContentType::JPEG, picture))
 }
 
-fn alarm_token(state: &CloudState, cookies: &CookieJar<'_>) -> Result<String, Failure> {
-    if let Ok(id) = session_id(cookies) {
-        if let Some(token) = state.mobile_token(&id) {
-            return Ok(token);
-        }
-    }
-    if let Some(cookie) = cookies.get_private(ALARM_COOKIE) {
-        if let Some(token) = state.mobile_token(cookie.value()) {
-            return Ok(token);
-        }
-    }
-    Err(fail(
-        Status::Unauthorized,
-        "the alarm centre needs the phone account once: connect it from the alarm panel",
-    ))
+fn vendor_failure(error: &CloudError) -> Failure {
+    tracing::warn!(%error, "alarm centre call failed");
+    fail(status_for(error), error.to_string())
 }
 
-async fn lookup(state: &CloudState, token: &str, serial: &str) -> Result<CloudDevice, Failure> {
+fn cloud_token(store: &State<Store>, id: &str) -> Result<String, Failure> {
+    let session = restore(store, id)?;
+    session
+        .token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            fail(
+                Status::Unauthorized,
+                "alarms read the vendor cloud; sign in with the cloud account, not the camera on this network",
+            )
+        })
+}
+
+async fn lookup(
+    state: &CloudState,
+    session: &str,
+    token: &str,
+    serial: &str,
+) -> Result<CloudDevice, Failure> {
+    let serial = serial.trim();
     if serial.is_empty() {
         return Err(fail(Status::BadRequest, "a device serial is required"));
     }
-    let devices = state
-        .envelope()
-        .device_list(token)
-        .await
-        .map_err(|error| cloud_failure(&error))?;
+    if !plain_token(serial) {
+        return Err(fail(Status::BadRequest, "that is not a device serial"));
+    }
+    let devices = match state.cached_devices(session) {
+        Some(devices) => devices,
+        None => {
+            let devices = state
+                .envelope()
+                .device_list(token)
+                .await
+                .map_err(|error| vendor_failure(&error))?;
+            state.keep_devices(session, &devices);
+            devices
+        }
+    };
     devices
         .into_iter()
         .find(|device| device.uuid.eq_ignore_ascii_case(serial))
@@ -185,6 +156,7 @@ fn auth_code(device: &CloudDevice) -> String {
 }
 
 async fn query(
+    state: &CloudState,
     device: &CloudDevice,
     window: (String, String),
     limit: Option<u32>,
@@ -197,9 +169,12 @@ async fn query(
         ));
     }
     let (start, end) = window;
-    let client = AlarmClient::from_env();
+    let number = limit
+        .unwrap_or(proview_core::cloud::alarm::PAGE_LIMIT)
+        .clamp(1, proview_core::cloud::alarm::PAGE_LIMIT);
+    let client = state.alarms();
     let mut last = CloudError::Rejected("the alarm centre refused every auth code".to_string());
-    for code in codes {
+    for (index, code) in codes.into_iter().enumerate() {
         let request = AlarmQuery {
             serial: device.uuid.clone(),
             auth_code: code,
@@ -207,17 +182,47 @@ async fn query(
             start: start.clone(),
             end: end.clone(),
             offset: 0,
-            number: limit.unwrap_or(proview_core::cloud::alarm::PAGE_LIMIT),
+            number,
         };
         match client.list(&request).await {
             Ok(page) => return Ok(page),
-            Err(error) => last = error,
+            Err(CloudError::Rejected(reason)) if index + 1 < AUTH_KEYS.len() => {
+                if !reason.to_lowercase().contains("authcode") {
+                    return Err(vendor_failure(&CloudError::Rejected(reason)));
+                }
+                last = CloudError::Rejected(reason);
+            }
+            Err(error) => return Err(vendor_failure(&error)),
         }
     }
-    Err(cloud_failure(&last))
+    Err(vendor_failure(&last))
 }
 
-fn window(start: Option<String>, end: Option<String>, hours: Option<i64>) -> (String, String) {
+fn object_name(object: &str) -> Result<String, Failure> {
+    let name = object.trim();
+    let shaped = !name.is_empty()
+        && name.len() <= 128
+        && name
+            .chars()
+            .all(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '_' | '-' | '.'));
+    if !shaped {
+        return Err(fail(
+            Status::BadRequest,
+            "that is not an alarm picture name",
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn plain_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|letter| letter.is_ascii_alphanumeric() || matches!(letter, '_' | '-'))
+}
+
+fn window(start: Option<String>, end: Option<String>) -> (String, String) {
     let stamp_of = |value: Option<String>| {
         value
             .map(|text| text.trim().to_string())
@@ -226,8 +231,7 @@ fn window(start: Option<String>, end: Option<String>, hours: Option<i64>) -> (St
     if let (Some(start), Some(end)) = (stamp_of(start), stamp_of(end)) {
         return (start, end);
     }
-    let hours = hours.filter(|value| *value > 0).unwrap_or(24).min(24 * 90);
-    (stamp(hours * 3600), stamp(0))
+    (stamp(24 * 3600), stamp(0))
 }
 
 fn stamp(seconds_back: i64) -> String {
@@ -266,4 +270,50 @@ fn poll_seconds() -> u64 {
         .and_then(|value| value.trim().parse().ok())
         .filter(|value: &u64| *value >= 5)
         .unwrap_or(20)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_web_reads_camel_case_keys_from_the_route() {
+        let body = AlarmList {
+            serial: "DEV0001".into(),
+            name: "Gate".into(),
+            total: 2,
+            finished: true,
+            entries: Vec::new(),
+            latency_ms: 104,
+            queried_at: 7,
+            poll_seconds: 20,
+        };
+        let json = serde_json::to_value(&body).expect("alarm list json");
+        for key in [
+            "latencyMs",
+            "pollSeconds",
+            "queriedAt",
+            "finished",
+            "entries",
+        ] {
+            assert!(json.get(key).is_some(), "{key} missing from {json}");
+        }
+        assert!(json.get("poll_seconds").is_none());
+    }
+
+    #[test]
+    fn a_picture_name_cannot_walk_the_path() {
+        assert!(object_name("003_DEV0001_261027203358.jpeg").is_ok());
+        for bad in ["", "../etc/passwd", "a/b.jpeg", "a?b", "a#b", "a b"] {
+            assert!(object_name(bad).is_err(), "{bad} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_serial_is_a_plain_token() {
+        assert!(plain_token("7f92970ddf5282743hrc"));
+        assert!(!plain_token(""));
+        assert!(!plain_token("a/b"));
+        assert!(!plain_token("a b"));
+    }
 }

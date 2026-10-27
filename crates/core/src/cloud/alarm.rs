@@ -7,10 +7,8 @@ use super::client::{CloudError, CloudResult};
 
 pub const ALARM_HOST: &str = "access-alc.secu100.net";
 pub const ALARM_PORT: u16 = 6602;
-pub const ALARM_TLS_PORT: u16 = 6502;
 pub const PICTURE_HOST: &str = "pub-pms-pic.secu100.net";
 pub const PICTURE_PORT: u16 = 8082;
-pub const PICTURE_TLS_PORT: u16 = 8182;
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 pub const PAGE_LIMIT: u32 = 60;
 pub const API_VERSION: &str = "1.0";
@@ -47,8 +45,6 @@ pub struct AlarmPicture {
     pub bucket: String,
     #[serde(default)]
     pub size: u64,
-    #[serde(default)]
-    pub url: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -131,12 +127,12 @@ impl AlarmClient {
             .body(body.to_string())
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         let status = reply.status();
         let text = reply
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         let mut page = parse_page(&text)?;
         page.serial = if page.serial.is_empty() {
             query.serial.clone()
@@ -149,11 +145,6 @@ impl AlarmClient {
             return Err(CloudError::Unreachable(format!(
                 "alarm center answered {status}"
             )));
-        }
-        for entry in &mut page.entries {
-            if let Some(picture) = entry.picture.as_mut() {
-                picture.url = picture_url(&query.serial, &query.auth_code, &picture.object);
-            }
         }
         Ok(page)
     }
@@ -170,12 +161,12 @@ impl AlarmClient {
             .get(&url)
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         let status = reply.status();
         let bytes = reply
             .bytes()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         if bytes.len() > 3 && bytes[0] == 0xff && bytes[1] == 0xd8 {
             return Ok(bytes.to_vec());
         }
@@ -299,7 +290,6 @@ fn entry_of(item: &Value) -> Option<AlarmEntry> {
                 .unwrap_or_default()
                 .to_string(),
             size: info.get("ObjSize").and_then(value_u64).unwrap_or_default(),
-            url: String::new(),
         })
     });
     Some(AlarmEntry {
@@ -486,6 +476,15 @@ mod tests {
         assert_eq!(paged["AlarmCenter"]["Header"]["MessageType"], QUERY_PAGE);
         assert_eq!(paged["AlarmCenter"]["Body"]["AlarmOffset"], 20);
         assert_eq!(paged["AlarmCenter"]["Body"]["AlarmNumber"], 10);
+    }
+
+    #[test]
+    fn a_serialised_page_never_carries_the_auth_code() {
+        let mut page = parse_page(REPLY).expect("page");
+        page.serial = "DEV0001".into();
+        let json = serde_json::to_string(&page).expect("page json");
+        assert!(!json.contains("authCode"), "{json}");
+        assert!(!json.contains("/download/"), "{json}");
     }
 
     #[test]
