@@ -240,3 +240,72 @@ test('the devices panel lists the account devices and saves a group through the 
     await page.close();
   }
 });
+
+const tourCalls = [];
+const TOUR_CAPS = {
+  patterns: [{ urlPattern: '*/api/device/controls*' }],
+  respond: (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname === '/api/device/controls') {
+      return {
+        onvif: false,
+        dvrip: true,
+        capabilities: [
+          { feature: 'ptz move', lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'DirectionRight on PTZ channel 0 shifted the lower lens' },
+          { feature: 'ptz patrol', lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'Uart.PTZTour holds 1 line(s) with 2 point(s) in total' },
+        ],
+      };
+    }
+    if (parsed.pathname === '/api/device/controls/presets') {
+      return [];
+    }
+    if (parsed.pathname === '/api/device/controls/tour') {
+      return {
+        ok: true,
+        backend: 'dvrip',
+        lines: [
+          {
+            channel: 0,
+            id: 1,
+            name: '',
+            points: [
+              { preset: 1, seconds: 3 },
+              { preset: 2, seconds: 3 },
+            ],
+          },
+        ],
+        presets: [
+          { channel: 0, id: 1, name: 'biasa' },
+          { channel: 0, id: 2, name: 'biasabaru' },
+        ],
+        locate: null,
+        note: 'the device answers every OPPTZControl with Ret 100 before it moves',
+      };
+    }
+    if (parsed.pathname === '/api/device/controls/tour/start' || parsed.pathname === '/api/device/controls/tour/stop') {
+      tourCalls.push(parsed.pathname + parsed.search);
+      const action = parsed.pathname.endsWith('start') ? 'start' : 'stop';
+      return { ok: true, backend: 'dvrip', action, tour: 1, times: 1, note: 'the device answers every OPPTZControl with Ret 100 before it moves' };
+    }
+    return {};
+  },
+};
+
+test('the pad starts and stops the device tour, and reports that the ack is not motion', async () => {
+  tourCalls.length = 0;
+  const page = await open({ intercept: TOUR_CAPS });
+  try {
+    await page.evaluate("document.getElementById('move').click()");
+    await page.wait("!document.getElementById('pad').hidden", 'the pad to open');
+    await page.evaluate("document.getElementById('tour').click()");
+    await page.wait("/Tour 1 running over 2 stops/.test(document.getElementById('control-status').textContent)", 'the tour to start');
+    assert.equal(await page.evaluate("document.getElementById('tour').getAttribute('aria-pressed')"), 'true');
+    assert.match(await page.evaluate("document.getElementById('control-status').textContent"), /watch the picture/);
+    await page.evaluate("document.getElementById('tour').click()");
+    await page.wait("/Stopped tour 1/.test(document.getElementById('control-status').textContent)", 'the tour to stop');
+    assert.equal(await page.evaluate("document.getElementById('tour').getAttribute('aria-pressed')"), 'false');
+    assert.deepEqual(tourCalls, ['/api/device/controls/tour/start?tour=1', '/api/device/controls/tour/stop?tour=1']);
+  } finally {
+    await page.close();
+  }
+});

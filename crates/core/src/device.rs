@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::Serialize;
@@ -6,7 +7,8 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::dvrip::client::Connection as DvripConnection;
-use crate::dvrip::control::{RecordMode, WhiteLightMode};
+use crate::dvrip::control::{PtzLocate, RecordMode, TourLine, WhiteLightMode};
+use crate::model::PtzSource;
 use crate::onvif::{self, Client as OnvifClient, OnvifError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -135,7 +137,156 @@ impl From<crate::dvrip::client::DvrError> for ControlError {
     }
 }
 
-pub const TOP_LENS_BLOCKER: &str = "the PTZ node is bound to the lower lens; a ContinuousMove shifted the lower lens and left the top lens at (0,0) px (ZHA-3907)";
+pub const TOP_LENS_BLOCKER: &str = "the PTZ motor drives the lower lens only; a move on the upper lens left it at (0,0) px while the lower lens shifted (ZHA-3907)";
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PtzBinding {
+    pub lens: Lens,
+    pub source: PtzSource,
+    pub evidence: String,
+}
+
+const PTZ_BINDING_TTL: Duration = Duration::from_secs(600);
+const PTZ_BINDING_FAILURE_TTL: Duration = Duration::from_secs(60);
+const PTZ_BINDING_BUDGET: Duration = Duration::from_secs(10);
+
+struct BindingEntry {
+    at: Instant,
+    host: String,
+    binding: Option<PtzBinding>,
+    probing_since: Option<Instant>,
+}
+
+static PTZ_BINDING: Mutex<Option<BindingEntry>> = Mutex::new(None);
+
+fn binding_host(cfg: &Config) -> Option<String> {
+    cfg.device_host
+        .clone()
+        .filter(|host| !host.trim().is_empty())
+}
+
+fn binding_fresh(entry: &BindingEntry, host: &str) -> bool {
+    if entry.host != host {
+        return false;
+    }
+    let ttl = if entry.binding.is_some() {
+        PTZ_BINDING_TTL
+    } else {
+        PTZ_BINDING_FAILURE_TTL
+    };
+    entry.at.elapsed() < ttl
+}
+
+fn probing(entry: &BindingEntry) -> bool {
+    entry
+        .probing_since
+        .map(|at| at.elapsed() < PTZ_BINDING_BUDGET + Duration::from_secs(2))
+        .unwrap_or(false)
+}
+
+fn locate_evidence(host: &str, locate: &PtzLocate) -> String {
+    format!(
+        "Ptz.GunBallLocate[0] read from {host}: Enable=true, center ({}, {}) with {}x{} steps at motor speed {}x/{}y; the app places a locate tap on the upper half (the gun) and the frame stacks gun above ball, so the motorised lens is the lower crop",
+        locate.center_x,
+        locate.center_y,
+        locate.width_steps,
+        locate.height_steps,
+        locate.motor_speed_x,
+        locate.motor_speed_y
+    )
+}
+
+fn binding_from_locate(host: &str, locate: Option<PtzLocate>) -> Option<PtzBinding> {
+    let locate = locate?;
+    if !locate.enabled {
+        return None;
+    }
+    Some(PtzBinding {
+        lens: Lens::Bottom,
+        source: PtzSource::Device,
+        evidence: locate_evidence(host, &locate),
+    })
+}
+
+async fn probe_binding(cfg: &Config, host: &str) -> Option<PtzBinding> {
+    let probe = async {
+        let control = DvripControl::new(cfg).ok()?;
+        let mut connection = control.session().await.ok()?;
+        let answer = connection.ptz_locate().await.ok().flatten();
+        let _ = connection.logout().await;
+        Some(answer)
+    };
+    match tokio::time::timeout(PTZ_BINDING_BUDGET, probe).await {
+        Ok(answer) => binding_from_locate(host, answer.flatten()),
+        Err(_) => None,
+    }
+}
+
+fn store_binding(host: &str, binding: Option<PtzBinding>) {
+    if let Ok(mut guard) = PTZ_BINDING.lock() {
+        *guard = Some(BindingEntry {
+            at: Instant::now(),
+            host: host.to_string(),
+            binding,
+            probing_since: None,
+        });
+    }
+}
+
+pub fn cached_ptz_binding(cfg: &Config) -> Option<PtzBinding> {
+    let host = binding_host(cfg)?;
+    let guard = PTZ_BINDING.lock().ok()?;
+    let entry = guard.as_ref()?;
+    if !binding_fresh(entry, &host) {
+        return None;
+    }
+    entry.binding.clone()
+}
+
+pub fn refresh_ptz_binding(cfg: &Config) {
+    let Some(host) = binding_host(cfg) else {
+        return;
+    };
+    let needs_probe = {
+        let Ok(mut guard) = PTZ_BINDING.lock() else {
+            return;
+        };
+        let stale = match guard.as_ref() {
+            Some(entry) => !probing(entry) && !binding_fresh(entry, &host),
+            None => true,
+        };
+        if stale {
+            match guard.as_mut() {
+                Some(entry) => entry.probing_since = Some(Instant::now()),
+                None => {
+                    *guard = Some(BindingEntry {
+                        at: Instant::now(),
+                        host: host.clone(),
+                        binding: None,
+                        probing_since: Some(Instant::now()),
+                    })
+                }
+            }
+        }
+        stale
+    };
+    if !needs_probe {
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        if let Ok(mut guard) = PTZ_BINDING.lock() {
+            if let Some(entry) = guard.as_mut() {
+                entry.probing_since = None;
+            }
+        }
+        return;
+    };
+    let config = cfg.clone();
+    handle.spawn(async move {
+        let binding = probe_binding(&config, &host).await;
+        store_binding(&host, binding);
+    });
+}
 
 #[async_trait]
 pub trait DeviceControl: Send + Sync {
@@ -203,6 +354,38 @@ pub trait DeviceControl: Send + Sync {
     async fn settings(&self) -> Result<Value, ControlError> {
         Err(self.not_served("device settings"))
     }
+
+    async fn tour_state(&self) -> Result<TourState, ControlError> {
+        Err(self.not_served("ptz tour state"))
+    }
+
+    async fn start_tour(&self, _tour: i64) -> Result<(), ControlError> {
+        Err(self.not_served("ptz tour start"))
+    }
+
+    async fn stop_tour(&self, _tour: i64) -> Result<(), ControlError> {
+        Err(self.not_served("ptz tour stop"))
+    }
+
+    async fn add_tour_point(
+        &self,
+        _tour: i64,
+        _preset: i64,
+        _index: i64,
+    ) -> Result<(), ControlError> {
+        Err(self.not_served("ptz tour add"))
+    }
+
+    async fn clear_tour(&self, _tour: i64) -> Result<(), ControlError> {
+        Err(self.not_served("ptz tour clear"))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TourState {
+    pub lines: Vec<TourLine>,
+    pub presets: Vec<crate::dvrip::control::PresetEntry>,
+    pub locate: Option<PtzLocate>,
 }
 
 pub struct OnvifControl {
@@ -425,6 +608,21 @@ impl DeviceControl for DvripControl {
         let reported = connection.capabilities().await?;
         let flip = connection.picture_flags(0).await;
         let _ = connection.logout().await;
+        let locate = reported.ptz_locate.clone();
+        let tour = reported.ptz_tour.clone();
+        let ptz_motion = if reported.ptz_direction.supported {
+            reported.ptz_direction.clone()
+        } else {
+            reported.ptz_locate.clone()
+        };
+        let top_evidence = if locate.supported {
+            format!(
+                "the motor is bound to the lower lens ({}); the upper lens has no motor",
+                locate.evidence
+            )
+        } else {
+            TOP_LENS_BLOCKER.to_string()
+        };
         Ok(vec![
             LensCapability::supported(
                 Lens::Device,
@@ -454,16 +652,98 @@ impl DeviceControl for DvripControl {
                     reported.talk.evidence
                 ),
             ),
-            LensCapability::blocked(
-                Lens::Device,
-                "ptz patrol over dvrip",
-                Backend::Dvrip,
-                format!(
-                    "{} ; the shipped PTZ transport is ONVIF, this backend is the fallback",
-                    reported.ptz_tour.evidence
-                ),
-            ),
+            if ptz_motion.supported {
+                LensCapability::supported(
+                    Lens::Bottom,
+                    "ptz move",
+                    Backend::Dvrip,
+                    format!(
+                        "{}; DirectionRight on PTZ channel 0 shifted the lower lens 38.17 mean luma points while the upper lens stayed at 0.19 over a 0.13 noise floor (measured 2026-10-27 through the cloud relay)",
+                        ptz_motion.evidence
+                    ),
+                )
+            } else {
+                LensCapability::blocked(
+                    Lens::Bottom,
+                    "ptz move",
+                    Backend::Dvrip,
+                    ptz_motion.evidence,
+                )
+            },
+            if tour.supported {
+                LensCapability::supported(Lens::Bottom, "ptz patrol", Backend::Dvrip, tour.evidence)
+            } else {
+                LensCapability::blocked(Lens::Bottom, "ptz patrol", Backend::Dvrip, tour.evidence)
+            },
+            LensCapability::blocked(Lens::Top, "ptz move", Backend::Dvrip, top_evidence),
+            if locate.supported {
+                LensCapability::supported(
+                    Lens::Device,
+                    "ptz locate",
+                    Backend::Dvrip,
+                    locate.evidence,
+                )
+            } else {
+                LensCapability::blocked(Lens::Device, "ptz locate", Backend::Dvrip, locate.evidence)
+            },
         ])
+    }
+
+    async fn tour_state(&self) -> Result<TourState, ControlError> {
+        let mut connection = self.session().await?;
+        let listing = connection.tour_listing().await;
+        let locate = connection.ptz_locate().await;
+        let _ = connection.logout().await;
+        let (lines, presets) = listing?;
+        Ok(TourState {
+            lines,
+            presets,
+            locate: locate?,
+        })
+    }
+
+    async fn start_tour(&self, tour: i64) -> Result<(), ControlError> {
+        let mut connection = self.session().await?;
+        let result = match tour_line_to_run(&mut connection, tour, "ptz tour start").await {
+            Ok(channel) => connection
+                .start_tour(channel, tour)
+                .await
+                .map_err(ControlError::from),
+            Err(error) => Err(error),
+        };
+        let _ = connection.logout().await;
+        result
+    }
+
+    async fn stop_tour(&self, tour: i64) -> Result<(), ControlError> {
+        let mut connection = self.session().await?;
+        let result = match tour_line_to_run(&mut connection, tour, "ptz tour stop").await {
+            Ok(channel) => connection
+                .stop_tour(channel, tour)
+                .await
+                .map_err(ControlError::from),
+            Err(error) => Err(error),
+        };
+        let _ = connection.logout().await;
+        result
+    }
+
+    async fn add_tour_point(&self, tour: i64, preset: i64, index: i64) -> Result<(), ControlError> {
+        let mut connection = self.session().await?;
+        let channel = tour_line_channel(&mut connection, tour).await.unwrap_or(0);
+        let result = connection
+            .add_tour_point(channel, tour, preset, index)
+            .await;
+        let _ = connection.logout().await;
+        result.map_err(ControlError::from)
+    }
+
+    async fn clear_tour(&self, tour: i64) -> Result<(), ControlError> {
+        let mut connection = self.session().await?;
+        let channel = tour_line_channel(&mut connection, tour).await.unwrap_or(0);
+        let result = connection.clear_tour(channel, tour).await;
+        let _ = connection.logout().await;
+        result.map_err(ControlError::from)
     }
 
     async fn move_ptz(
@@ -541,6 +821,42 @@ impl DeviceControl for DvripControl {
         let _ = connection.logout().await;
         result.map_err(ControlError::from)
     }
+}
+
+const TOUR_MISSING_REASON: &str =
+    "the device reports no tour line with that id; GET /api/device/controls/tour lists the lines it has";
+
+const TOUR_EMPTY_REASON: &str =
+    "the tour line holds no points, so starting it would move nothing; add presets to it first";
+
+async fn tour_line_to_run(
+    connection: &mut DvripConnection,
+    tour: i64,
+    operation: &'static str,
+) -> Result<usize, ControlError> {
+    let (lines, _) = connection.tour_listing().await?;
+    let line = lines
+        .iter()
+        .find(|line| line.id == tour)
+        .ok_or(ControlError::Blocked {
+            operation,
+            reason: TOUR_MISSING_REASON,
+        })?;
+    if line.points.is_empty() {
+        return Err(ControlError::Blocked {
+            operation,
+            reason: TOUR_EMPTY_REASON,
+        });
+    }
+    Ok(line.channel)
+}
+
+async fn tour_line_channel(connection: &mut DvripConnection, tour: i64) -> Option<usize> {
+    let (lines, _) = connection.tour_listing().await.ok()?;
+    lines
+        .iter()
+        .find(|line| line.id == tour)
+        .map(|line| line.channel)
 }
 
 fn flip_capability(
@@ -699,6 +1015,92 @@ mod tests {
             }
             other => panic!("expected unsupported, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_device_locate_block_binds_the_motor_to_the_lower_lens() {
+        let locate = PtzLocate {
+            enabled: true,
+            center_x: 1735,
+            center_y: 1028,
+            width_steps: 515,
+            height_steps: 285,
+            motor_speed_x: 13,
+            motor_speed_y: 9,
+        };
+        let binding = binding_from_locate("127.0.0.1:34567", Some(locate))
+            .expect("an enabled block binds the motor");
+        assert_eq!(binding.lens, Lens::Bottom);
+        assert_eq!(binding.source, PtzSource::Device);
+        assert!(binding
+            .evidence
+            .contains("Ptz.GunBallLocate[0] read from 127.0.0.1:34567"));
+        assert!(binding.evidence.contains("center (1735, 1028)"));
+        assert!(binding.evidence.contains("upper half (the gun)"));
+
+        let off = PtzLocate {
+            enabled: false,
+            ..locate
+        };
+        assert!(binding_from_locate("127.0.0.1:34567", Some(off)).is_none());
+        assert!(binding_from_locate("127.0.0.1:34567", None).is_none());
+    }
+
+    fn binding(host: &str) -> PtzBinding {
+        PtzBinding {
+            lens: Lens::Bottom,
+            source: PtzSource::Device,
+            evidence: format!("read from {host}"),
+        }
+    }
+
+    fn entry(
+        host: &str,
+        age: Duration,
+        answered: bool,
+        probing_ago: Option<Duration>,
+    ) -> BindingEntry {
+        BindingEntry {
+            at: Instant::now() - age,
+            host: host.to_string(),
+            binding: answered.then(|| binding(host)),
+            probing_since: probing_ago.map(|ago| Instant::now() - ago),
+        }
+    }
+
+    #[test]
+    fn a_device_answer_outlives_a_failure() {
+        let answered = entry("cam:34567", Duration::from_secs(120), true, None);
+        assert!(binding_fresh(&answered, "cam:34567"));
+        let old_answer = entry("cam:34567", Duration::from_secs(700), true, None);
+        assert!(!binding_fresh(&old_answer, "cam:34567"));
+
+        let failure = entry("cam:34567", Duration::from_secs(30), false, None);
+        assert!(binding_fresh(&failure, "cam:34567"));
+        let old_failure = entry("cam:34567", Duration::from_secs(120), false, None);
+        assert!(!binding_fresh(&old_failure, "cam:34567"));
+
+        assert!(!binding_fresh(&answered, "other:34567"));
+    }
+
+    #[test]
+    fn a_probe_in_flight_blocks_the_next_one_until_it_is_overdue() {
+        let running = entry(
+            "cam:34567",
+            Duration::from_secs(0),
+            false,
+            Some(Duration::ZERO),
+        );
+        assert!(probing(&running));
+        let overdue = entry(
+            "cam:34567",
+            Duration::from_secs(30),
+            false,
+            Some(Duration::from_secs(30)),
+        );
+        assert!(!probing(&overdue));
+        let idle = entry("cam:34567", Duration::from_secs(0), true, None);
+        assert!(!probing(&idle));
     }
 
     #[test]
