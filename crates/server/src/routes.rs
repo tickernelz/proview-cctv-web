@@ -10,6 +10,9 @@ pub mod grid;
 #[path = "routes/cloud_bind.rs"]
 pub mod cloud_bind;
 
+#[path = "routes/playback.rs"]
+pub mod playback;
+
 use std::time::Duration;
 
 use proview_core::config::Config;
@@ -45,7 +48,8 @@ pub fn files() -> Vec<rocket::route::Route> {
         style_css,
         tokens_css,
         font,
-        media_clip
+        media_clip,
+        crate::routes::playback::script
     ]
 }
 
@@ -60,7 +64,8 @@ pub fn api() -> Vec<rocket::route::Route> {
         probe_device,
         rtsp_probe,
         health,
-        crate::stream::stats
+        crate::stream::stats,
+        crate::routes::playback::files
     ]
     .into_iter()
     .chain(control::routes())
@@ -72,7 +77,7 @@ pub fn api() -> Vec<rocket::route::Route> {
 }
 
 pub fn live() -> Vec<rocket::route::Route> {
-    routes![ws_live]
+    routes![ws_live, crate::routes::playback::watch]
         .into_iter()
         .chain(audio::routes())
         .collect()
