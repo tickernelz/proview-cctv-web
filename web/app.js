@@ -4,7 +4,6 @@ const enc = encodeURIComponent;
 const PREFS_KEY = 'pvw_prefs_v2';
 const LIVE_WINDOW_SECONDS = 12;
 const LIVE_TARGET_LAG_SECONDS = 1.0;
-const GRID_LIMIT = 4;
 const SECTIONS = ['playback', 'camera', 'connection', 'config', 'server'];
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
 const SIGNIN_LEDE = 'The same PROVIEW account your phone uses. The camera password stays on this machine.';
@@ -574,7 +573,7 @@ function renderSwitcher() {
     ? ['channel ' + camera.channel, lensMeta()].filter(Boolean).join(' · ')
     : 'nothing selected';
   const grid = el('grid-toggle');
-  grid.disabled = !several;
+  grid.disabled = state.cameras.length === 0;
   const inGrid = state.view === 'grid';
   grid.setAttribute('aria-label', inGrid ? 'Back to the camera' : 'Show every camera');
   grid.title = (inGrid ? 'Back to the camera' : 'Show every camera') + ' (G)';
@@ -2060,140 +2059,24 @@ async function toggleFullscreen() {
   }
 }
 
-const gridTask = { token: 0 };
+function startGrid() {
+  ProviewGrid.open();
+}
 
 function stopGrid() {
-  gridTask.token += 1;
-  for (const [id, player] of state.players) {
-    if (id.startsWith('grid:')) {
-      player.destroy();
-      state.players.delete(id);
-    }
-  }
+  ProviewGrid.close();
 }
 
 function renderTileSelection() {
-  for (const tile of document.querySelectorAll('.tile')) {
-    tile.classList.toggle('sel', tile.dataset.key === state.selectedId + ':' + state.channel);
-  }
-}
-
-function renderGridCount() {
-  const tiles = [...document.querySelectorAll('.tile')];
-  const count = (name) => tiles.filter((tile) => tile.dataset.state === name).length;
-  const parts = [state.cameras.length + ' camera' + (state.cameras.length === 1 ? '' : 's')];
-  if (count('playing')) parts.push(count('playing') + ' live');
-  if (count('loading')) parts.push(count('loading') + ' connecting');
-  if (count('error')) parts.push(count('error') + ' failed');
-  if (count('offline')) parts.push(count('offline') + ' offline');
-  if (state.cameras.length > GRID_LIMIT) parts.push('showing the first ' + GRID_LIMIT);
-  el('grid-count').textContent = parts.join(' · ');
-}
-
-function setTile(tile, name, detail) {
-  tile.dataset.state = name;
-  const fail = tile.querySelector('.tile-fail');
-  const right = tile.querySelector('.tile-meta .right');
-  tile.querySelector('.prog').hidden = name !== 'loading';
-  tile.querySelector('video').hidden = name !== 'playing' && name !== 'stalled';
-  tile.querySelector('.tile-state').textContent =
-    { loading: 'connecting', playing: 'live', stalled: 'frozen', error: 'failed', offline: 'offline' }[name] || name;
-  right.classList.toggle('warn', name === 'error' || name === 'offline' || name === 'stalled');
-  right.textContent = name === 'playing' ? hms(Date.now()) : name === 'error' ? hms(Date.now()) : name === 'offline' ? 'offline' : '';
-  fail.hidden = name !== 'error' && name !== 'offline';
-  if (!fail.hidden) {
-    fail.querySelector('strong').textContent = name === 'offline' ? 'Offline' : 'No picture';
-    fail.querySelector('span').textContent =
-      name === 'offline' ? statusLine(camera ? camera.device : null) + '.' : detail || 'The stream stopped.';
-    fail.querySelector('button').hidden = name !== 'error';
-  }
-  renderGridCount();
-}
-
-async function playTile(tile, camera, token) {
-  const id = 'grid:' + camera.key;
-  const previous = state.players.get(id);
-  if (previous) {
-    previous.destroy();
-  }
-  if (deviceStatus(camera.device).known && !camera.device.online) {
-    setTile(tile, 'offline');
-    return;
-  }
-  const player = new StreamPlayer(tile.querySelector('video'), (name, message) => setTile(tile, name, message));
-  state.players.set(id, player);
-  setTile(tile, 'loading');
-  try {
-    const ticket = await api(
-      '/api/stream?device=' + enc(camera.device.id) + '&channel=' + camera.channel + '&quality=' + enc(state.prefs.quality),
-    );
-    if (token !== gridTask.token) {
-      player.destroy();
-      return;
-    }
-    await player.play(ticket);
-  } catch (error) {
-    if (sessionLost(error)) {
-      return;
-    }
-    setTile(tile, 'error', shortStreamError(error));
-    tile.querySelector('.tile-fail span').title = error.message;
-  }
-}
-
-function startGrid() {
-  stopGrid();
-  const token = gridTask.token;
-  const tiles = el('tiles');
-  tiles.replaceChildren();
-  const shown = state.cameras.slice(0, GRID_LIMIT);
-  tiles.dataset.count = String(shown.length);
-  for (const camera of shown) {
-    const tile = make('article', 'tile');
-    tile.dataset.key = camera.key;
-    const open = make('button', 'tile-open');
-    open.type = 'button';
-    open.setAttribute('aria-label', 'Open ' + camera.name + ' in Live');
-    open.addEventListener('click', () => openCamera(state.cameras.indexOf(camera)));
-    const well = make('div', 'well');
-    const video = document.createElement('video');
-    video.playsInline = true;
-    video.muted = true;
-    video.hidden = true;
-    const prog = make('div', 'prog');
-    const fail = make('div', 'tile-fail');
-    fail.hidden = true;
-    const retry = make('button', '', 'Try again');
-    retry.type = 'button';
-    retry.addEventListener('click', () => playTile(tile, camera, gridTask.token));
-    fail.append(make('strong'), make('span'), retry);
-    well.append(video, prog, fail);
-    const meta = make('div', 'tile-meta');
-    const left = make('p');
-    left.append(make('strong', '', camera.name), make('span', 'tile-state'));
-    meta.append(left, make('span', 'right'));
-    tile.append(open, well, meta);
-    tiles.append(tile);
-    playTile(tile, camera, token);
-  }
-  renderTileSelection();
-  renderGridCount();
+  ProviewGrid.syncSelection();
 }
 
 function moveTileFocus(key) {
-  const buttons = [...document.querySelectorAll('.tile-open')];
-  if (!buttons.length) {
-    return;
-  }
-  const index = Math.max(0, buttons.indexOf(document.activeElement));
-  const columns = buttons.length > 1 ? 2 : 1;
-  const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -columns, ArrowDown: columns }[key];
-  const next = buttons[Math.min(buttons.length - 1, Math.max(0, index + step))];
-  next.focus();
+  ProviewGrid.moveFocus(key);
 }
 
 function setView(name, options = {}) {
-  const next = name === 'grid' && state.cameras.length > 1 ? 'grid' : 'live';
+  const next = name === 'grid' && state.cameras.length > 0 ? 'grid' : 'live';
   const changed = state.view !== next;
   state.view = next;
   if (location.hash !== '#' + next) {
