@@ -56,6 +56,14 @@ separate note on every action says the ack is not motion; start and stop answer
 409 when the device holds no such line or the line has no points, and `TourTimes`
 is fixed at 1 as the app sends it. `docs/protocol.md` 9A carries the numbers.
 
+- Alarm message centre. `GET /api/cloud/alarms` reads the vendor alarm centre
+  (`access-alc.secu100.net:6602`) with the envelope recovered from
+  `libFunSDK.so` (`AlarmCenter/Header/*`, `MSG_ALARM_QUERY_REQ` and
+  `MSG_ALARM_QUERY_BY_TIME_REQ`), and `web/alarms.js` lists the results with
+  time, event and channel, polls on an interval and raises a browser
+  notification for alarm ids it has not seen before. Live: 52 alarms for one
+  local day, route round-trip 457 ms cold and 77-86 ms warm, a silent host failing in 6 s.
+
 ### Changed
 
 - `/api/lens` reads the motorised lens from the device (`Ptz.GunBallLocate`) and
