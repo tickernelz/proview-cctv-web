@@ -460,3 +460,27 @@ async fn a_revert_the_device_ignores_is_reported_as_a_failed_revert() {
     handle.abort();
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn an_overwrite_block_shaped_as_an_array_is_written_through_its_entry() {
+    let fake = Fake::new(Behaviour::Honour);
+    fake.seed(
+        "General.General",
+        json!([{ "OverWrite": "OverWrite", "MachineName": "cam" }]),
+    );
+    let (mut connection, handle) = device(fake.clone()).await;
+    let dir = backups();
+    let report = connection
+        .write_overwrite(proview_core::dvrip::settings::OverwriteMode::Stop, &dir)
+        .await
+        .unwrap();
+    assert!(!report.reverted);
+    assert_eq!(report.fields.len(), 1);
+    assert_eq!(report.fields[0].field, "0.OverWrite");
+    assert_eq!(report.fields[0].before, json!("OverWrite"));
+    assert_eq!(report.fields[0].after, json!("StopRecord"));
+    let writes = fake.writes.lock().unwrap().clone();
+    assert_eq!(writes[0].1[0]["OverWrite"], json!("StopRecord"));
+    handle.abort();
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -843,14 +843,17 @@ impl Connection {
     ) -> Result<WriteReport, SettingsError> {
         let before = self.setting_block(GENERAL_BLOCK).await?;
         let mut desired = before.clone();
-        desired["OverWrite"] = json!(mode.wire());
-        self.write_setting(
-            GENERAL_BLOCK,
-            desired,
-            &["OverWrite".to_string()],
-            backup_dir,
-        )
-        .await
+        let (_, prefix) = first_entry(&before);
+        let key = format!("{prefix}OverWrite");
+        {
+            let entry = slot(&mut desired, &key).ok_or_else(|| SettingsError::Missing {
+                block: GENERAL_BLOCK,
+                path: key.clone(),
+            })?;
+            *entry = json!(mode.wire());
+        }
+        self.write_setting(GENERAL_BLOCK, desired, &[key], backup_dir)
+            .await
     }
 
     pub async fn write_record_mode(
