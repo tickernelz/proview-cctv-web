@@ -323,21 +323,23 @@ impl EnvelopeClient {
     }
 
     fn next(&self) -> Signed {
-        let counter = self
-            .counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                let next = current + 1;
-                Some(if next >= COUNTER_WRAP { 1 } else { next })
-            })
-            .map(|previous| {
-                if previous + 1 >= COUNTER_WRAP {
-                    1
-                } else {
-                    previous + 1
-                }
-            })
-            .unwrap_or(1);
-        signed_request(&self.identity, counter, now_millis())
+        let mut current = self.counter.load(Ordering::SeqCst);
+        loop {
+            let next = if current + 1 >= COUNTER_WRAP {
+                1
+            } else {
+                current + 1
+            };
+            match self.counter.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return signed_request(&self.identity, next, now_millis()),
+                Err(seen) => current = seen,
+            }
+        }
     }
 
     fn signed(
