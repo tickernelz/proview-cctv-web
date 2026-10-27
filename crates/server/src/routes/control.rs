@@ -53,6 +53,7 @@ fn control_status(error: &ControlError) -> Status {
         ControlError::Unsupported { .. } => Status::NotImplemented,
         ControlError::NotConfigured(_) => Status::BadRequest,
         ControlError::Blocked { .. } => Status::Conflict,
+        ControlError::Timeout { .. } => Status::GatewayTimeout,
         ControlError::Device(_) => Status::BadGateway,
     }
 }

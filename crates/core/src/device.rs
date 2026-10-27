@@ -84,6 +84,11 @@ pub enum ControlError {
         operation: &'static str,
         reason: &'static str,
     },
+    Timeout {
+        operation: &'static str,
+        address: String,
+        window: Duration,
+    },
     Device(String),
 }
 
@@ -99,6 +104,14 @@ impl std::fmt::Display for ControlError {
             ControlError::Blocked { operation, reason } => {
                 write!(f, "{operation} is blocked: {reason}")
             }
+            ControlError::Timeout {
+                operation,
+                address,
+                window,
+            } => write!(
+                f,
+                "{operation} to {address} did not answer inside {window:?}"
+            ),
             ControlError::Device(detail) => write!(f, "device: {detail}"),
         }
     }
@@ -161,7 +174,11 @@ impl From<SessionError> for ControlError {
     fn from(error: SessionError) -> Self {
         match error {
             SessionError::Failed(inner) => inner,
-            other => ControlError::Device(other.to_string()),
+            SessionError::Timeout { address, window } => ControlError::Timeout {
+                operation: "connect and login",
+                address,
+                window,
+            },
         }
     }
 }
@@ -176,6 +193,10 @@ pub struct PtzBinding {
 }
 
 pub const SESSION_WINDOW: Duration = Duration::from_secs(10);
+
+pub const OP_WINDOW: Duration = Duration::from_secs(20);
+
+const OP_WINDOW_ENV: &str = "PROVIEW_DVRIP_WINDOW_MS";
 
 const PTZ_BINDING_TTL: Duration = Duration::from_secs(600);
 const PTZ_BINDING_FAILURE_TTL: Duration = Duration::from_secs(60);
@@ -607,14 +628,48 @@ impl DeviceControl for OnvifControl {
     }
 }
 
+fn op_window() -> Duration {
+    match std::env::var(OP_WINDOW_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => OP_WINDOW,
+    }
+}
+
+async fn call_within<T, F>(
+    operation: &'static str,
+    address: &str,
+    window: Duration,
+    call: F,
+) -> Result<T, ControlError>
+where
+    F: std::future::Future<Output = Result<T, crate::dvrip::client::DvrError>>,
+{
+    match tokio::time::timeout(window, call).await {
+        Ok(result) => result.map_err(ControlError::from),
+        Err(_) => Err(ControlError::Timeout {
+            operation,
+            address: address.to_string(),
+            window,
+        }),
+    }
+}
+
 pub struct DvripControl {
     address: String,
     user: String,
     password: String,
+    window: Duration,
 }
 
 impl DvripControl {
     pub fn new(cfg: &Config) -> Result<Self, ControlError> {
+        Self::with_window(cfg, op_window())
+    }
+
+    pub fn with_window(cfg: &Config, window: Duration) -> Result<Self, ControlError> {
         let address = cfg
             .device_host
             .clone()
@@ -623,6 +678,7 @@ impl DvripControl {
             address,
             user: cfg.device_user.clone(),
             password: cfg.device_pass.clone(),
+            window,
         })
     }
 
@@ -665,9 +721,21 @@ impl DeviceControl for DvripControl {
 
     async fn capabilities(&self) -> Result<Vec<LensCapability>, ControlError> {
         let mut connection = self.session().await?;
-        let reported = connection.capabilities().await?;
-        let flip = connection.picture_flags(0).await;
-        let _ = connection.logout().await;
+        let reported = call_within(
+            "ability read",
+            &self.address,
+            self.window,
+            connection.capabilities(),
+        )
+        .await?;
+        let flip = call_within(
+            "picture flip read",
+            &self.address,
+            self.window,
+            connection.picture_flags(0),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
         let locate = reported.ptz_locate.clone();
         let tour = reported.ptz_tour.clone();
         let ptz_motion = if reported.ptz_direction.supported {
@@ -751,9 +819,21 @@ impl DeviceControl for DvripControl {
 
     async fn tour_state(&self) -> Result<TourState, ControlError> {
         let mut connection = self.session().await?;
-        let listing = connection.tour_listing().await;
-        let locate = connection.ptz_locate().await;
-        let _ = connection.logout().await;
+        let listing = call_within(
+            "tour listing",
+            &self.address,
+            self.window,
+            connection.tour_listing(),
+        )
+        .await;
+        let locate = call_within(
+            "ptz locate read",
+            &self.address,
+            self.window,
+            connection.ptz_locate(),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
         let (lines, presets) = listing?;
         Ok(TourState {
             lines,
@@ -764,46 +844,86 @@ impl DeviceControl for DvripControl {
 
     async fn start_tour(&self, tour: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
-        let result = match tour_line_to_run(&mut connection, tour, "ptz tour start").await {
-            Ok(channel) => connection
-                .start_tour(channel, tour)
+        let result = match tour_line_to_run(
+            &mut connection,
+            tour,
+            "ptz tour start",
+            &self.address,
+            self.window,
+        )
+        .await
+        {
+            Ok(channel) => {
+                call_within(
+                    "ptz tour start",
+                    &self.address,
+                    self.window,
+                    connection.start_tour(channel, tour),
+                )
                 .await
-                .map_err(ControlError::from),
+            }
             Err(error) => Err(error),
         };
-        let _ = connection.logout().await;
+        let _ = connection.logout_within(self.window).await;
         result
     }
 
     async fn stop_tour(&self, tour: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
-        let result = match tour_line_to_run(&mut connection, tour, "ptz tour stop").await {
-            Ok(channel) => connection
-                .stop_tour(channel, tour)
+        let result = match tour_line_to_run(
+            &mut connection,
+            tour,
+            "ptz tour stop",
+            &self.address,
+            self.window,
+        )
+        .await
+        {
+            Ok(channel) => {
+                call_within(
+                    "ptz tour stop",
+                    &self.address,
+                    self.window,
+                    connection.stop_tour(channel, tour),
+                )
                 .await
-                .map_err(ControlError::from),
+            }
             Err(error) => Err(error),
         };
-        let _ = connection.logout().await;
+        let _ = connection.logout_within(self.window).await;
         result
     }
 
     async fn add_tour_point(&self, tour: i64, preset: i64, index: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
-        let channel = tour_line_channel(&mut connection, tour).await.unwrap_or(0);
-        let result = connection
-            .add_tour_point(channel, tour, preset, index)
-            .await;
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let channel = tour_line_channel(&mut connection, tour, &self.address, self.window)
+            .await
+            .unwrap_or(0);
+        let result = call_within(
+            "ptz tour point add",
+            &self.address,
+            self.window,
+            connection.add_tour_point(channel, tour, preset, index),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn clear_tour(&self, tour: i64) -> Result<(), ControlError> {
         let mut connection = self.session().await?;
-        let channel = tour_line_channel(&mut connection, tour).await.unwrap_or(0);
-        let result = connection.clear_tour(channel, tour).await;
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let channel = tour_line_channel(&mut connection, tour, &self.address, self.window)
+            .await
+            .unwrap_or(0);
+        let result = call_within(
+            "ptz tour clear",
+            &self.address,
+            self.window,
+            connection.clear_tour(channel, tour),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn move_ptz(
@@ -821,9 +941,15 @@ impl DeviceControl for DvripControl {
             });
         }
         let mut connection = self.session().await?;
-        let result = connection.ptz_step(pan, tilt, hold).await;
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let result = call_within(
+            "ptz move",
+            &self.address,
+            self.window,
+            connection.ptz_step(pan, tilt, hold),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn white_light(
@@ -832,14 +958,26 @@ impl DeviceControl for DvripControl {
     ) -> Result<Option<String>, ControlError> {
         let mut connection = self.session().await?;
         let result = match mode {
-            Some(mode) => connection
-                .set_white_light(mode)
+            Some(mode) => call_within(
+                "white light write",
+                &self.address,
+                self.window,
+                connection.set_white_light(mode),
+            )
+            .await
+            .map(|_| Some(mode.wire().to_string())),
+            None => {
+                call_within(
+                    "white light read",
+                    &self.address,
+                    self.window,
+                    connection.white_light_mode(),
+                )
                 .await
-                .map(|_| Some(mode.wire().to_string())),
-            None => connection.white_light_mode().await,
+            }
         };
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn picture_flip(
@@ -848,38 +986,66 @@ impl DeviceControl for DvripControl {
         mirror: Option<bool>,
     ) -> Result<(Option<String>, Option<String>), ControlError> {
         let mut connection = self.session().await?;
-        let mut result = Ok((None, None));
+        let mut result: Result<(Option<String>, Option<String>), ControlError> = Ok((None, None));
         if flip.is_some() || mirror.is_some() {
-            result = connection
-                .set_picture_flip(0, flip, mirror)
-                .await
-                .map(|_| (None, None));
+            result = call_within(
+                "picture flip write",
+                &self.address,
+                self.window,
+                connection.set_picture_flip(0, flip, mirror),
+            )
+            .await
+            .map(|_| (None, None));
         }
         if result.is_ok() {
-            result = connection.picture_flags(0).await;
+            result = call_within(
+                "picture flip read",
+                &self.address,
+                self.window,
+                connection.picture_flags(0),
+            )
+            .await;
         }
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn record_mode(&self, mode: Option<RecordMode>) -> Result<Option<String>, ControlError> {
         let mut connection = self.session().await?;
         let result = match mode {
-            Some(mode) => connection
-                .set_record_mode(mode)
+            Some(mode) => call_within(
+                "record mode write",
+                &self.address,
+                self.window,
+                connection.set_record_mode(mode),
+            )
+            .await
+            .map(|_| Some(mode.wire().to_string())),
+            None => {
+                call_within(
+                    "record mode read",
+                    &self.address,
+                    self.window,
+                    connection.record_mode(),
+                )
                 .await
-                .map(|_| Some(mode.wire().to_string())),
-            None => connection.record_mode().await,
+            }
         };
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 
     async fn snapshot(&self) -> Result<Vec<u8>, ControlError> {
         let mut connection = self.session().await?;
-        let result = connection.snapshot(0).await;
-        let _ = connection.logout().await;
-        result.map_err(ControlError::from)
+        let result = call_within(
+            "snapshot",
+            &self.address,
+            self.window,
+            connection.snapshot(0),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        result
     }
 }
 
@@ -893,8 +1059,11 @@ async fn tour_line_to_run(
     connection: &mut DvripConnection,
     tour: i64,
     operation: &'static str,
+    address: &str,
+    window: Duration,
 ) -> Result<usize, ControlError> {
-    let (lines, _) = connection.tour_listing().await?;
+    let (lines, _) =
+        call_within("tour listing", address, window, connection.tour_listing()).await?;
     let line = lines
         .iter()
         .find(|line| line.id == tour)
@@ -911,8 +1080,15 @@ async fn tour_line_to_run(
     Ok(line.channel)
 }
 
-async fn tour_line_channel(connection: &mut DvripConnection, tour: i64) -> Option<usize> {
-    let (lines, _) = connection.tour_listing().await.ok()?;
+async fn tour_line_channel(
+    connection: &mut DvripConnection,
+    tour: i64,
+    address: &str,
+    window: Duration,
+) -> Option<usize> {
+    let (lines, _) = call_within("tour listing", address, window, connection.tour_listing())
+        .await
+        .ok()?;
     lines
         .iter()
         .find(|line| line.id == tour)
@@ -920,7 +1096,7 @@ async fn tour_line_channel(connection: &mut DvripConnection, tour: i64) -> Optio
 }
 
 fn flip_capability(
-    live_read: Result<(Option<String>, Option<String>), crate::dvrip::client::DvrError>,
+    live_read: Result<(Option<String>, Option<String>), ControlError>,
     reported: crate::dvrip::control::Capability,
 ) -> LensCapability {
     match live_read {
