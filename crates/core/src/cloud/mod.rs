@@ -1,7 +1,9 @@
+pub mod alarm;
 pub mod app;
 pub mod attributes;
 pub mod bind;
 pub mod client;
+pub mod css;
 pub mod digest;
 pub mod dss;
 pub mod envelope;
@@ -9,6 +11,7 @@ pub mod session;
 pub mod status;
 pub mod types;
 
+pub use alarm::{AlarmClient, AlarmEntry, AlarmPage, AlarmPicture, AlarmQuery};
 pub use app::{AppCaps, AppFlags, CapsClient, DEFAULT_BASE as CAPS_BASE, REQUESTED_CAPS};
 pub use attributes::{AttributeClient, AttributeStore, DeviceAttributes, Organisation};
 pub use bind::{
@@ -16,6 +19,7 @@ pub use bind::{
     QrDevice, QrError, SignOutReply,
 };
 pub use client::{classify, CloudClient, CloudError, CloudResult};
+pub use css::{CssClient, SignRequest, SignedFile};
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
 pub use dss::{
     cloud_recordings, query_body, read_recordings, token_body, CloudRecording, DssClaims,

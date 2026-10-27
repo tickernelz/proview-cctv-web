@@ -1,3 +1,6 @@
+#[path = "routes/alarms.rs"]
+pub mod alarms;
+
 #[path = "routes/apmode.rs"]
 pub mod apmode;
 
@@ -59,6 +62,9 @@ pub fn files() -> Vec<rocket::route::Route> {
         crate::routes::playback::script,
         settings_write::device_settings_js
     ]
+    .into_iter()
+    .chain(alarms::files())
+    .collect()
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -78,6 +84,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(alarms::routes())
     .chain(fisheye::api())
     .chain(recordings::routes())
     .chain(grid::routes())
@@ -295,11 +302,13 @@ async fn login(
 fn logout(
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<crate::routes::cloud::CloudState>,
     cookies: &CookieJar<'_>,
 ) -> Json<StatusBody> {
     if let Some(c) = cookies.get_private("pvw_session") {
         store.remove(c.value());
         modes.forget(c.value());
+        cloud.forget_devices(c.value());
         cookies.remove_private(c);
     }
     Json(StatusBody {

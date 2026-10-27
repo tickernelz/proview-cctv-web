@@ -74,9 +74,10 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Alarm message list | `AlarmMessActivity`, `CMpsClientV2::SearchAlarmInfo`, `AlarmCenter/Header/*` | blocked | cloud message centre, same envelope blocker |
-| Alarm push (FCM) | `AlarmPushService`, `SUPPORT_*_PUSH=false` | blocked | vendor FCM sender id + topic authorisation live in the vendor backend |
-| Local notification on new event | browser Notification API | blocked | depends on the alarm list source |
+| Alarm message list | `AlarmMessActivity`, `CMpsClientV2::SearchAlarmInfo`, `AlarmCenter/Header/*` | done | `crates/core/src/cloud/alarm.rs` speaks the recovered `AlarmCenter` envelope against `access-alc.secu100.net:6602` over plain HTTP (6502 TLS refuses with `EE certificate key too weak`, so the per-device auth code travels unencrypted to the vendor gateway); live: 52 alarms for one local day, route round-trip 213-297 ms with a 157 ms vendor call, listed with time, event and channel by `web/alarms.js` |
+| Alarm picture | `PicInfo/ObjName`, `StorageBucket`, `CCMDownloadFile::GetCSSFileSign` | done | the panel asks `POST http://access-css.secu100.net:6614/` for a signed object request (`CssCenter` `MSG_DOWNLOAD_SIGN_REQ`, `Body/ObjInfo[{ObjName,StorageBucket}]`, `ObjType PIC`, `Method GET`) and then GETs the returned storage URL with the `Date` and `Authorization` headers it hands back: 66 685 bytes, JPEG 640x720, the same size `PicInfo.ObjSize` reports for that alarm; live route test `the_picture_route_returns_a_vendor_thumbnail` (ZHA-4023). The older `pub-pms-pic.secu100.net:8082/download/<sn>/<code>/<object>.jpeg` path answers `500 check authcode failed` for every per-device code the account carries and is removed; `ObjInfo` must be an array - sending it as an object answers `404 not find` |
+| Alarm push (FCM) | `AlarmPushService`, `SUPPORT_*_PUSH=false` | done | vendor FCM needs the vendor sender id and topic; this app polls `GET /api/cloud/alarms` every `PROVIEW_ALARM_POLL_SECONDS` (20 s default) and raises a browser `Notification` for alarm ids it has not seen |
+| Local notification on new event | browser Notification API | partial | `web/alarms.js` raises one notification per new alarm id while the tab is hidden, after the user presses Notify me; permission is never requested on load |
 
 ## Device management
 
