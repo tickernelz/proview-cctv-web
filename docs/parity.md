@@ -67,8 +67,8 @@ not is listed as `blocked` with the missing input.
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
 | Device playback | `CloudPlayBackActivity`, `OPPlayBack`, `opSearch` | blocked | needs the device session |
-| Cloud recording list | `XMCloudStorage`, `CloudMediaSearchCssHls` | blocked | needs the DSS token (`/reqToken`, `sign` unknown) |
-| Clip download | `CCloudStorageDownloadFile` | blocked | follows the two rows above |
+| Cloud recording list | `XMCloudStorage`, `CloudMediaSearchCssHls`, PMS `/v2` | partial | token recovered and proven on the wire: `POST https://pub-token.xmeye.net/reqToken` with the SDK's own body answers 200 `{"ret":200,"code":2000}` in 0.25 s, and `POST http://access-pms.secu100.net:6602/v2` with `auth` from the device-list `pms` field plus `muserid` from the access token answers 200 `{"msg":"video_query","code":"200"}` in 0.13 s after a 0.31 s login. The account behind this build has no active cloud plan (the app shows `Penyimpanan awan — Sekarang aktif` and `Berlangganan penyimpanan cloud`), so the query is acknowledged with no clips; `/api/recordings` returns that page with its notice and the UI renders it |
+| Clip download | `CCloudStorageDownloadFile`, DVRIP file read | blocked | two routes, both closed today: the cloud one needs a clip to exist (no cloud plan on this account) plus the `GetFileAuthSign` m3u8/ts chain (`CCloudStorageTalker` 0xd4db40, not recovered), and the LAN one needs the camera on this host's network — 192.168.0.100:34567/554/80 all time out from the workstation, which only sees the WSL NAT 172.23.199.41 |
 
 ## Events / alarms
 
