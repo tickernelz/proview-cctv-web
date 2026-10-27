@@ -87,5 +87,4 @@ mod tests {
     fn a_broken_modulus_is_refused() {
         assert!(communicate_key("not-hex", "010001", "abcdefghijklmnop").is_err());
     }
-
 }
