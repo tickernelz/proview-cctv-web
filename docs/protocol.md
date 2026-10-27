@@ -1103,6 +1103,32 @@ Next measurement: hook the AES setup that runs for message 1000 — the earlier
 hook showed `AES_set_encrypt_key` firing with 32-byte keys during a live session,
 which is a candidate for this login cipher.
 
+### 4C.20 Where the AES keys come from, by caller
+
+The shim now prints the caller of every `AES_set_encrypt_key` as an offset into
+`libFunSDK`. One live session:
+
+```
+778  0x1e12f64  bits=256     (libcrypto region; TLS record keys)
+ 18  0x1e137f0  bits=256
+ 16  0x1d6f4a0  bits=128
+  9  0xacac60   bits=128     (vendor code, not libcrypto)
+  8  0x1e137f0  bits=128
+  4  0xacae80   bits=128     (vendor code)
+```
+
+The two low-offset callers are the only ones inside the SDK's own text, and the
+keys they set look like derived 16-character strings (`31412962…9de0`), which is
+what a media/login cipher key would look like. Tried against the login body of
+the same run under AES-128-CBC and ECB: no plaintext, so those two are not the
+login cipher either — but they are now the two addresses worth naming from the
+binary, which is the next step (`rea` / ghidra on `0xacac60` and `0xacae80`).
+
+Note the build trap found on the way: the harvest script compiled the shim into
+the same `librpshook.so` it was about to load, and a silent link failure left the
+previous binary in place, so two earlier runs logged no callers at all. Building
+to a fresh name is what made this map appear.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
