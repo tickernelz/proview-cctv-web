@@ -48,8 +48,10 @@ reports `ptzSource: "device"` with a `ptzEvidence` string that quotes the block
 and names the host it came from, instead of the measured default it used to
 guess. The read never blocks the live stream: the route answers from a cache and
 refreshes in the background with one bounded probe (10 s) at a time, keeping a
-device answer for 10 minutes and a failure or timeout for 1 minute. The measured
-default stays only as the fallback when the cache holds nothing.
+device answer for 10 minutes and a failure or timeout for 1 minute. While a
+refresh runs the last device answer keeps serving, so `/api/lens` never drops to
+`measured_default` between refreshes; the measured default stays only as the
+fallback when the cache holds nothing at all.
 - `lens=top` on `/api/device/controls/ptz` now answers 409 with the code
 `ptz_lens_has_no_motor`, the device own locate block in the message, and a
 pointer to `lens=bottom`, so the refusal carries evidence instead of a bare
