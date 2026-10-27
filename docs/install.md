@@ -24,7 +24,7 @@ SmartScreen will show "Windows protected your PC" and the publisher appears as
 unknown. That is expected, not a sign of tampering — verify the checksum above.
 
 1. Download the `.msi` (or `.exe` NSIS installer) for your architecture:
-   `PROVIEW.CCTV_0.2.4_x64_en-US.msi` / `PROVIEW.CCTV_0.2.4_x64-setup.exe`, or
+   `PROVIEW.CCTV_0.2.5_x64_en-US.msi` / `PROVIEW.CCTV_0.2.5_x64-setup.exe`, or
    the `arm64` pair.
 2. Unblock the file before running it:
    ```powershell
@@ -45,9 +45,9 @@ The app is **unsigned** and **not notarized**; the bundler applies only an
 ad-hoc signature (`codesign -s -`), which Apple silicon requires to run at all.
 Gatekeeper will refuse the first launch.
 
-1. Download the `.dmg` for your Mac: `PROVIEW.CCTV_0.2.4_aarch64.dmg` for
-   Apple silicon, `PROVIEW.CCTV_0.2.4_x64.dmg` for Intel, or
-   `PROVIEW.CCTV_0.2.4_universal.dmg`.
+1. Download the `.dmg` for your Mac: `PROVIEW.CCTV_0.2.5_aarch64.dmg` for
+   Apple silicon, `PROVIEW.CCTV_0.2.5_x64.dmg` for Intel, or
+   `PROVIEW.CCTV_0.2.5_universal.dmg`.
 2. Open the disk image and drag the app to `/Applications`.
 3. Right-click the app → **Open** → **Open**. (Double-clicking only shows the
    refusal dialog the first time.)
@@ -62,14 +62,14 @@ Path to a signed build later: Apple Developer ID certificate + notarization.
 
 ```sh
 # AppImage (x86_64; use the _aarch64 file on ARM)
-chmod +x PROVIEW.CCTV_0.2.4_amd64.AppImage
-./PROVIEW.CCTV_0.2.4_amd64.AppImage
+chmod +x PROVIEW.CCTV_0.2.5_amd64.AppImage
+./PROVIEW.CCTV_0.2.5_amd64.AppImage
 
 # Debian / Ubuntu
-sudo apt install ./PROVIEW.CCTV_0.2.4_amd64.deb
+sudo apt install ./PROVIEW.CCTV_0.2.5_amd64.deb
 
 # Fedora / RHEL
-sudo rpm -i PROVIEW.CCTV-0.2.4-1.x86_64.rpm
+sudo rpm -i PROVIEW.CCTV-0.2.5-1.x86_64.rpm
 ```
 
 The desktop build needs `webkit2gtk-4.1` at runtime (installed automatically by

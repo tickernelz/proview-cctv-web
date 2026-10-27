@@ -5,6 +5,27 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## 0.2.5 — 2026-10-27
+
+### Fixed
+
+- `proview-server --version` (and `-V`) printed nothing and started the server
+  instead. The option parser treated every option as one that takes a value, so a
+  bare flag never matched and `--version` fell through to `main`. It now prints
+  `proview-server <version>` and exits, with a unit test for the flag shape.
+
+### Changed
+
+- The whole documentation set was brought to this release: README rewritten
+  (status, feature table, Settings-first configuration, the cookie secret a
+  release build needs, honest cloud login status), `CHANGELOG.md` added,
+  `protocol.md` section 3A records what the vendor SDK harness proved,
+  `cloud-app-surface.md` / `parity.md` / `providers.md` say plainly that the
+  login envelope is proven but not integrated, `deploy.md` no longer claims
+  credentials never touch disk, `install.md` uses the real asset names, and
+  `settings.md`, `performance.md`, `webview-matrix.md`, `mobile-lab.md` and
+  `DESIGN.md` match the code. The v0.2.4 tag predates this pass.
+
 ## 0.2.4 — 2026-10-27
 
 Settings you can reach before signing in, and honest wording everywhere.

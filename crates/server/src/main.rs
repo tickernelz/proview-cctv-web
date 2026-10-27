@@ -1,6 +1,10 @@
 use proview_server::ServeOptions;
 use tracing_subscriber::EnvFilter;
 
+fn flag<S: AsRef<str>>(args: impl IntoIterator<Item = S>, name: &str) -> bool {
+    args.into_iter().any(|item| item.as_ref() == name)
+}
+
 fn argument(name: &str) -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(item) = args.next() {
@@ -22,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
-    if argument("--version").is_some() {
+    if flag(std::env::args().skip(1), "--version") || flag(std::env::args().skip(1), "-V") {
         println!("proview-server {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
@@ -61,5 +65,21 @@ async fn shutdown_signal() -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         tokio::signal::ctrl_c().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::flag;
+
+    #[test]
+    fn a_bare_flag_needs_no_value_after_it() {
+        assert!(flag(["--version"], "--version"));
+        assert!(flag(["-V"], "-V"));
+        assert!(flag(
+            ["--listen", "127.0.0.1:8787", "--version"],
+            "--version"
+        ));
+        assert!(!flag(["--listen", "127.0.0.1:8787"], "--version"));
     }
 }
