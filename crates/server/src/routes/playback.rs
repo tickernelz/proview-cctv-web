@@ -1,0 +1,590 @@
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use futures_util::SinkExt;
+use proview_core::cloud::envelope::{EnvelopeClient, Identity};
+use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
+use proview_core::cloud::MISSING_CLOUD_IDENTITY;
+use proview_core::config::Config;
+use proview_core::dvrip::playback::{
+    access_unit, is_video, shift, FrameRate, MediaReader, PlaybackFile, RecordKind, Session,
+};
+use proview_core::media::hevc;
+use proview_core::provider::{p2p, rps, VendorSession};
+use proview_core::session::Store;
+use proview_core::source::{Fmp4Splitter, Piece};
+use rocket::http::{CookieJar, Status};
+use rocket::response::content::RawJavaScript;
+use rocket::serde::json::Json;
+use rocket::State;
+use rocket_ws as ws;
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
+
+use crate::routes::{fail, restore, session_id, Failure};
+
+const RANGE_WAIT: Duration = Duration::from_secs(8);
+const KEY_GRACE: usize = 96;
+
+pub fn routes() -> Vec<rocket::route::Route> {
+    routes![files, script]
+}
+
+#[get("/playback.js")]
+pub fn script() -> RawJavaScript<&'static str> {
+    RawJavaScript(include_str!("../../../../web/playback.js"))
+}
+
+#[derive(Serialize)]
+pub struct FilesBody {
+    pub ok: bool,
+    pub source: &'static str,
+    pub device: String,
+    pub channel: u8,
+    pub begin: String,
+    pub end: String,
+    pub count: usize,
+    pub bytes: u64,
+    pub truncated: bool,
+    pub cap: usize,
+    pub elapsed_ms: u64,
+    pub files: Vec<PlaybackFile>,
+}
+
+#[get("/playback/files?<device>&<channel>&<begin>&<end>&<kind>")]
+#[allow(clippy::too_many_arguments)]
+pub async fn files(
+    device: String,
+    channel: Option<u8>,
+    begin: Option<String>,
+    end: Option<String>,
+    kind: Option<String>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<FilesBody>, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    let begin = begin.unwrap_or_else(|| "2026-10-24 00:00:00".to_string());
+    let end = end.unwrap_or_else(|| "2026-10-25 00:00:00".to_string());
+    let channel = channel.unwrap_or(0);
+    let kind = kind.unwrap_or_else(|| "h264".to_string());
+    let started = Instant::now();
+    let mut session = open_tunnel(cfg, &vendor, &device)
+        .await
+        .map_err(|message| fail(Status::BadGateway, message))?;
+    let found = session
+        .files(channel, &begin, &end, &kind)
+        .await
+        .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
+    let _ = session.logout().await;
+    let bytes = found.iter().map(|file| file.bytes).sum();
+    Ok(Json(FilesBody {
+        ok: true,
+        source: "cloud",
+        device,
+        channel,
+        begin,
+        end,
+        count: found.len(),
+        bytes,
+        truncated: found.len() >= proview_core::dvrip::playback::MAX_FILES,
+        cap: proview_core::dvrip::playback::MAX_FILES,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+        files: found,
+    }))
+}
+
+async fn open_tunnel(
+    cfg: &Config,
+    vendor: &VendorSession,
+    serial: &str,
+) -> Result<Session, String> {
+    let token = vendor
+        .token
+        .as_deref()
+        .ok_or("the session carries no cloud token; sign in again")?;
+    let identity = Identity::resolve();
+    if !identity.is_complete() {
+        return Err(MISSING_CLOUD_IDENTITY.to_string());
+    }
+    let client = EnvelopeClient::with_base(identity, cfg.cloud_base.clone());
+    let devices = client
+        .device_list(token)
+        .await
+        .map_err(|error| error.to_string())?;
+    let device = devices
+        .iter()
+        .find(|device| device.uuid == serial)
+        .ok_or("the device is not on this account")?;
+    let rps_id = device
+        .extra
+        .get("rps")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if rps_id.is_empty() {
+        return Err("the account device carries no rps id".to_string());
+    }
+    let status = StatusClient::new(STATUS_HOST)
+        .query(serial, &auth_code_of(device))
+        .await
+        .map_err(|error| error.to_string())?;
+    let (access_host, access_port) = status
+        .access_server()
+        .ok_or("no status cluster reported an access server")?;
+    let session_id = rps::session_id();
+    let client_token = rps::client_token();
+    let body = p2p::agent_request(
+        &rps_id,
+        &client_token,
+        serial,
+        p2p::AGENT_SERVICE_MEDIA,
+        &session_id,
+        p2p::AGENT_STEP_MEDIA,
+    );
+    let agent = rps::AccessClient::new()
+        .assign(&access_host, access_port, &body)
+        .await
+        .map_err(|error| error.to_string())?;
+    let frame = p2p::handshake_frame(&rps_id, &client_token, serial, &session_id);
+    let tunnel = rps::open(&agent, &frame)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !tunnel.reply.accepted() {
+        return Err(format!(
+            "the relay refused the tunnel with error {}",
+            tunnel.reply.error_num
+        ));
+    }
+    let mut session = Session::open(tunnel.stream);
+    session
+        .login(&cfg.device_user, &cfg.device_pass)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(session)
+}
+
+#[derive(Deserialize)]
+struct WatchQuery {
+    device: String,
+    channel: Option<u8>,
+    name: String,
+    begin: String,
+    end: String,
+    start: Option<u32>,
+}
+
+fn ffmpeg(fps: f64) -> Command {
+    let binary = std::env::var("PROVIEW_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
+    let mut command = Command::new(binary);
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-flags",
+        "low_delay",
+        "-probesize",
+        "32768",
+        "-analyzeduration",
+        "0",
+        "-f",
+        "hevc",
+        "-framerate",
+        &format!("{fps:.3}"),
+        "-i",
+        "pipe:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-profile:v",
+        "baseline",
+        "-g",
+        "25",
+        "-keyint_min",
+        "25",
+        "-sc_threshold",
+        "0",
+        "-an",
+        "-f",
+        "mp4",
+        "-movflags",
+        "+empty_moov+default_base_moof+frag_keyframe+separate_moof+omit_tfhd_offset",
+        "pipe:1",
+    ]);
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn annex_b(record: &proview_core::dvrip::playback::Record, out: &mut Vec<u8>) -> bool {
+    if !is_video(record) {
+        return false;
+    }
+    let nals = access_unit(record);
+    if nals.is_empty() {
+        return false;
+    }
+    for nal in &nals {
+        hevc::append_annexb(nal, out);
+    }
+    true
+}
+
+fn text_frame(payload: serde_json::Value) -> ws::Message {
+    ws::Message::Text(payload.to_string())
+}
+
+#[get("/ws/playback?<device>&<channel>&<name>&<begin>&<end>&<start>")]
+#[allow(clippy::too_many_arguments)]
+pub fn watch(
+    ws: ws::WebSocket,
+    device: String,
+    channel: Option<u8>,
+    name: String,
+    begin: String,
+    end: String,
+    start: Option<u32>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<ws::Channel<'static>, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
+    if device.contains('/') || device.contains("..") {
+        return Err(fail(Status::BadRequest, "invalid device id"));
+    }
+    let params = WatchQuery {
+        device,
+        channel,
+        name,
+        begin,
+        end,
+        start,
+    };
+    let config = cfg.inner().clone();
+    Ok(ws.channel(move |mut stream| {
+        Box::pin(async move {
+            let channel = params.channel.unwrap_or(0);
+            let from = params.start.unwrap_or(0);
+            let file = PlaybackFile {
+                name: params.name.clone(),
+                begin: shift(&params.begin, from).unwrap_or_else(|| params.begin.clone()),
+                end: params.end.clone(),
+                bytes: 0,
+                disk: None,
+            };
+            let _ = stream
+                .send(text_frame(serde_json::json!({
+                    "type": "status",
+                    "message": "opening the cloud tunnel",
+                })))
+                .await;
+            let opened = Instant::now();
+            let mut session = match open_tunnel(&config, &vendor, &params.device).await {
+                Ok(session) => session,
+                Err(message) => {
+                    let _ = stream
+                        .send(text_frame(serde_json::json!({
+                            "type": "error",
+                            "message": message,
+                        })))
+                        .await;
+                    return Ok(());
+                }
+            };
+            let _ = stream
+                .send(text_frame(serde_json::json!({
+                    "type": "status",
+                    "message": "asking the device for the clip",
+                    "openMs": opened.elapsed().as_millis() as u64,
+                })))
+                .await;
+            if let Err(error) = session.claim(&file, channel).await {
+                let _ = stream
+                    .send(text_frame(serde_json::json!({
+                        "type": "error",
+                        "message": error.to_string(),
+                    })))
+                    .await;
+                return Ok(());
+            }
+            let queued = Instant::now();
+            if let Err(error) = session.start(&file, channel).await {
+                let _ = stream
+                    .send(text_frame(serde_json::json!({
+                        "type": "error",
+                        "message": error.to_string(),
+                    })))
+                    .await;
+                return Ok(());
+            }
+
+            let mut reader = MediaReader::new();
+            let mut rate = FrameRate::default();
+            let mut pending: Vec<Vec<u8>> = Vec::new();
+            let mut key_frames = 0usize;
+            let mut video = 0usize;
+            let mut first_key = Instant::now();
+            let mut priming = true;
+            while priming {
+                let record = match session.frame(RANGE_WAIT).await {
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        let _ = stream
+                            .send(text_frame(serde_json::json!({
+                                "type": "error",
+                                "message": "the device sent no media inside the wait window",
+                            })))
+                            .await;
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        let _ = stream
+                            .send(text_frame(serde_json::json!({
+                                "type": "error",
+                                "message": error.to_string(),
+                            })))
+                            .await;
+                        return Ok(());
+                    }
+                };
+                reader.push(&record.payload);
+                while let Some(frame) = reader.next_record() {
+                    if frame.kind == RecordKind::Key {
+                        key_frames += 1;
+                        if key_frames == 1 {
+                            first_key = Instant::now();
+                        }
+                    }
+                    let mut bytes = Vec::new();
+                    if annex_b(&frame, &mut bytes) {
+                        video += 1;
+                        rate.observe(&frame);
+                        pending.push(bytes);
+                    }
+                }
+                if key_frames >= 2 && rate.settled() {
+                    priming = false;
+                }
+                if video >= KEY_GRACE || first_key.elapsed() > Duration::from_secs(4) {
+                    priming = false;
+                }
+            }
+
+            if key_frames == 0 {
+                let _ = stream
+                    .send(text_frame(serde_json::json!({
+                        "type": "error",
+                        "message": "the device streamed no keyframe inside the priming window",
+                    })))
+                    .await;
+                return Ok(());
+            }
+            let fps = rate.per_second;
+            let mut child = match ffmpeg(fps).spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let _ = stream
+                        .send(text_frame(serde_json::json!({
+                            "type": "error",
+                            "message": format!("ffmpeg did not start: {error}"),
+                        })))
+                        .await;
+                    return Ok(());
+                }
+            };
+            let mut stdin = match child.stdin.take() {
+                Some(stdin) => stdin,
+                None => return Ok(()),
+            };
+            let mut stdout = match child.stdout.take() {
+                Some(stdout) => stdout,
+                None => return Ok(()),
+            };
+            let stderr = child.stderr.take();
+            let _ = stream
+                .send(text_frame(serde_json::json!({
+                    "type": "status",
+                    "message": "transcoding the clip",
+                    "fps": (fps * 1000.0).round() / 1000.0,
+                    "primedFrames": video,
+                    "primedKeys": key_frames,
+                    "primeMs": queued.elapsed().as_millis() as u64,
+                })))
+                .await;
+
+            let primed = pending;
+            let stop_file = file.clone();
+            let pump = tokio::spawn(async move {
+                for frame in primed {
+                    if stdin.write_all(&frame).await.is_err() {
+                        return video;
+                    }
+                }
+                let mut written = 0usize;
+                loop {
+                    let record = match session.frame(Duration::from_secs(10)).await {
+                        Ok(Some(record)) => record,
+                        _ => break,
+                    };
+                    reader.push(&record.payload);
+                    let mut keep = true;
+                    while let Some(frame) = reader.next_record() {
+                        let mut bytes = Vec::new();
+                        if annex_b(&frame, &mut bytes) {
+                            written += 1;
+                            if stdin.write_all(&bytes).await.is_err() {
+                                keep = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !keep {
+                        break;
+                    }
+                }
+                let _ = stdin.shutdown().await;
+                let _ = session.stop(&stop_file, channel).await;
+                written
+            });
+
+            let mut splitter = Fmp4Splitter::new();
+            let mut buffer = vec![0u8; 64 * 1024];
+            let mut init_sent = false;
+            let mut sent = 0u64;
+            let mut first_frame: Option<u64> = None;
+            loop {
+                let read = match stdout.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(read) => read,
+                    Err(_) => break,
+                };
+                for piece in splitter.push(&buffer[..read]) {
+                    let payload = match piece {
+                        Piece::Init(fragment) => {
+                            init_sent = true;
+                            fragment
+                        }
+                        Piece::Fragment(fragment) => {
+                            if first_frame.is_none() {
+                                first_frame = Some(queued.elapsed().as_millis() as u64);
+                            }
+                            fragment
+                        }
+                    };
+                    sent += payload.len() as u64;
+                    if stream
+                        .send(ws::Message::Binary(payload.to_vec()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            let written = pump.await.unwrap_or(0);
+            let status = child.try_wait();
+            if let Some(stderr) = stderr {
+                let mut text = String::new();
+                let mut handle = stderr;
+                use tokio::io::AsyncReadExt as _;
+                let mut chunk = [0u8; 2048];
+                while let Ok(read) = handle.read(&mut chunk).await {
+                    if read == 0 {
+                        break;
+                    }
+                    text.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                    if text.len() > 2048 {
+                        break;
+                    }
+                }
+                if !text.trim().is_empty() {
+                    tracing::warn!(detail = %text.trim(), "playback ffmpeg reported");
+                }
+            }
+            let _ = stream
+                .send(text_frame(serde_json::json!({
+                    "type": "stats",
+                    "init": init_sent,
+                    "framesWritten": written,
+                    "bytes": sent,
+                    "firstFrameMs": first_frame,
+                    "fps": (fps * 1000.0).round() / 1000.0,
+                    "exit": status.ok().flatten().and_then(|status| status.code()),
+                })))
+                .await;
+            let _ = child.kill().await;
+            Ok(())
+        })
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::ModeStore;
+    use proview_core::config::{Config, ProviderKind};
+    use proview_core::provider::Mode;
+    use rocket::http::Status;
+    use rocket::local::blocking::Client;
+
+    fn client() -> Client {
+        let config = Config {
+            provider: ProviderKind::Fixture,
+            cloud_base: "https://pub-token.example.invalid".to_string(),
+            device_user: "admin".to_string(),
+            device_pass: "device-password".to_string(),
+            fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),
+            device_host: None,
+            device_onvif: None,
+            device_rtsp: None,
+            session_ttl_secs: 60,
+        };
+        let figment = rocket::Config::figment()
+            .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
+            .merge(("port", 0));
+        Client::tracked(crate::app::build_with_modes(
+            figment,
+            config,
+            ModeStore::new(Mode::Cloud, None),
+        ))
+        .expect("rocket")
+    }
+
+    #[test]
+    fn the_file_list_refuses_a_request_without_a_session() {
+        let rocket = client();
+        let response = rocket
+            .get("/api/playback/files?device=abc&channel=0&begin=2026-10-24%2000:00:00&end=2026-10-24%2023:59:59")
+            .dispatch();
+        assert_eq!(response.status(), Status::Unauthorized);
+    }
+
+    #[test]
+    fn the_watch_socket_is_wired_and_refuses_a_plain_request() {
+        let rocket = client();
+        let response = rocket
+            .get("/ws/playback?device=abc&name=/a.h264&begin=2026-10-24%2000:00:00&end=2026-10-24%2000:05:00")
+            .dispatch();
+        assert_eq!(response.status(), Status::BadRequest);
+    }
+
+    #[test]
+    fn the_browser_script_is_served_next_to_the_app() {
+        let rocket = client();
+        let response = rocket.get("/playback.js").dispatch();
+        assert_eq!(response.status(), Status::Ok);
+        let body = response.into_string().expect("body");
+        assert!(body.contains("/ws/playback"));
+        assert!(body.contains("MediaSource"));
+    }
+}

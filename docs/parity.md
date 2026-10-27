@@ -66,7 +66,7 @@ not is listed as `blocked` with the missing input.
 
 | Feature | Evidence | Status | Note |
 |---|---|---|---|
-| Device playback | `CloudPlayBackActivity`, `OPPlayBack`, `opSearch` | blocked | needs the device session |
+| Device playback | `CloudPlayBackActivity`, `OPPlayBack`, `opSearch`, `crates/core/src/dvrip/playback.rs` | partial | real file list and a playing clip over the cloud tunnel with the camera unreachable on the LAN: the 2026-10-24 range returned 557 files (10.08 MB), and a clip plays in headless Chromium at 2304x2592 with tunnel 0.45 s, priming 0.82 s and first frame at 2.49 s. Video only: no audio record was found among the stream's magic values. Seek is keyframe aligned (a +120 s request moved the first key stamp by 131). Download and a timeline of the whole day are not wired (ZHA-4007) |
 | Cloud recording list | `XMCloudStorage`, `CloudMediaSearchCssHls` | blocked | needs the DSS token (`/reqToken`, `sign` unknown) |
 | Clip download | `CCloudStorageDownloadFile` | blocked | follows the two rows above |
 
