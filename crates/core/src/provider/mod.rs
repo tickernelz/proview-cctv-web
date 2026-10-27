@@ -1,6 +1,7 @@
 pub mod cloud;
 pub mod fixture;
 pub mod local;
+pub mod p2p;
 pub mod router;
 
 use serde::{Deserialize, Serialize};
