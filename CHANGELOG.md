@@ -32,10 +32,13 @@ stability before 1.0.
   switches whose replies land out of order, where the older reply used to keep
   an unowned `/ws/live` socket alive and, in the other order, overwrite the
   ticket with the quality the user had already left. A `sourceopen` that
-  arrives after `destroy()` opens no socket at all.
+  arrives after `destroy()` opens no socket at all. A player replaced before
+  its first frame now takes its `loadedmetadata` listener with it, so the
+  watchdog it would have started on that event cannot outlive it and report
+  `stalled` on a later load that has not shown a frame yet.
   `tests/web/stream-orphan.test.mjs` covers the Settings case, the late
-  `sourceopen` and both overlap orders; it fails on 6c70754 and passes after
-  this change.
+  `sourceopen`, both overlap orders and the replaced player; it fails on
+  6c70754 and passes after this change.
 
 ## 0.3.4 — 2026-10-28
 

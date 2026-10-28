@@ -82,6 +82,26 @@ const MANUAL_MEDIA = TRACK + `
   })();
 `;
 
+const DROP_FRAMES = `
+  window.__liveSockets = [];
+  window.__dropFrames = false;
+  (() => {
+    const Native = window.WebSocket;
+    window.WebSocket = function (url, protocols) {
+      const socket = protocols === undefined ? new Native(url) : new Native(url, protocols);
+      const drop = window.__dropFrames;
+      socket.addEventListener('message', (event) => {
+        if (drop) {
+          event.stopImmediatePropagation();
+        }
+      });
+      window.__liveSockets.push({ url: String(url), socket, drop });
+      return socket;
+    };
+    window.WebSocket.prototype = Native.prototype;
+  })();
+`;
+
 let server;
 let browser;
 
@@ -106,6 +126,8 @@ const openSettings = async (page) => {
 const liveSockets = "window.__liveSockets.filter((entry) => entry.url.includes('/ws/live')).map((entry) => entry.socket.readyState)";
 
 const socketsWithOwner = "window.__liveSockets.filter((entry) => entry.url.includes('/ws/live')).map((entry) => ({ q: entry.url, rs: entry.socket.readyState, owned: Boolean(state.players.get('stage')) && state.players.get('stage').socket === entry.socket }))";
+
+const stageSocketOpen = "Boolean(state.players.get('stage') && state.players.get('stage').socket && state.players.get('stage').socket.readyState === 1)";
 
 const ownedOpenSocket = "window.__liveSockets.some((entry) => entry.url.includes('/ws/live') && entry.socket.readyState === 1 && state.players.get('stage') && state.players.get('stage').socket === entry.socket)";
 
@@ -143,6 +165,30 @@ test('a sourceopen that arrives after the player was destroyed opens no socket',
   }
 });
 
+test('a player replaced before its first frame stays quiet on the shared video', async () => {
+  const page = await browser.page({ init: [DROP_FRAMES] });
+  try {
+    await signIn(page, server.base);
+    await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the boot picture', 20000);
+    await page.evaluate("window.__dropFrames = true; setQuality('sub')");
+    await page.wait(stageSocketOpen, 'the replaced socket to open without frames', 10000);
+    await page.evaluate("window.__replaced = state.players.get('stage')");
+    await page.evaluate("window.__dropFrames = false; setQuality('main')");
+    await page.wait("document.getElementById('well').dataset.state === 'playing' && state.players.get('stage').announced", 'the next picture', 20000);
+    const replaced = await page.evaluate("({ same: state.players.get('stage') === window.__replaced, watchdog: window.__replaced.watchdog !== null })");
+    assert.equal(replaced.same, false, 'every request owns its stage player');
+    assert.equal(replaced.watchdog, false, 'a replaced player runs no watchdog: ' + JSON.stringify(replaced));
+    await page.evaluate("window.__dropFrames = true; setQuality('sub')");
+    await page.wait(stageSocketOpen, 'a socket that sends no frame', 10000);
+    await page.evaluate('new Promise((done) => setTimeout(done, 4500))');
+    const after = await page.evaluate("({ well: document.getElementById('well').dataset.state, watchdog: window.__replaced.watchdog !== null })");
+    assert.equal(after.watchdog, false, 'the replaced player stays quiet: ' + JSON.stringify(after));
+    assert.equal(after.well, 'loading', 'a load with no frame yet stays loading: ' + JSON.stringify(after));
+  } finally {
+    await page.close();
+  }
+});
+
 for (const order of [[0, 1], [1, 0]]) {
   test('two quality switches overlap in flight, replies in order ' + order.join(','), async () => {
     const page = await browser.page({ init: [HOLD_ANY] });
@@ -150,10 +196,14 @@ for (const order of [[0, 1], [1, 0]]) {
       await signIn(page, server.base);
       await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the boot picture', 20000);
       assert.equal((await page.evaluate(liveSockets)).length, 1);
+      const started = await page.evaluate('state.prefs.quality');
+      const other = started === 'main' ? 'sub' : 'main';
       await page.evaluate('window.__holding = true');
-      await page.evaluate("setQuality('sub')");
-      await page.evaluate("setQuality('main')");
+      await page.evaluate("setQuality('" + other + "')");
+      await page.evaluate("setQuality('" + started + "')");
       await page.wait('window.__held.length === 2', 'both stream requests parked', 10000);
+      const held = await page.evaluate('window.__held.map((entry) => entry.url)');
+      assert.ok(held[0].includes('quality=' + other) && held[1].includes('quality=' + started), 'two different qualities are in flight: ' + JSON.stringify(held));
       await page.evaluate('window.__held[' + order[0] + '].release()');
       await page.evaluate('new Promise((done) => setTimeout(done, 1000))');
       await page.evaluate('window.__held[' + order[1] + '].release()');

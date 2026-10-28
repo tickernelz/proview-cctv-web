@@ -1033,6 +1033,7 @@ class StreamPlayer {
     this.stalled = false;
     this.metadataTimer = null;
     this.announced = false;
+    this.onMetadata = null;
   }
 
   expectFirstFrame() {
@@ -1043,6 +1044,7 @@ class StreamPlayer {
         return;
       }
       this.announced = true;
+      this.onMetadata = null;
       if (this.metadataTimer) {
         window.clearTimeout(this.metadataTimer);
         this.metadataTimer = null;
@@ -1054,6 +1056,7 @@ class StreamPlayer {
       announce();
       return;
     }
+    this.onMetadata = announce;
     video.addEventListener('loadedmetadata', announce, { once: true });
     this.metadataTimer = window.setTimeout(() => {
       if (!this.announced) {
@@ -1104,6 +1107,10 @@ class StreamPlayer {
 
   destroy() {
     this.stopWatchdog();
+    if (this.onMetadata) {
+      this.video.removeEventListener('loadedmetadata', this.onMetadata);
+      this.onMetadata = null;
+    }
     if (this.metadataTimer) {
       window.clearTimeout(this.metadataTimer);
       this.metadataTimer = null;
