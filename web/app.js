@@ -1033,6 +1033,7 @@ class StreamPlayer {
     this.stalled = false;
     this.metadataTimer = null;
     this.announced = false;
+    this.onMetadata = null;
   }
 
   expectFirstFrame() {
@@ -1043,6 +1044,7 @@ class StreamPlayer {
         return;
       }
       this.announced = true;
+      this.onMetadata = null;
       if (this.metadataTimer) {
         window.clearTimeout(this.metadataTimer);
         this.metadataTimer = null;
@@ -1054,6 +1056,7 @@ class StreamPlayer {
       announce();
       return;
     }
+    this.onMetadata = announce;
     video.addEventListener('loadedmetadata', announce, { once: true });
     this.metadataTimer = window.setTimeout(() => {
       if (!this.announced) {
@@ -1104,6 +1107,10 @@ class StreamPlayer {
 
   destroy() {
     this.stopWatchdog();
+    if (this.onMetadata) {
+      this.video.removeEventListener('loadedmetadata', this.onMetadata);
+      this.onMetadata = null;
+    }
     if (this.metadataTimer) {
       window.clearTimeout(this.metadataTimer);
       this.metadataTimer = null;
@@ -1183,6 +1190,9 @@ class StreamPlayer {
     video.src = this.url;
 
     media.addEventListener('sourceopen', () => {
+      if (this.media !== media) {
+        return;
+      }
       let buffer;
       try {
         buffer = media.addSourceBuffer(MEDIA_SOURCE_TYPE);
@@ -1927,15 +1937,19 @@ async function requestStream() {
   if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
     return;
   }
+  const previous = state.players.get('stage');
+  if (previous) {
+    previous.destroy();
+    state.players.delete('stage');
+  }
   const player = stagePlayer();
-  player.destroy();
   state.ticket = null;
   setStage('loading');
   try {
     const ticket = await api(
       '/api/stream?device=' + enc(camera.device.id) + '&channel=' + enc(camera.channel) + '&quality=' + enc(state.prefs.quality),
     );
-    if (currentCamera() !== camera) {
+    if (currentCamera() !== camera || state.players.get('stage') !== player) {
       return;
     }
     state.ticket = ticket;

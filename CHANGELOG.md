@@ -20,6 +20,25 @@ stability before 1.0.
   re-binds to loopback gets a 403 and a page without the token. A server build
   carries no token, so its view still says to restart the process instead of
   offering a button that cannot work.
+- Opening **Settings** while the boot request for the live stream is still
+  waiting no longer leaves a player behind. `requestStream` held the player it
+  built across the `await /api/stream`, so the `stopAll()` from the Settings
+  screen destroyed it and removed it from `state.players`, and the reply still
+  called `player.play()`: a `/ws/live` socket opened with nothing left in the
+  app able to close it, and the ticket it stored described a camera no screen
+  was showing. Every request now builds its own stage player (the one it
+  replaces is destroyed and unregistered first), so a reply is dropped when the
+  stage no longer owns the player it belongs to; that also covers two quality
+  switches whose replies land out of order, where the older reply used to keep
+  an unowned `/ws/live` socket alive and, in the other order, overwrite the
+  ticket with the quality the user had already left. A `sourceopen` that
+  arrives after `destroy()` opens no socket at all. A player replaced before
+  its first frame now takes its `loadedmetadata` listener with it, so the
+  watchdog it would have started on that event cannot outlive it and report
+  `stalled` on a later load that has not shown a frame yet.
+  `tests/web/stream-orphan.test.mjs` covers the Settings case, the late
+  `sourceopen`, both overlap orders and the replaced player; it fails on
+  6c70754 and passes after this change.
 
 ## 0.3.4 — 2026-10-28
 
