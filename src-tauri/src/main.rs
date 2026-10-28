@@ -263,7 +263,9 @@ fn main() {
                     if settings.close_to_tray && shell.tray_ready() {
                         api.prevent_close();
                         let _ = window.hide();
-                        tray::hint_once(window.app_handle(), &shell);
+                        if !tray_pause(window.app_handle(), &shell, settings.alarm_notify) {
+                            tray::hint_once(window.app_handle(), &shell);
+                        }
                     }
                 }
                 WindowEvent::Resized(_)
@@ -272,6 +274,7 @@ fn main() {
                         && window.is_minimized().unwrap_or(false) =>
                 {
                     let _ = window.hide();
+                    tray_pause(window.app_handle(), &shell, settings.alarm_notify);
                 }
                 _ => {}
             }
@@ -290,6 +293,14 @@ fn main() {
         });
 
     runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+}
+
+fn tray_pause(app: &tauri::AppHandle, shell: &DesktopShell, notify_on: bool) -> bool {
+    if !notify_on || !shell.take_tray_pause_notice() {
+        return false;
+    }
+    notify::post_paused(app);
+    true
 }
 
 fn probe_page(app: &tauri::AppHandle) {

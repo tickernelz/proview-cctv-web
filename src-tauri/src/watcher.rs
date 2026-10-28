@@ -6,72 +6,12 @@ use proview_server::desktop_alarms::{AlarmReadError, DesktopAlarms};
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
-use crate::desktop_state::{DesktopState, Policy, OVERLAP_SECS};
+use crate::desktop_state::{now_seconds, Policy, Run, OVERLAP_SECS};
 use crate::notify;
 use crate::shell::DesktopShell;
 
 const BASELINE_HOURS: i64 = 1;
 const PAD_SECS: i64 = 14 * 3600;
-
-fn now_seconds() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-pub struct Run {
-    session_start: i64,
-    first_check: bool,
-    last_ok: Option<i64>,
-    failed_checks: usize,
-    pause_posted: bool,
-}
-
-impl Run {
-    pub fn new(session_start: i64) -> Self {
-        Self {
-            session_start,
-            first_check: true,
-            last_ok: None,
-            failed_checks: 0,
-            pause_posted: false,
-        }
-    }
-
-    pub fn policy(&self, state: &DesktopState, interval: u64, now: i64) -> Policy {
-        if !state.baseline_done {
-            return Policy::Silent;
-        }
-        if self.first_check {
-            return Policy::Notify {
-                cutoff: self.session_start - interval as i64 - OVERLAP_SECS,
-            };
-        }
-        if self.failed_checks >= 2 {
-            return Policy::Notify { cutoff: now };
-        }
-        Policy::Notify { cutoff: i64::MIN }
-    }
-
-    pub fn failed(&mut self, session_lost: bool) -> bool {
-        self.failed_checks += 1;
-        let announced = session_lost && self.last_ok.is_some() && !self.pause_posted;
-        if announced {
-            self.pause_posted = true;
-        }
-        announced
-    }
-
-    pub fn finished(&mut self, ok: bool, now: i64) {
-        if ok {
-            self.first_check = false;
-            self.failed_checks = 0;
-            self.pause_posted = false;
-            self.last_ok = Some(now);
-        }
-    }
-}
 
 pub fn spawn(
     handle: &tokio::runtime::Handle,
@@ -84,7 +24,6 @@ pub fn spawn(
         let mut due = tokio::time::Instant::now();
         let mut enabled = false;
         let mut asked = false;
-        let mut run = Run::new(now_seconds());
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let settings = shell.current();
@@ -99,7 +38,7 @@ pub fn spawn(
             }
             if !enabled {
                 enabled = true;
-                run = Run::new(now_seconds());
+                shell.restart_alarm_run(now_seconds());
                 due = tokio::time::Instant::now();
             }
             if !asked {
@@ -121,6 +60,10 @@ pub fn spawn(
             let account = sessions.latest().map(|(_, session)| session.account);
             let (since, policy) = match shell.state.lock() {
                 Ok(mut state) => {
+                    let mut alarm = match shell.alarm.lock() {
+                        Ok(alarm) => alarm,
+                        Err(_) => continue,
+                    };
                     if let Some(name) = account.as_deref() {
                         let previous = state.account.clone();
                         if state.switch_account(name) {
@@ -131,7 +74,7 @@ pub fn spawn(
                                     "another account signed in; the alarm run starts over"
                                 );
                             }
-                            run = Run::new(now);
+                            *alarm = Run::new(now);
                         }
                     }
                     (
@@ -140,7 +83,7 @@ pub fn spawn(
                         } else {
                             now - BASELINE_HOURS * 3600
                         },
-                        run.policy(&state, settings.interval_secs, now),
+                        alarm.policy(&state, settings.interval_secs, now),
                     )
                 }
                 Err(_) => continue,
@@ -152,7 +95,9 @@ pub fn spawn(
                         Ok(mut state) => state.absorb(&entries, policy, floor, now),
                         Err(_) => continue,
                     };
-                    run.finished(true, now);
+                    if let Ok(mut alarm) = shell.alarm.lock() {
+                        alarm.finished(true, now);
+                    }
                     if batch.changed {
                         shell.save();
                     }
@@ -165,12 +110,12 @@ pub fn spawn(
                 }
                 Err(error) => {
                     let lost = matches!(error, AlarmReadError::SignedOut);
-                    if run.failed(lost) {
-                        notify::post_message(
-                            &app,
-                            "Alarm notifications paused",
-                            "Open PROVIEW and sign in to keep them coming.",
-                        );
+                    let announced = match shell.alarm.lock() {
+                        Ok(mut alarm) => alarm.failed(lost),
+                        Err(_) => false,
+                    };
+                    if announced {
+                        notify::post_paused(&app);
                         tracing::warn!(%error, "alarm notifications paused");
                     } else if lost {
                         tracing::debug!(%error, "alarm check skipped while the session is gone");
@@ -186,6 +131,7 @@ pub fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop_state::DesktopState;
     use proview_server::desktop_alarms::DesktopAlarm;
 
     fn alarm(id: &str, utc_time: i64) -> DesktopAlarm {
@@ -323,6 +269,28 @@ mod tests {
         let batch = state.absorb(&[alarm("fresh", 1_025)], policy, 0, 1_030);
         assert_eq!(batch.fresh.len(), 1, "a single failure keeps the toast");
         assert_eq!(batch.skipped, 0);
+    }
+
+    #[test]
+    fn a_hide_before_any_success_announces_the_pause_once() {
+        let mut run = Run::new(0);
+        assert!(
+            run.tray_pause_notice(),
+            "sign-in never happened, so the pause is the truth"
+        );
+        assert!(
+            !run.tray_pause_notice(),
+            "a second hide in the same run stays quiet"
+        );
+        run.finished(true, 10);
+        assert!(
+            !run.tray_pause_notice(),
+            "a run whose check succeeded is not paused"
+        );
+        assert!(
+            run.failed(true),
+            "the watcher still owns the pause once the session returns"
+        );
     }
 
     #[test]

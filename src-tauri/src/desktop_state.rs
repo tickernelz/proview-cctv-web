@@ -115,6 +115,76 @@ impl DesktopState {
     }
 }
 
+pub fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+pub struct Run {
+    session_start: i64,
+    first_check: bool,
+    last_ok: Option<i64>,
+    failed_checks: usize,
+    pause_posted: bool,
+    tray_pause_posted: bool,
+}
+
+impl Run {
+    pub fn new(session_start: i64) -> Self {
+        Self {
+            session_start,
+            first_check: true,
+            last_ok: None,
+            failed_checks: 0,
+            pause_posted: false,
+            tray_pause_posted: false,
+        }
+    }
+
+    pub fn policy(&self, state: &DesktopState, interval: u64, now: i64) -> Policy {
+        if !state.baseline_done {
+            return Policy::Silent;
+        }
+        if self.first_check {
+            return Policy::Notify {
+                cutoff: self.session_start - interval as i64 - OVERLAP_SECS,
+            };
+        }
+        if self.failed_checks >= 2 {
+            return Policy::Notify { cutoff: now };
+        }
+        Policy::Notify { cutoff: i64::MIN }
+    }
+
+    pub fn failed(&mut self, session_lost: bool) -> bool {
+        self.failed_checks += 1;
+        let announced = session_lost && self.last_ok.is_some() && !self.pause_posted;
+        if announced {
+            self.pause_posted = true;
+        }
+        announced
+    }
+
+    pub fn finished(&mut self, ok: bool, now: i64) {
+        if ok {
+            self.first_check = false;
+            self.failed_checks = 0;
+            self.pause_posted = false;
+            self.last_ok = Some(now);
+        }
+    }
+
+    pub fn tray_pause_notice(&mut self) -> bool {
+        if self.last_ok.is_some() || self.tray_pause_posted {
+            return false;
+        }
+        self.tray_pause_posted = true;
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
