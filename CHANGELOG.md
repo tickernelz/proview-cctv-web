@@ -56,6 +56,14 @@ stability before 1.0.
   camera bound or unbound inside those 30 s still answers correctly. The vendor
   identity stays per request: `PROVIEW_APP_UUID/KEY/SECRET` saved in Settings
   after start reach the next call, as they did before the provider was shared.
+- Parallel cold opens in one session share a single device list. The window was
+  read before the fetch, so N tiles of a grid opening at once could each miss it
+  and each ask `msdlistCode`; a `tokio::sync::Mutex` per vendor session now
+  gates the fetch and a waiter re-reads the window under that gate instead of
+  asking the vendor again. The re-read keys on the serial the caller wants, so a
+  camera the window does not carry is still fetched again rather than refused,
+  and a gate is dropped once no caller holds it, so the map cannot grow with
+  every session that opens a camera.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`

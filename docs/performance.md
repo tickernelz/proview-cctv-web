@@ -269,17 +269,24 @@ that answers `msdlistCode` and nothing else:
 | `GET /ws/live`, same viewer | 1 `msdlistCode` + a new client and token-store load | 0 |
 | cold start (`open_media`) | 1 `msdlistCode` + a new client and token-store load | 0 |
 | total per viewer open | 3 | 1 |
+| N parallel cold opens, one session | N `msdlistCode` | 1 |
 
 `crates/server/tests/live_scope.rs` measures the row: one ticket, then two
 socket opens on the camera the account owns, and one `msdlistCode` request
 arrives. The window is 30 s per vendor session, and the next call after it
 closes asks the cloud again, a serial the window does not carry is asked again
 rather than refused, and a fresh device-list fetch (`/api/devices`) replaces the
-window; `crates/core/src/provider/cloud.rs` carries the six tests behind those
+window; `crates/core/src/provider/cloud.rs` carries the eight tests behind those
 sentences (one session pays one list for every serial, a second session pays its
 own, an entry older than the window is fetched again, a serial bound inside the
 window is recognised, a refresh replaces the window, a serial a refresh drops
-stops answering).
+stops answering, three parallel cold opens on one session pay one list, and the
+gate map does not grow with each session).
+The fetch is single-flight per vendor session: a `tokio::sync::Mutex` per token
+gates it and is dropped once no caller holds it, so the winner asks the cloud and
+the waiters reuse its list. The re-check under that gate still keys on the serial
+the caller wants, which is what keeps the refetch-miss above a miss and not a
+refusal.
 No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
 the fix removes two of those round trips and three client builds per open.
 
