@@ -1,6 +1,7 @@
 import './tokens.css'
 import './style.css'
 import './tailwind.css'
+import './live/mount'
 import './legacy/app.js'
 import './legacy/fisheye.js'
 import './legacy/account.js'

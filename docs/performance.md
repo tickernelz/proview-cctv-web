@@ -409,3 +409,22 @@ CI, run 40726996679 at 1edca06: job `e2e` 219 s (container init 38 s, cached
 pipeline wall is 227 s; main 7510ccd took 385 s, held by a 357 s macOS desktop
 job. The slowest single test is 4.9 s (WebKit, alarms). With the responsive and touch
 specs the suite is 218 tests, 1.6 min locally.
+
+### Live toolbar in Vue (measured 2026-10-29, ZHA-4181)
+
+The caption, the control row and the lens and quality menus are one Vue
+component (`apps/web/src/live/LiveBar.vue`) over a reactive store
+(`src/live/store.ts`); the menus are Reka UI 2.11.0 `DropdownMenu`, vendored as
+shadcn-vue style wrappers in `src/components/ui/dropdown-menu/`. Same method as
+above, baseline origin/main 98db3a5 (Vue and Tailwind compiled, nothing mounted):
+
+| File | main 98db3a5 | Live in Vue | Delta | Budget |
+|---|---:|---:|---:|---:|
+| JS (one hashed chunk) | 39,469 B | 106,865 B | +67,396 B | +80 KB |
+| CSS (one hashed file) | 7,004 B | 7,115 B | +111 B | +20 KB |
+
+The JS delta is the first mounted Vue app: the Vue runtime, Reka UI with
+`@vueuse/core` and floating-ui for menu placement. Later screens reuse all of
+it, so they add only their own components. Icons stay in the inline sprite
+(`Icon.vue` renders `<use href="#i-name">`), so no icon package ships.
+e2e at this change: 139 passed, 1 skipped, 1.3 min locally; node web tests 46/46.

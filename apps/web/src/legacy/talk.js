@@ -1,4 +1,5 @@
 import { renderCaption, setControlStatus, state, talk } from './app.js';
+import { live } from '../live/store';
 
 const TALK_RATE = 8000;
 const TALK_FRAME = 320;
@@ -79,21 +80,12 @@ function toPcm16(samples) {
 }
 
 function paintLevel(samples) {
-  const level = document.getElementById('level');
-  if (!level) {
-    return;
-  }
   let sum = 0;
   for (const sample of samples) {
     sum += sample * sample;
   }
   const rms = Math.sqrt(sum / samples.length);
-  const lit = Math.min(5, Math.round(rms * 20));
-  const bars = level.children;
-  for (let index = 0; index < bars.length; index += 1) {
-    bars[index].classList.toggle('on', index < lit);
-  }
-  level.dataset.level = String(lit);
+  live.talk.level = Math.min(5, Math.round(rms * 20));
 }
 
 function pushChunk(samples) {
@@ -193,22 +185,14 @@ function openSocket() {
 
 export async function startTalk() {
   const shared = talkUi();
-  const button = document.getElementById('talk');
-  if (!shared || shared.active || (button && button.disabled)) {
+  if (!shared || shared.active || !live.gate.intercom.ok) {
     return;
   }
   if (typeof state !== 'undefined' && state.view !== 'live') {
     return;
   }
   shared.active = true;
-  if (button) {
-    button.classList.add('talk-on');
-    button.setAttribute('aria-pressed', 'true');
-  }
-  const level = document.getElementById('level');
-  if (level) {
-    level.hidden = false;
-  }
+  live.talk.on = true;
   talkCaption();
   uplink.chunks = 0;
   uplink.frames = 0;
@@ -293,19 +277,8 @@ export function stopTalk() {
   uplink.stream = null;
   uplink.source = null;
   uplink.node = null;
-  const button = document.getElementById('talk');
-  if (button) {
-    button.classList.remove('talk-on');
-    button.setAttribute('aria-pressed', 'false');
-  }
-  const level = document.getElementById('level');
-  if (level) {
-    level.hidden = true;
-    level.dataset.level = '0';
-    for (const bar of level.children) {
-      bar.classList.remove('on');
-    }
-  }
+  live.talk.on = false;
+  live.talk.level = 0;
   if (shared) {
     shared.active = false;
   }

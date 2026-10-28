@@ -337,7 +337,7 @@ for (const touch of [false, true]) {
     for (const width of [360, 390, 480, 600, 700]) {
       const page = await open({ width, height: 844 });
       try {
-        await page.wait("!document.getElementById('lens-pick').hidden", 'the lens picker of the dual-lens clip');
+        await page.wait("document.getElementById('lens-pick')?.hidden === false", 'the lens picker of the dual-lens clip');
         if (touch) {
           await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
           await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'pointer', value: 'coarse' }] });

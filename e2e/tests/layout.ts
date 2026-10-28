@@ -97,7 +97,7 @@ export async function overflowFindings(page: Page): Promise<string[]> {
       found.push(...cutOff(node, box))
     }
 
-    const surfaces = ['#pb', '#device-admin', '#recordings-panel', '.alarm-sheet', '.menu:not(.sheet)', '#pad']
+    const surfaces = ['#pb', '#device-admin', '#recordings-panel', '.alarm-sheet', '.menu:not(.sheet)', '.menu-panel', '#pad']
       .flatMap((selector) => [...document.querySelectorAll<HTMLElement>(selector)])
       .filter((node) => !node.hidden && node.checkVisibility({ visibilityProperty: true }))
     const surface = surfaces.length ? surfaces[surfaces.length - 1] : document.body

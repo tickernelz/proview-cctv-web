@@ -1,4 +1,6 @@
-import { StreamPlayer, api, deviceStatus, el, enc, hm, hms, make, openCamera, sessionLost, shortStreamError, state, statusLine } from './app.js';
+import { api } from '../lib/api';
+import { StreamPlayer } from '../lib/stream-player';
+import { deviceStatus, el, enc, hm, hms, make, openCamera, sessionLost, shortStreamError, state, statusLine } from './app.js';
 
 const GRID_MAX_TILES = 9;
 const GRID_QUALITY_WORDS = { main: 'HD', sub: 'SD' };
@@ -259,7 +261,7 @@ async function gridPlayTile(tile, view) {
     gridSetTileState(tile, 'offline');
     return;
   }
-  const player = new StreamPlayer(tile.querySelector('video'), (name, message) => gridSetTileState(tile, name, message));
+  const player = new StreamPlayer(tile.querySelector('video'), (name, message) => gridSetTileState(tile, name, message), () => state.muted);
   gridView.players.set(key, player);
   gridSetTileState(tile, 'loading');
   try {

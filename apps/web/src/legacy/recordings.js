@@ -1,3 +1,5 @@
+import { addLauncher } from '../live/store';
+
 (function () {
   'use strict';
 
@@ -16,17 +18,15 @@
   ].join('');
   document.body.appendChild(panel);
 
-  const controls = document.getElementById('controls');
-  const launcher = document.createElement('button');
-  launcher.type = 'button';
-  launcher.id = 'recordings-launcher';
-  launcher.className = 'ctl';
-  launcher.setAttribute('aria-pressed', 'false');
-  launcher.setAttribute('aria-controls', 'recordings-panel');
-  launcher.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-cloud"></use></svg><span>Cloud</span>';
-  if (!controls) return;
-  const spacer = controls.querySelector('.spacer');
-  controls.insertBefore(launcher, spacer || null);
+  const launcher = addLauncher({
+    id: 'recordings-launcher',
+    label: 'Cloud',
+    icon: 'cloud',
+    slot: 'start',
+    pressed: false,
+    controls: 'recordings-panel',
+    onClick: () => show(panel.hidden),
+  });
 
   const form = panel.querySelector('[data-form]');
   const dayInput = form.elements.day;
@@ -45,7 +45,7 @@
 
   function show(open) {
     panel.hidden = !open;
-    launcher.setAttribute('aria-pressed', open ? 'true' : 'false');
+    launcher.pressed = open;
     if (open) {
       loadDevices().catch(function (error) {
         status.textContent = error.message;
@@ -53,9 +53,6 @@
     }
   }
 
-  launcher.addEventListener('click', function () {
-    show(panel.hidden);
-  });
   panel.querySelector('[data-close]').addEventListener('click', function () {
     show(false);
   });

@@ -111,23 +111,7 @@
         </div>
         <div class="fs-line" id="fs-line" hidden><span id="fs-name"></span><span id="fs-time"></span></div>
       </div>
-      <div class="well-meta">
-        <p id="caption" data-testid="live-caption" role="status"><strong id="caption-name"></strong><span id="caption-state" data-testid="live-state"></span></p>
-        <div class="right"><span id="caption-flag" data-testid="live-lag"></span><span class="mono" id="clock" data-testid="live-clock"></span></div>
-      </div>
-      <div class="controls" id="controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
-        <button class="ctl" id="talk" data-testid="ctl-talk" type="button" data-requires="device" data-act="intercom" aria-keyshortcuts="T"><svg class="i" aria-hidden="true"><use href="#i-mic"></use></svg><span>Talk</span><span class="level" id="level" aria-hidden="true" hidden><i></i><i></i><i></i><i></i><i></i></span></button>
-        <button class="ctl" id="mute" data-testid="ctl-mute" type="button" aria-pressed="false" aria-keyshortcuts="M"><svg class="i" aria-hidden="true"><use href="#i-speaker-off"></use></svg><span>Sound</span></button>
-        <span class="sep"></span>
-        <button class="ctl" id="record" data-testid="ctl-record" type="button" aria-pressed="false" aria-keyshortcuts="R"><svg class="i" aria-hidden="true"><use href="#i-record"></use></svg><span>Record</span></button>
-        <button class="ctl" id="snapshot" data-testid="ctl-snapshot" type="button" aria-keyshortcuts="S"><svg class="i" aria-hidden="true"><use href="#i-camera"></use></svg><span>Snapshot</span></button>
-        <span class="spacer"></span>
-        <button class="ctl" id="move" data-testid="ctl-move" type="button" data-requires="device" data-act="move" aria-pressed="false" aria-controls="pad" aria-keyshortcuts="V"><svg class="i" aria-hidden="true"><use href="#i-move"></use></svg><span>Move</span></button>
-        <button class="pick" id="lens-pick" data-testid="lens-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="lens-menu" aria-keyshortcuts="L" hidden><span id="lens-pick-label" data-testid="lens-label">Both lenses</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-        <button class="pick" id="quality-pick" data-testid="quality-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="quality-menu" aria-keyshortcuts="Q"><span id="quality-pick-label">Quality HD</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-        <span class="sep"></span>
-        <button class="iconbtn" id="fullscreen" data-testid="ctl-fullscreen" type="button" aria-label="Full screen" title="Full screen (F)" aria-keyshortcuts="F"><svg class="i" aria-hidden="true"><use href="#i-expand"></use></svg></button>
-      </div>
+      <div id="live-bar" class="live-bar"></div>
     </section>
     <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" hidden>
       <div class="tiles" id="tiles" data-testid="grid-tiles"></div>
@@ -136,12 +120,6 @@
   </main>
 
   <div class="menu" id="camera-menu" data-testid="camera-menu" role="menu" aria-label="Cameras" hidden></div>
-  <div class="menu" id="lens-menu" data-testid="lens-menu" role="menu" aria-label="Lens" hidden></div>
-  <div class="menu" id="quality-menu" data-testid="quality-menu" role="menu" aria-label="Quality" hidden>
-    <div class="menu-h">Quality · Q switches</div>
-    <button class="menu-row" type="button" role="menuitemradio" data-quality="main" aria-checked="true"><svg class="i i-16" aria-hidden="true"><use href="#i-check"></use></svg><span class="col"><span class="name">HD</span><span class="sub">the main stream</span></span></button>
-    <button class="menu-row" type="button" role="menuitemradio" data-quality="sub" aria-checked="false"><svg class="i i-16" aria-hidden="true"><use href="#i-check"></use></svg><span class="col"><span class="name">SD</span><span class="sub">the sub stream, lighter on the network</span></span></button>
-  </div>
   <section class="menu sheet" id="keys" aria-labelledby="keys-title" hidden>
     <div class="sheet-h"><h2 id="keys-title">Keyboard</h2><button class="iconbtn" id="keys-close" type="button" aria-label="Close the keyboard list"><svg class="i i-16" aria-hidden="true"><use href="#i-x"></use></svg></button></div>
     <dl class="keys">
