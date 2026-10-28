@@ -6,6 +6,7 @@ const DEVICES = [{ id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: tru
 const TOKEN = 'probe-desktop-token';
 const LISTEN = '127.0.0.1:9797';
 const BUDGET = 60000;
+const FIELD = "document.querySelector('#settings-fields [data-key=\"PROVIEW_LISTEN\"]')";
 
 let browser;
 
@@ -25,28 +26,62 @@ async function openConfiguration(page) {
     BUDGET,
   );
   await page.evaluate("document.querySelector('.set-nav a[data-section=\"config\"]').click()");
-  await page.wait(
-    "document.getElementById('settings-status').textContent !== 'Not loaded yet.'",
-    'the settings view to load',
-    BUDGET,
-  );
-  await page.wait(
-    "document.querySelector('#settings-fields [data-key=\"PROVIEW_LISTEN\"]') !== null",
-    'the server address field',
-    BUDGET,
-  );
+  await page.wait("document.getElementById('settings-status').textContent !== 'Not loaded yet.'", 'the settings view', BUDGET);
+  await page.wait(FIELD + ' !== null', 'the server address field', BUDGET);
+}
+
+async function settle(page) {
+  const snapshot = () =>
+    page.evaluate(
+      "document.querySelectorAll('#settings-fields .row').length + ':' + document.getElementById('settings-status').textContent",
+    );
+  const end = Date.now() + BUDGET;
+  let last = await snapshot();
+  let since = Date.now();
+  for (;;) {
+    await new Promise((done) => setTimeout(done, 50));
+    const now = await snapshot();
+    if (now !== last) {
+      last = now;
+      since = Date.now();
+    } else if (Date.now() - since >= 500) {
+      return;
+    }
+    if (Date.now() > end) {
+      throw new Error('the settings view never settled: ' + last);
+    }
+  }
+}
+
+async function watch(page, expression, what, deadline = BUDGET) {
+  const end = Date.now() + deadline;
+  for (;;) {
+    if (await page.evaluate(expression)) return;
+    if (Date.now() > end) {
+      const dump = await page.evaluate(`JSON.stringify({
+        value: (${FIELD} || {}).value,
+        rows: document.querySelectorAll('#settings-fields .row').length,
+        saveHidden: document.getElementById('settings-save').hidden,
+        bar: document.getElementById('save-state').textContent,
+        status: document.getElementById('settings-status').textContent,
+      })`);
+      throw new Error('timed out waiting for ' + what + ': ' + dump);
+    }
+    await new Promise((done) => setTimeout(done, 50));
+  }
 }
 
 async function saveARestartField(page) {
   await openConfiguration(page);
+  await settle(page);
   await page.evaluate(`(() => {
-    const input = document.querySelector('#settings-fields [data-key="PROVIEW_LISTEN"]');
+    const input = ${FIELD};
     input.value = ${JSON.stringify(LISTEN)};
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
-  await page.wait("!document.getElementById('settings-save').hidden", 'the Save button', BUDGET);
+  await watch(page, "!document.getElementById('settings-save').hidden", 'the Save button');
   await page.evaluate("document.getElementById('settings-save').click()");
-  await page.wait("document.getElementById('save-state').textContent.includes('Restart')", 'the save bar', BUDGET);
+  await watch(page, "document.getElementById('save-state').textContent.includes('Restart')", 'the save bar');
 }
 
 function headerValue(request, name) {
