@@ -1376,6 +1376,9 @@ Measured on 2026-10-28, camera on a network this host cannot reach
 ```
 tools/acceptance/live_acceptance.py --mode cloud --duration 60 --sn 7f92970ddf5282743hrc
 verdict: pass · frames: 31 · bytes: 82552824 · longest gap: 2.439s · seconds: 60.569
+
+tools/acceptance/live_acceptance.py --mode cloud --duration 300
+verdict: pass · frames: 150 · bytes: 422299033 · longest gap: 2.732s · seconds: 300.071
 ```
 
 A third-party WebSocket client against the same server measured the browser-side
