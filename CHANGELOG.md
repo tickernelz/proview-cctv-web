@@ -20,6 +20,16 @@ stability before 1.0.
   re-binds to loopback gets a 403 and a page without the token. A server build
   carries no token, so its view still says to restart the process instead of
   offering a button that cannot work.
+- Opening **Settings** while the boot request for the live stream is still
+  waiting no longer leaves a player behind. `requestStream` held the player it
+  built across the `await /api/stream`, so the `stopAll()` from the Settings
+  screen destroyed it and removed it from `state.players`, and the reply still
+  called `player.play()`: a `/ws/live` socket opened with nothing left in the
+  app able to close it, and the ticket it stored described a camera no screen
+  was showing. The reply is now dropped when the stage no longer owns that
+  player, and a `sourceopen` that arrives after `destroy()` opens no socket at
+  all. `tests/web/settings-boot.test.mjs` fails on 6c70754 and passes after
+  this change.
 
 ## 0.3.4 — 2026-10-28
 

@@ -1176,6 +1176,9 @@ class StreamPlayer {
     video.src = this.url;
 
     media.addEventListener('sourceopen', () => {
+      if (this.media !== media) {
+        return;
+      }
       let buffer;
       try {
         buffer = media.addSourceBuffer(MEDIA_SOURCE_TYPE);
@@ -1928,7 +1931,7 @@ async function requestStream() {
     const ticket = await api(
       '/api/stream?device=' + enc(camera.device.id) + '&channel=' + enc(camera.channel) + '&quality=' + enc(state.prefs.quality),
     );
-    if (currentCamera() !== camera) {
+    if (currentCamera() !== camera || state.players.get('stage') !== player) {
       return;
     }
     state.ticket = ticket;
