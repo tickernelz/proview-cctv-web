@@ -232,7 +232,7 @@ test('the devices panel lists the account devices and saves a group through the 
     assert.match(tags[0], /1 shared/);
     assert.match(tags[1], /favourite/);
 
-    await page.evaluate("document.getElementById('device-admin-group').value = 'teras'");
+    await page.evaluate("(() => { const input = document.getElementById('device-admin-group'); input.value = 'teras'; input.dispatchEvent(new Event('input')); })()");
     await page.evaluate("[...document.querySelectorAll('#device-admin button')].find((button) => button.textContent.includes('Save group')).click()");
     await page.wait("document.getElementById('device-admin-status').textContent === 'Stub saved the group'", 'the save to come back', 10000);
     assert.equal(await page.evaluate("document.getElementById('device-admin').hidden"), false);

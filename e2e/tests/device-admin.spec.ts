@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { playing, signIn } from './app'
+import { ACCOUNT, playing, signIn } from './app'
 
 const ATTRIBUTES = {
   ok: true,
@@ -106,7 +106,7 @@ test('a refused action is a red alert with the server reason, visible without sc
   expect(colours.text).toBe(colours.bad)
 })
 
-test('a camera list that fails to load is an alert with Try again, and no form', async ({ page }) => {
+test('a camera list that fails to load is an alert with Try again, and only Accept stays', async ({ page }) => {
   let fail = true
   await page.route(/\/api\/cloud\/device-attributes/, (route) =>
     fail ? route.fulfill({ status: 502, json: { message: 'the vendor cloud did not answer' } }) : route.fulfill({ json: ATTRIBUTES }),
@@ -117,19 +117,59 @@ test('a camera list that fails to load is an alert with Try again, and no form',
   await expect(sheet.getByTestId('device-admin-error')).toHaveText('The vendor cloud did not answer')
   await expect(sheet.getByTestId('device-admin-error')).toHaveAttribute('role', 'alert')
   await expect(page.locator('#device-admin-name')).toHaveCount(0)
+  await expect(sheet.getByRole('tab', { name: 'Name', exact: true })).toBeDisabled()
+  await expect(page.locator('#device-admin-share-device')).toBeVisible()
   fail = false
   await sheet.getByTestId('device-admin-retry').click()
   await expect(sheet.getByTestId('device-admin-row')).toHaveCount(2)
   await expect(sheet.getByTestId('device-admin-error')).toHaveCount(0)
 })
 
-test('an account without cameras says so and shows no form', async ({ page }) => {
-  await fakeCloud(page, { ok: true, groups: [], devices: [] })
+test('an account without cameras says so and can still accept a shared camera', async ({ page }) => {
+  const calls: Call[] = []
+  await page.route(/\/api\/cloud\/device-attributes/, (route) => route.fulfill({ json: { ok: true, groups: [], devices: [] } }))
+  await page.route(/\/api\/cloud\/device\/share\/accept/, (route) => {
+    calls.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() })
+    return route.fulfill({ json: { ok: true, materialised: true } })
+  })
   await signIn(page, 'one')
   await playing(page)
   const sheet = await openSheet(page)
   await expect(sheet.getByTestId('device-admin-empty')).toHaveText('No camera on this account yet.')
-  await expect(sheet.getByRole('tablist')).toHaveCount(0)
+  await expect(sheet.getByRole('tab', { name: 'Sharing' })).toHaveAttribute('aria-selected', 'true')
+  await expect(sheet.getByRole('tab', { name: 'Name', exact: true })).toBeDisabled()
+  await expect(sheet.getByRole('tab', { name: 'Password' })).toBeDisabled()
+  await expect(page.locator('#device-admin-accept')).toHaveCount(0)
+  await page.locator('#device-admin-share-device').fill('SERIAL9')
+  await page.locator('#device-admin-share-pass').fill('account-secret')
+  await sheet.getByRole('button', { name: 'Accept', exact: true }).click()
+  await expect(page.getByTestId('device-admin-status')).toHaveText("Accepted SERIAL9; it is in this account's device list")
+  expect(calls).toEqual([{ path: '/api/cloud/device/share/accept', body: { devId: 'SERIAL9', password: 'account-secret' } }])
+  await expect(page.locator('#device-admin-share-pass')).toHaveValue('')
+})
+
+test('Settings closes the sheet, and signing out drops what was typed', async ({ page }) => {
+  await fakeCloud(page)
+  await signIn(page, 'one')
+  await playing(page)
+  const sheet = await openSheet(page)
+  await page.getByTestId('open-settings').click()
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(sheet).toBeHidden()
+  await page.getByTestId('settings-back').click()
+  await openSheet(page)
+  await sheet.getByRole('tab', { name: 'Sharing' }).click()
+  await page.locator('#device-admin-share-pass').fill('typed-secret')
+  const settings = page.getByTestId('open-settings')
+  const [bar, box] = await Promise.all([settings.boundingBox(), sheet.boundingBox()])
+  expect(box!.y).toBeGreaterThanOrEqual(bar!.y + bar!.height)
+  await settings.click()
+  await page.getByRole('link', { name: 'Connection', exact: true }).click()
+  await page.locator('#signout').click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(sheet).toBeHidden()
+  const typed = await page.evaluate(() => [...document.querySelectorAll('input')].some((input) => input.value === 'typed-secret'))
+  expect(typed).toBe(false)
 })
 
 test('the three jobs sit on tabs, and the favourite switch is saved with the group', async ({ page }) => {

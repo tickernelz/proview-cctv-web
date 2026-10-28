@@ -24,7 +24,7 @@ const BUSY: Record<Action, string> = {
 const open = computed(() => live.sheet === 'devices')
 const sheet = ref<HTMLElement>()
 const closeButton = ref<HTMLButtonElement>()
-const rows = ref<HTMLButtonElement[]>([])
+const rows: (HTMLButtonElement | null)[] = []
 const list = reactive({ phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error', devices: [] as Device[], groups: [] as string[], error: '' })
 const chosen = ref('')
 const tab = ref('name')
@@ -45,6 +45,7 @@ const launcher = addLauncher({
 watch(open, (shown) => (launcher.pressed = shown))
 
 const device = computed(() => list.devices.find((entry) => entry.uuid === chosen.value) || null)
+const shownTab = computed(() => (device.value ? tab.value : 'share'))
 
 function sentence(error: unknown) {
   const text = error instanceof Error ? error.message : String(error)
@@ -80,7 +81,7 @@ function onRowKey(event: KeyboardEvent, index: number) {
   event.preventDefault()
   const next = (index + step + list.devices.length) % list.devices.length
   choose(list.devices[next].uuid)
-  rows.value[next]?.focus()
+  rows[next]?.focus()
 }
 
 async function refresh() {
@@ -109,7 +110,7 @@ async function show() {
   if (!open.value || !sheet.value?.contains(document.activeElement)) return
   await nextTick()
   const index = list.devices.findIndex((entry) => entry.uuid === chosen.value)
-  if (index >= 0 && document.activeElement === closeButton.value) rows.value[index]?.focus()
+  if (index >= 0 && document.activeElement === closeButton.value) rows[index]?.focus()
 }
 
 function close(returnFocus = true) {
@@ -128,10 +129,10 @@ function say(message: string, kind: 'ok' | 'bad') {
   action.kind = kind
 }
 
-async function run(name: Action, work: (uuid: string) => Promise<string>) {
+async function run(name: Action, work: (uuid: string) => Promise<string>, needsCamera = true) {
   if (action.busy) return
   const uuid = chosen.value
-  if (!uuid) return say('Pick a camera first', 'bad')
+  if (needsCamera && !uuid) return say('Pick a camera first', 'bad')
   action.busy = name
   action.message = ''
   action.kind = ''
@@ -208,7 +209,7 @@ const accept = () =>
     if (!key) throw new Error('paste an invitation key or a shared camera serial first')
     await post('/api/cloud/device/share/accept', { key })
     return 'Transfer ' + key + ' acknowledged; the camera lands after Accept with its serial and your password'
-  })
+  }, false)
 
 const password = () =>
   run('password', async (uuid) => {
@@ -220,7 +221,30 @@ const password = () =>
 
 const label = (name: Action, idle: string) => (action.busy === name ? BUSY[name] : idle)
 
+function forgetForm() {
+  Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+  Object.assign(action, { busy: '', message: '', kind: '' })
+  Object.assign(list, { phase: 'idle', devices: [], groups: [], error: '' })
+  chosen.value = ''
+}
+
+function syncScreen() {
+  if (!open.value) return
+  const watchView = document.getElementById('watch')
+  if (watchView && !watchView.hidden) return
+  close(false)
+}
+
 onMounted(() => {
+  const screens = new MutationObserver(() => {
+    syncScreen()
+    const signin = document.getElementById('signin')
+    if (signin && !signin.hidden) forgetForm()
+  })
+  for (const id of ['watch', 'signin']) {
+    const screen = document.getElementById(id)
+    if (screen) screens.observe(screen, { attributes: true, attributeFilter: ['hidden'] })
+  }
   document.addEventListener('keydown', onEscape)
   ;(window as unknown as { proviewDeviceAdmin: unknown }).proviewDeviceAdmin = { open: show, close, refresh }
 })
@@ -253,7 +277,7 @@ onMounted(() => {
         <button
           v-for="(entry, index) in list.devices"
           :key="entry.uuid"
-          ref="rows"
+          :ref="(el) => (rows[index] = el as HTMLButtonElement | null)"
           type="button"
           class="menu-row"
           role="radio"
@@ -270,11 +294,11 @@ onMounted(() => {
           <Icon name="check" small />
         </button>
       </div>
-      <Tabs v-if="device" v-model="tab">
+      <Tabs v-if="list.phase !== 'loading' || list.devices.length" :model-value="shownTab" @update:model-value="(value) => (tab = String(value))">
         <TabsList aria-label="What to change">
-          <TabsTrigger value="name" data-testid="device-admin-tab-name">Name</TabsTrigger>
+          <TabsTrigger value="name" data-testid="device-admin-tab-name" :disabled="!device">Name</TabsTrigger>
           <TabsTrigger value="share" data-testid="device-admin-tab-share">Sharing</TabsTrigger>
-          <TabsTrigger value="password" data-testid="device-admin-tab-password">Password</TabsTrigger>
+          <TabsTrigger value="password" data-testid="device-admin-tab-password" :disabled="!device">Password</TabsTrigger>
         </TabsList>
         <TabsContent value="name">
           <section class="devices-group">
@@ -298,7 +322,7 @@ onMounted(() => {
           </section>
         </TabsContent>
         <TabsContent value="share">
-          <section class="devices-group">
+          <section v-if="device" class="devices-group">
             <h3>Share this camera</h3>
             <label class="field">
               <span class="lab">Share to account</span>
@@ -316,6 +340,7 @@ onMounted(() => {
           </section>
           <section class="devices-group">
             <h3>Accept a shared camera</h3>
+            <label v-if="!device" class="field"><span class="lab">Invitation key</span><input id="device-admin-key" v-model="form.key" type="text" placeholder="transKey from the invitation"></label>
             <label class="field">
               <span class="lab">Camera shared with you</span>
               <input id="device-admin-share-device" v-model="form.sharedDevice" type="text" placeholder="camera serial shared with you">
