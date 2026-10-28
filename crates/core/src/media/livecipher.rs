@@ -45,13 +45,11 @@ impl LiveCipher {
     }
 
     pub fn mask(&self, payload: &mut [u8], frame_len: u32) -> usize {
-        let limit = (frame_len as usize)
-            .min(MASK_WINDOW)
-            .min(payload.len());
+        let limit = (frame_len as usize).min(MASK_WINDOW).min(payload.len());
         let salt = (frame_len % SALT_MOD) as u8;
-        for i in 0..limit {
+        for (i, byte) in payload.iter_mut().enumerate().take(limit) {
             let source = (self.key[i] as u32 + frame_len) % MASK_WINDOW as u32;
-            payload[i] ^= self.key[source as usize] ^ salt;
+            *byte ^= self.key[source as usize] ^ salt;
         }
         limit
     }
