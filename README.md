@@ -65,7 +65,9 @@ password: fixture-password
 Configuration lives in the app. Values are written to `settings.json` in the
 data directory, each save merges into what is already stored, and a key that is
 read once at startup is marked "needs restart" in the view — the desktop build
-offers a **Restart the app** button for those, a server says to restart the
+offers a **Restart the app** button for those and restarts the shell through
+`POST /api/desktop/restart` with the per-run token the served page carries (no
+IPC, which the loopback origin is refused), a server says to restart the
 process. Keys read per request apply as soon as they are saved.
 `docs/settings.md` lists every key, the precedence rule and the API.
 

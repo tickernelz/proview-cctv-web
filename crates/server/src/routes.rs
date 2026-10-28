@@ -104,8 +104,15 @@ pub fn live() -> Vec<rocket::route::Route> {
 }
 
 #[get("/")]
-fn index() -> RawHtml<&'static str> {
-    RawHtml(include_str!("../../../web/index.html"))
+fn index(control: &State<Option<crate::desktop::DesktopControl>>) -> RawHtml<String> {
+    let page = include_str!("../../../web/index.html");
+    RawHtml(match control.inner().as_ref() {
+        Some(control) => page.replace(
+            "</head>",
+            &format!("{}\n</head>", crate::desktop::bootstrap(control)),
+        ),
+        None => page.to_string(),
+    })
 }
 
 #[get("/app.js")]

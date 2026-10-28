@@ -2337,9 +2337,14 @@ function settingsPayload() {
   return payload;
 }
 
+function desktopControl() {
+  const control = window.__PROVIEW_DESKTOP__;
+  return control && typeof control.token === 'string' && control.token ? control : null;
+}
+
 function renderSaveBar() {
   const changed = Object.keys(settingsPayload()).length;
-  const restart = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  const restart = Boolean(desktopControl());
   el('settings-discard').hidden = changed === 0;
   el('settings-save').hidden = changed === 0;
   el('settings-restart').hidden = !(changed === 0 && pendingRestart > 0 && restart);
@@ -2759,9 +2764,17 @@ el('settings-fields').addEventListener('input', () => renderSaveBar());
 el('settings-fields').addEventListener('change', () => renderSaveBar());
 el('settings-restart').addEventListener('click', async () => {
   const button = el('settings-restart');
+  const control = desktopControl();
+  if (!control) {
+    setSettingsStatus('Close the app and open it again to apply the saved fields.', true);
+    return;
+  }
   setBusy(button, true, 'Restarting…');
   try {
-    await window.__TAURI__.core.invoke('restart_app');
+    await api('/api/desktop/restart', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-proview-desktop-token': control.token },
+    });
   } catch (error) {
     setSettingsStatus('Could not restart: ' + error.message, true);
     setBusy(button, false, '');
