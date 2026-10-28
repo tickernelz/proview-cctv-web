@@ -603,6 +603,7 @@ function renderCameraMenu() {
     row.tabIndex = -1;
     row.setAttribute('role', 'menuitemradio');
     row.setAttribute('aria-checked', String(camera.key === state.selectedId + ':' + state.channel));
+    row.dataset.testid = 'camera-option';
     const dot = make('span', 'dot' + (camera.device.online ? '' : ' off'));
     const col = make('span', 'col');
     col.append(
@@ -1565,6 +1566,7 @@ function renderLensPicker() {
     row.tabIndex = -1;
     row.setAttribute('role', 'menuitemradio');
     row.setAttribute('aria-checked', String(option.value === String(state.lensView)));
+    row.dataset.testid = 'lens-option';
     const col = make('span', 'col');
     col.append(make('span', 'name', option.name), make('span', 'sub', option.sub));
     row.append(icon('check', 'i-16'), col);
@@ -1804,6 +1806,7 @@ async function loadPresets() {
       const button = make('button', '', preset.name || preset.token);
       button.type = 'button';
       button.title = 'GotoPreset ' + preset.token;
+      button.dataset.testid = 'ptz-preset';
       button.addEventListener('click', async () => {
         try {
           await api('/api/device/controls/preset/goto?token=' + enc(preset.token), { method: 'POST' });
@@ -2282,6 +2285,7 @@ function renderSettings(view, options = {}) {
         box_input.type = 'checkbox';
         box_input.id = id;
         box_input.dataset.key = field.key;
+        box_input.dataset.testid = 'setting-' + field.key;
         box_input.dataset.secret = 'false';
         box_input.checked = (field.value || field.default || 'off') === 'on';
         const state = make('span', '', box_input.checked ? 'On' : 'Off');
@@ -2341,6 +2345,7 @@ function renderSettings(view, options = {}) {
       input.id = id;
       input.spellcheck = false;
       input.dataset.key = field.key;
+      input.dataset.testid = 'setting-' + field.key;
       input.dataset.secret = field.secret ? 'true' : 'false';
       column.append(input);
       row.append(label, column);

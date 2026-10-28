@@ -48,27 +48,27 @@
   <p class="sr" role="status">Opening PROVIEW</p>
 </div>
 
-<div id="signin" class="screen" hidden>
+<div id="signin" data-testid="signin" class="screen" hidden>
   <header class="topbar">
     <span class="brand"><span class="mark" aria-hidden="true"></span>PROVIEW</span>
     <div class="spacer"></div>
-    <button class="iconbtn" type="button" data-theme-toggle aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+    <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
   </header>
   <main class="auth">
     <div class="auth-form">
       <h1 id="signin-title" tabindex="-1">Watch the camera from this desk</h1>
       <p class="lede" id="signin-lede">The same PROVIEW account your phone uses. The camera password stays on this machine.</p>
-      <div class="notice" id="signin-notice" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-clock"></use></svg><span>Nothing is being recorded while you are signed out.</span></div>
+      <div class="notice" id="signin-notice" data-testid="signin-notice" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-clock"></use></svg><span>Nothing is being recorded while you are signed out.</span></div>
       <div class="tabs" role="tablist" aria-label="Sign-in method">
         <button id="tab-cloud" type="button" role="tab" aria-selected="true" aria-controls="panel-cloud">Account</button>
         <button id="tab-local" type="button" role="tab" aria-selected="false" aria-controls="panel-local" tabindex="-1">This network</button>
       </div>
       <div id="panel-cloud" role="tabpanel" aria-labelledby="tab-cloud">
         <form id="login-form" autocomplete="on" novalidate>
-          <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" placeholder="name@example.com" spellcheck="false" required></div>
-          <div class="field" id="password-field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required>
-            <p class="err" id="login-error" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-warning"></use></svg><span></span></p></div>
-          <button id="login-submit" class="btn btn-fill" type="submit">Sign in</button>
+          <div class="field"><label for="email">Email</label><input id="email" data-testid="signin-email" name="email" type="email" autocomplete="username" placeholder="name@example.com" spellcheck="false" required></div>
+          <div class="field" id="password-field"><label for="password">Password</label><input id="password" data-testid="signin-password" name="password" type="password" autocomplete="current-password" required>
+            <p class="err" id="login-error" data-testid="signin-error" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-warning"></use></svg><span></span></p></div>
+          <button id="login-submit" data-testid="signin-submit" class="btn btn-fill" type="submit">Sign in</button>
         </form>
       </div>
       <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" hidden>
@@ -96,32 +96,32 @@
   </main>
 </div>
 
-<div id="watch" class="screen" hidden>
+<div id="watch" data-testid="live" class="screen" hidden>
   <a class="skip" href="#controls">Skip to controls</a>
   <header class="topbar">
-    <button class="switcher" id="switcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="camera-menu">
-      <span class="dot" id="switcher-dot" role="img" aria-label="Online"></span><span class="name" id="switcher-name">No camera</span><span class="meta" id="switcher-meta"></span><svg class="i i-16 chev" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
+    <button class="switcher" id="switcher" data-testid="camera-switcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="camera-menu">
+      <span class="dot" id="switcher-dot" role="img" aria-label="Online"></span><span class="name" id="switcher-name" data-testid="camera-name">No camera</span><span class="meta" id="switcher-meta"></span><svg class="i i-16 chev" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
     </button>
     <div class="spacer"></div>
-    <button class="iconbtn" id="grid-toggle" type="button" aria-label="Show every camera" title="Show every camera (G)"><svg class="i" aria-hidden="true"><use href="#i-grid"></use></svg></button>
-    <button class="iconbtn" id="open-settings" type="button" aria-label="Settings" title="Settings (,)"><svg class="i" aria-hidden="true"><use href="#i-sliders"></use></svg></button>
-    <button class="iconbtn" type="button" data-theme-toggle aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+    <button class="iconbtn" id="grid-toggle" data-testid="grid-toggle" type="button" aria-label="Show every camera" title="Show every camera (G)"><svg class="i" aria-hidden="true"><use href="#i-grid"></use></svg></button>
+    <button class="iconbtn" id="open-settings" data-testid="open-settings" type="button" aria-label="Settings" title="Settings (,)"><svg class="i" aria-hidden="true"><use href="#i-sliders"></use></svg></button>
+    <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
   </header>
   <div class="banner" id="banner" role="alert" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-disconnect"></use></svg><span><strong id="banner-title"></strong> <span id="banner-text"></span></span><div class="spacer"></div><button id="banner-action" type="button">Retry now</button></div>
   <main id="main" class="viewer">
-    <div class="emptywrap" id="empty" hidden>
+    <div class="emptywrap" id="empty" data-testid="devices-empty" hidden>
       <div class="empty">
         <h2 id="empty-title" tabindex="-1">No cameras on this account yet</h2>
         <p id="empty-text">Add the camera in the phone app with the same account, then refresh. If the camera is on your own network, set its address under Settings, Configuration instead.</p>
-        <div class="actions"><button class="btn btn-line" id="refresh" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh</button><button class="btn btn-text" id="empty-settings" type="button">Open Settings</button></div>
+        <div class="actions"><button class="btn btn-line" id="refresh" data-testid="devices-refresh" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh</button><button class="btn btn-text" id="empty-settings" type="button">Open Settings</button></div>
       </div>
     </div>
     <section id="live" class="live" aria-label="Live">
-      <div class="well" id="well" data-state="idle">
-        <div class="lens-crop" id="lens-crop" hidden><video id="video" playsinline muted></video></div>
+      <div class="well" id="well" data-testid="live-well" data-state="idle">
+        <div class="lens-crop" id="lens-crop" data-testid="live-frame" hidden><video id="video" data-testid="live-video" playsinline muted></video></div>
         <div class="prog" id="prog" hidden></div>
         <div class="well-msg" id="well-msg" hidden>
-          <h2 id="well-title"></h2>
+          <h2 id="well-title" data-testid="live-title"></h2>
           <p id="well-text"></p>
           <p class="mono" id="well-code" hidden></p>
           <div class="actions" id="well-actions" hidden>
@@ -129,43 +129,43 @@
             <button class="btn btn-text inv" id="check-password" type="button">Check the camera password</button>
           </div>
         </div>
-        <div class="pad" id="pad" role="group" aria-label="Pan and tilt" hidden>
+        <div class="pad" id="pad" data-testid="ptz-pad" role="group" aria-label="Pan and tilt" hidden>
           <button class="pk up" type="button" data-act="up" data-requires="device" aria-label="Tilt up"><svg class="i" aria-hidden="true"><use href="#i-chevron-up"></use></svg></button>
           <button class="pk left" type="button" data-act="left" data-requires="device" aria-label="Pan left"><svg class="i" aria-hidden="true"><use href="#i-chevron-left"></use></svg></button>
           <button class="pk home" type="button" data-act="home" data-requires="device" aria-label="Stop"><svg class="i i-16" aria-hidden="true"><use href="#i-stop"></use></svg></button>
           <button class="pk right" type="button" data-act="right" data-requires="device" aria-label="Pan right"><svg class="i" aria-hidden="true"><use href="#i-chevron-right"></use></svg></button>
           <button class="pk down" type="button" data-act="down" data-requires="device" aria-label="Tilt down"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-          <div class="pad-note"><span id="preset-label">Presets</span><span id="presets" class="presets"></span><button class="btn btn-text" id="tour" type="button" data-act="cruise" data-requires="device" aria-pressed="false">Tour</button><span id="control-status" role="status"></span></div>
+          <div class="pad-note"><span id="preset-label" data-testid="ptz-preset-label">Presets</span><span id="presets" data-testid="ptz-presets" class="presets"></span><button class="btn btn-text" id="tour" data-testid="ptz-tour" type="button" data-act="cruise" data-requires="device" aria-pressed="false">Tour</button><span id="control-status" data-testid="control-status" role="status"></span></div>
         </div>
         <div class="fs-line" id="fs-line" hidden><span id="fs-name"></span><span id="fs-time"></span></div>
       </div>
       <div class="well-meta">
-        <p id="caption" role="status"><strong id="caption-name"></strong><span id="caption-state"></span></p>
-        <div class="right"><span id="caption-flag"></span><span class="mono" id="clock"></span></div>
+        <p id="caption" data-testid="live-caption" role="status"><strong id="caption-name"></strong><span id="caption-state" data-testid="live-state"></span></p>
+        <div class="right"><span id="caption-flag" data-testid="live-lag"></span><span class="mono" id="clock" data-testid="live-clock"></span></div>
       </div>
       <div class="controls" id="controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
-        <button class="ctl" id="talk" type="button" data-requires="device" data-act="intercom" aria-keyshortcuts="T"><svg class="i" aria-hidden="true"><use href="#i-mic"></use></svg><span>Talk</span><span class="level" id="level" aria-hidden="true" hidden><i></i><i></i><i></i><i></i><i></i></span></button>
-        <button class="ctl" id="mute" type="button" aria-pressed="false" aria-keyshortcuts="M"><svg class="i" aria-hidden="true"><use href="#i-speaker-off"></use></svg><span>Sound</span></button>
+        <button class="ctl" id="talk" data-testid="ctl-talk" type="button" data-requires="device" data-act="intercom" aria-keyshortcuts="T"><svg class="i" aria-hidden="true"><use href="#i-mic"></use></svg><span>Talk</span><span class="level" id="level" aria-hidden="true" hidden><i></i><i></i><i></i><i></i><i></i></span></button>
+        <button class="ctl" id="mute" data-testid="ctl-mute" type="button" aria-pressed="false" aria-keyshortcuts="M"><svg class="i" aria-hidden="true"><use href="#i-speaker-off"></use></svg><span>Sound</span></button>
         <span class="sep"></span>
-        <button class="ctl" id="record" type="button" aria-pressed="false" aria-keyshortcuts="R"><svg class="i" aria-hidden="true"><use href="#i-record"></use></svg><span>Record</span></button>
-        <button class="ctl" id="snapshot" type="button" aria-keyshortcuts="S"><svg class="i" aria-hidden="true"><use href="#i-camera"></use></svg><span>Snapshot</span></button>
+        <button class="ctl" id="record" data-testid="ctl-record" type="button" aria-pressed="false" aria-keyshortcuts="R"><svg class="i" aria-hidden="true"><use href="#i-record"></use></svg><span>Record</span></button>
+        <button class="ctl" id="snapshot" data-testid="ctl-snapshot" type="button" aria-keyshortcuts="S"><svg class="i" aria-hidden="true"><use href="#i-camera"></use></svg><span>Snapshot</span></button>
         <span class="spacer"></span>
-        <button class="ctl" id="move" type="button" data-requires="device" data-act="move" aria-pressed="false" aria-controls="pad" aria-keyshortcuts="V"><svg class="i" aria-hidden="true"><use href="#i-move"></use></svg><span>Move</span></button>
-        <button class="pick" id="lens-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="lens-menu" aria-keyshortcuts="L" hidden><span id="lens-pick-label">Both lenses</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-        <button class="pick" id="quality-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="quality-menu" aria-keyshortcuts="Q"><span id="quality-pick-label">Quality HD</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
+        <button class="ctl" id="move" data-testid="ctl-move" type="button" data-requires="device" data-act="move" aria-pressed="false" aria-controls="pad" aria-keyshortcuts="V"><svg class="i" aria-hidden="true"><use href="#i-move"></use></svg><span>Move</span></button>
+        <button class="pick" id="lens-pick" data-testid="lens-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="lens-menu" aria-keyshortcuts="L" hidden><span id="lens-pick-label" data-testid="lens-label">Both lenses</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
+        <button class="pick" id="quality-pick" data-testid="quality-pick" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="quality-menu" aria-keyshortcuts="Q"><span id="quality-pick-label">Quality HD</span><svg class="i i-16" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
         <span class="sep"></span>
-        <button class="iconbtn" id="fullscreen" type="button" aria-label="Full screen" title="Full screen (F)" aria-keyshortcuts="F"><svg class="i" aria-hidden="true"><use href="#i-expand"></use></svg></button>
+        <button class="iconbtn" id="fullscreen" data-testid="ctl-fullscreen" type="button" aria-label="Full screen" title="Full screen (F)" aria-keyshortcuts="F"><svg class="i" aria-hidden="true"><use href="#i-expand"></use></svg></button>
       </div>
     </section>
-    <section id="grid" class="gridview" aria-label="Every camera" hidden>
-      <div class="tiles" id="tiles"></div>
-      <div class="controls"><p class="count" id="grid-count"></p><span class="spacer"></span><button class="iconbtn" id="grid-fullscreen" type="button" aria-label="Full screen" title="Full screen (F)"><svg class="i" aria-hidden="true"><use href="#i-expand"></use></svg></button></div>
+    <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" hidden>
+      <div class="tiles" id="tiles" data-testid="grid-tiles"></div>
+      <div class="controls"><p class="count" id="grid-count" data-testid="grid-count"></p><span class="spacer"></span><button class="iconbtn" id="grid-fullscreen" type="button" aria-label="Full screen" title="Full screen (F)"><svg class="i" aria-hidden="true"><use href="#i-expand"></use></svg></button></div>
     </section>
   </main>
 
-  <div class="menu" id="camera-menu" role="menu" aria-label="Cameras" hidden></div>
-  <div class="menu" id="lens-menu" role="menu" aria-label="Lens" hidden></div>
-  <div class="menu" id="quality-menu" role="menu" aria-label="Quality" hidden>
+  <div class="menu" id="camera-menu" data-testid="camera-menu" role="menu" aria-label="Cameras" hidden></div>
+  <div class="menu" id="lens-menu" data-testid="lens-menu" role="menu" aria-label="Lens" hidden></div>
+  <div class="menu" id="quality-menu" data-testid="quality-menu" role="menu" aria-label="Quality" hidden>
     <div class="menu-h">Quality · Q switches</div>
     <button class="menu-row" type="button" role="menuitemradio" data-quality="main" aria-checked="true"><svg class="i i-16" aria-hidden="true"><use href="#i-check"></use></svg><span class="col"><span class="name">HD</span><span class="sub">the main stream</span></span></button>
     <button class="menu-row" type="button" role="menuitemradio" data-quality="sub" aria-checked="false"><svg class="i i-16" aria-hidden="true"><use href="#i-check"></use></svg><span class="col"><span class="name">SD</span><span class="sub">the sub stream, lighter on the network</span></span></button>
@@ -192,12 +192,12 @@
   </section>
 </div>
 
-<div id="settings" class="screen" hidden>
+<div id="settings" data-testid="settings" class="screen" hidden>
   <header class="topbar">
-    <button class="ctl back" id="settings-back" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-arrow-left"></use></svg><span id="settings-back-label">Live</span></button>
+    <button class="ctl back" id="settings-back" data-testid="settings-back" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-arrow-left"></use></svg><span id="settings-back-label">Live</span></button>
     <h1 class="screen-title" id="settings-title" tabindex="-1">Settings</h1>
     <div class="spacer"></div>
-    <button class="iconbtn" type="button" data-theme-toggle aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
+    <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
   </header>
   <div class="set">
     <nav class="set-nav" aria-label="Settings sections">
@@ -221,7 +221,7 @@
         <div class="row"><div class="lab">Sound</div><div class="ctl-col"><label class="switchrow"><input type="checkbox" role="switch" id="set-muted">Start muted</label></div></div>
         <div class="row"><div class="lab">On the picture<div class="hint">The window keeps the name and clock under the picture either way.</div></div><div class="ctl-col">
           <label class="switchrow"><input type="checkbox" role="switch" id="set-osd">Camera name and clock in full screen</label>
-          <label class="switchrow"><input type="checkbox" role="switch" id="set-flip">Turn the picture 180° (a camera mounted upside down)</label></div></div>
+          <label class="switchrow"><input type="checkbox" role="switch" id="set-flip" data-testid="set-flip">Turn the picture 180° (a camera mounted upside down)</label></div></div>
         <div class="row"><div class="lab" id="lab-theme">Theme</div><div class="ctl-col" role="radiogroup" aria-labelledby="lab-theme">
           <label class="opt"><input type="radio" name="theme" value="system">Match the system</label>
           <label class="opt"><input type="radio" name="theme" value="dark">Dark</label>
@@ -238,7 +238,7 @@
           <div class="row"><div class="lab">Lens layout</div><div class="ctl-col"><p class="val" id="lens-source">Waiting for the first frame.</p><p class="hint" id="lens-roles-note">Which half moves comes from the device report. Until the server sends it, the lenses are named by position, not by role.</p></div></div>
           <div class="row"><div class="lab">What it can do<div class="hint" id="device-note">Device controls have not been checked yet.</div></div><div class="ctl-col">
             <table class="tbl"><caption class="sr">Device capability report from the server</caption><thead><tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">Reported</th><th scope="col">Evidence</th></tr></thead><tbody id="capability-rows"></tbody></table></div></div>
-          <div class="row"><div class="lab">White light</div><div class="ctl-col"><button class="btn btn-line" id="light" type="button" data-requires="device" data-act="strobe">Switch the white light</button><p class="hint" id="light-status" role="status"></p></div></div>
+          <div class="row"><div class="lab">White light</div><div class="ctl-col"><button class="btn btn-line" id="light" data-testid="ctl-light" type="button" data-requires="device" data-act="strobe">Switch the white light</button><p class="hint" id="light-status" data-testid="light-status" role="status"></p></div></div>
         </div>
       </section>
       <section data-section="connection" aria-labelledby="h-connection" hidden>
@@ -254,8 +254,8 @@
       <section data-section="config" aria-labelledby="h-config" hidden>
         <h2 class="set-h" id="h-config" tabindex="-1">Configuration</h2>
         <p class="set-sub">Server settings, stored on this machine in <code>settings.json</code>. Saving sends only the fields you changed; secrets are never read back. A key that needs a restart says so under its label.</p>
-        <div id="settings-fields"></div>
-        <p class="hint" id="settings-status" role="status">Not loaded yet.</p>
+        <div id="settings-fields" data-testid="settings-fields"></div>
+        <p class="hint" id="settings-status" data-testid="settings-status" role="status">Not loaded yet.</p>
       </section>
       <section data-section="server" aria-labelledby="h-server" hidden>
         <h2 class="set-h" id="h-server" tabindex="-1">Server</h2>
@@ -272,11 +272,11 @@
     </div>
   </div>
   <div class="savebar">
-    <span class="state" id="save-state" role="status">Everything saved</span>
+    <span class="state" id="save-state" data-testid="save-state" role="status">Everything saved</span>
     <div class="spacer"></div>
     <button class="btn btn-text" id="settings-discard" type="button" hidden>Discard</button>
-    <button class="btn btn-fill" id="settings-save" type="button" aria-keyshortcuts="Control+S" hidden>Save changes</button>
-    <button class="btn btn-fill" id="settings-restart" type="button" hidden>Restart the app</button>
+    <button class="btn btn-fill" id="settings-save" data-testid="settings-save" type="button" aria-keyshortcuts="Control+S" hidden>Save changes</button>
+    <button class="btn btn-fill" id="settings-restart" data-testid="settings-restart" type="button" hidden>Restart the app</button>
   </div>
 </div>
 
