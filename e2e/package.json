@@ -4,14 +4,11 @@
   "type": "module",
   "scripts": {
     "serve": "node serve.mjs",
-    "test": "e2e run --strict-cache",
-    "update": "e2e run --update-snapshots"
+    "test": "playwright test",
+    "update": "playwright test --update-snapshots"
   },
   "devDependencies": {
-    "@ai-sdk/openai-compatible": "3.0.80",
-    "@e2e-dev/web": "0.15.3",
-    "@types/node": "26.6.5",
-    "ai": "7.0.155",
-    "e2e": "0.21.3"
+    "@playwright/test": "1.64.1",
+    "@types/node": "26.6.5"
   }
 }

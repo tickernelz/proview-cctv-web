@@ -51,9 +51,6 @@ jobs:
       options: --ipc=host
     env:
       CI: '1'
-      E2E_TELEMETRY_DISABLED: '1'
-      DO_NOT_TRACK: '1'
-      E2E_UPDATE_CHECK_DISABLED: '1'
       OPENSSL_NO_VENDOR: '1'
     steps:
       - uses: actions/checkout@v4
@@ -81,23 +78,16 @@ jobs:
       - name: Install the e2e harness
         working-directory: e2e
         run: npm ci --include=dev
-      - name: Start the fixture servers
+      - name: e2e (Chromium and WebKit, fixture servers)
         working-directory: e2e
-        run: |
-          nohup node serve.mjs > serve.log 2>&1 &
-          for i in $(seq 1 60); do [ -f .servers.json ] && break; sleep 0.5; done
-          cat serve.log
-          test -f .servers.json
-      - name: e2e (replay only, no model)
-        working-directory: e2e
-        run: npx --no-install e2e run --strict-cache
+        run: npx --no-install playwright test
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results
           path: |
-            e2e/.e2e/
-            e2e/serve.log
+            e2e/test-results/
+            e2e/playwright-report/
           retention-days: 7
 
   desktop-smoke:

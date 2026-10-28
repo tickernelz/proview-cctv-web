@@ -1,20 +1,18 @@
 # End-to-end tests
 
-The suite drives the page that `proview-server` serves from `apps/web/dist`,
-against the fixture provider (no camera, no vendor account), in Chromium and
-WebKit, with [e2e](https://github.com/tester-army/e2e) (`e2e` 0.21.3 and
-`@e2e-dev/web` 0.15.3, Apache-2.0, pinned exactly).
+Playwright (`@playwright/test` 1.64.1, pinned exactly) drives the page that
+`proview-server` serves from `apps/web/dist`, against the fixture provider
+(no camera, no vendor account), in Chromium and WebKit. No test calls a model.
 
-- `serve.mjs` starts one `proview-server` per scenario in `scenarios.mjs`
-  (empty, one, many cameras; per-browser copies for the specs that save state)
-  and writes their URLs to `.servers.json`. The config refuses to load without
-  that file.
-- `tests/*.e2e.ts` find elements by `data-testid` only.
-- `tests/visual.e2e.ts` compares six screens at 1440x900 and 1280x800 in the
-  dark and the light theme against `tests/visual.e2e.ts-snapshots/`.
-- No test calls a model. A future `agent.act` step is recorded once with a
-  model and committed under `.e2e/cache`; CI runs `--strict-cache`, so a
-  stale recording fails with `REPLAY_STALE` instead of calling a model.
+- `global-setup.ts` starts one `proview-server` per scenario in
+  `scenarios.mjs` (empty, one, many cameras; per-browser copies for the specs
+  that save settings or the grid layout, so test order cannot leak between
+  specs) and stops them after the run.
+- `tests/*.spec.ts` find elements by `data-testid` only.
+- `tests/visual.spec.ts` compares six screens at 1440x900 and 1280x800 in the
+  dark and the light theme against `tests/visual.spec.ts-snapshots/`
+  (`maxDiffPixelRatio` 0.002; live video and clocks masked).
+- Retry 1; a failed test keeps its trace and video in `test-results/`.
 
 ## Run it locally
 
@@ -23,19 +21,18 @@ WebKit, with [e2e](https://github.com/tester-army/e2e) (`e2e` 0.21.3 and
 OPENSSL_NO_VENDOR=1 ~/re/proview-cctv/build-slot.sh cargo build -p proview-server
 cd e2e
 npm ci
-npm run serve &        # keep it running; Ctrl-C stops every server
-./run.sh               # the suite inside mcr.microsoft.com/playwright, as CI renders
-./run.sh --target chromium tests/live.e2e.ts
+npm run serve &        # fixture servers on the host; Ctrl-C stops them all
+./run.sh               # the suite in mcr.microsoft.com/playwright, as CI renders it
+./run.sh --project=chromium tests/live.spec.ts
 ```
 
-`run.sh` runs the CLI in the Playwright image that matches the pinned
-`playwright-core`, so screenshots render with the same fonts as CI. Running
-`npx e2e run` on the host works for the functional specs, but the visual
-specs then compare host rendering against the committed Linux baselines.
+`run.sh` runs Playwright in the image that matches the pinned version, so
+screenshots render with the same fonts as CI, and reuses the host servers
+(`PROVIEW_E2E_REUSE=1`) because a binary linked on the host may not run inside
+the image. In CI, `npx playwright test` starts the servers itself with the
+binary built in the same container.
 
-Set `PROVIEW_SERVER_BIN` when the binary is not `target/debug/proview-server`
-(on this box: `$HOME/.cache/zha4181/target/debug/proview-server` with
-`LD_LIBRARY_PATH=/home/linuxbrew/.linuxbrew/lib`).
+Set `PROVIEW_SERVER_BIN` when the binary is not `target/debug/proview-server`.
 
 ## Update the screenshots
 
@@ -43,11 +40,18 @@ Set `PROVIEW_SERVER_BIN` when the binary is not `target/debug/proview-server`
 ./run.sh --update-snapshots
 ```
 
-Look at every changed PNG before committing it. A change that moves pixels on
-purpose commits its new baselines in the same commit as the change.
+Look at every changed PNG before committing it, and commit new baselines in
+the same commit as the change that moved the pixels.
 
-## Telemetry
+## Why Playwright and not tester-army/e2e
 
-`run.sh` and the CI job set `E2E_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`,
-and `E2E_UPDATE_CHECK_DISABLED=1`. On your own machine, `npx e2e telemetry
-disable` turns it off for every run.
+Both ran the same 84 tests (2 workers, retry 1, same image and servers) on
+2026-10-28, three rounds each, servers restarted before each cold run:
+
+| Harness | Cold | Warm | Median |
+|---|---|---|---|
+| `e2e` 0.21.3 + `@e2e-dev/web` 0.15.3, `--strict-cache` | 76 / 64 / 54 s | 70 / 72 / 76 s | 71 s |
+| `@playwright/test` 1.64.1 | 45 / 43 / 50 s | 44 / 42 / 46 s | 44.5 s |
+
+No test needed an agent step, which is the part `e2e` adds on top of
+Playwright, so Zhafron chose plain Playwright (2026-10-28 15:59Z).

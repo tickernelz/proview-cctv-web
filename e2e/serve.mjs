@@ -4,6 +4,7 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 import { SCENARIOS, SERVERS_FILE, serverNames } from './scenarios.mjs'
 
 const ROOT = resolve(import.meta.dirname, '..')
@@ -62,30 +63,38 @@ async function start(name, dir) {
   }
 }
 
-const dir = mkdtempSync(join(tmpdir(), 'proview-e2e-'))
-const running = []
-const stop = (code) => {
-  for (const { child } of running) child.kill('SIGKILL')
-  rmSync(SERVERS_FILE, { force: true })
-  rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
-  process.exit(code)
+export async function startServers() {
+  const dir = mkdtempSync(join(tmpdir(), 'proview-e2e-'))
+  const running = []
+  const stop = () => {
+    for (const { child } of running) child.kill('SIGKILL')
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 })
+  }
+  try {
+    running.push(...(await Promise.all(serverNames().map((name) => start(name, dir)))))
+  } catch (error) {
+    stop()
+    throw error
+  }
+  return { urls: Object.fromEntries(running.map(({ name, base }) => [name, base])), running, stop }
 }
-process.on('SIGINT', () => stop(0))
-process.on('SIGTERM', () => stop(0))
 
-try {
-  running.push(...(await Promise.all(serverNames().map((name) => start(name, dir)))))
-} catch (error) {
-  console.error(String(error))
-  stop(1)
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  const { urls, running, stop } = await startServers()
+  const quit = (code) => {
+    stop()
+    rmSync(SERVERS_FILE, { force: true })
+    process.exit(code)
+  }
+  process.on('SIGINT', () => quit(0))
+  process.on('SIGTERM', () => quit(0))
+  for (const server of running) {
+    server.child.once('exit', (code) => {
+      console.error(server.name + ': proview-server exited ' + code)
+      quit(1)
+    })
+  }
+  writeFileSync(SERVERS_FILE + '.partial', JSON.stringify(urls, null, 2))
+  renameSync(SERVERS_FILE + '.partial', SERVERS_FILE)
+  console.log('serving ' + running.length + ' fixture servers; URLs in ' + SERVERS_FILE)
 }
-for (const server of running) {
-  server.child.once('exit', (code) => {
-    console.error(server.name + ': proview-server exited ' + code)
-    stop(1)
-  })
-}
-const partial = SERVERS_FILE + '.partial'
-writeFileSync(partial, JSON.stringify(Object.fromEntries(running.map(({ name, base }) => [name, base])), null, 2))
-renameSync(partial, SERVERS_FILE)
-console.log('serving ' + running.length + ' fixture servers; URLs in ' + SERVERS_FILE)

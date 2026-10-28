@@ -1,30 +1,28 @@
-import { readFileSync } from 'node:fs'
-import { expect } from 'e2e'
-import type { App, Screen } from 'e2e'
-import type { Browser } from '@e2e-dev/web'
-import { PER_BROWSER, SERVERS_FILE, type Scenario } from '../scenarios.mjs'
+import { expect, type Page } from '@playwright/test'
+import { PER_BROWSER, type Scenario } from '../scenarios.mjs'
 
 export const ACCOUNT = { email: 'fixture@example.invalid', password: 'fixture-password' }
 
-const servers = JSON.parse(readFileSync(SERVERS_FILE, 'utf8')) as Record<string, string>
+const servers = JSON.parse(process.env.PROVIEW_E2E_SERVERS ?? '{}') as Record<string, string>
 
-export async function serverFor(scenario: Scenario, browser: Browser): Promise<string> {
+export const serverFor0 = (scenario: Scenario) => servers[scenario] + '/'
+
+async function serverFor(scenario: Scenario, page: Page): Promise<string> {
   let name: string = scenario
   if (PER_BROWSER.includes(scenario)) {
-    const agent = await browser.evaluate(() => navigator.userAgent)
+    const agent = await page.evaluate(() => navigator.userAgent)
     name = scenario + '-' + (/Chrome\//.test(agent) ? 'chromium' : 'webkit')
   }
   const base = servers[name]
-  if (!base) throw new Error('no fixture server named ' + name + ' in ' + SERVERS_FILE)
+  if (!base) throw new Error('no fixture server named ' + name + '; the global setup did not run')
   return base
 }
 
-export async function signIn(app: App, browser: Browser, scenario: Scenario): Promise<string> {
-  await app.open('about:blank')
-  const base = await serverFor(scenario, browser)
-  await app.open(base + '/')
-  const status = await browser.evaluate(
-    (account: { email: string; password: string }) =>
+export async function signIn(page: Page, scenario: Scenario): Promise<string> {
+  const base = await serverFor(scenario, page)
+  await page.goto(base + '/')
+  const status = await page.evaluate(
+    (account) =>
       fetch('/api/login', {
         method: 'POST',
         credentials: 'same-origin',
@@ -34,10 +32,10 @@ export async function signIn(app: App, browser: Browser, scenario: Scenario): Pr
     ACCOUNT,
   )
   expect(status).toBe(200)
-  await app.open(base + '/?signed-in#live')
+  await page.goto(base + '/?signed-in#live')
   return base
 }
 
-export async function playing(screen: Screen) {
-  await expect(screen.getByTestId('live-well')).toHaveAttribute('data-state', 'playing', { timeout: 20_000 })
+export async function playing(page: Page) {
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-state', 'playing', { timeout: 20_000 })
 }
