@@ -64,7 +64,7 @@ fn fake_cloud(rows: Rows, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
                 })
                 .collect();
             let payload = format!(
-                "{{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{{\"data\":[{}]}}}}",
+                "{{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{{\"mine\":[{}]}}}}",
                 entries.join(",")
             );
             let response = format!(
@@ -115,7 +115,6 @@ fn free_port() -> u16 {
 fn spawn_server(cloud_base: String) -> (SocketAddr, tokio::runtime::Runtime) {
     let port = free_port();
     let figment = rocket::Config::figment()
-        .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
         .merge(("address", "127.0.0.1"))
         .merge(("port", port));
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -229,6 +228,12 @@ fn a_session_cannot_open_the_socket_of_a_serial_it_does_not_own() {
     assert!(
         foreign_body.contains("device not in this account"),
         "the refusal must name the reason: {foreign_body}"
+    );
+
+    let (own_code, own_body) = ws_probe(address, OTHER_SERIAL, &cookie);
+    assert_eq!(
+        own_code, 101,
+        "B owns the serial its account lists: {own_body}"
     );
 
     drop(cookie);
