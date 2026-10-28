@@ -468,6 +468,19 @@ pub async fn start_monitor(
         .await
 }
 
+pub fn live_ticket(device: &str, channel: u32, high: bool) -> Result<StreamTicket, ProviderError> {
+    if device.trim().is_empty() || device.contains('/') || device.contains("..") {
+        return Err(ProviderError::UnknownDevice(device.to_string()));
+    }
+    let quality = if high { "main" } else { "sub" };
+    Ok(StreamTicket {
+        kind: StreamKind::Ws,
+        url: format!("/ws/live?device={device}&channel={channel}&quality={quality}"),
+        expires_in: 120,
+        source: ProviderSource::Cloud,
+    })
+}
+
 fn configured_serial() -> String {
     std::env::var("PROVIEW_DEVICE_SERIAL")
         .map(|value| value.trim().to_string())
@@ -683,21 +696,18 @@ impl Provider for CloudProvider {
 
     async fn stream(
         &self,
-        _session: &VendorSession,
+        session: &VendorSession,
         device: &str,
         channel: u32,
         high: bool,
     ) -> Result<StreamTicket, ProviderError> {
-        if device.trim().is_empty() || device.contains('/') || device.contains("..") {
-            return Err(ProviderError::UnknownDevice(device.to_string()));
+        let ticket = live_ticket(device, channel, high)?;
+        if !self.owns(session, device).await? {
+            return Err(ProviderError::UnknownDevice(format!(
+                "{device} is not in this account"
+            )));
         }
-        let quality = if high { "main" } else { "sub" };
-        Ok(StreamTicket {
-            kind: StreamKind::Ws,
-            url: format!("/ws/live?device={device}&channel={channel}&quality={quality}"),
-            expires_in: 120,
-            source: ProviderSource::Cloud,
-        })
+        Ok(ticket)
     }
 
     async fn playback(
@@ -802,43 +812,57 @@ mod path_tests {
         assert!(report.detail.contains("relay refused the session"));
     }
 
-    #[tokio::test]
-    async fn the_ticket_points_at_the_live_socket_and_names_the_cloud() {
-        let provider = CloudProvider::with_identity(
-            &crate::config::Config::from_env(),
-            Identity::new("uuid", "key", "secret"),
-        );
-        let session = VendorSession {
-            account: "probe".to_string(),
-            token: Some("access".to_string()),
-        };
-        let ticket = provider
-            .stream(&session, "7f92970ddf5282743hrc", 1, true)
-            .await
-            .expect("ticket");
+    #[test]
+    fn the_ticket_points_at_the_live_socket_and_names_the_cloud() {
+        let ticket = live_ticket("7f92970ddf5282743hrc", 1, true).expect("ticket");
         assert!(matches!(ticket.kind, StreamKind::Ws));
         assert_eq!(ticket.source, ProviderSource::Cloud);
         assert_eq!(
             ticket.url,
             "/ws/live?device=7f92970ddf5282743hrc&channel=1&quality=main"
         );
+        let sub = live_ticket("7f92970ddf5282743hrc", 1, false).expect("ticket");
+        assert_eq!(
+            sub.url,
+            "/ws/live?device=7f92970ddf5282743hrc&channel=1&quality=sub"
+        );
+    }
+
+    #[test]
+    fn a_path_like_device_is_refused_before_a_ticket() {
+        assert!(matches!(
+            live_ticket("../etc/passwd", 1, true),
+            Err(ProviderError::UnknownDevice(_))
+        ));
+        assert!(matches!(
+            live_ticket("  ", 1, true),
+            Err(ProviderError::UnknownDevice(_))
+        ));
     }
 
     #[tokio::test]
-    async fn a_path_like_device_is_refused_before_a_ticket() {
-        let provider = CloudProvider::with_identity(
-            &crate::config::Config::from_env(),
-            Identity::new("uuid", "key", "secret"),
-        );
+    async fn the_endpoint_still_walks_the_path_before_it_issues_a_ticket() {
+        let mut cfg = crate::config::Config::from_env();
+        cfg.cloud_base = "http://127.0.0.1:1".to_string();
+        let provider = CloudProvider::with_identity(&cfg, Identity::new("uuid", "key", "secret"));
         let session = VendorSession {
             account: "probe".to_string(),
             token: Some("access".to_string()),
         };
         let error = provider
-            .stream(&session, "../etc/passwd", 1, true)
+            .stream(&session, "7f92970ddf5282743hrc", 1, true)
             .await
-            .expect_err("a path is not a device");
-        assert!(matches!(error, ProviderError::UnknownDevice(_)));
+            .expect_err("an unreachable cloud base is not a ticket");
+        assert!(
+            matches!(
+                error,
+                ProviderError::Unreachable(_) | ProviderError::Upstream(_)
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("msdlistCode") || error.to_string().contains("127.0.0.1:1")
+        );
     }
 
     #[test]
