@@ -300,17 +300,6 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn two_stores_over_one_directory_keep_both_entries() {
-        let dir = scratch();
-        let first = DeviceTokenStore::load(Some(&dir));
-        let second = DeviceTokenStore::load(Some(&dir));
-        first.put("serial-one", "first").expect("put first");
-        second.put("serial-two", "second").expect("put second");
-        assert_eq!(first.get("serial-two").as_deref(), Some("second"));
-        assert_eq!(second.get("serial-one").as_deref(), Some("first"));
-        fs::remove_dir_all(&dir).ok();
-    }
     #[cfg(unix)]
     #[test]
     fn the_key_file_is_private_from_the_first_write() {

@@ -579,23 +579,32 @@ mod tests {
     }
 
     #[test]
-    fn a_cloud_key_is_scoped_away_from_a_local_key_for_the_same_device() {
+    fn a_cloud_publisher_does_not_answer_for_a_local_key_of_the_same_device() {
+        let hub = LiveHub::default();
         let local = StreamKey::new("7f92970ddf5282743hrc", 1, false, LiveMode::Transcode);
         let cloud = StreamKey::cloud(
-            "6f8c33b29c95774c14bae9436e721c8",
+            "account-one",
             "7f92970ddf5282743hrc",
             1,
             false,
             LiveMode::Transcode,
         );
-        assert_ne!(local, cloud);
-        let other = StreamKey::cloud(
-            "11111111111111111111111111111111",
+        let other_account = StreamKey::cloud(
+            "account-two",
             "7f92970ddf5282743hrc",
             1,
             false,
             LiveMode::Transcode,
         );
-        assert_ne!(cloud, other);
+        let _publisher = hub.publisher(cloud.clone());
+        assert!(hub.has_publisher(&cloud));
+        assert!(
+            !hub.has_publisher(&local),
+            "a cloud publisher must not answer a local key for the same serial"
+        );
+        assert!(
+            !hub.has_publisher(&other_account),
+            "a cloud publisher must not answer another account's key"
+        );
     }
 }

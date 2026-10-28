@@ -198,10 +198,20 @@ impl CloudProvider {
 }
 
 impl CloudProvider {
-    pub async fn owns(&self, session: &VendorSession, device: &str) -> Result<bool, ProviderError> {
+    pub async fn entry_of(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<Option<crate::cloud::types::CloudDevice>, ProviderError> {
         let token = self.token(session)?;
         let devices = self.client.device_list(token).await.map_err(map_cloud)?;
-        Ok(devices.iter().any(|entry| entry.uuid == device.trim()))
+        Ok(devices
+            .into_iter()
+            .find(|entry| entry.uuid == device.trim()))
+    }
+
+    pub async fn owns(&self, session: &VendorSession, device: &str) -> Result<bool, ProviderError> {
+        Ok(self.entry_of(session, device).await?.is_some())
     }
 
     pub async fn open_media(
@@ -511,6 +521,16 @@ fn device_credential_for(
     credential_decision(&configured_serial(), serial, &user, &pass)
 }
 
+fn unready_reason(stored_token: bool, credential: &DeviceCredential) -> Option<String> {
+    if stored_token {
+        return None;
+    }
+    match credential {
+        DeviceCredential::Allowed { .. } => None,
+        DeviceCredential::Refused(reason) => Some(reason.clone()),
+    }
+}
+
 fn credential_decision(configured: &str, serial: &str, user: &str, pass: &str) -> DeviceCredential {
     if configured.trim().is_empty() {
         return DeviceCredential::Refused(
@@ -729,10 +749,15 @@ impl Provider for CloudProvider {
         high: bool,
     ) -> Result<StreamTicket, ProviderError> {
         let ticket = live_ticket(device, channel, high)?;
-        if !self.owns(session, device).await? {
+        let Some(entry) = self.entry_of(session, device).await? else {
             return Err(ProviderError::UnknownDevice(format!(
                 "{device} is not in this account"
             )));
+        };
+        let credential = device_credential_for(device.trim(), &entry);
+        let stored = self.tokens.get(device.trim()).is_some();
+        if let Some(reason) = unready_reason(stored, &credential) {
+            return Err(ProviderError::Misconfigured(reason));
         }
         Ok(ticket)
     }
@@ -895,27 +920,22 @@ mod path_tests {
     #[test]
     fn the_credentials_only_answer_for_the_configured_serial() {
         assert!(matches!(
-            credential_decision(
-                "7f92970ddf5282743hrc",
-                "7f92970ddf5282743hrc",
-                "admin",
-                "pass"
-            ),
+            credential_decision("serial-one", "serial-one", "admin", "pass"),
             DeviceCredential::Allowed { .. }
         ));
         assert!(matches!(
-            credential_decision("7f92970ddf5282743hrc", "other-serial", "admin", "pass"),
+            credential_decision("serial-one", "serial-two", "admin", "pass"),
             DeviceCredential::Refused(_)
         ));
         assert!(matches!(
-            credential_decision("", "7f92970ddf5282743hrc", "admin", "pass"),
+            credential_decision("", "serial-one", "admin", "pass"),
             DeviceCredential::Refused(_)
         ));
     }
 
     #[test]
     fn a_missing_serial_refusal_names_the_setting_to_fill() {
-        match credential_decision("", "7f92970ddf5282743hrc", "admin", "pass") {
+        match credential_decision("", "serial-one", "admin", "pass") {
             DeviceCredential::Refused(reason) => {
                 assert!(reason.contains("PROVIEW_DEVICE_SERIAL"), "{reason}")
             }
@@ -926,10 +946,24 @@ mod path_tests {
     #[test]
     fn an_empty_password_refuses_even_for_the_right_serial() {
         assert!(matches!(
-            credential_decision("7f92970ddf5282743hrc", "7f92970ddf5282743hrc", "admin", ""),
+            credential_decision("serial-one", "serial-one", "admin", ""),
             DeviceCredential::Refused(_)
         ));
     }
+
+    #[test]
+    fn a_ticket_is_refused_when_the_device_can_never_log_in() {
+        let refused = credential_decision("", "serial-one", "admin", "pass");
+        let reason = unready_reason(false, &refused).expect("a refusal without a token");
+        assert!(reason.contains("PROVIEW_DEVICE_SERIAL"), "{reason}");
+        assert!(
+            unready_reason(true, &refused).is_none(),
+            "a stored token means the password is not needed"
+        );
+        let allowed = credential_decision("serial-one", "serial-one", "admin", "pass");
+        assert!(unready_reason(false, &allowed).is_none());
+    }
+
     #[test]
     fn a_failed_handshake_is_reported_as_such() {
         let mut report = CloudPath::default();

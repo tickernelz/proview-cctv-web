@@ -497,7 +497,7 @@ async fn cloud_path(
 
 #[get("/ws/live?<device>&<channel>&<quality>&<codec>")]
 #[allow(clippy::too_many_arguments)]
-async fn ws_live(
+pub async fn ws_live(
     ws: ws::WebSocket,
     device: String,
     channel: Option<u32>,
