@@ -3,11 +3,8 @@ pub mod dhav;
 pub mod fmp4;
 pub mod h264;
 pub mod hevc;
-<<<<<<< HEAD
-pub mod livecipher;
-=======
 pub mod live;
->>>>>>> 16361cc (feat(media): carry live cloud video without the media key)
+pub mod livecipher;
 pub mod nal;
 pub mod ps;
 pub mod rtp;
