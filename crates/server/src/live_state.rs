@@ -37,6 +37,18 @@ impl LiveState {
     }
 
     pub fn ensure_rtsp_source(&self, key: StreamKey, target: RtspTarget) -> bool {
+        let hub = self.hub.clone();
+        let spawn_key = key.clone();
+        self.track_source(key, move |stop| async move {
+            proview_core::source::pump(hub, spawn_key, target, stop).await;
+        })
+    }
+
+    fn track_source<F, Fut>(&self, key: StreamKey, work: F) -> bool
+    where
+        F: FnOnce(Arc<AtomicBool>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         let mut guard = self.sources.lock().expect("sources poisoned");
         if let Some(entry) = guard.get(&key) {
             if entry.alive.load(Ordering::Relaxed) {
@@ -55,17 +67,16 @@ impl LiveState {
         );
         drop(guard);
 
-        let pump_hub = self.hub.clone();
         let finish = self.sources.clone();
         let running = key.clone();
-        let pump_stop = stop.clone();
-        let pump_alive = alive.clone();
+        let work_stop = stop.clone();
+        let work_alive = alive.clone();
         tokio::spawn(async move {
-            proview_core::source::pump(pump_hub, running.clone(), target, pump_stop).await;
-            pump_alive.store(false, Ordering::Relaxed);
+            work(work_stop).await;
+            work_alive.store(false, Ordering::Relaxed);
             let mut guard = finish.lock().expect("sources poisoned");
             if let Some(entry) = guard.get(&running) {
-                if Arc::ptr_eq(&entry.alive, &pump_alive) {
+                if Arc::ptr_eq(&entry.alive, &work_alive) {
                     guard.remove(&running);
                 }
             }
@@ -75,17 +86,18 @@ impl LiveState {
         let watcher_hub = self.hub.clone();
         let watcher_key = key.clone();
         let watcher_alive = alive;
+        let watcher_stop = stop;
         tokio::spawn(async move {
             let mut idle_since: Option<Instant> = None;
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                if stop.load(Ordering::Relaxed) {
+                if watcher_stop.load(Ordering::Relaxed) {
                     break;
                 }
                 if watcher_hub.subscriber_count(&watcher_key) == 0 {
                     let since = *idle_since.get_or_insert_with(Instant::now);
                     if since.elapsed() >= Duration::from_secs(60) {
-                        stop.store(true, Ordering::Relaxed);
+                        watcher_stop.store(true, Ordering::Relaxed);
                         break;
                     }
                 } else {
@@ -102,6 +114,24 @@ impl LiveState {
         true
     }
 
+    pub fn ensure_cloud_source(
+        &self,
+        key: StreamKey,
+        cfg: proview_core::config::Config,
+        session: proview_core::provider::VendorSession,
+        device: String,
+        channel: u32,
+        high: bool,
+    ) -> bool {
+        let hub = self.hub.clone();
+        let spawn_key = key.clone();
+        self.track_source(key, move |stop| async move {
+            proview_core::provider::cloud::CloudProvider::pump_live(
+                hub, spawn_key, cfg, session, device, channel, high, stop,
+            )
+            .await;
+        })
+    }
     pub fn plan_for(&self, path: &str, per_fragment: usize) -> Result<Arc<ClipPlan>, String> {
         let mut guard = self.plans.lock().expect("plan cache poisoned");
         if let Some(plan) = guard.get(path) {

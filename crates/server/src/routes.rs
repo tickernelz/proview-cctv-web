@@ -499,16 +499,36 @@ fn ws_live(
     codec: Option<String>,
     cfg: &State<Config>,
     store: &State<Store>,
+    modes: &State<ModeStore>,
     live: &State<crate::live_state::LiveState>,
     cookies: &CookieJar<'_>,
 ) -> Result<ws::Channel<'static>, Failure> {
     let id = session_id(cookies)?;
-    restore(store, &id)?;
+    let vendor = restore(store, &id)?;
     if device.contains('/') || device.contains("..") {
         return Err(fail(Status::BadRequest, "invalid device id"));
     }
     let channel = channel.unwrap_or(1);
     let sub_stream = quality.as_deref() == Some("sub");
+    if modes.mode_for(Some(&id)) == proview_core::provider::Mode::Cloud {
+        let key = StreamKey::new(device.clone(), channel, sub_stream, LiveMode::Transcode);
+        let subscription = live.hub.subscribe(key.clone());
+        live.ensure_cloud_source(
+            key.clone(),
+            (*cfg.inner()).clone(),
+            vendor,
+            device,
+            channel,
+            !sub_stream,
+        );
+        let session = crate::stream::LiveSession {
+            key,
+            subscription,
+            restart: None,
+            keep_alive: None,
+        };
+        return Ok(crate::stream::channel(ws, live.inner().clone(), session));
+    }
     let target = rtsp_target_stream(cfg, sub_stream);
     let mode = match target {
         Some(_) => crate::stream::requested_mode(codec.as_deref()),

@@ -313,6 +313,12 @@ def server_env(args, port: int, data_dir: Path) -> dict:
     if args.mode == "fixture":
         env["PROVIEW_PROVIDER"] = "fixture"
         env["PROVIEW_FIXTURE_DIR"] = str(Path(args.fixture_dir).expanduser())
+    device_file = Path(args.device_env_file).expanduser()
+    if args.mode == "cloud" and device_file.is_file():
+        device = read_env_file(str(device_file))
+        if "PROVIEW_DEVICE_USER" in device and "PROVIEW_DEVICE_PASS" in device:
+            env["PROVIEW_DEVICE_USER"] = device["PROVIEW_DEVICE_USER"]
+            env["PROVIEW_DEVICE_PASS"] = device["PROVIEW_DEVICE_PASS"]
     return env
 
 
@@ -659,6 +665,7 @@ def main(argv) -> int:
     parser.add_argument("--allow-lan", action="store_true")
     parser.add_argument("--env-file", default="~/re/proview-cctv/secrets/proview.env")
     parser.add_argument("--identity-file", default="~/re/proview-cctv/secrets/identity.env")
+    parser.add_argument("--device-env-file", default="~/re/proview-cctv/secrets/device.env")
     parser.add_argument("--lock", default="~/re/proview-cctv/relay.lock")
     parser.add_argument("--lock-wait", type=float, default=60.0)
     parser.add_argument("--out", default="~/re/proview-cctv/acceptance")

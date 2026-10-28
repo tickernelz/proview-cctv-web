@@ -1353,6 +1353,41 @@ per-device store (`cloud/device_tokens.rs`: AES-256-GCM, key file 0600, serial b
 as associated data, `forget` to revoke) and uses it first, but the working session
 comes from the password login the app itself performs at bind.
 
+### 4C.25 The media reaches the browser, and what the acceptance run measures
+
+`CloudProvider::stream` no longer touches the device: it answers a
+`StreamTicket` (`kind: ws`, `source: cloud`, `/ws/live?device=…&channel=…&quality=…`).
+The tunnel is opened by the live source instead, the way the RTSP path works:
+
+1. `LiveState::ensure_cloud_source` starts one source per stream key, and stops it
+   after 60 s without subscribers (`track_source`, shared with `ensure_rtsp_source`).
+2. `CloudProvider::pump_live` opens the relay tunnel and the device session
+   (`open_media`: device list, status cluster, `RpsAV`, handshake, device login,
+   claim 1413, start 1410), feeds every msgid 1412 body through `LiveDemux`, and
+   waits for the three HEVC parameter sets before it starts ffmpeg, because
+   ffmpeg refuses an elementary stream that begins mid-slice.
+3. `source::spawn_fmp4_publisher` is the same ffmpeg + `Fmp4Splitter` code the RTSP
+   trancode path uses, so the browser still receives an init segment and
+   fragments and the UI needed no change.
+
+Measured on 2026-10-28, camera on a network this host cannot reach
+(`192.168.0.100:554` times out, exit 0 comes only with that guard):
+
+```
+tools/acceptance/live_acceptance.py --mode cloud --duration 60 --sn 7f92970ddf5282743hrc
+verdict: pass · frames: 31 · bytes: 82552824 · longest gap: 2.439s · seconds: 60.569
+```
+
+A third-party WebSocket client against the same server measured the browser-side
+shape of it: 15 fragments, 38,354,737 bytes in 30 s (10.2 Mbit/s), first frame at
+**1,622 ms**, longest gap 2.44 s.
+
+The acceptance harness grew one option for this: `--device-env-file`
+(default `~/re/proview-cctv/secrets/device.env`) forwards `PROVIEW_DEVICE_USER`
+and `PROVIEW_DEVICE_PASS` to the server it starts, because a cloud session still
+needs the device login of 4C.24 and the harness builds the server environment from
+scratch. The values never enter the repository, the report, or the command line.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

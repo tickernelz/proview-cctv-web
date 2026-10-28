@@ -212,7 +212,7 @@ pub fn ffmpeg_command(codec: &str) -> Command {
     command
 }
 
-async fn drain_stderr(mut child: Child) -> Option<String> {
+pub async fn drain_stderr(mut child: Child) -> Option<String> {
     let mut stderr = child.stderr.take()?;
     let mut buffer = Vec::new();
     let _ = stderr.read_to_end(&mut buffer).await;
@@ -313,60 +313,12 @@ async fn pump_transcode(
     audio_channel: Option<u8>,
     stop: &Arc<AtomicBool>,
 ) -> Result<(), SourceError> {
-    let mut child = ffmpeg_command(&video.codec)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                SourceError::FfmpegMissing
-            } else {
-                SourceError::Io(error)
-            }
-        })?;
-    let mut stdin = child.stdin.take().ok_or(SourceError::FfmpegMissing)?;
-    let mut stdout = child.stdout.take().ok_or(SourceError::FfmpegMissing)?;
-
-    let parameter_sets: Vec<u8> = [video.vps.as_ref(), video.sps.as_ref(), video.pps.as_ref()]
+    let parameter_sets: Vec<Vec<u8>> = [video.vps.clone(), video.sps.clone(), video.pps.clone()]
         .into_iter()
         .flatten()
-        .fold(Vec::new(), |mut acc, parameter| {
-            hevc::append_annexb(parameter, &mut acc);
-            acc
-        });
-    if !parameter_sets.is_empty() {
-        stdin
-            .write_all(&parameter_sets)
-            .await
-            .map_err(SourceError::Io)?;
-    }
-
-    let _sender = hub.publisher(key.clone());
-    let publish_hub = hub.clone();
-    let publish_key = key.clone();
-    let reader = tokio::spawn(async move {
-        let mut splitter = Fmp4Splitter::new();
-        let mut chunk = vec![0u8; 64 * 1024];
-        loop {
-            let read = match stdout.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(_) => break,
-            };
-            for piece in splitter.push(&chunk[..read]) {
-                match piece {
-                    Piece::Init(bytes) => {
-                        publish_hub.publish_packet(&publish_key, LivePacket::init(bytes));
-                    }
-                    Piece::Fragment(bytes) => {
-                        publish_hub.publish(&publish_key, bytes);
-                    }
-                }
-            }
-        }
-    });
+        .collect();
+    let (mut stdin, reader, child) =
+        spawn_fmp4_publisher(hub, key, &video.codec, &parameter_sets).await?;
 
     let mut depacketizer = hevc::Depacketizer::new();
     let mut written = Vec::with_capacity(256 * 1024);
@@ -678,4 +630,65 @@ mod tests {
         assert!(gate.accept(true));
         assert!(gate.accept(false));
     }
+}
+
+pub type Fmp4Publisher = (
+    tokio::process::ChildStdin,
+    tokio::task::JoinHandle<()>,
+    Child,
+);
+
+pub async fn spawn_fmp4_publisher(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+    codec: &str,
+    parameter_sets: &[Vec<u8>],
+) -> Result<Fmp4Publisher, SourceError> {
+    let mut child = ffmpeg_command(codec)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SourceError::FfmpegMissing
+            } else {
+                SourceError::Io(error)
+            }
+        })?;
+    let mut stdin = child.stdin.take().ok_or(SourceError::FfmpegMissing)?;
+    let mut stdout = child.stdout.take().ok_or(SourceError::FfmpegMissing)?;
+    let mut head = Vec::new();
+    for parameter in parameter_sets {
+        hevc::append_annexb(parameter, &mut head);
+    }
+    if !head.is_empty() {
+        stdin.write_all(&head).await.map_err(SourceError::Io)?;
+    }
+    let _sender = hub.publisher(key.clone());
+    let publish_hub = hub.clone();
+    let publish_key = key.clone();
+    let reader = tokio::spawn(async move {
+        let mut splitter = Fmp4Splitter::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let read = match stdout.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            for piece in splitter.push(&chunk[..read]) {
+                match piece {
+                    Piece::Init(bytes) => {
+                        publish_hub.publish_packet(&publish_key, LivePacket::init(bytes));
+                    }
+                    Piece::Fragment(bytes) => {
+                        publish_hub.publish(&publish_key, bytes);
+                    }
+                }
+            }
+        }
+    });
+    Ok((stdin, reader, child))
 }

@@ -11,7 +11,6 @@ pub struct Config {
     pub device_rtsp: Option<String>,
     pub device_onvif: Option<String>,
     pub session_ttl_secs: u64,
-    pub data_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,9 +56,6 @@ impl Config {
             device_rtsp: env::var("PROVIEW_DEVICE_RTSP")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
-            data_dir: env::var("PROVIEW_DATA_DIR")
-                .ok()
-                .filter(|value| !value.trim().is_empty()),
             session_ttl_secs: env::var("PROVIEW_SESSION_TTL")
                 .ok()
                 .and_then(|v| v.parse().ok())

@@ -1519,7 +1519,6 @@ mod tests {
             device_rtsp: None,
             device_onvif: onvif.map(str::to_string),
             session_ttl_secs: 3600,
-            data_dir: None,
         }
     }
 }
