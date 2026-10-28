@@ -756,7 +756,11 @@ function setStage(name, detail = {}) {
   el('well-code').textContent = code;
   renderStage(name === 'error' ? detail.stage : null);
   el('well-actions').hidden = name !== 'error';
-  el('check-password').hidden = !(name === 'error' && /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || '')));
+  el('check-password').hidden = !(
+    name === 'error' &&
+    !detail.misconfigured &&
+    /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || ''))
+  );
   el('record').disabled = name !== 'playing';
   el('snapshot').disabled = !showing;
   if (name !== 'playing' && name !== 'stalled') {
@@ -994,6 +998,9 @@ async function copyStageDetail() {
 }
 
 function explainStreamError(error, attempt) {
+  if (error.code === 'misconfigured') {
+    return error.message;
+  }
   if (attempt && attempt.stage) {
     return stageLine(attempt);
   }
@@ -1962,9 +1969,10 @@ async function requestStream() {
     const attempt =
       error.body && Array.isArray(error.body.stages) && error.body.stages.length ? error.body : null;
     const base = explainStreamError(error, attempt);
-    setStage('error', { text: base, code: error.message, stage: attempt });
+    const misconfigured = error.code === 'misconfigured';
+    setStage('error', { text: base, code: error.message, stage: attempt, misconfigured });
     console.error('stream request failed', error);
-    if (error.status === 501 && camera.device) {
+    if (error.status === 501 && !misconfigured && camera.device) {
       const deviceId = camera.device.id;
       cloudPathDetail(deviceId).then((detail) => {
         if (!detail || currentCamera() !== camera || state.stage.name !== 'error') {
