@@ -847,7 +847,12 @@ mod tests {
     #[test]
     fn the_browser_script_is_served_next_to_the_app() {
         let rocket = client();
-        let response = rocket.get("/playback.js").dispatch();
+        let page = rocket.get("/").dispatch().into_string().expect("page");
+        let start = page
+            .find("/assets/index-")
+            .expect("the page links its bundle");
+        let end = start + page[start..].find(".js").expect("a script bundle") + 3;
+        let response = rocket.get(page[start..end].to_string()).dispatch();
         assert_eq!(response.status(), Status::Ok);
         let body = response.into_string().expect("body");
         assert!(body.contains("/ws/playback"));
