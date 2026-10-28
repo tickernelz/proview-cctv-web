@@ -233,12 +233,7 @@ async fn stub_vendor(body: &'static str) -> String {
                 let mut buffer = vec![0u8; 4096];
                 let _ = socket.read(&mut buffer).await;
                 let reply = format!(
-                    "HTTP/1.1 200 OK
-content-type: application/json
-content-length: {}
-connection: close
-
-{}",
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                     body.len(),
                     body
                 );
