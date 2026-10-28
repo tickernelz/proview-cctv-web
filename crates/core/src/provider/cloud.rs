@@ -1168,7 +1168,6 @@ mod stream_tests {
 }
 
 #[cfg(test)]
-
 mod entry_cache_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
