@@ -562,6 +562,7 @@ mod tests {
         Config {
             provider: ProviderKind::Fixture,
             cloud_base: "https://pub-token.xmeye.net".to_string(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "device-password".to_string(),
             fixture_dir: "fixtures".to_string(),

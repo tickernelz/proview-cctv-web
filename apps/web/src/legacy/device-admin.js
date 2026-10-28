@@ -210,7 +210,8 @@
           const data = reply && reply.data;
           const key = data && (data.transKey || data.key || (data.transInfos && data.transInfos[0] && data.transInfos[0].transKey));
           if (key) shareKey.value = key;
-          return key ? 'invitation ' + key : 'the cloud accepted the invitation';
+          const invited = reply && reply.resolved ? ' to ' + reply.resolved : '';
+          return key ? 'invitation ' + key + invited : 'the cloud accepted the invitation' + invited;
         }),
       }),
       field('Invitation key', shareKey),
@@ -225,9 +226,10 @@
             if (device) {
               const password = shareAccountPass.value;
               if (!password) throw new Error('the receiver needs its own account password');
-              await call(API.accept, { method: 'POST', body: JSON.stringify({ devId: device, password }) });
+              const reply = await call(API.accept, { method: 'POST', body: JSON.stringify({ devId: device, password }) });
+              if (!reply || reply.materialised !== true) throw new Error('the camera did not land in this account');
               shareAccountPass.value = '';
-              return 'accepted ' + device;
+              return 'accepted ' + device + ', it is in this account\'s device list';
             }
             if (!key) throw new Error('paste an invitation key first');
             await call(API.accept, { method: 'POST', body: JSON.stringify({ key }) });

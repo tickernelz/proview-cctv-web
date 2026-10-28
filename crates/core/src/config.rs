@@ -4,6 +4,7 @@ use std::env;
 pub struct Config {
     pub provider: ProviderKind,
     pub cloud_base: String,
+    pub share_base: String,
     pub device_user: String,
     pub device_pass: String,
     pub fixture_dir: String,
@@ -44,6 +45,10 @@ impl Config {
             provider,
             cloud_base: env::var("PROVIEW_CLOUD_BASE")
                 .unwrap_or_else(|_| crate::cloud::envelope::ENVELOPE_BASE.to_string()),
+            share_base: env::var("PROVIEW_SHARE_BASE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| crate::cloud::attributes::SHARE_BASE.to_string()),
             device_user: env::var("PROVIEW_DEVICE_USER").unwrap_or_else(|_| "admin".to_string()),
             device_pass: env::var("PROVIEW_DEVICE_PASS").unwrap_or_default(),
             fixture_dir: env::var("PROVIEW_FIXTURE_DIR").unwrap_or_else(|_| default_fixture_dir()),

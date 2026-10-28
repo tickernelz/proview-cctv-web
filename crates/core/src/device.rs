@@ -1512,6 +1512,7 @@ mod tests {
         crate::config::Config {
             provider: crate::config::ProviderKind::Fixture,
             cloud_base: "https://pub-token.xmeye.net".to_string(),
+            share_base: crate::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "device-password".to_string(),
             fixture_dir: "fixtures".to_string(),

@@ -82,6 +82,7 @@ fn fake_cloud(rows: Rows, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
 fn config(cloud_base: String) -> proview_core::config::Config {
     proview_core::config::Config {
         provider: proview_core::config::ProviderKind::Proview,
+        share_base: cloud_base.clone(),
         cloud_base,
         device_user: "admin".to_string(),
         device_pass: String::new(),

@@ -86,10 +86,7 @@ fn clients(cfg: &Config) -> Arc<CloudClients> {
     static POOL: OnceLock<Mutex<HashMap<String, Arc<CloudClients>>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = pool.lock().unwrap_or_else(|error| error.into_inner());
-    let share_base = std::env::var("PROVIEW_SHARE_BASE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| proview_core::cloud::attributes::SHARE_BASE.to_string());
+    let share_base = cfg.share_base.clone();
     guard
         .entry(format!("{}|{}", cfg.cloud_base, share_base))
         .or_insert_with(|| {
@@ -315,15 +312,23 @@ fn clean(raw: &Option<String>) -> Option<String> {
 }
 
 fn account_matches(returned: &str, wanted: &str) -> bool {
-    if returned.eq_ignore_ascii_case(wanted) {
+    let returned: Vec<char> = returned.trim().to_lowercase().chars().collect();
+    let wanted: Vec<char> = wanted.trim().to_lowercase().chars().collect();
+    if returned == wanted {
         return true;
     }
-    returned.len() == wanted.len()
-        && returned.contains('*')
-        && returned
-            .chars()
-            .zip(wanted.chars())
-            .all(|(masked, real)| masked == '*' || masked.eq_ignore_ascii_case(&real))
+    let Some(first) = returned.iter().position(|character| *character == '*') else {
+        return false;
+    };
+    let last = returned
+        .iter()
+        .rposition(|character| *character == '*')
+        .unwrap_or(first);
+    let prefix = &returned[..first];
+    let suffix = &returned[last + 1..];
+    wanted.len() >= prefix.len() + suffix.len()
+        && wanted.starts_with(prefix)
+        && wanted.ends_with(suffix)
 }
 
 #[post("/cloud/device/share", data = "<body>")]
@@ -338,24 +343,11 @@ async fn share(
         return Err(fail(Status::BadRequest, "at least one uuid is required"));
     }
     let admin = clients(cfg);
-    let target = match (clean(&body.accept_id), clean(&body.account)) {
-        (Some(id), _) => id,
+    let (target, resolved) = match (clean(&body.accept_id), clean(&body.account)) {
+        (Some(id), _) => (id, None),
         (None, Some(account)) => {
-            let hits = admin
-                .admin
-                .search_user(&signed.token, &account)
-                .await
-                .map_err(cloud_failure)?;
-            hits.iter()
-                .find(|hit| account_matches(&hit.account, &account))
-                .or_else(|| hits.first())
-                .map(|hit| hit.id.clone())
-                .ok_or_else(|| {
-                    fail(
-                        Status::NotFound,
-                        format!("no account on the cloud matches {account}"),
-                    )
-                })?
+            let (id, masked) = resolve_target(&admin.admin, &signed.token, &account).await?;
+            (id, Some(masked))
         }
         (None, None) => {
             return Err(fail(
@@ -369,7 +361,11 @@ async fn share(
         .share_out(&signed.token, &body.uuids, &target)
         .await
         .map_err(cloud_failure)?;
-    Ok(Json(reply))
+    let mut payload = reply;
+    if let (Some(masked), serde_json::Value::Object(fields)) = (resolved, &mut payload) {
+        fields.insert("resolved".to_string(), serde_json::Value::String(masked));
+    }
+    Ok(Json(payload))
 }
 
 #[get("/cloud/device/share/pending?<uuids>")]
@@ -449,12 +445,27 @@ async fn share_accept(
                 "the receiver must send its account password with the device id",
             ));
         }
-        return admin
+        let reply = admin
             .share
             .share_accept_device(&signed.token, &signed.account, &body.password, device)
             .await
-            .map(Json)
-            .map_err(cloud_failure);
+            .map_err(cloud_failure)?;
+        let devices = admin
+            .cloud
+            .device_list(&signed.token)
+            .await
+            .map_err(cloud_failure)?;
+        if devices.iter().any(|entry| entry.uuid == device) {
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "materialised": true,
+                "vendor": reply,
+            })));
+        }
+        return Err(fail(
+            Status::Conflict,
+            format!("the share service answered 2000 for {device}, but the camera is not in this account's device list, so the acceptance did not take effect"),
+        ));
     }
     let key = body.key.trim();
     if key.is_empty() {
@@ -535,29 +546,56 @@ async fn change_password(
     }))
 }
 
+async fn resolve_target(
+    admin: &AttributeClient,
+    token: &str,
+    account: &str,
+) -> Result<(String, String), Failure> {
+    let hits = admin
+        .search_user(token, account)
+        .await
+        .map_err(cloud_failure)?;
+    let matching: Vec<&proview_core::cloud::attributes::UserSearchHit> = hits
+        .iter()
+        .filter(|hit| account_matches(&hit.account, account))
+        .collect();
+    match matching.as_slice() {
+        [] => Err(fail(
+            Status::NotFound,
+            format!("no account on the cloud matches {account}"),
+        )),
+        [hit] => Ok((hit.id.clone(), hit.account.clone())),
+        many => Err(fail(
+            Status::Conflict,
+            format!(
+                "{account} matches {} accounts on the cloud; send the receiving account id instead",
+                many.len()
+            ),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_masked_search_hit_still_matches_the_account_that_asked_for_it() {
+    fn a_masked_hit_matches_on_its_prefix_and_suffix_only() {
         assert!(account_matches(
             "zhafron@example.com",
             "Zhafron@Example.com"
         ));
         assert!(account_matches(
-            "zh*****@example.com",
-            "zhafron@example.com"
+            "zh***@example.com",
+            "zhexample@example.com"
         ));
-        assert!(!account_matches(
-            "zh*****@example.com",
-            "someone@example.com"
-        ));
+        assert!(account_matches("zh***@gmail.com", "zhexample@gmail.com"));
+        assert!(!account_matches("zh***@gmail.com", "someone@gmail.com"));
+        assert!(!account_matches("zh***@gmail.com", "zhexample@example.com"));
         assert!(!account_matches(
             "zhafron@example.com",
             "zhafron@example.org"
         ));
-        assert!(!account_matches("zh*", "zhafron@example.com"));
     }
 
     #[test]

@@ -2204,9 +2204,14 @@ without removing the device — `mdsharedel` with `shareUuid` is refused as
 receiver 1 → 0, owner still 1.
 
 Routes in this project: `POST /api/cloud/device/share` takes `acceptId` or `account`
-(an email goes through `usersearch` first), and `POST /api/cloud/device/share/accept`
-takes `key` (the SDK transfer) or `devId` plus the receiver's password, which is
-digested and sent inside the sealed body. `PROVIEW_SHARE_BASE` overrides the share host.
+(an email goes through `usersearch`, and the hit must match the account by its masked
+prefix and suffix — no match is 404, more than one is 409, and the masked account is
+echoed back as `resolved`), and `POST /api/cloud/device/share/accept` takes `key` (the
+SDK transfer) or `devId` plus the receiver's raw password, sent inside the sealed body.
+The accept route never reports success on the vendor's 2000 alone: it reads the
+receiver's `msdlistCode` afterwards and answers 409 when `devId` is not in it, because
+2000 on `mdshareaccept` is also what a wrong password gets. `PROVIEW_SHARE_BASE` sets
+the share host (`Config::share_base`).
 
 **5. The transfer does not repeat.** Once the receiver has removed the device with
 `mdrm`, `devicesTransOut` still answers 2000 with a fresh `transKey`, but the
