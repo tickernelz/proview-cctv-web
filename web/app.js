@@ -397,20 +397,17 @@ async function signedIn() {
     await loadMode();
     return;
   }
-  const caret = settingsCaret();
-  const onSettings = state.screen === 'settings';
   state.signedIn = true;
   state.account = me.account || null;
   el('account').textContent = state.account || 'Signed in';
-  showScreen('watch');
+  if (state.screen !== 'settings') {
+    showScreen('watch');
+  }
   await loadMode();
   await loadDevices();
-  if (onSettings || state.screen === 'settings') {
-    showScreen('settings');
+  if (state.screen === 'settings') {
+    stopAll();
     renderSettingsChrome();
-    if (caret) {
-      restoreSettingsCaret(caret);
-    }
     return;
   }
   route(location.hash, false);
@@ -2795,6 +2792,9 @@ el('signout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST' });
   } catch {}
   state.stage.lastFrameAt = 0;
+  if (settingsView) {
+    renderSettings(settingsView, { reset: true });
+  }
   showSignin();
   await loadMode();
 });

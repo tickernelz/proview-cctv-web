@@ -20,6 +20,35 @@ const COUNT_SETTINGS = `(() => {
   };
 })();`;
 
+
+const HOLD_SIGNIN = `(() => {
+  const real = window.fetch.bind(window);
+  const Native = window.WebSocket;
+  window.__sockets = [];
+  window.WebSocket = class Tracked extends Native {
+    constructor(...args) {
+      super(...args);
+      window.__sockets.push(this);
+    }
+  };
+  const held = [];
+  window.__release = () => {
+    window.fetch = real;
+    for (const run of held.splice(0)) run();
+  };
+  window.fetch = (target, options) => {
+    const url = typeof target === 'string' ? target : (target && target.url) || '';
+    if (url.indexOf('/api/login') === -1 && url.indexOf('/api/devices') === -1) {
+      return real(target, options);
+    }
+    return new Promise((done, fail) => {
+      held.push(() => real(target, options).then(done, fail));
+    });
+  };
+})();`;
+
+const OPEN_SOCKETS = 'window.__sockets.filter((socket) => socket.readyState === 1).length';
+
 let browser;
 
 before(async () => {
@@ -49,14 +78,16 @@ async function typeAddress(page, text) {
   }
 }
 
-async function withPage(body) {
+async function withPage(body, options = {}) {
   const server = await startServer(DEVICES, { clips: CLIPS });
   let page;
   try {
-    page = await browser.page({ init: [COUNT_SETTINGS] });
-    await signIn(page, server.base);
-    await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the camera to play', BUDGET);
-    await body(page);
+    page = await browser.page({ init: options.init || [COUNT_SETTINGS] });
+    if (options.ready !== false) {
+      await signIn(page, server.base);
+      await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the camera to play', BUDGET);
+    }
+    await body(page, server.base);
   } finally {
     await page?.close();
     await server.stop();
@@ -78,6 +109,37 @@ test('a field typed while boot finishes keeps its value, its focus and the Save 
     assert.equal(await page.evaluate("document.getElementById('settings-discard').hidden"), false);
     assert.equal(await page.evaluate('window.__settingsLoads'), 1);
   });
+});
+
+test('Settings opened during a held sign-in keeps the edits and starts no stream behind it', async () => {
+  await withPage(
+    async (page, base) => {
+      await page.goto(base + '/');
+      await page.wait("!document.getElementById('signin').hidden", 'the sign-in screen', BUDGET);
+      await page.evaluate(
+        "document.getElementById('email').value = 'fixture@example.invalid'; document.getElementById('password').value = 'fixture-password';",
+      );
+      await page.evaluate("document.getElementById('login-submit').click()");
+      await page.evaluate("document.getElementById('login-settings').click()");
+      await page.wait(FIELD + ' !== null', 'the server address field', BUDGET);
+      await typeAddress(page, TYPED);
+      assert.equal(await page.evaluate(FIELD + '.value'), TYPED);
+      assert.equal(await page.evaluate('state.screen'), 'settings');
+      await page.evaluate('window.__release()');
+      await page.wait('state.devices.length === 1', 'the boot to read the devices', BUDGET);
+      await new Promise((done) => setTimeout(done, 200));
+      assert.equal(await page.evaluate('state.signedIn'), true);
+      assert.equal(await page.evaluate('state.screen'), 'settings');
+      assert.equal(await page.evaluate(FIELD + '.value'), TYPED);
+      assert.equal(await page.evaluate("document.getElementById('settings-save').hidden"), false);
+      assert.equal(await page.evaluate(OPEN_SOCKETS), 0);
+      await page.evaluate("document.getElementById('settings-discard').click()");
+      await page.evaluate("document.getElementById('settings-back').click()");
+      await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the stream after leaving Settings', BUDGET);
+      assert.equal(await page.evaluate(OPEN_SOCKETS), 1);
+    },
+    { init: [HOLD_SIGNIN], ready: false },
+  );
 });
 
 test('a re-render keeps unsaved edits and Discard puts the saved values back', async () => {
