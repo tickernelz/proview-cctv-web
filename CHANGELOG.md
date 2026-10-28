@@ -70,6 +70,21 @@ stability before 1.0.
   camera bound or unbound inside those 30 s still answers correctly. The vendor
   identity stays per request: `PROVIEW_APP_UUID/KEY/SECRET` saved in Settings
   after start reach the next call, as they did before the provider was shared.
+- Parallel cold opens in one session share a single device list, including when
+  the list lacks the camera and when the cloud fails. The window was read before
+  the fetch, so N tiles of a grid opening at once could each miss it and each ask
+  `msdlistCode`; a `tokio::sync` mutex per vendor session now gates the fetch, and
+  a waiter adopts whatever the winner produced when that finished after the
+  waiter started. That is one call per burst for hits, for serials the account
+  does not list, and for a failed or timed-out list — the failure is handed to
+  every waiter instead of being retried one at a time, so a grid against a dead
+  cloud no longer waits N times the 20 s request timeout. A sequential open still
+  asks again, and an explicit refresh (`/api/devices`) never adopts: it waits its
+  turn and then asks, so a camera bound or a nickname changed while another fetch
+  was running is still in the list it returns. The cost of adoption is that a
+  camera bound inside one round trip is not seen by the opens already waiting,
+  which the next open or `/api/devices` picks up. A gate is dropped once no
+  caller holds it, so the map cannot grow with every session that opens a camera.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`
@@ -91,12 +106,17 @@ stability before 1.0.
   `AdminToken` was never issued, and the stream ran on a session the password never
   owned. The tunnel setup in `CloudProvider::open_media` (status query,
   `access_server`, `agent_request`, `assign`, `handshake_frame`, `tunnel::open`,
-  `accepted`) is one helper now, called again when a stored token fails, and
+  `accepted`) is split in two: a relay lookup (status query, access server) and
+  a dial (assign, handshake, accepted). The fallback only dials again, so a stale
+  token no longer repeats the pub-status fan-out whose answer it already has, and
   `drain_late_frames` is gone. Measured on the live relay: a second tunnel in one
   viewer open is accepted with the same `session_id` (`ErrorNum 200`), the first
-  tunnel stays up and keeps its claim, `assign` costs 73–98 ms and the handshake
-  22–45 ms against the drain's 80 ms floor, and a stale token costs one extra tunnel
-  once, since the token is dropped. Against a peer that answers the token login
+  tunnel stays up and keeps its claim; a stale token leaves one pub-status fan-out
+  per open and costs one dial, `assign` 73–98 ms plus handshake 22–45 ms. The
+  `open_media` wall on the device, three samples each, was 564–701 ms with no
+  stored token and 653–986 ms with a stale one, against the drain's 80 ms floor
+  and 480 ms worst case; this device refuses stored `AdminToken`s (`Ret` 137), so
+  the accepted-token arm has no live sample. Against a peer that answers the token login
   700 ms late — later than the whole drain — the pre-fix code returns a session
   owned by the late reply and stores its `AdminToken`; the fixed code answers the
   password login on the second connection.
