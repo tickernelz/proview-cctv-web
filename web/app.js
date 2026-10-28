@@ -2316,8 +2316,10 @@ function renderSettings(view, options = {}) {
   host.replaceChildren();
   settingsInitial = new Map();
   settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
+  const inDesktop = Boolean(window.__TAURI__);
   const groups = new Map();
   for (const field of view.fields) {
+    if (field.group === 'Desktop' && !inDesktop) continue;
     if (!groups.has(field.group)) groups.set(field.group, []);
     groups.get(field.group).push(field);
   }
@@ -2326,6 +2328,37 @@ function renderSettings(view, options = {}) {
     for (const field of fields) {
       const id = settingsInputId(field.key);
       const row = make('div', 'row');
+      if (field.kind === 'toggle') {
+        const label = make('div', 'lab', field.label);
+        if (field.hint) {
+          const hint = make('span', 'hint', field.hint);
+          hint.style.display = 'block';
+          label.append(hint);
+        }
+        const box = make('label', 'switchrow');
+        const box_input = make('input', '');
+        box_input.type = 'checkbox';
+        box_input.id = id;
+        box_input.dataset.key = field.key;
+        box_input.dataset.secret = 'false';
+        box_input.checked = (field.value || field.default || 'off') === 'on';
+        const state = make('span', '', box_input.checked ? 'On' : 'Off');
+        box_input.addEventListener('change', () => {
+          state.textContent = box_input.checked ? 'On' : 'Off';
+          renderSaveBar();
+        });
+        box.append(box_input, state);
+        const column = make('div', 'ctl-col');
+        column.append(box);
+        row.append(label, column);
+        host.append(row);
+        settingsInitial.set(field.key, {
+          secret: false,
+          set: field.set,
+          value: box_input.checked ? 'on' : 'off',
+        });
+        continue;
+      }
       const label = make('label', 'lab', field.label);
       label.setAttribute('for', id);
       if (field.restart) {
@@ -2350,6 +2383,11 @@ function renderSettings(view, options = {}) {
       } else {
         input = make('input', 'text-input' + (field.kind !== 'secret' && MONO_KEY.test(field.key) ? ' mono-input' : ''));
         input.type = field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text';
+        if (field.kind === 'number') {
+          if (field.min !== null && field.min !== undefined) input.min = String(field.min);
+          if (field.max !== null && field.max !== undefined) input.max = String(field.max);
+          if (field.default) input.placeholder = field.default;
+        }
         if (field.kind === 'secret') {
           input.placeholder = field.set ? 'stored, type to replace' : 'not set';
           input.autocomplete = 'new-password';
@@ -2386,9 +2424,10 @@ function settingsPayload() {
     const key = input.dataset.key;
     const secret = input.dataset.secret === 'true';
     const initial = settingsInitial.get(key) || { secret, set: false, value: '' };
-    if (secret && input.value === '') continue;
-    if (!secret && input.value === initial.value) continue;
-    payload[key] = input.value;
+    const value = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value;
+    if (secret && value === '') continue;
+    if (!secret && value === initial.value) continue;
+    payload[key] = value;
   }
   return payload;
 }
@@ -3023,6 +3062,13 @@ if (typeof ResizeObserver === 'function') {
 document.addEventListener('fullscreenchange', () => {
   layoutLensCrop();
   renderFsLine();
+});
+
+window.addEventListener('desktop-live', () => {
+  if (state.signedIn) {
+    showScreen('watch');
+    setView('live');
+  }
 });
 
 state.muted = state.prefs.muted;

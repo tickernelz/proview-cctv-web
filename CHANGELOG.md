@@ -7,8 +7,73 @@ stability before 1.0.
 
 ## Unreleased
 
+### Added
+
+- Desktop alarm notifications and the tray. The desktop process polls the alarm
+  centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
+  native system notification per new alarm — device, event and time — so the
+  alarm arrives with the window minimized or closed to the tray. An alarm is
+  keyed by device serial, channel and id, since an id is a one-second local
+  timestamp that two cameras or two channels can share. What was announced is
+  kept in `desktop-state.json` and expired by the age of the alarm, never by the
+  number of entries, so an id cannot fall off a list and come back; an alarm
+  older than the requested window is ignored whether or not it was announced, so
+  the centre returning one again cannot re-post it. A run — the process starting
+  with notifications on, or the switch turning on — treats what arrived before
+  its first **successful** check as history and posts one summary instead of a
+  toast per missed alarm; a check that fails before the window has signed in
+  does not count, and a fresh install's baseline mark is saved even when that
+  pass found nothing. A click focuses the window and opens that alarm in the
+  Alarm messages sheet where the platform reports clicks, and a click on the
+  summary opens the sheet with no alarm marked. The tray carries Open, Live and
+  Quit; a left click on it focuses the window, and a second launch focuses the
+  running window instead of starting a second server. Closing the window keeps
+  the app running (default), minimizing hides it (off by default), a macOS Dock
+  click brings it back, and the first close announces once that the app is still
+  in the tray. A tray that cannot be built — including a Linux box without the
+  AppIndicator library — turns both behaviours off rather than hiding a window
+  with no way back. Four new keys, `PROVIEW_DESKTOP_ALARM_NOTIFY`,
+  `PROVIEW_DESKTOP_ALARM_INTERVAL`, `PROVIEW_DESKTOP_CLOSE_TO_TRAY` and
+  `PROVIEW_DESKTOP_MINIMIZE_TO_TRAY`, sit under Settings → Configuration →
+  Desktop, are read by the shell, never exported into the environment, and stay
+  out of the page on a self-hosted server.
+- `docs/desktop-notifications.md` records what a headless box measured (the
+  watcher, dedupe, catch-up and floor tests, the app posting and the page
+  receiving its event under Xvfb) and what it could not (a notification or a
+  click seen on Windows, macOS or a real Linux desktop, and cost per check on a
+  real account).
+
+### Changed
+
+- The desktop shell hands events to the page through `WebviewWindow::eval` and a
+  DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
+  remote origin and a capability only covers the local one, so `event.listen`
+  was refused and a click never reached the sheet. The app therefore ships no
+  capability file at all.
+- The FCM row of `docs/parity.md` is `not needed` for the desktop build: the
+  native notification path replaces the vendor push, which stays relevant only to
+  a mobile build registered in the vendor Firebase project. The local
+  notification row names the desktop process as the main path and the browser
+  Notification API as the web fallback.
+
 ### Fixed
 
+- A desktop alarm check that loses the session no longer goes quiet. The shared
+  session expires `PROVIEW_SESSION_TTL` seconds after sign-in (an hour by
+  default) and reading it does not renew it, so an app kept in the tray stopped
+  checking with one debug line and nothing else. Once a check has succeeded, the
+  first later check whose error says the session is gone posts one *Alarm
+  notifications paused — open PROVIEW and sign in* notification and logs at warn,
+  once per span; the next successful check re-arms it, and a launch that has not
+  checked successfully yet announces nothing, because the session store is empty
+  at every start. A recovery after two failed checks in a row summarizes the gap
+  in one notification instead of replaying the backlog alarm by alarm, while a
+  single missed check still toasts; the rule counts checks rather than seconds,
+  so timer jitter cannot flip it. The remembered
+  window and the device cache now belong to the signed-in account, so an account
+  switch drops both and starts the run over, and an empty first pass reports a
+  state change so the baseline mark is saved by the watcher rather than only by
+  a direct `save()`.
 - The desktop **Restart the app** button restarts the app again. The window is
   served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
   the `restart_app` IPC command was refused and the button did nothing. The page

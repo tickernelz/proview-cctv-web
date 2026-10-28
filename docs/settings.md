@@ -103,8 +103,18 @@ value says which screen owns it.
 | Advanced | `PROVIEW_PROFILE` | keychain profile used by the desktop |
 | Advanced | `PROVIEW_DATA_DIR` | data directory, restart |
 | Advanced | `ROCKET_SECRET_KEY` | cookie signing secret, secret, restart |
+| Desktop | `PROVIEW_DESKTOP_ALARM_NOTIFY` | `on` or `off`, default `off`; a native system notification for each new alarm |
+| Desktop | `PROVIEW_DESKTOP_ALARM_INTERVAL` | seconds between alarm checks, 15 to 3600, default 60 |
+| Desktop | `PROVIEW_DESKTOP_CLOSE_TO_TRAY` | `on` or `off`, default `on`; closing the window leaves the app in the tray |
+| Desktop | `PROVIEW_DESKTOP_MINIMIZE_TO_TRAY` | `on` or `off`, default `off`; minimizing hides the window to the tray |
 
-Unknown keys are rejected, numbers must parse, and a select must be one of its options;
+The four `PROVIEW_DESKTOP_*` keys are read by the desktop shell, never exported into
+the environment, and take effect on the next alarm check or window event; a build
+without the desktop shell simply ignores them. `docs/desktop-notifications.md` says
+what each one does to the window and to the notifications.
+
+Unknown keys are rejected, numbers must parse, a toggle must be `on` or `off`, a
+number with bounds must sit inside them, and a select must be one of its options;
 each failure comes back as `400 {"ok":false,"message":"…"}`. `GET /api/settings` also
 reports `exists` so the view can say whether anything has been saved yet. A missing
 camera address answers `400 {"ok":false,"code":"device_host_missing",…}` (and
@@ -116,5 +126,5 @@ it writes behind it.
 
 | Call | Body | Reply |
 |---|---|---|
-| `GET /api/settings` | — | `{path, exists, fields:[{key,label,group,kind,options,hint,restart,secret,set,value}]}` |
+| `GET /api/settings` | — | `{path, exists, fields:[{key,label,group,kind,options,hint,restart,secret,set,value,default,min,max}]}`; `default` is what an unset key behaves as, `min`/`max` bound a number |
 | `POST /api/settings` | `{"values":{ "<KEY>": "<value>" }}` | the same view, after the file is written |

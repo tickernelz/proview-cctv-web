@@ -85,7 +85,15 @@ pub fn build_with_state_and_accounts(
     settings: crate::settings::SettingsStore,
     accounts: crate::routes::cloud_bind::AccountStore,
 ) -> rocket::Rocket<rocket::Build> {
-    build_with_control(figment, config, modes, settings, accounts, None)
+    build_with_control(
+        figment,
+        config,
+        modes,
+        settings,
+        accounts,
+        None,
+        Store::new(),
+    )
 }
 
 fn build_with_control(
@@ -95,10 +103,11 @@ fn build_with_control(
     settings: crate::settings::SettingsStore,
     accounts: crate::routes::cloud_bind::AccountStore,
     control: Option<crate::desktop::DesktopControl>,
+    sessions: Store,
 ) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
-        .manage(Store::new())
+        .manage(sessions)
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .manage(crate::routes::cloud::CloudState::new())
@@ -134,7 +143,9 @@ pub async fn serve_with_state(
     config: Config,
     settings: crate::settings::SettingsStore,
 ) -> Result<ServerHandle, Box<rocket::Error>> {
-    serve_with_control(opts, config, settings, None).await
+    serve_shared(opts, config, settings)
+        .await
+        .map(|(handle, _)| handle)
 }
 
 pub async fn serve_desktop(
@@ -143,7 +154,25 @@ pub async fn serve_desktop(
     settings: crate::settings::SettingsStore,
     control: crate::desktop::DesktopControl,
 ) -> Result<ServerHandle, Box<rocket::Error>> {
+    let (handle, _) = serve_desktop_shared(opts, config, settings, control).await?;
+    Ok(handle)
+}
+
+pub async fn serve_desktop_shared(
+    opts: ServeOptions,
+    config: Config,
+    settings: crate::settings::SettingsStore,
+    control: crate::desktop::DesktopControl,
+) -> Result<(ServerHandle, Store), Box<rocket::Error>> {
     serve_with_control(opts, config, settings, Some(control)).await
+}
+
+pub async fn serve_shared(
+    opts: ServeOptions,
+    config: Config,
+    settings: crate::settings::SettingsStore,
+) -> Result<(ServerHandle, Store), Box<rocket::Error>> {
+    serve_with_control(opts, config, settings, None).await
 }
 
 async fn serve_with_control(
@@ -151,11 +180,12 @@ async fn serve_with_control(
     config: Config,
     settings: crate::settings::SettingsStore,
     control: Option<crate::desktop::DesktopControl>,
-) -> Result<ServerHandle, Box<rocket::Error>> {
+) -> Result<(ServerHandle, Store), Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
     let accounts = crate::routes::cloud_bind::AccountStore::load(opts.data_dir.as_deref());
     let control = control.map(|control| control.for_authority(format!("{}:{port}", opts.address)));
+    let sessions = Store::new();
     let rig = build_with_control(
         figment(&opts, port),
         config,
@@ -163,6 +193,7 @@ async fn serve_with_control(
         settings,
         accounts,
         control,
+        sessions.clone(),
     );
     let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
@@ -177,7 +208,7 @@ async fn serve_with_control(
             tracing::error!(%error, "server stopped unexpectedly");
         }
     });
-    Ok(ServerHandle { address, shutdown })
+    Ok((ServerHandle { address, shutdown }, sessions))
 }
 
 fn reserve_port(address: &str, requested: u16) -> u16 {
