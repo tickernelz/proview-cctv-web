@@ -5,6 +5,22 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Fixed
+
+- The desktop **Restart the app** button restarts the app again. The window is
+  served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
+  the `restart_app` IPC command was refused and the button did nothing. The page
+  now posts to `POST /api/desktop/restart` with the per-run token the desktop
+  shell writes into the served page (`window.__PROVIEW_DESKTOP__`), and Rust
+  calls `app.restart()`; the command and its IPC registration are gone, and no
+  capability was widened to the served origin. The route and the page accept
+  only the authority the shell bound (`127.0.0.1:<port>`), so a name that
+  re-binds to loopback gets a 403 and a page without the token. A server build
+  carries no token, so its view still says to restart the process instead of
+  offering a button that cannot work.
+
 ## 0.3.4 — 2026-10-28
 
 ### Added

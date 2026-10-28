@@ -116,9 +116,27 @@ fn config_from_keychain() -> Config {
     config
 }
 
-#[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+#[cfg(feature = "restart-probe")]
+const RESTART_PROBE: &str = include_str!("restart_probe.js");
+
+#[cfg(feature = "restart-probe")]
+fn restart_probe() -> Option<std::path::PathBuf> {
+    if !flag("--restart-probe") {
+        return None;
+    }
+    let marker = std::env::var("PROVIEW_RESTART_PROBE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("proview-restart-probe.marker"));
+    if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
+        println!("restart probe: the app came back, app.restart() ran");
+        std::process::exit(0);
+    }
+    match std::fs::write(&marker, std::process::id().to_string()) {
+        Ok(()) => println!("restart probe: marker {} written", marker.display()),
+        Err(error) => eprintln!("restart probe: no marker at {}: {error}", marker.display()),
+    }
+    Some(marker)
 }
 
 fn main() {
@@ -130,6 +148,9 @@ fn main() {
     if let Some(code) = credential_command() {
         std::process::exit(code);
     }
+
+    #[cfg(feature = "restart-probe")]
+    let probe = restart_probe();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -151,8 +172,11 @@ fn main() {
                 secret_key: Some(local_secret()),
                 data_dir,
             };
-            let server =
-                handle.block_on(proview_server::serve_with_state(options, config, settings))?;
+            let (control, mut restarts) =
+                proview_server::desktop::DesktopControl::new(local_secret());
+            let server = handle.block_on(proview_server::serve_desktop(
+                options, config, settings, control,
+            ))?;
             let url: tauri::Url = format!("http://{}/", server.address).parse()?;
             tracing::info!(%url, "serving the local session");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
@@ -160,9 +184,31 @@ fn main() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(880.0, 600.0)
                 .build()?;
+            let quitting = app.handle().clone();
+            handle.spawn(async move {
+                if restarts.recv().await.is_some() {
+                    tracing::info!("the page asked for a restart");
+                    quitting.restart();
+                }
+            });
+            #[cfg(feature = "restart-probe")]
+            if probe.is_some() {
+                let main = app.get_webview_window("main");
+                handle.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    tracing::info!("probe: driving the Restart the app button");
+                    match main {
+                        Some(window) => {
+                            if let Err(error) = window.eval(RESTART_PROBE) {
+                                tracing::error!(%error, "probe: the driver did not run");
+                            }
+                        }
+                        None => tracing::error!("probe: no window to drive"),
+                    }
+                });
+            }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![restart_app])
         .run(tauri::generate_context!())
         .expect("tauri application");
 
