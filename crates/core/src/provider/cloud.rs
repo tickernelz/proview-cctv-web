@@ -25,6 +25,8 @@ struct SessionEntries {
     devices: Arc<Vec<CloudDevice>>,
 }
 
+type Gate = Arc<AsyncMutex<Option<(Instant, CloudError)>>>;
+
 pub struct CloudProvider {
     http: reqwest::Client,
     base: String,
@@ -33,7 +35,7 @@ pub struct CloudProvider {
     status: StatusClient,
     tokens: crate::cloud::DeviceTokenStore,
     entries: Mutex<HashMap<String, SessionEntries>>,
-    gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    gates: Mutex<HashMap<String, Gate>>,
     entry_ttl: Duration,
 }
 
@@ -106,14 +108,33 @@ impl CloudProvider {
         );
     }
 
-    fn gate(&self, token: &str) -> Arc<AsyncMutex<()>> {
+    fn entries_since(&self, session: &str, arrived: Instant) -> Option<Arc<Vec<CloudDevice>>> {
+        let mut entries = match self.entries.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let fresh = match entries.get(session) {
+            Some(entry) => entry.at.elapsed() < self.entry_ttl,
+            None => false,
+        };
+        if !fresh {
+            entries.remove(session);
+            return None;
+        }
+        entries
+            .get(session)
+            .filter(|entry| entry.at >= arrived)
+            .map(|entry| entry.devices.clone())
+    }
+
+    fn gate(&self, token: &str) -> Gate {
         let mut gates = match self.gates.lock() {
             Ok(gates) => gates,
             Err(poisoned) => poisoned.into_inner(),
         };
         gates
             .entry(token.to_string())
-            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
             .clone()
     }
 
@@ -128,46 +149,38 @@ impl CloudProvider {
         self.gates.lock().map(|gates| gates.len()).unwrap_or(0)
     }
 
-    async fn entries_once(
-        &self,
-        token: &str,
-        wanted: Option<&str>,
-    ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
+    async fn entries_once(&self, token: &str) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
         let gate = self.gate(token);
-        let _held = gate.lock().await;
-        if let Some(devices) = self.cached_entries(token) {
-            let carried = match wanted {
-                Some(serial) => devices.iter().any(|entry| entry.uuid == serial),
-                None => false,
-            };
-            if carried {
-                return Ok(devices);
+        let arrived = Instant::now();
+        let mut flight = gate.lock().await;
+        if let Some((at, error)) = flight.as_ref() {
+            if *at >= arrived {
+                return Err(map_cloud(error.clone()));
             }
         }
-        let devices = Arc::new(
-            self.envelope()
-                .device_list(token)
-                .await
-                .map_err(map_cloud)?,
-        );
-        self.remember_entries(token, devices.clone());
-        Ok(devices)
+        if let Some(devices) = self.entries_since(token, arrived) {
+            return Ok(devices);
+        }
+        match self.envelope().device_list(token).await {
+            Ok(devices) => {
+                let devices = Arc::new(devices);
+                self.remember_entries(token, devices.clone());
+                *flight = None;
+                Ok(devices)
+            }
+            Err(error) => {
+                *flight = Some((Instant::now(), error.clone()));
+                Err(map_cloud(error))
+            }
+        }
     }
 
     async fn fetch_entries(
         &self,
         session: &VendorSession,
     ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
-        self.fetch_entries_matching(session, None).await
-    }
-
-    async fn fetch_entries_matching(
-        &self,
-        session: &VendorSession,
-        wanted: Option<&str>,
-    ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
         let token = self.token(session)?;
-        let entries = self.entries_once(token, wanted).await;
+        let entries = self.entries_once(token).await;
         self.release_gates();
         entries
     }
@@ -350,7 +363,7 @@ impl CloudProvider {
                 return Ok(Some(found.clone()));
             }
         }
-        let devices = self.fetch_entries_matching(session, Some(serial)).await?;
+        let devices = self.fetch_entries(session).await?;
         Ok(devices.iter().find(|entry| entry.uuid == serial).cloned())
     }
 
@@ -1218,26 +1231,37 @@ mod entry_cache_tests {
         base: String,
         rows: Arc<Mutex<Vec<String>>>,
         hits: Arc<AtomicUsize>,
+        status: Arc<Mutex<u16>>,
         stop: Arc<AtomicBool>,
         handle: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Stub {
         fn start(rows: &[&str]) -> Self {
-            Self::with_delay(rows, Duration::ZERO)
+            Self::build(rows, 200, Duration::ZERO)
         }
 
         fn with_delay(rows: &[&str], delay: Duration) -> Self {
+            Self::build(rows, 200, delay)
+        }
+
+        fn failing(rows: &[&str], status: u16, delay: Duration) -> Self {
+            Self::build(rows, status, delay)
+        }
+
+        fn build(rows: &[&str], status: u16, delay: Duration) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("stub listener");
             let address = listener.local_addr().expect("stub address");
             listener.set_nonblocking(true).expect("stub non blocking");
             let rows: Arc<Mutex<Vec<String>>> =
                 Arc::new(Mutex::new(rows.iter().map(|row| row.to_string()).collect()));
             let hits = Arc::new(AtomicUsize::new(0));
+            let reply = Arc::new(Mutex::new(status));
             let stop = Arc::new(AtomicBool::new(false));
             let counted = hits.clone();
             let ending = stop.clone();
             let listing = rows.clone();
+            let answering = reply.clone();
             let handle = std::thread::spawn(move || {
                 while !ending.load(Ordering::Relaxed) {
                     let (stream, _) = match listener.accept() {
@@ -1247,13 +1271,19 @@ mod entry_cache_tests {
                             continue;
                         }
                     };
-                    serve(stream, &listing, &counted, delay);
+                    let listing = listing.clone();
+                    let counted = counted.clone();
+                    let answering = answering.clone();
+                    std::thread::spawn(move || {
+                        serve(stream, &listing, &counted, &answering, delay)
+                    });
                 }
             });
             Self {
                 base: format!("http://{address}"),
                 rows,
                 hits,
+                status: reply,
                 stop,
                 handle: Some(handle),
             }
@@ -1262,6 +1292,11 @@ mod entry_cache_tests {
         fn set_rows(&self, rows: &[&str]) {
             let mut held = self.rows.lock().expect("rows");
             *held = rows.iter().map(|row| row.to_string()).collect();
+        }
+
+        fn set_status(&self, status: u16) {
+            let mut held = self.status.lock().expect("status");
+            *held = status;
         }
 
         fn hits(&self) -> usize {
@@ -1278,7 +1313,13 @@ mod entry_cache_tests {
         }
     }
 
-    fn serve(stream: TcpStream, rows: &Mutex<Vec<String>>, hits: &AtomicUsize, delay: Duration) {
+    fn serve(
+        stream: TcpStream,
+        rows: &Mutex<Vec<String>>,
+        hits: &AtomicUsize,
+        status: &Mutex<u16>,
+        delay: Duration,
+    ) {
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let Ok(mut writer) = stream.try_clone() else {
@@ -1308,6 +1349,14 @@ mod entry_cache_tests {
             if !delay.is_zero() {
                 std::thread::sleep(delay);
             }
+        }
+        let status = *status.lock().expect("status");
+        if status != 200 {
+            let response = format!(
+                "HTTP/1.1 {status} Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = writer.write_all(response.as_bytes());
+            return;
         }
         let serials = rows.lock().expect("rows").clone();
         let entries: Vec<String> = serials
@@ -1490,5 +1539,82 @@ mod entry_cache_tests {
             0,
             "a finished fetch must leave no gate behind"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_opens_for_cameras_the_list_lacks_pay_one_device_list() {
+        let stub = Stub::with_delay(&["serial-one"], Duration::from_millis(300));
+        let provider = Arc::new(provider(&stub));
+        let held = Arc::new(session("probe", "access"));
+        let mut pending = tokio::task::JoinSet::new();
+
+        for serial in [
+            "stranger-one",
+            "stranger-two",
+            "stranger-three",
+            "stranger-four",
+        ] {
+            let provider = Arc::clone(&provider);
+            let held = Arc::clone(&held);
+            pending.spawn(async move { provider.owns(&held, serial).await });
+        }
+        while let Some(joined) = pending.join_next().await {
+            assert!(
+                !joined.expect("joined").expect("owns"),
+                "a camera the account does not list is not owned"
+            );
+        }
+        assert_eq!(
+            stub.hits(),
+            1,
+            "one burst of unknown serials must ask the cloud once, not once per serial"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn parallel_cold_opens_share_one_failed_attempt() {
+        let stub = Stub::failing(&["serial-one"], 503, Duration::from_millis(300));
+        let provider = Arc::new(provider(&stub));
+        let held = Arc::new(session("probe", "access"));
+        let started = Instant::now();
+        let mut pending = tokio::task::JoinSet::new();
+
+        for serial in ["serial-one", "serial-two", "serial-three", "serial-four"] {
+            let provider = Arc::clone(&provider);
+            let held = Arc::clone(&held);
+            pending.spawn(async move { provider.owns(&held, serial).await });
+        }
+        while let Some(joined) = pending.join_next().await {
+            let outcome = joined.expect("joined");
+            assert!(
+                outcome.is_err(),
+                "a failed device list must surface as an error, not as an unowned camera"
+            );
+        }
+        assert_eq!(
+            stub.hits(),
+            1,
+            "four opens against one failing cloud must ask once"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(600),
+            "waiters must share the failure instead of queuing behind it, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_attempt_does_not_wedge_the_session() {
+        let stub = Stub::failing(&["serial-one"], 503, Duration::from_millis(20));
+        let provider = provider(&stub);
+        let session = session("probe", "access");
+
+        assert!(provider.owns(&session, "serial-one").await.is_err());
+        stub.set_status(200);
+        assert!(
+            provider.owns(&session, "serial-one").await.expect("retry"),
+            "the next open must meet the cloud again, not a remembered failure"
+        );
+        assert_eq!(stub.hits(), 2, "the retry is the second call");
     }
 }

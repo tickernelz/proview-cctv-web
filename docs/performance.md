@@ -270,23 +270,32 @@ that answers `msdlistCode` and nothing else:
 | cold start (`open_media`) | 1 `msdlistCode` + a new client and token-store load | 0 |
 | total per viewer open | 3 | 1 |
 | N parallel cold opens, one session | N `msdlistCode` | 1 |
+| N parallel opens for serials the list lacks | N `msdlistCode`, N x RTT | 1 |
+| N parallel opens against a failing cloud | N `msdlistCode`, N x failure | 1 |
 
 `crates/server/tests/live_scope.rs` measures the row: one ticket, then two
 socket opens on the camera the account owns, and one `msdlistCode` request
 arrives. The window is 30 s per vendor session, and the next call after it
 closes asks the cloud again, a serial the window does not carry is asked again
 rather than refused, and a fresh device-list fetch (`/api/devices`) replaces the
-window; `crates/core/src/provider/cloud.rs` carries the eight tests behind those
+window; `crates/core/src/provider/cloud.rs` carries the eleven tests behind those
 sentences (one session pays one list for every serial, a second session pays its
 own, an entry older than the window is fetched again, a serial bound inside the
 window is recognised, a refresh replaces the window, a serial a refresh drops
-stops answering, three parallel cold opens on one session pay one list, and the
-gate map does not grow with each session).
-The fetch is single-flight per vendor session: a `tokio::sync::Mutex` per token
+stops answering, three parallel cold opens on one session pay one list, four
+parallel opens for serials the list lacks pay one, four parallel opens against a
+failing cloud pay one and return in one failure's time, a failure is not
+remembered for the next open, and the gate map does not grow with each session).
+The fetch is single-flight per vendor session: a `tokio::sync` mutex per token
 gates it and is dropped once no caller holds it, so the winner asks the cloud and
-the waiters reuse its list. The re-check under that gate still keys on the serial
-the caller wants, which is what keeps the refetch-miss above a miss and not a
-refusal.
+the waiters adopt what it produced. Adoption is keyed on when the caller arrived,
+not on the serial: a list or a failure that finished after the caller started
+waiting is the answer, so a burst pays one call whether it hits, misses or fails,
+and a waiter never queues behind an attempt that already finished. A sequential
+caller still refetches, which is what keeps the refetch-miss above a miss and not
+a refusal; the cost of adoption is that a camera bound inside one round trip is
+not seen by the opens already waiting, and the next open or `/api/devices` picks
+it up.
 No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
 the fix removes two of those round trips and three client builds per open.
 
