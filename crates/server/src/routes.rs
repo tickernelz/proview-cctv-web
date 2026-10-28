@@ -50,7 +50,7 @@ pub mod settings_write;
 pub mod recordings;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, media_clip, asset]
+    routes![index, media_clip, page_asset, bundled_asset, font]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -104,20 +104,31 @@ fn index(
 #[exclude = "index.html"]
 struct Dist;
 
-#[get("/<path..>", rank = 20)]
-fn asset(path: std::path::PathBuf) -> Option<(ContentType, std::borrow::Cow<'static, [u8]>)> {
-    let name = path
-        .iter()
-        .map(|part| part.to_str())
-        .collect::<Option<Vec<_>>>()?
-        .join("/");
-    let file = Dist::get(&name)?;
-    let kind = path
+type Asset = (ContentType, std::borrow::Cow<'static, [u8]>);
+
+fn embedded(name: &str) -> Option<Asset> {
+    let file = Dist::get(name)?;
+    let kind = std::path::Path::new(name)
         .extension()
         .and_then(|ext| ext.to_str())
         .and_then(ContentType::from_extension)
         .unwrap_or(ContentType::Binary);
     Some((kind, file.data))
+}
+
+#[get("/<file>", rank = 20)]
+fn page_asset(file: &str) -> Option<Asset> {
+    embedded(file)
+}
+
+#[get("/assets/<file>")]
+fn bundled_asset(file: &str) -> Option<Asset> {
+    embedded(&format!("assets/{file}"))
+}
+
+#[get("/fonts/<file>")]
+fn font(file: &str) -> Option<Asset> {
+    embedded(&format!("fonts/{file}"))
 }
 
 #[get("/health")]
