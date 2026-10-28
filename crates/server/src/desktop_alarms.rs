@@ -2,7 +2,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use proview_core::cloud::alarm::PAGE_LIMIT;
-use proview_core::cloud::{AlarmClient, AlarmEntry, CloudDevice, EnvelopeClient, Identity};
+use proview_core::cloud::{
+    AlarmClient, AlarmEntry, CloudDevice, CloudError, EnvelopeClient, Identity,
+};
 use proview_core::session::Store;
 use serde::Serialize;
 
@@ -53,12 +55,16 @@ pub struct DesktopAlarms {
 }
 
 impl DesktopAlarms {
-    pub fn from_env() -> Self {
+    pub fn new(envelope: EnvelopeClient) -> Self {
         Self {
-            envelope: EnvelopeClient::new(Identity::resolve()),
+            envelope,
             alarms: AlarmClient::from_env(),
             devices: Mutex::new(None),
         }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(EnvelopeClient::new(Identity::resolve()))
     }
 
     fn cached_devices(&self, account: &str) -> Option<Vec<CloudDevice>> {
@@ -87,11 +93,14 @@ impl DesktopAlarms {
         let devices = match self.cached_devices(&session.account) {
             Some(devices) => devices,
             None => {
-                let devices = self
-                    .envelope
-                    .device_list(&token)
-                    .await
-                    .map_err(|error| AlarmReadError::Cloud(error.to_string()))?;
+                let devices =
+                    self.envelope
+                        .device_list(&token)
+                        .await
+                        .map_err(|error| match error {
+                            CloudError::Expired => AlarmReadError::SignedOut,
+                            other => AlarmReadError::Cloud(other.to_string()),
+                        })?;
                 self.keep_devices(&session.account, &devices);
                 devices
             }

@@ -1,8 +1,11 @@
 use std::fs;
 
 use proview_core::cloud::{
-    body_key, open, scramble, seal, signature, signed_request, url_encode, Identity,
+    body_key, open, scramble, seal, signature, signed_request, url_encode, CloudError,
+    EnvelopeClient, Identity,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn fixture() -> serde_json::Value {
     let path = concat!(
@@ -80,4 +83,65 @@ fn credentials_never_reach_the_signed_body_unencoded() {
     let sealed = seal(key, &body).expect("seal");
     assert_eq!(open(key, &sealed).expect("open"), body);
     assert!(body.ends_with("pass=p%40ss%20word%26x"));
+}
+
+async fn stub_vendor(body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stub listener");
+    let address = listener.local_addr().expect("stub address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 4096];
+                let _ = socket.read(&mut buffer).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    format!("http://{address}")
+}
+
+fn probe_client(base: String) -> EnvelopeClient {
+    EnvelopeClient::with_base(
+        Identity::new("probe-uuid", "probe-key", "probe-secret"),
+        base,
+    )
+}
+
+#[tokio::test]
+async fn a_revoked_token_is_expired_on_the_device_list() {
+    let base = stub_vendor(r#"{"code":-4004,"msg":"token revoked"}"#).await;
+    let error = probe_client(base)
+        .device_list("revoked-token")
+        .await
+        .expect_err("a revoked token cannot list devices");
+    assert!(
+        matches!(error, CloudError::Expired),
+        "a revoked token is a session that ended, not a plain rejection: {error}"
+    );
+    assert_eq!(error.to_string(), "session expired; sign in again");
+}
+
+#[tokio::test]
+async fn another_refusal_stays_a_rejection() {
+    let base = stub_vendor(r#"{"code":-1001,"msg":"device list refused"}"#).await;
+    let error = probe_client(base)
+        .device_list("token")
+        .await
+        .expect_err("a refusal is not a device list");
+    assert!(
+        matches!(error, CloudError::Rejected(_)),
+        "only the expired code means signed out: {error}"
+    );
+    assert!(error.to_string().contains("device list refused"), "{error}");
 }

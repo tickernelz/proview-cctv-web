@@ -174,4 +174,19 @@ still out of reach.
    wins per value for a build made from source, and a build without an identity
    answers `MISSING_CLOUD_IDENTITY`. The out-of-tree emulator of `protocol.md`
    section 3A is how the envelope was learned; it is not needed to log in.
+5. A token the vendor revokes is a session that ended, not a cloud failure:
+   `msdlistCode` answering `-4004` becomes `CloudError::Expired` in
+   `device_list`, the variant `refresh` already returned. Every route that reads
+   the device list answers `401` for it. On the provider path that replaces a
+   `502` — the code used to arrive as a plain rejection, which the provider
+   reports as an upstream failure — for `GET /api/devices`, `GET /api/cloud-path`,
+   `GET /api/recordings` and `GET /api/stream`. On the routes that call the
+   envelope client themselves it replaces a `400` for
+   `GET /api/cloud/device-attributes`, `GET /api/cloud/alarms` and
+   `/api/cloud/alarms/picture`. A live attempt on `GET /api/stream` stops at that
+   error without running the diagnostic walk, because `worth_walking` in
+   `crates/server/src/routes/live.rs` excludes `ProviderError::Expired`, so its
+   failure body carries no `stage`, `detail`, `elapsed_ms` or `stages`. The
+   desktop watcher reads the same variant as `AlarmReadError::SignedOut` and posts
+   its pause notification; see `desktop-notifications.md`.
 
