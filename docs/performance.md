@@ -257,3 +257,56 @@ cargo run -p proview-core --example envelope_login
 A release build already carries the identity and needs neither of the three; the
 example is a source build, so it takes them from the environment or from
 `cloud-identity.env` at the workspace root.
+
+## Live cloud acceptance (measured 2026-10-28)
+
+`tools/acceptance/live_acceptance.py` is the only evidence this repository
+accepts for "live cloud works"; `docs/live-acceptance.md` says what it refuses to
+claim. These are the first three runs, all from the same WSL2 host whose LAN
+cannot reach the camera (`nc -z 192.168.0.100 554` times out after 3.0 s), so
+every byte in them had to cross the vendor cloud.
+
+| Run | Code | Verdict | Where it stopped | Numbers |
+|---|---|---|---|---|
+| `4d9ff0773885-20261028T014711Z` | `4d9ff07`, fixture self-check | pass | - | 31 messages, 279 010 B, 30.0 s, longest gap 1.0 s; `ffprobe` decodes 700 frames at 640×360 H.264 |
+| `4d9ff0773885-20261028T015118Z` | `4d9ff07`, main | fail | `stream` | relay `103.85.122.25` answers `ret 117`, ticket 502 in 0.398 s |
+| `56771819ad88-20261028T015228Z` | `5677181`, `work/stream-live` | fail | `stream` | 0 keyframes, 0 deltas, 0 dropped, 0 elementary bytes from the same relay |
+
+What the stages that do pass cost, on loopback plus vendor time:
+
+| Stage | Run `…T015118Z` | Run `…T015228Z` |
+|---|---|---|
+| camera unreachable on the LAN | 3.031 s | 3.005 s |
+| `cargo build --release -p proview-server` | 1.329 s (warm) | 93.950 s (branch switch) |
+| `POST /api/login`, signed v3 envelope | 0.208 s | 0.310 s |
+| `GET /api/devices`, one device, serial `7f92970ddf5282743hrc` | 0.276 s | 0.299 s |
+| `GET /api/stream` | 0.398 s, HTTP 502 | 3.468 s, HTTP 502 |
+
+The first build that bakes the app identity (`PROVIEW_APP_*` from
+`secrets/identity.env`) took 89.888 s in run `…T014902Z`; afterwards the build
+stage is an up-to-date cargo check.
+
+Reading the numbers:
+
+1. Sign-in and the device list are not the problem. They reproduce the
+   2026-10-27 envelope row (0.30-0.39 s) at 0.21-0.31 s here, and the device
+   list carries the camera serial in 0.28-0.30 s.
+2. The relay accepts the claim and then delivers nothing. Main never sends the
+   start (`ret 117`, "cipher and start pending"); `work/stream-live` sends the
+   claim before login and still counts zero media in six seconds. The missing
+   piece is the start payload or the cipher, not the connection.
+3. The fixture self-check is the harness proving itself, not evidence about the
+   camera: the same counter runs over a recorded clip, and the dump decodes to
+   700 frames in 30 s (23.3 fps inside 31 fMP4 fragments). A zero in the cloud
+   rows is therefore a relay fact, not dead code.
+
+Reproduce:
+
+```sh
+cd ~/Projects/proview-cctv-web-wt/acceptance
+python3 tools/acceptance/live_acceptance.py --sn 7f92970ddf5282743hrc
+```
+
+No pass can be recorded until the `stream` stage stops failing. Each run keeps
+`report.md`, `report.json`, the server log and the payload dump under
+`~/re/proview-cctv/acceptance/`.

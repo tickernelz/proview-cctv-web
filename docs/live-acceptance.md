@@ -84,6 +84,7 @@ Useful flags:
 | `--allow-lan` | off | keep going when the camera answers on the LAN; the report records it, and the result never counts as cloud evidence |
 | `--no-build` | off | reuse `target/release/proview-server` |
 | `--bin` | `target/release/proview-server` | binary to run |
+| `--repo` | the harness's own checkout | repository to build and measure, so the script can live outside the tree under test |
 | `--out` | `~/re/proview-cctv/acceptance` | report root |
 | `--lock` | `~/re/proview-cctv/relay.lock` | relay mutex |
 | `--lock-wait` | 60 | seconds to wait for the lock before failing |
@@ -168,3 +169,7 @@ A run that matters gets one row in `docs/performance.md` under
 "Live cloud acceptance", quoting the run directory so the numbers stay
 reproducible. A run that fails gets a line naming the stage, because a failure
 with a stage is worth more than a success without numbers.
+
+The first three runs are recorded there: the fixture self-check passing, main
+failing at `stream` with `ret 117` from the relay, and `work/stream-live`
+failing at `stream` with 0 keyframes and 0 elementary bytes.
