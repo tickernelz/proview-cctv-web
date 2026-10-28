@@ -102,8 +102,9 @@ tabular numerals, so a ticking clock does not shift its neighbours.
 
 ## Space, shape, elevation
 
-Spacing on a 4 px grid: 4 · 8 · 12 · 16 · 20 · 24 · 32 · 40 · 56 (v1's 6 and
-10 px steps are gone; `--s2` is 8). Tight inside a control (8), loose between
+Spacing on a 4 px grid, one token per value: `--s1` 4 · `--s2` 8 · `--s3` 12 ·
+`--s4` 16 · `--s5` 20 · `--s6` 24 · `--s7` 32 · `--s8` 40 · `--s9` 56 (v1's 6, 10
+and 14 px steps are gone). Tight inside a control (8), loose between
 groups (16–24); the page edge is 20 px (16 below 480 px) and the stage runs to
 it. Radius 6 (code chips), 8 (buttons, inputs, tiles), 12 (stage, menus, sheets);
 pill only for switches, badges and table status. Three layers: the flat page,
@@ -229,8 +230,16 @@ clock and the bell as an emoji.
 | < 1024 | auto grid: 2 columns (1 below 640) |
 | < 900 | sign-in becomes one column; the decorative stage is hidden |
 | < 768 | settings sections become a wrapping row above the content |
-| < 640 | settings rows stack label over control; tiles keep 16:9 and scroll; stream controls show icons only |
-| < 480 | top bar tightens to 16 px edges, the camera name ellipsises, the meta is hidden; sheets span the width |
+| < 640 | settings rows stack label over control; tiles keep 16:9 and scroll; stream controls show icons only; the pan and tilt pad docks above the controls |
+| < 480 | top bar tightens to 16 px edges, the camera name ellipsises, the meta is hidden; every sheet spans the width |
+
+The gate walks every state a user reaches: both sign-in tabs, live, the pan and
+tilt pad, the camera and quality menus, the alarm, cloud-recording and devices
+sheets, playback, every camera, and each Settings section. Tables are the one
+thing allowed to scroll sideways, inside their own box. Under `pointer: coarse`
+(`e2e/tests/touch.spec.ts`, phone 390×844 and tablet 768×1024) every visible
+button, link, input, select, tab and menu item in those states is at least
+44×44.
 
 ## Focus and targets
 
