@@ -85,6 +85,7 @@ the build was made without a cloud identity, and points at
 Building from source with an identity of your own:
 
 ```sh
+(cd apps/web && npm ci && npm run build)
 PROVIEW_REQUIRE_CLOUD_IDENTITY=1 \
 PROVIEW_APP_UUID=... PROVIEW_APP_KEY=... PROVIEW_APP_SECRET=... \
 cargo build --release -p proview-server

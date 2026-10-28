@@ -4,7 +4,17 @@
   "version": "0.3.5",
   "identifier": "io.zhafron.proview-cctv",
   "build": {
-    "frontendDist": "../web"
+    "frontendDist": "../apps/web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": {
+      "script": "npm run dev",
+      "cwd": "../apps/web",
+      "wait": false
+    },
+    "beforeBuildCommand": {
+      "script": "npm ci && npm run build",
+      "cwd": "../apps/web"
+    }
   },
   "app": {
     "withGlobalTauri": true,

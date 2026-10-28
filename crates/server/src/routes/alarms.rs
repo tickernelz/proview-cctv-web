@@ -33,15 +33,6 @@ pub fn routes() -> Vec<rocket::route::Route> {
     routes![list, picture]
 }
 
-pub fn files() -> Vec<rocket::route::Route> {
-    routes![alarms_js]
-}
-
-#[get("/alarms.js")]
-fn alarms_js() -> rocket::response::content::RawJavaScript<&'static str> {
-    rocket::response::content::RawJavaScript(include_str!("../../../../web/alarms.js"))
-}
-
 #[get("/cloud/alarms?<sn>&<start>&<end>&<limit>")]
 pub async fn list(
     sn: String,

@@ -38,6 +38,13 @@ opaque `pvw_session` cookie, and every vendor call happens server side.
 
 ## Run
 
+The page is a Vite app in `apps/web`; the server embeds its `dist/` at compile
+time, so build it before any `cargo` command (Node 22 or newer):
+
+```sh
+(cd apps/web && npm ci && npm run build)
+```
+
 ```sh
 ROCKET_SECRET_KEY="$(openssl rand -base64 32)" cargo run --release -p proview-server
 # http://127.0.0.1:8787
@@ -57,6 +64,13 @@ PROVIEW_PROVIDER=fixture cargo run -p proview-server
 
 A debug build generates its own cookie secret, so the demo needs no environment
 at all.
+
+Frontend work with hot reload: run the server on its default port 8787, then
+`npm run dev` in `apps/web` and open http://localhost:5173; Vite proxies
+`/api`, `/ws` and `/media` to the server. For the desktop shell,
+`PROVIEW_WEB_DEV=1 cargo tauri dev` starts Vite, binds the in-process server to
+8787 and opens the window on Vite instead of the embedded page (debug builds
+only).
 
 ```
 email:    fixture@example.invalid

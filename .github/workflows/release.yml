@@ -51,6 +51,16 @@ jobs:
         with:
           key: server-${{ matrix.target }}
           cache-targets: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Build the web app
+        working-directory: apps/web
+        run: |
+          npm ci
+          npm run build
       - name: Cloud identity
         shell: bash
         env:
@@ -184,6 +194,11 @@ jobs:
         with:
           key: desktop-${{ matrix.label }}
           cache-targets: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - name: Cloud identity
         shell: bash
         env:

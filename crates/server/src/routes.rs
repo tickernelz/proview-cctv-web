@@ -31,10 +31,11 @@ use proview_core::live::{LiveMode, StreamKey};
 use proview_core::provider::{self, CloudPath, Device, Provider, ProviderError, Router};
 use proview_core::session::{self, Store};
 use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
-use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
+use rocket::response::content::RawHtml;
 use rocket::serde::json::Json;
 use rocket::State;
 use rocket_ws as ws;
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ModeStore;
@@ -47,25 +48,7 @@ pub mod settings_write;
 pub mod recordings;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![
-        index,
-        app_js,
-        fisheye_js,
-        account_js,
-        talk_js,
-        grid_js,
-        recordings_js,
-        device_admin_js,
-        style_css,
-        tokens_css,
-        font,
-        media_clip,
-        crate::routes::playback::script,
-        settings_write::device_settings_js
-    ]
-    .into_iter()
-    .chain(alarms::files())
-    .collect()
+    routes![index, media_clip, asset]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -114,81 +97,25 @@ fn index(
     })
 }
 
-#[get("/app.js")]
-fn app_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/app.js"))
-}
+#[derive(Embed)]
+#[folder = "../../apps/web/dist"]
+#[exclude = "index.html"]
+struct Dist;
 
-#[get("/fisheye.js")]
-fn fisheye_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/fisheye.js"))
-}
-
-#[get("/grid.js")]
-fn grid_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/grid.js"))
-}
-
-#[get("/account.js")]
-fn account_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/account.js"))
-}
-
-#[get("/talk.js")]
-fn talk_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/talk.js"))
-}
-
-#[get("/recordings.js")]
-fn recordings_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/recordings.js"))
-}
-
-#[get("/device-admin.js")]
-fn device_admin_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../web/device-admin.js"))
-}
-
-#[get("/tokens.css")]
-fn tokens_css() -> RawCss<&'static str> {
-    RawCss(include_str!("../../../web/tokens.css"))
-}
-
-#[get("/style.css")]
-fn style_css() -> RawCss<&'static str> {
-    RawCss(include_str!("../../../web/style.css"))
-}
-
-#[get("/fonts/<name>")]
-fn font(name: &str) -> Option<(ContentType, &'static [u8])> {
-    let woff2 = ContentType::new("font", "woff2");
-    match name {
-        "plex-sans-400.woff2" => Some((
-            woff2,
-            include_bytes!("../../../web/fonts/plex-sans-400.woff2"),
-        )),
-        "plex-sans-500.woff2" => Some((
-            woff2,
-            include_bytes!("../../../web/fonts/plex-sans-500.woff2"),
-        )),
-        "plex-sans-600.woff2" => Some((
-            woff2,
-            include_bytes!("../../../web/fonts/plex-sans-600.woff2"),
-        )),
-        "plex-mono-400.woff2" => Some((
-            woff2,
-            include_bytes!("../../../web/fonts/plex-mono-400.woff2"),
-        )),
-        "plex-mono-500.woff2" => Some((
-            woff2,
-            include_bytes!("../../../web/fonts/plex-mono-500.woff2"),
-        )),
-        "OFL.txt" => Some((
-            ContentType::Plain,
-            include_bytes!("../../../web/fonts/OFL.txt"),
-        )),
-        _ => None,
-    }
+#[get("/<path..>", rank = 20)]
+fn asset(path: std::path::PathBuf) -> Option<(ContentType, std::borrow::Cow<'static, [u8]>)> {
+    let name = path
+        .iter()
+        .map(|part| part.to_str())
+        .collect::<Option<Vec<_>>>()?
+        .join("/");
+    let file = Dist::get(&name)?;
+    let kind = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(ContentType::from_extension)
+        .unwrap_or(ContentType::Binary);
+    Some((kind, file.data))
 }
 
 #[get("/health")]

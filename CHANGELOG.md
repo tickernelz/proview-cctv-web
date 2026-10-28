@@ -45,6 +45,14 @@ stability before 1.0.
 
 ### Changed
 
+- The page moved from `web/` to a Vite app in `apps/web`. `npm run build`
+  emits `apps/web/dist/` with a hashed stylesheet, and the server embeds that
+  directory with `rust-embed` instead of one route per file, so build the page
+  before `cargo` (see README). The scripts are served unchanged; `/tokens.css`
+  and `/style.css` became one `/assets/index-<hash>.css`. CI and release jobs
+  run `npm ci && npm run build` with an npm cache, and `cargo tauri build` does
+  the same through `beforeBuildCommand`. `PROVIEW_WEB_DEV=1 cargo tauri dev`
+  opens the desktop window on the Vite dev server for hot reload.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`
