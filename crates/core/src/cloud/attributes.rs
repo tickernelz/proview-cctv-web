@@ -13,6 +13,9 @@ use super::types::{user_message, CloudDevice, Envelope, CODE_TOKEN_EXPIRED};
 
 pub const RENAME_ENDPOINT: &str = "mdedit";
 pub const LOGIN_PASSWORD_ENDPOINT: &str = "mdeditPass";
+pub const USER_SEARCH_ENDPOINT: &str = "usersearch";
+pub const SHARE_ACCEPT_DEVICE_ENDPOINT: &str = "mdshareaccept";
+pub const SHARE_BASE: &str = "https://as-ams.jftechws.com";
 pub const SHARE_OUT_ENDPOINT: &str = "devicesTransOut";
 pub const SHARE_PENDING_ENDPOINT: &str = "hasDevicesTrans";
 pub const SHARE_INFO_ENDPOINT: &str = "devicesTransInfo";
@@ -160,6 +163,18 @@ impl AttributeClient {
         self.call(LOGIN_PASSWORD_ENDPOINT, Some(body), access).await
     }
 
+    pub async fn search_user(&self, access: &str, query: &str) -> CloudResult<Vec<UserSearchHit>> {
+        let needle = query.trim();
+        if needle.is_empty() {
+            return Err(CloudError::Rejected(
+                "a user search needs a query".to_string(),
+            ));
+        }
+        let body = format!("search={}", url_encode(needle));
+        let reply = self.call(USER_SEARCH_ENDPOINT, Some(body), access).await?;
+        Ok(parse_user_hits(&reply["data"]))
+    }
+
     pub async fn share_out(
         &self,
         access: &str,
@@ -193,6 +208,29 @@ impl AttributeClient {
     pub async fn share_accept(&self, access: &str, trans_key: &str) -> CloudResult<Value> {
         let body = format!("transKey={}", url_encode(trans_key.trim()));
         self.call(SHARE_ACCEPT_ENDPOINT, Some(body), access).await
+    }
+
+    pub async fn share_accept_device(
+        &self,
+        access: &str,
+        account: &str,
+        password: &str,
+        dev_id: &str,
+    ) -> CloudResult<Value> {
+        let target = dev_id.trim();
+        if target.is_empty() {
+            return Err(CloudError::Rejected(
+                "accepting a share needs the device id".to_string(),
+            ));
+        }
+        let body = format!(
+            "uname={}&upass={}&devId={}",
+            url_encode(account.trim()),
+            url_encode(password),
+            url_encode(target)
+        );
+        self.call(SHARE_ACCEPT_DEVICE_ENDPOINT, Some(body), access)
+            .await
     }
 
     pub async fn share_cancel(
@@ -338,9 +376,60 @@ impl DeviceAttributes {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserSearchHit {
+    pub account: String,
+    pub id: String,
+}
+
+fn parse_user_hits(data: &Value) -> Vec<UserSearchHit> {
+    let rows = match data {
+        Value::Array(rows) => rows.clone(),
+        Value::String(raw) => serde_json::from_str::<Vec<Value>>(raw).unwrap_or_default(),
+        Value::Object(map) => map
+            .get("list")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    rows.iter()
+        .filter_map(|row| {
+            let account = row
+                .get("account")
+                .and_then(Value::as_str)?
+                .trim()
+                .to_string();
+            let id = row.get("id").and_then(Value::as_str)?.trim().to_string();
+            if account.is_empty() || id.is_empty() {
+                return None;
+            }
+            Some(UserSearchHit { account, id })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_hits_are_read_from_an_array_a_string_and_a_list() {
+        let direct = json!([{"account": "one@example.com", "id": "u-1"}]);
+        assert_eq!(
+            parse_user_hits(&direct),
+            vec![UserSearchHit {
+                account: "one@example.com".to_string(),
+                id: "u-1".to_string(),
+            }]
+        );
+        let encoded = Value::String(r#"[{"account":"two@example.com","id":"u-2"}]"#.to_string());
+        assert_eq!(parse_user_hits(&encoded)[0].id, "u-2");
+        let listed = json!({"list": [{"account": "three@example.com", "id": "u-3"}]});
+        assert_eq!(parse_user_hits(&listed)[0].account, "three@example.com");
+        let partial = json!([{"account": "four@example.com"}, {"id": "u-5"}]);
+        assert!(parse_user_hits(&partial).is_empty());
+    }
 
     #[test]
     fn counter_wraps_inside_the_signed_window() {
