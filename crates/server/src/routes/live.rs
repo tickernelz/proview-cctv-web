@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
@@ -18,6 +18,7 @@ use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
 use rocket::serde::Serialize;
 use rocket::State;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
 use crate::config::ModeStore;
@@ -35,6 +36,7 @@ pub const STAGES: [&str; 8] = [
 ];
 
 const STAGE_LIMIT: Duration = Duration::from_secs(8);
+const WALK_DEADLINE: Duration = Duration::from_secs(8);
 const WALK_COOLDOWN: Duration = Duration::from_millis(5_000);
 
 #[derive(Debug, Clone, Serialize)]
@@ -50,22 +52,51 @@ pub struct Attempt {
     pub device: String,
     pub channel: u32,
     pub at: u64,
-    pub stage: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<&'static str>,
     pub detail: String,
     pub elapsed_ms: u64,
     pub stages: Vec<StageReport>,
 }
 
-pub fn first_unproven(stages: &[StageReport]) -> &'static str {
-    STAGES
-        .iter()
-        .copied()
-        .find(|stage| {
-            !stages
-                .iter()
-                .any(|report| report.stage == *stage && report.ok)
-        })
-        .unwrap_or("first_frame")
+impl Attempt {
+    pub fn failed_stage(reports: &[StageReport]) -> Option<&'static str> {
+        reports
+            .iter()
+            .rev()
+            .find(|report| !report.ok)
+            .map(|report| report.stage)
+    }
+
+    fn from_reports(
+        device: &str,
+        channel: u32,
+        at: u64,
+        reports: Vec<StageReport>,
+        elapsed_ms: u64,
+    ) -> Self {
+        let stage = Self::failed_stage(&reports);
+        let detail = stage
+            .and_then(|stage| {
+                reports
+                    .iter()
+                    .find(|report| report.stage == stage && !report.ok)
+                    .map(|report| report.detail.clone())
+            })
+            .unwrap_or_else(|| {
+                "every stage the cloud path makes today answered; the provider stopped after the device login"
+                    .to_string()
+            });
+        Self {
+            device: device.to_string(),
+            channel,
+            at,
+            stage,
+            detail,
+            elapsed_ms,
+            stages: reports,
+        }
+    }
 }
 
 fn unix_ms() -> u64 {
@@ -75,9 +106,30 @@ fn unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Key {
+    pub device: String,
+    pub channel: u32,
+}
+
+impl Key {
+    pub fn new(device: &str, channel: u32) -> Self {
+        Self {
+            device: device.to_string(),
+            channel,
+        }
+    }
+}
+
+struct Held {
+    session: String,
+    attempt: Attempt,
+}
+
 #[derive(Default)]
 pub struct Ledger {
-    entries: Mutex<HashMap<String, Attempt>>,
+    entries: Mutex<HashMap<Key, Held>>,
+    gates: Mutex<HashMap<Key, Arc<AsyncMutex<()>>>>,
 }
 
 impl Ledger {
@@ -85,35 +137,70 @@ impl Ledger {
         Self::default()
     }
 
-    pub fn record(&self, attempt: Attempt) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(attempt.device.clone(), attempt);
+    pub fn gate(&self, key: &Key) -> Arc<AsyncMutex<()>> {
+        let mut gates = match self.gates.lock() {
+            Ok(gates) => gates,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
+    pub fn record(&self, session: &str, attempt: Attempt) {
+        let key = Key::new(&attempt.device, attempt.channel);
+        let mut entries = match self.entries.lock() {
+            Ok(entries) => entries,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        entries.insert(
+            key.clone(),
+            Held {
+                session: session.to_string(),
+                attempt,
+            },
+        );
+        if let Ok(mut gates) = self.gates.lock() {
+            gates.retain(|held, gate| held != &key || Arc::strong_count(gate) > 1);
         }
     }
 
-    pub fn forget(&self, device: &str) {
+    pub fn forget(&self, device: &str, channel: u32) {
+        let key = Key::new(device, channel);
         if let Ok(mut entries) = self.entries.lock() {
-            entries.remove(device);
+            entries.remove(&key);
+        }
+        if let Ok(mut gates) = self.gates.lock() {
+            gates.remove(&key);
         }
     }
 
-    pub fn last(&self, device: &str) -> Option<Attempt> {
-        self.entries
-            .lock()
-            .ok()
-            .and_then(|entries| entries.get(device).cloned())
+    pub fn last(&self, session: &str, key: &Key) -> Option<Attempt> {
+        let entries = self.entries.lock().ok()?;
+        let held = entries.get(key)?;
+        if held.session != session {
+            return None;
+        }
+        Some(held.attempt.clone())
     }
 
-    pub fn fresh(&self, device: &str, window: Duration) -> Option<Attempt> {
-        self.last(device)
+    pub fn fresh(&self, session: &str, key: &Key, window: Duration) -> Option<Attempt> {
+        self.last(session, key)
             .filter(|attempt| unix_ms().saturating_sub(attempt.at) < window.as_millis() as u64)
     }
 
-    pub fn attempts(&self) -> Vec<Attempt> {
+    pub fn attempts(&self, session: &str) -> Vec<Attempt> {
         let mut attempts: Vec<Attempt> = self
             .entries
             .lock()
-            .map(|entries| entries.values().cloned().collect())
+            .map(|entries| {
+                entries
+                    .values()
+                    .filter(|held| held.session == session)
+                    .map(|held| held.attempt.clone())
+                    .collect()
+            })
             .unwrap_or_default();
         attempts.sort_by_key(|attempt| std::cmp::Reverse(attempt.at));
         attempts
@@ -144,110 +231,120 @@ struct Walk<'a> {
     channel: u32,
     high: bool,
     status_host: String,
-}
-
-async fn bounded<T>(future: impl Future<Output = Result<T, String>>) -> Result<T, String> {
-    match timeout(STAGE_LIMIT, future).await {
-        Ok(outcome) => outcome,
-        Err(_) => Err(format!("no answer within {} ms", STAGE_LIMIT.as_millis())),
-    }
-}
-
-fn record<T>(
-    reports: &mut Vec<StageReport>,
-    stage: &'static str,
     started: Instant,
-    outcome: Result<(T, String), String>,
-) -> Result<(T, String), String> {
-    let elapsed_ms = started.elapsed().as_millis() as u64;
-    let (ok, detail) = match &outcome {
-        Ok((_, detail)) => (true, detail.clone()),
-        Err(detail) => (false, detail.clone()),
-    };
-    reports.push(StageReport {
-        stage,
-        ok,
-        elapsed_ms,
-        detail,
-    });
-    outcome
 }
 
-impl Walk<'_> {
-    async fn run(&self) -> Attempt {
-        let started = Instant::now();
-        let stages = self.stages().await;
-        let stage = first_unproven(&stages);
-        let detail = stages
-            .iter()
-            .find(|report| report.stage == stage && !report.ok)
-            .map(|report| report.detail.clone())
-            .unwrap_or_else(|| {
-                "every stage up to opmonitor_claim answered and no frame was read after it"
-                    .to_string()
-            });
-        Attempt {
-            device: self.device.to_string(),
-            channel: self.channel,
-            at: unix_ms(),
-            stage,
-            detail,
-            elapsed_ms: started.elapsed().as_millis() as u64,
-            stages,
+impl<'a> Walk<'a> {
+    fn new(
+        cfg: &'a Config,
+        session: &'a VendorSession,
+        device: &'a str,
+        channel: u32,
+        high: bool,
+    ) -> Self {
+        Self {
+            cfg,
+            session,
+            device,
+            channel,
+            high,
+            status_host: STATUS_HOST.to_string(),
+            started: Instant::now(),
         }
     }
 
-    async fn stages(&self) -> Vec<StageReport> {
+    async fn bounded<T>(
+        &self,
+        reports: &mut Vec<StageReport>,
+        stage: &'static str,
+        started: Instant,
+        future: impl Future<Output = Result<(T, String), String>>,
+    ) -> Result<(T, String), String> {
+        let spent = self.started.elapsed();
+        let left = WALK_DEADLINE.saturating_sub(spent);
+        let outcome = if left.is_zero() {
+            Err(format!(
+                "the walk spent its {} ms budget before this stage",
+                WALK_DEADLINE.as_millis()
+            ))
+        } else {
+            match timeout(left.min(STAGE_LIMIT), future).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(format!(
+                    "no answer within {} ms",
+                    left.min(STAGE_LIMIT).as_millis()
+                )),
+            }
+        };
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let (ok, detail) = match &outcome {
+            Ok((_, detail)) => (true, detail.clone()),
+            Err(detail) => (false, detail.clone()),
+        };
+        reports.push(StageReport {
+            stage,
+            ok,
+            elapsed_ms,
+            detail,
+        });
+        outcome
+    }
+
+    async fn run(mut self) -> Attempt {
+        let reports = self.stages().await;
+        Attempt::from_reports(
+            self.device,
+            self.channel,
+            unix_ms(),
+            reports,
+            self.started.elapsed().as_millis() as u64,
+        )
+    }
+
+    async fn stages(&mut self) -> Vec<StageReport> {
         let mut reports: Vec<StageReport> = Vec::with_capacity(STAGES.len());
 
-        let mut started = Instant::now();
+        let started = Instant::now();
         let token = match self.session.token.as_deref() {
             Some(token) if !token.trim().is_empty() => {
-                record(
-                    &mut reports,
-                    "cloud_login",
-                    started,
-                    Ok((
-                        (),
-                        format!(
-                            "the session carries the cloud token for {}",
-                            self.session.account
-                        ),
-                    )),
-                )
-                .ok();
+                reports.push(StageReport {
+                    stage: "cloud_login",
+                    ok: true,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    detail: "the session carries a cloud token".to_string(),
+                });
                 token.to_string()
             }
             _ => {
-                record::<()>(
-                    &mut reports,
-                    "cloud_login",
-                    started,
-                    Err("the session carries no cloud token; sign in again".to_string()),
-                )
-                .ok();
+                reports.push(StageReport {
+                    stage: "cloud_login",
+                    ok: false,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    detail: "the session carries no cloud token; sign in again".to_string(),
+                });
                 return reports;
             }
         };
 
-        started = Instant::now();
-        let entry = match record(
-            &mut reports,
-            "device_list",
-            started,
-            bounded(self.list(&token)).await,
-        ) {
+        let started = Instant::now();
+        let entry = match self
+            .bounded(&mut reports, "device_list", started, self.list(&token))
+            .await
+        {
             Ok((entry, _)) => entry,
             Err(_) => return reports,
         };
 
-        started = Instant::now();
-        let state = match record(
-            &mut reports,
-            "status_cluster",
-            started,
-            bounded(self.cluster(&entry)).await,
-        ) {
+        let started = Instant::now();
+        let state = match self
+            .bounded(
+                &mut reports,
+                "status_cluster",
+                started,
+                self.cluster(&entry),
+            )
+            .await
+        {
             Ok((state, _)) => state,
             Err(_) => return reports,
         };
@@ -257,49 +354,44 @@ impl Walk<'_> {
             session: rps::session_id(),
         };
 
-        started = Instant::now();
-        let agent = match record(
-            &mut reports,
-            "rps_access",
-            started,
-            bounded(self.assign(&entry, &state, &wire)).await,
-        ) {
+        let started = Instant::now();
+        let agent = match self
+            .bounded(
+                &mut reports,
+                "rps_access",
+                started,
+                self.assign(&entry, &state, &wire),
+            )
+            .await
+        {
             Ok((agent, _)) => agent,
             Err(_) => return reports,
         };
 
-        started = Instant::now();
-        let tunnel = match record(
-            &mut reports,
-            "tunnel",
-            started,
-            bounded(self.open(&entry, &agent, &wire)).await,
-        ) {
+        let started = Instant::now();
+        let tunnel = match self
+            .bounded(
+                &mut reports,
+                "tunnel",
+                started,
+                self.open(&entry, &agent, &wire),
+            )
+            .await
+        {
             Ok((tunnel, _)) => tunnel,
             Err(_) => return reports,
         };
 
-        started = Instant::now();
-        let mut connection = match record(
+        let started = Instant::now();
+        self.bounded(
             &mut reports,
             "dvrip_login",
             started,
-            bounded(self.login_device(&entry, tunnel)).await,
-        ) {
-            Ok((connection, _)) => connection,
-            Err(_) => return reports,
-        };
-
-        started = Instant::now();
-        record(
-            &mut reports,
-            "opmonitor_claim",
-            started,
-            bounded(self.claim(&mut connection)).await,
+            self.login_device(&entry, tunnel),
         )
+        .await
         .ok();
 
-        let _ = timeout(Duration::from_millis(400), connection.logout()).await;
         reports
     }
 
@@ -326,6 +418,11 @@ impl Walk<'_> {
             .unwrap_or("")
             .trim()
             .to_string();
+        if rps.is_empty() {
+            return Err(
+                "the device list carries no rps id, so the relay cannot be asked".to_string(),
+            );
+        }
         let device_token = found
             .extra
             .get("deviceToken")
@@ -366,11 +463,6 @@ impl Walk<'_> {
         state: &DeviceOnline,
         wire: &Wire,
     ) -> Result<(AgentServer, String), String> {
-        if entry.rps.is_empty() {
-            return Err(
-                "the device list carries no rps id, so no access server can be asked".to_string(),
-            );
-        }
         let (host, port) = state
             .access_server()
             .ok_or_else(|| format!("{} (no cluster reported an access server)", state.summary()))?;
@@ -442,29 +534,9 @@ impl Walk<'_> {
                     .unwrap_or_default()
             )
         };
+        let _ = self.high;
         Ok((connection, detail))
     }
-
-    async fn claim(&self, connection: &mut Connection) -> Result<((), String), String> {
-        let channel = self.channel.clamp(1, u32::from(u8::MAX)) as u8 - 1;
-        let stream = if self.high { "Main" } else { "Sub" };
-        connection
-            .claim_monitor(channel, stream)
-            .await
-            .map_err(|error| format!("the monitor claim was refused: {error}"))?;
-        Ok((
-            (),
-            format!("channel {} claimed on the {stream} stream", self.channel),
-        ))
-    }
-}
-
-fn status_host() -> String {
-    std::env::var("PROVIEW_STATUS_HOST")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| STATUS_HOST.to_string())
 }
 
 fn worth_walking(error: &ProviderError) -> bool {
@@ -480,25 +552,20 @@ fn worth_walking(error: &ProviderError) -> bool {
 
 async fn diagnose(
     cfg: &Config,
+    session: &str,
     vendor: &VendorSession,
     device: &str,
     channel: u32,
     high: bool,
 ) -> Attempt {
-    if let Some(previous) = ledger().fresh(device, WALK_COOLDOWN) {
+    let key = Key::new(device, channel);
+    let gate = ledger().gate(&key);
+    let _held = gate.lock().await;
+    if let Some(previous) = ledger().fresh(session, &key, WALK_COOLDOWN) {
         return previous;
     }
-    let attempt = Walk {
-        cfg,
-        session: vendor,
-        device,
-        channel,
-        high,
-        status_host: status_host(),
-    }
-    .run()
-    .await;
-    ledger().record(attempt.clone());
+    let attempt = Walk::new(cfg, vendor, device, channel, high).run().await;
+    ledger().record(session, attempt.clone());
     attempt
 }
 
@@ -552,7 +619,7 @@ pub async fn stream(
     let high = quality.as_deref() != Some("sub");
     let error = match router.stream(&vendor, &device, channel, high).await {
         Ok(ticket) => {
-            ledger().forget(&device);
+            ledger().forget(&device, channel);
             return Ok(Json(ticket));
         }
         Err(error) => error,
@@ -562,7 +629,7 @@ pub async fn stream(
         && router.source() == ProviderSource::Cloud
         && worth_walking(&error)
     {
-        Some(diagnose(cfg, &vendor, &device, channel, high).await)
+        Some(diagnose(cfg, &id, &vendor, &device, channel, high).await)
     } else {
         None
     };
@@ -576,8 +643,8 @@ pub async fn stream(
         stages: Vec::new(),
     };
     if let Some(attempt) = attempt {
-        body.stage = Some(attempt.stage);
-        body.detail = Some(attempt.detail);
+        body.stage = attempt.stage;
+        body.detail = attempt.stage.map(|_| attempt.detail.clone());
         body.elapsed_ms = Some(attempt.elapsed_ms);
         body.stages = attempt.stages;
     }
@@ -612,12 +679,17 @@ pub fn stats(
         frames,
         bytes,
         gaps,
-        attempts: ledger().attempts(),
+        attempts: ledger().attempts(&id),
     }))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
     use super::*;
 
     fn report(stage: &'static str, ok: bool) -> StageReport {
@@ -644,56 +716,178 @@ mod tests {
     }
 
     #[test]
-    fn the_failing_stage_is_the_first_one_without_a_pass() {
-        assert_eq!(first_unproven(&[]), "cloud_login");
+    fn only_a_report_that_failed_names_the_stage() {
+        assert_eq!(Attempt::failed_stage(&[]), None);
         assert_eq!(
-            first_unproven(&[report("cloud_login", true)]),
-            "device_list"
+            Attempt::failed_stage(&[report("cloud_login", true), report("device_list", true)]),
+            None
         );
         assert_eq!(
-            first_unproven(&[
+            Attempt::failed_stage(&[
                 report("cloud_login", true),
                 report("device_list", true),
                 report("status_cluster", false),
             ]),
-            "status_cluster"
+            Some("status_cluster")
         );
         let walked = STAGES
             .iter()
-            .take(7)
+            .take(6)
             .map(|stage| report(stage, true))
             .collect::<Vec<_>>();
-        assert_eq!(first_unproven(&walked), "first_frame");
+        assert_eq!(Attempt::failed_stage(&walked), None);
+        let attempt = Attempt::from_reports("cam", 1, unix_ms(), walked, 9);
+        assert_eq!(attempt.stage, None);
+        let json = serde_json::to_value(&attempt).expect("attempt json");
+        assert!(json.get("stage").is_none(), "{json}");
     }
 
     #[test]
-    fn a_failed_attempt_keeps_its_stages_and_counts_its_time() {
+    fn only_the_stages_the_walk_runs_are_reported() {
+        let stages = &STAGES[..6];
+        assert_eq!(stages.last().copied(), Some("dvrip_login"));
+        assert!(!stages.contains(&"opmonitor_claim"));
+        assert!(!stages.contains(&"first_frame"));
+    }
+
+    #[test]
+    fn a_ledger_entry_belongs_to_the_session_that_made_it() {
         let ledger = Ledger::new();
-        assert!(ledger.last("cam").is_none());
-        ledger.record(Attempt {
-            device: "cam".to_string(),
-            channel: 1,
-            at: unix_ms(),
-            stage: "tunnel",
-            detail: "the relay refused the session: ErrorNum 403".to_string(),
-            elapsed_ms: 41,
-            stages: vec![
-                report("cloud_login", true),
-                report("device_list", true),
-                report("status_cluster", true),
-                report("rps_access", true),
-                report("tunnel", false),
-            ],
-        });
-        assert_eq!(
-            ledger.last("cam").map(|attempt| attempt.stage),
-            Some("tunnel")
+        let key = Key::new("cam", 1);
+        ledger.record(
+            "session-a",
+            Attempt {
+                device: "cam".to_string(),
+                channel: 1,
+                at: unix_ms(),
+                stage: Some("tunnel"),
+                detail: "the relay refused the session: ErrorNum 403".to_string(),
+                elapsed_ms: 41,
+                stages: vec![report("cloud_login", true), report("tunnel", false)],
+            },
         );
-        assert!(ledger.fresh("cam", Duration::from_secs(30)).is_some());
-        assert!(ledger.fresh("cam", Duration::ZERO).is_none());
-        assert_eq!(ledger.attempts().len(), 1);
-        ledger.forget("cam");
-        assert!(ledger.attempts().is_empty());
+        assert_eq!(
+            ledger.last("session-a", &key).map(|attempt| attempt.stage),
+            Some(Some("tunnel"))
+        );
+        assert!(ledger.last("session-b", &key).is_none());
+        assert!(ledger
+            .fresh("session-a", &key, Duration::from_secs(30))
+            .is_some());
+        assert!(ledger.fresh("session-a", &key, Duration::ZERO).is_none());
+        assert!(ledger
+            .fresh("session-b", &key, Duration::from_secs(30))
+            .is_none());
+        assert!(ledger.last("session-a", &Key::new("cam", 4)).is_none());
+        assert_eq!(ledger.attempts("session-a").len(), 1);
+        assert!(ledger.attempts("session-b").is_empty());
+        ledger.forget("cam", 1);
+        assert!(ledger.attempts("session-a").is_empty());
+    }
+
+    async fn stub_cloud(requests: Arc<AtomicUsize>, devices: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("stub listener");
+        let address = listener.local_addr().expect("stub address");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let requests = requests.clone();
+                tokio::spawn(async move {
+                    let mut buffer = vec![0u8; 4096];
+                    let _ = socket.read(&mut buffer).await;
+                    requests.fetch_add(1, AtomicOrdering::SeqCst);
+                    let body = format!("{{\"code\":200,\"data\":{{\"mine\":{devices}}}}}");
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    #[tokio::test]
+    async fn four_parallel_failures_for_one_channel_share_a_single_walk() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = stub_cloud(requests.clone(), "[]").await;
+        let cfg = Config {
+            provider: ProviderKind::Proview,
+            cloud_base: base,
+            device_user: "admin".to_string(),
+            device_pass: "secret".to_string(),
+            fixture_dir: "fixtures".to_string(),
+            device_host: None,
+            device_rtsp: None,
+            device_onvif: None,
+            session_ttl_secs: 3600,
+        };
+        let session = VendorSession {
+            account: "parallel@example.invalid".to_string(),
+            token: Some("token".to_string()),
+        };
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let cfg = cfg.clone();
+            let session = session.clone();
+            handles.push(tokio::spawn(async move {
+                diagnose(&cfg, "parallel-session", &session, "parallel-cam", 4, true).await
+            }));
+        }
+        let mut stages = Vec::new();
+        for handle in handles {
+            let attempt = handle.await.expect("walk task");
+            assert_eq!(attempt.device, "parallel-cam");
+            assert_eq!(attempt.channel, 4);
+            stages.push(attempt.stage);
+        }
+        assert_eq!(requests.load(AtomicOrdering::SeqCst), 1);
+        assert!(
+            stages.iter().all(|stage| *stage == Some("device_list")),
+            "{stages:?}"
+        );
+        ledger().forget("parallel-cam", 4);
+    }
+
+    #[tokio::test]
+    async fn a_device_without_an_rps_id_fails_at_the_device_list_like_the_provider() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = stub_cloud(
+            requests.clone(),
+            r#"[{"uuid":"no-rps-cam","nickname":"No rps","channelNum":1}]"#,
+        )
+        .await;
+        let cfg = Config {
+            provider: ProviderKind::Proview,
+            cloud_base: base,
+            device_user: "admin".to_string(),
+            device_pass: "secret".to_string(),
+            fixture_dir: "fixtures".to_string(),
+            device_host: None,
+            device_rtsp: None,
+            device_onvif: None,
+            session_ttl_secs: 3600,
+        };
+        let session = VendorSession {
+            account: "rps@example.invalid".to_string(),
+            token: Some("token".to_string()),
+        };
+        let attempt = Walk::new(&cfg, &session, "no-rps-cam", 1, true).run().await;
+        assert_eq!(attempt.stage, Some("device_list"));
+        assert!(attempt.detail.contains("no rps id"), "{}", attempt.detail);
+        assert_eq!(attempt.stages.len(), 2);
+        assert_eq!(requests.load(AtomicOrdering::SeqCst), 1);
+        assert!(!attempt
+            .stages
+            .iter()
+            .any(|row| row.stage == "status_cluster"));
     }
 
     #[tokio::test]
@@ -713,17 +907,10 @@ mod tests {
             account: "walk@example.invalid".to_string(),
             token: Some("token".to_string()),
         };
-        let attempt = Walk {
-            cfg: &cfg,
-            session: &session,
-            device: "fixture-dev-0001",
-            channel: 1,
-            high: true,
-            status_host: "127.0.0.2".to_string(),
-        }
-        .run()
-        .await;
-        assert_eq!(attempt.stage, "device_list");
+        let attempt = Walk::new(&cfg, &session, "fixture-dev-0001", 1, true)
+            .run()
+            .await;
+        assert_eq!(attempt.stage, Some("device_list"));
         assert_eq!(attempt.stages.len(), 2);
         assert!(attempt.stages[0].ok);
         assert_eq!(attempt.stages[0].stage, "cloud_login");
@@ -731,12 +918,8 @@ mod tests {
         assert!(!attempt.stages[1].detail.is_empty());
     }
 
-    #[test]
-    fn a_session_without_a_token_stops_the_walk_before_any_call() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
+    #[tokio::test]
+    async fn a_session_without_a_token_stops_the_walk_before_any_call() {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: "http://127.0.0.1:1".to_string(),
@@ -752,18 +935,10 @@ mod tests {
             account: "walk@example.invalid".to_string(),
             token: None,
         };
-        let attempt = runtime.block_on(
-            Walk {
-                cfg: &cfg,
-                session: &session,
-                device: "fixture-dev-0001",
-                channel: 1,
-                high: true,
-                status_host: "127.0.0.2".to_string(),
-            }
-            .run(),
-        );
-        assert_eq!(attempt.stage, "cloud_login");
+        let attempt = Walk::new(&cfg, &session, "fixture-dev-0001", 1, true)
+            .run()
+            .await;
+        assert_eq!(attempt.stage, Some("cloud_login"));
         assert_eq!(attempt.stages.len(), 1);
         assert!(!attempt.stages[0].ok);
     }

@@ -24,6 +24,11 @@ Eight stages, always reported in this order:
 | `opmonitor_claim` | `Connection::claim_monitor` on the channel and stream |
 | `first_frame` | an access unit for the session arrived |
 
+The vocabulary is fixed; the walk reports a stage only when it makes that call.
+Today `provider/cloud.rs` stops after the device login, so the walk stops there
+too and `opmonitor_claim` and `first_frame` appear only once the provider sends
+those calls. A stage is never reported for a call the provider does not make.
+
 ## 2. Report shape
 
 One stage report is exactly:
@@ -50,11 +55,11 @@ An attempt carries the reports it actually produced:
 }
 ```
 
-`stage` is **the first stage the attempt did not complete**, in vocabulary
-order. A run that proves every stage before `first_frame` therefore reports
-`first_frame`: no frame arrived, which is what the page then says. A stage is
-never reported as passed because a later one was reached; each report is the
-outcome of its own call.
+`stage` is the stage of a report that **failed**, and it is absent when every
+report passed. A walk that proves all six stages the cloud path makes today
+answers `stage: null` and leaves the field out of the JSON; the provider's own
+message is then the only answer, because the provider is where the run stopped.
+`detail` follows `stage`: it is absent when `stage` is.
 
 `stages` holds only stages the walk executed, so its length is the evidence: a
 two-row list means the walk stopped at the second row.
@@ -76,13 +81,13 @@ failure, 404 for an unknown device, 401 for a lost session) and this body:
 }
 ```
 
-`message` is the provider's own error and stays for clients that only read it.
-`stage`, `detail`, `elapsed_ms` and `stages` appear only when a walk ran: a
-fixture or LAN provider has no cloud path to walk, and its failure keeps the
-older `{ok, message}` body.
+`message` is the provider's own error and always present. `elapsed_ms` and
+`stages` are present whenever a walk ran; `stage` and `detail` only when a
+stage failed. A fixture or LAN provider has no cloud path to walk, so its
+failure keeps the older `{ok, message}` body.
 
 `GET /api/live/stats` (session required) returns the hub counters plus the last
-attempt per device:
+attempt of **that session**:
 
 ```json
 {
@@ -96,8 +101,10 @@ attempt per device:
 ```
 
 `frames` and `bytes` are summed from the hub's `packets` and `bytes`;
-`gaps` is the hub's `drops`. `attempts` is one entry per device, newest
-first, and is empty until a stream has failed.
+`gaps` is the hub's `drops`. `attempts` is one entry per (device, channel)
+this session tried, newest first, and is empty until one of its streams failed.
+An attempt's owner is not serialised, so another session never sees the device
+ids, the account or the vendor words of a session it does not own.
 
 ## 4. When the walk runs, and how often
 
@@ -107,36 +114,55 @@ a credentials, expiry, unknown-device, not-implemented or misconfiguration
 error. Those five name their own cause and a walk would add vendor calls without
 adding an answer.
 
-A successful ticket drops the device's attempt, so `/api/live/stats` never
-shows a failure that a later attempt disproved.
+A successful ticket drops the attempt for that (device, channel), so
+`/api/live/stats` never shows a failure that a later attempt disproved.
 
-The vendor relay allows one session per device, so a walk for the same device is
-reused for 5 s (`WALK_COOLDOWN`) instead of opening a second relay session; the
-reused report keeps its original `at`. Every stage is bounded at 8 s
-(`STAGE_LIMIT`) and reports `no answer within 8000 ms` when the bound fires,
-so a wedged vendor cannot hold `/api/stream` open.
+The vendor relay allows one session per device, so a walk is single-flight per
+(device, channel): a second failure for the same pair waits for the walk already
+running and then reuses its report instead of opening a second relay session.
+The window is 5 s (`WALK_COOLDOWN`); a reused report keeps its original `at`.
+The whole walk shares one 8 s budget (`WALK_DEADLINE`); each stage takes what is
+left of it, capped at `STAGE_LIMIT` (8 s), and a stage that outlives the budget
+reports `the walk spent its 8000 ms budget before this stage`. A wedged vendor
+therefore cannot hold `/api/stream` open past that budget.
 
 ## 5. The walk, and what it duplicates
 
 `crates/core/src/provider/cloud.rs` walks these same calls inside `stream()`
 but answers one string, so a per-stage duration cannot be recovered from it.
-The walk in `routes/live.rs` therefore calls the same public primitives of
-`proview_core` — `cloud::envelope`, `cloud::status`, `provider::rps`,
-`provider::p2p`, `dvrip::client` — one stage at a time, and times each. It is
-a diagnostic second pass over a path that has just failed, not a second live
-path: it reads no media and closes the tunnel when it stops.
+The walk in `routes/live.rs` calls the same public `proview_core` primitives —
+`cloud::envelope`, `cloud::status`, `provider::rps`, `provider::p2p`,
+`dvrip::client` — in the same order and with the same arguments, one stage at a
+time, and times each. It stops where the provider stops: no monitor claim and no
+media read, so it never asks the device to stream into a tunnel that closes.
 
 When `provider/cloud.rs` grows a stage report of its own, the walk is deleted
 and this route reads that report; until then this is the only place a per-stage
 duration exists.
 
-`PROVIEW_STATUS_HOST` overrides the status cluster host for the walk
-(default `pub-status.secu100.net`), so a run can be pointed at a controlled
-host to prove which stage a failure lands in.
+## 5b. What the walk costs
+
+`/api/stream` on a stub cloud, three runs per cell, base `4d9ff07` against the
+lane head, same stub and same account:
+
+| Failure | base `4d9ff07` | lane head | Walk's share |
+|---|---|---|---|
+| cloud base refused | 1.38-1.77 ms | 1.05-1.08 ms | below the noise floor, one refused socket |
+| device list without an rps id | 2.79-2.98 ms | 3.26-4.40 ms | 0.5-1.4 ms, one extra device list |
+| stub ok, vendor status silent | 1.03-2.07 s | 2.05-4.02 s | 1.0-2.0 s, the walk repeats the status query |
+| 4 parallel calls, one channel | 4 stub calls, 3.09 s wall | 5 stub calls, 4.02 s wall | exactly one walk for all four |
+
+The third row is the worst case today and it is the vendor's status query, not
+the walk's bookkeeping. The 8 s budget caps a wedged vendor below that.
+
+The walk reads the status host from `STATUS_HOST`, the same constant the
+provider uses; the host is a field on the walk so a test can point it at a stub,
+and nothing in the running server changes it.
 
 ## 6. What the page shows
 
 The live page prints `Failed at <stage> after <ms> ms: <detail>` where it used
-to print "Camera offline", keeps the provider message in the tooltip line, and
-offers **Copy the stage detail**, which copies that line plus one line per stage
-with its own duration.
+to print "Camera offline", keeps the provider message in the tooltip line, lists
+the per-stage trail, and offers **Copy the stage detail**, which copies that line
+plus one line per stage with its own duration. When no stage failed the headline
+stays the provider's sentence and the trail still lists the stages that passed.

@@ -954,11 +954,11 @@ function stagePanel() {
 function renderStage(attempt) {
   const line = stagePanel();
   const button = el('well-stage-copy');
-  state.stage.attempt = attempt || null;
-  line.textContent = attempt ? stageTrailInline(attempt) : '';
+  state.stage.attempt = attempt && attempt.stages && attempt.stages.length ? attempt : null;
+  line.textContent = state.stage.attempt ? stageTrailInline(state.stage.attempt) : '';
   line.hidden = !attempt;
   if (button) {
-    button.hidden = !attempt;
+    button.hidden = !state.stage.attempt;
     button.textContent = 'Copy the stage detail';
   }
 }
@@ -968,7 +968,10 @@ async function copyStageDetail() {
   if (!attempt) {
     return;
   }
-  const text = stageLine(attempt) + '\n' + stageTrail(attempt);
+  const head = attempt.stage
+    ? stageLine(attempt)
+    : 'No stage failed; the provider stopped: ' + (attempt.message || 'no message');
+  const text = head + '\n' + stageTrail(attempt);
   const button = el('well-stage-copy');
   try {
     await navigator.clipboard.writeText(text);
@@ -1935,7 +1938,8 @@ async function requestStream() {
     if (sessionLost(error)) {
       return;
     }
-    const attempt = error.body && error.body.stage ? error.body : null;
+    const attempt =
+      error.body && Array.isArray(error.body.stages) && error.body.stages.length ? error.body : null;
     const base = explainStreamError(error, attempt);
     setStage('error', { text: base, code: error.message, stage: attempt });
     console.error('stream request failed', error);
