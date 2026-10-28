@@ -259,7 +259,7 @@ async function gridPlayTile(tile, view) {
     gridSetTileState(tile, 'offline');
     return;
   }
-  const player = new StreamPlayer(tile.querySelector('video'), (name, message) => gridSetTileState(tile, name, message));
+  const player = new StreamPlayer(tile.querySelector('video'), (name, message) => gridSetTileState(tile, name, message), () => state.muted);
   gridView.players.set(key, player);
   gridSetTileState(tile, 'loading');
   try {
