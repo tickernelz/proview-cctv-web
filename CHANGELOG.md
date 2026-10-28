@@ -69,6 +69,23 @@ stability before 1.0.
 
 ### Fixed
 
+- The password fallback after a stale device token opens its own tunnel instead of
+  reusing the socket the token login left behind. A token reply and a password
+  reply carry the same message id (`1001`), so a token reply that arrived after the
+  token loop gave up — or after the six 80 ms drains that used to run before the
+  fallback — was read as the password reply: the session belonged to the old login,
+  `AdminToken` was never issued, and the stream ran on a session the password never
+  owned. The tunnel setup in `CloudProvider::open_media` (status query,
+  `access_server`, `agent_request`, `assign`, `handshake_frame`, `tunnel::open`,
+  `accepted`) is one helper now, called again when a stored token fails, and
+  `drain_late_frames` is gone. Measured on the live relay: a second tunnel in one
+  viewer open is accepted with the same `session_id` (`ErrorNum 200`), the first
+  tunnel stays up and keeps its claim, `assign` costs 73–98 ms and the handshake
+  22–45 ms against the drain's 80 ms floor, and a stale token costs one extra tunnel
+  once, since the token is dropped. Against a peer that answers the token login
+  700 ms late — later than the whole drain — the pre-fix code returns a session
+  owned by the late reply and stores its `AdminToken`; the fixed code answers the
+  password login on the second connection.
 - A vendor token the cloud revokes is reported as a session that ended instead of
   a cloud failure. The device list answered code `-4004` as a plain rejection
   (`session expired; sign in again`), so the desktop watcher logged it at warn and
