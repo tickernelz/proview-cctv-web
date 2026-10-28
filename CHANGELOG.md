@@ -28,7 +28,7 @@ stability before 1.0.
   app able to close it, and the ticket it stored described a camera no screen
   was showing. The reply is now dropped when the stage no longer owns that
   player, and a `sourceopen` that arrives after `destroy()` opens no socket at
-  all. `tests/web/settings-boot.test.mjs` fails on 6c70754 and passes after
+  all. `tests/web/stream-orphan.test.mjs` fails on 6c70754 and passes after
   this change.
 
 ## 0.3.4 — 2026-10-28
