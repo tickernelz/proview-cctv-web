@@ -12,24 +12,40 @@ stability before 1.0.
 - Desktop alarm notifications and the tray. The desktop process polls the alarm
   centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
   native system notification per new alarm — device, event and time — so the
-  alarm arrives with the window minimized or closed to the tray. Ids already
-  announced are kept in `desktop-state.json`, so a restart posts nothing again,
-  and the first pass only records what is already in the last hour. A click
+  alarm arrives with the window minimized or closed to the tray. An alarm is
+  keyed by device serial, channel and id, since an id is a one-second local
+  timestamp that two cameras or two channels can share. What was announced is
+  kept in `desktop-state.json` and expired by the age of the alarm, never by the
+  number of entries, so an id cannot fall off a list and come back. A run — the
+  process starting with notifications on, or the switch turning on — treats what
+  arrived before it as history and posts one summary instead of a toast per
+  missed alarm; the first pass on a fresh install announces nothing. A click
   focuses the window and opens that alarm in the Alarm messages sheet where the
   platform reports clicks. The tray carries Open, Live and Quit; a left click on
-  it focuses the window. Closing the window keeps the app running (default) and
-  minimizing hides it (off by default), both switchable in Settings, and the
-  first close announces once that the app is still in the tray. A tray that
-  cannot be installed turns both behaviours off rather than hiding a window with
-  no way back. Four new keys, `PROVIEW_DESKTOP_ALARM_NOTIFY`,
+  it focuses the window, and a second launch focuses the running window instead
+  of starting a second server. Closing the window keeps the app running
+  (default), minimizing hides it (off by default), a macOS Dock click brings it
+  back, and the first close announces once that the app is still in the tray. A
+  tray that cannot be built — including a Linux box without the AppIndicator
+  library — turns both behaviours off rather than hiding a window with no way
+  back. Four new keys, `PROVIEW_DESKTOP_ALARM_NOTIFY`,
   `PROVIEW_DESKTOP_ALARM_INTERVAL`, `PROVIEW_DESKTOP_CLOSE_TO_TRAY` and
   `PROVIEW_DESKTOP_MINIMIZE_TO_TRAY`, sit under Settings → Configuration →
-  Desktop and are read by the shell, never exported into the environment.
-  `docs/desktop-notifications.md` records what a headless box measured (watcher
-  and dedupe tests, the app posting under Xvfb) and what it could not (a
-  notification or a click seen on Windows, macOS or a real Linux desktop).
+  Desktop, are read by the shell, never exported into the environment, and stay
+  out of the page on a self-hosted server.
+- `docs/desktop-notifications.md` records what a headless box measured (watcher,
+  dedupe and catch-up tests, the app posting and the page receiving its event
+  under Xvfb) and what it could not (a notification or a click seen on Windows,
+  macOS or a real Linux desktop, and cost per check on a real account).
 
 ### Changed
+
+- The desktop shell hands events to the page through `WebviewWindow::eval` and a
+  DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
+  remote origin, and a capability only covers the local one, so `event.listen`
+  was refused and a click never reached the sheet. The app therefore ships no
+  capability file at all; nothing on the page calls a Tauri command in this
+  feature.
 
 - The FCM row of `docs/parity.md` is `not needed` for the desktop build: the
   native notification path replaces the vendor push, which stays relevant only to

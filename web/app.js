@@ -2181,8 +2181,10 @@ function renderSettings(view) {
   host.replaceChildren();
   settingsInitial = new Map();
   settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
+  const inDesktop = Boolean(window.__TAURI__);
   const groups = new Map();
   for (const field of view.fields) {
+    if (field.group === 'Desktop' && !inDesktop) continue;
     if (!groups.has(field.group)) groups.set(field.group, []);
     groups.get(field.group).push(field);
   }
@@ -2900,16 +2902,12 @@ document.addEventListener('fullscreenchange', () => {
   renderFsLine();
 });
 
-if (window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen) {
-  window.__TAURI__.event
-    .listen('desktop://live', () => {
-      if (state.signedIn) {
-        showScreen('watch');
-        setView('live');
-      }
-    })
-    .catch(() => {});
-}
+window.addEventListener('desktop-live', () => {
+  if (state.signedIn) {
+    showScreen('watch');
+    setView('live');
+  }
+});
 
 state.muted = state.prefs.muted;
 state.lensView = state.prefs.lens;

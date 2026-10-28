@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { startServer, startBrowser, signIn } from './cdp.mjs';
 
 const DEVICES = [{ id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 }];
+const SHELL = ['window.__TAURI__ = { core: { invoke: () => Promise.reject(new Error("no ipc in this test")) } };'];
 
 let server;
 let browser;
@@ -22,12 +23,11 @@ after(async () => {
 
 const idOf = (key) => 'setting-' + key.toLowerCase().replace(/_/g, '-');
 
-async function openSettings() {
-  const page = await browser.page();
+async function openSettings(init = SHELL) {
+  const page = await browser.page({ init });
   await signIn(page, server.base);
   await page.goto(server.base + '/?signed-in#settings/config');
-  await page.wait("!document.getElementById('settings').hidden", 'the Settings screen', 20000);
-  await page.wait("document.getElementById('setting-proview-desktop-alarm-notify') !== null", 'the Desktop settings group', 20000);
+  await page.wait(init.length ? "document.getElementById('setting-proview-desktop-alarm-notify') !== null" : "document.getElementById('setting-proview-device-host') !== null", 'the settings fields', 20000);
   return page;
 }
 
@@ -70,6 +70,45 @@ test('a switched toggle is saved as on or off through the same settings call', a
     assert.equal(value('PROVIEW_DESKTOP_ALARM_NOTIFY'), 'on');
     assert.equal(value('PROVIEW_DESKTOP_CLOSE_TO_TRAY'), 'off');
     assert.equal(await page.evaluate(checked('proview_desktop_alarm_notify')), true, 'the switch keeps its state after the save');
+  } finally {
+    await page.close();
+  }
+});
+
+test('the desktop group stays out of the way on a self-hosted page', async () => {
+  const page = await openSettings([]);
+  try {
+    const hasDesktop = await page.evaluate("document.getElementById('setting-proview-desktop-alarm-notify') !== null");
+    assert.equal(hasDesktop, false, 'nothing reads these keys outside the desktop shell');
+  } finally {
+    await page.close();
+  }
+});
+
+test('a desktop alarm event opens the sheet on that camera', async () => {
+  const page = await browser.page({ init: SHELL });
+  try {
+    await signIn(page, server.base);
+    await page.wait("document.getElementById('alarm-bell') !== null || document.querySelector('.alarm-bell') !== null", 'the alarm bell', 20000);
+    await page.evaluate(
+      "window.dispatchEvent(new CustomEvent('desktop-alarm', { detail: { id: '261027171005', serial: 'gate', channel: '0', device: 'Gate camera', event: 'Motion', time: '2026-10-27 17:10:05', utcTime: 1793095807 } }))",
+    );
+    await page.wait("document.querySelector('.alarm-sheet') && !document.querySelector('.alarm-sheet').hidden", 'the alarm sheet', 15000);
+    const chosen = await page.evaluate("document.querySelector('[data-device]').value");
+    assert.equal(chosen, 'gate', 'the sheet follows the camera the alarm came from');
+  } finally {
+    await page.close();
+  }
+});
+
+test('a desktop live event brings the live view back', async () => {
+  const page = await browser.page({ init: SHELL });
+  try {
+    await signIn(page, server.base);
+    await page.evaluate("location.hash = '#settings/config'; document.getElementById('open-settings').click()");
+    await page.wait("!document.getElementById('settings').hidden", 'the settings screen', 15000);
+    await page.evaluate("window.dispatchEvent(new CustomEvent('desktop-live'))");
+    await page.wait("!document.getElementById('watch').hidden", 'the live screen', 15000);
   } finally {
     await page.close();
   }

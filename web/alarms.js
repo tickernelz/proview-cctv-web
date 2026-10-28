@@ -16,8 +16,7 @@
     focusShown: '',
   };
 
-  const desktop = () =>
-    Boolean(window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen);
+  const desktop = () => Boolean(window.__TAURI__);
 
   const css = document.createElement('style');
   css.textContent = [
@@ -356,9 +355,7 @@
     if (document.visibilityState === 'visible' && signedIn()) poll();
     else schedule();
   });
-  if (desktop()) {
-    window.__TAURI__.event.listen('desktop://alarm', (event) => focusAlarm(event.payload)).catch(() => {});
-  }
+  window.addEventListener('desktop-alarm', (event) => focusAlarm(event.detail));
   window.addEventListener('load', sync);
   if (document.readyState !== 'loading') sync();
 })();

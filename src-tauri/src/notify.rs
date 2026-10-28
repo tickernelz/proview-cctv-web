@@ -3,10 +3,11 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
 use proview_server::desktop::DesktopAlarm;
-use tauri::{AppHandle, Emitter, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::{ActionPerformed, NotificationExt};
 
-pub const OPEN_ALARM_EVENT: &str = "desktop://alarm";
+pub const ALARM_EVENT: &str = "desktop-alarm";
 
 static NEXT_ID: AtomicI32 = AtomicI32::new(1);
 
@@ -25,6 +26,20 @@ pub fn install(app: &AppHandle) -> Result<(), tauri_plugin_notification::Error> 
     })
 }
 
+pub fn dispatch(app: &AppHandle, name: &str, payload: impl Serialize) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let (Ok(name), Ok(payload)) = (serde_json::to_string(name), serde_json::to_string(&payload))
+    else {
+        return;
+    };
+    let script = format!("window.dispatchEvent(new CustomEvent({name}, {{ detail: {payload} }}));");
+    if let Err(error) = window.eval(&script) {
+        tracing::warn!(%error, event = %name, "could not hand the event to the page");
+    }
+}
+
 fn on_tap(app: &AppHandle, action: &ActionPerformed) {
     let Some(notification) = action.notification() else {
         return;
@@ -38,11 +53,8 @@ fn on_tap(app: &AppHandle, action: &ActionPerformed) {
             .and_then(|mut map| map.remove(&id))
     });
     crate::tray::focus_main(app);
-    let Some(alarm) = alarm else {
-        return;
-    };
-    if let Err(error) = app.emit_to("main", OPEN_ALARM_EVENT, &alarm) {
-        tracing::warn!(%error, alarm = %alarm.id, "could not hand the alarm to the window");
+    if let Some(alarm) = alarm {
+        dispatch(app, ALARM_EVENT, alarm);
     }
 }
 
@@ -62,6 +74,24 @@ pub fn post(app: &AppHandle, alarm: &DesktopAlarm) {
     } else {
         alarm.time.trim().to_string()
     };
+    show(app, id, &title, &body);
+    tracing::info!(alarm = %alarm.id, device = %alarm.device, "notification posted");
+}
+
+pub fn post_message(app: &AppHandle, title: &str, body: &str) {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    show(app, id, title, body);
+    tracing::info!(title, "notification posted");
+}
+
+pub fn summary(app: &AppHandle, count: usize) {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let title = format!("{count} alarm while PROVIEW was closed");
+    show(app, id, &title, "Open the alarm sheet to review them.");
+    tracing::info!(count, "notification posted");
+}
+
+fn show(app: &AppHandle, id: i32, title: &str, body: &str) {
     let shown = app
         .notification()
         .builder()
@@ -69,15 +99,6 @@ pub fn post(app: &AppHandle, alarm: &DesktopAlarm) {
         .title(title)
         .body(body)
         .show();
-    tracing::info!(alarm = %alarm.id, device = %alarm.device, "notification posted");
-    if let Err(error) = shown {
-        tracing::warn!(%error, alarm = %alarm.id, "the system did not take the notification");
-    }
-}
-
-pub fn post_message(app: &AppHandle, title: &str, body: &str) {
-    let shown = app.notification().builder().title(title).body(body).show();
-    tracing::info!(title, "notification posted");
     if let Err(error) = shown {
         tracing::warn!(%error, title, "the system did not take the notification");
     }

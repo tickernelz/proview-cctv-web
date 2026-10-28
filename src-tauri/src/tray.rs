@@ -1,10 +1,9 @@
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
+use tauri_plugin_notification::NotificationExt;
 
-use crate::shell::DesktopShell;
-
-pub const LIVE_EVENT: &str = "desktop://live";
+pub const LIVE_EVENT: &str = "desktop-live";
 
 fn icon(app: &AppHandle) -> Option<tauri::image::Image<'_>> {
     app.default_window_icon()
@@ -12,7 +11,40 @@ fn icon(app: &AppHandle) -> Option<tauri::image::Image<'_>> {
         .or_else(|| tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).ok())
 }
 
-pub fn install(app: &AppHandle) -> tauri::Result<()> {
+#[cfg(target_os = "linux")]
+fn tray_library() -> Option<&'static str> {
+    const NAMES: [&str; 4] = [
+        "libayatana-appindicator3.so.1",
+        "libayatana-appindicator3.so",
+        "libappindicator3.so.1",
+        "libappindicator3.so",
+    ];
+    NAMES
+        .into_iter()
+        .find(|name| unsafe { libloading::Library::new(name) }.is_ok())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn tray_library() -> Option<&'static str> {
+    Some("system")
+}
+
+pub fn install(app: &AppHandle) -> Result<(), String> {
+    let library = tray_library().ok_or_else(|| {
+        "libayatana-appindicator3 is not installed, so the tray cannot be built".to_string()
+    })?;
+    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(app)));
+    match built {
+        Ok(Ok(())) => {
+            tracing::info!(library, "tray icon installed");
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("the tray backend panicked while building".to_string()),
+    }
+}
+
+fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
     let live = MenuItem::with_id(app, "live", "Live", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -28,9 +60,7 @@ pub fn install(app: &AppHandle) -> tauri::Result<()> {
             "open" => focus_main(app),
             "live" => {
                 focus_main(app);
-                if let Err(error) = app.emit_to("main", LIVE_EVENT, ()) {
-                    tracing::warn!(%error, "could not reach the window");
-                }
+                crate::notify::dispatch(app, LIVE_EVENT, ());
             }
             "quit" => app.exit(0),
             _ => {}
@@ -61,7 +91,7 @@ pub fn focus_main(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
-pub fn hint_once(app: &AppHandle, shell: &DesktopShell) {
+pub fn hint_once(app: &AppHandle, shell: &crate::shell::DesktopShell) {
     let first = match shell.state.lock() {
         Ok(mut state) => {
             if state.tray_hint {
@@ -78,9 +108,15 @@ pub fn hint_once(app: &AppHandle, shell: &DesktopShell) {
     }
     shell.save();
     tracing::info!("the window moved to the tray for the first time");
-    crate::notify::post_message(
-        app,
-        "PROVIEW CCTV is still running",
-        "The window is in the tray. Open it from the tray icon, or Quit from its menu.",
-    );
+    let id = 0;
+    let shown = app
+        .notification()
+        .builder()
+        .id(id)
+        .title("PROVIEW CCTV is still running")
+        .body("The window is in the tray. Open it from the tray icon, or Quit from its menu.")
+        .show();
+    if let Err(error) = shown {
+        tracing::warn!(%error, "the system did not take the notification");
+    }
 }

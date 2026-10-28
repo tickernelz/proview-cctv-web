@@ -4,17 +4,37 @@ use std::path::Path;
 use proview_server::desktop::DesktopAlarm;
 use serde::{Deserialize, Serialize};
 
-const KEEP: usize = 500;
+pub const OVERLAP_SECS: i64 = 120;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeenAlarm {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub utc_time: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    Silent,
+    Notify { cutoff: i64 },
+}
+
+#[derive(Debug, Default)]
+pub struct Batch {
+    pub fresh: Vec<DesktopAlarm>,
+    pub skipped: usize,
+    pub changed: bool,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopState {
     #[serde(default)]
-    pub seen: Vec<String>,
+    pub seen: Vec<SeenAlarm>,
     #[serde(default)]
     pub last_seen: i64,
-    #[serde(default)]
-    pub baseline_done: bool,
     #[serde(default)]
     pub tray_hint: bool,
 }
@@ -37,25 +57,43 @@ impl DesktopState {
         std::fs::rename(&staged, path)
     }
 
-    pub fn absorb(&mut self, entries: &[DesktopAlarm]) -> Vec<DesktopAlarm> {
-        let notify = self.baseline_done;
-        let mut fresh = Vec::new();
+    pub fn absorb(
+        &mut self,
+        entries: &[DesktopAlarm],
+        policy: Policy,
+        floor: i64,
+        now: i64,
+    ) -> Batch {
+        let before = self.seen.len();
+        self.seen.retain(|seen| seen.utc_time >= floor);
+        let mut batch = Batch {
+            changed: self.seen.len() != before,
+            ..Batch::default()
+        };
+        let ceiling = now + OVERLAP_SECS;
         for entry in entries {
-            if self.seen.iter().any(|seen| seen == &entry.id) {
+            let key = entry.key();
+            if self.seen.iter().any(|seen| seen.key == key) {
                 continue;
             }
-            self.seen.push(entry.id.clone());
-            if self.seen.len() > KEEP {
-                let drop = self.seen.len() - KEEP;
-                self.seen.drain(..drop);
-            }
-            self.last_seen = self.last_seen.max(entry.utc_time);
-            if notify {
-                fresh.push(entry.clone());
+            self.seen.push(SeenAlarm {
+                key,
+                utc_time: entry.utc_time,
+            });
+            self.last_seen = self.last_seen.max(entry.utc_time.min(ceiling));
+            batch.changed = true;
+            match policy {
+                Policy::Silent => batch.skipped += 1,
+                Policy::Notify { cutoff } => {
+                    if entry.utc_time < cutoff {
+                        batch.skipped += 1;
+                    } else {
+                        batch.fresh.push(entry.clone());
+                    }
+                }
             }
         }
-        self.baseline_done = true;
-        fresh
+        batch
     }
 }
 
@@ -63,15 +101,20 @@ impl DesktopState {
 mod tests {
     use super::*;
 
-    fn alarm(id: &str, utc_time: i64) -> DesktopAlarm {
+    fn alarm(serial: &str, channel: &str, id: &str, utc_time: i64) -> DesktopAlarm {
         DesktopAlarm {
             id: id.to_string(),
-            serial: "DEV0001".to_string(),
+            serial: serial.to_string(),
+            channel: channel.to_string(),
             device: "Gate".to_string(),
             event: "Motion".to_string(),
             time: "2026-10-28 01:02:03".to_string(),
             utc_time,
         }
+    }
+
+    fn gate(id: &str, utc_time: i64) -> DesktopAlarm {
+        alarm("DEV0001", "0", id, utc_time)
     }
 
     fn temp(tag: &str) -> std::path::PathBuf {
@@ -84,28 +127,40 @@ mod tests {
     #[test]
     fn the_first_pass_records_and_the_next_new_alarm_posts_once() {
         let mut state = DesktopState::default();
-        let baseline = vec![alarm("a1", 10), alarm("a2", 11)];
-        assert!(
-            state.absorb(&baseline).is_empty(),
-            "the first pass only marks what is already there"
-        );
+        let baseline = vec![gate("a1", 10), gate("a2", 11)];
+        let quiet = state.absorb(&baseline, Policy::Silent, 0, 100);
+        assert!(quiet.fresh.is_empty(), "the first pass only records");
+        assert_eq!(quiet.skipped, 2);
         assert_eq!(state.last_seen, 11);
-        let fresh = state.absorb(&[alarm("a2", 11), alarm("a3", 12)]);
-        assert_eq!(fresh.len(), 1, "only what arrived after the baseline");
-        assert_eq!(fresh[0].id, "a3");
-        assert!(
-            state.absorb(&[alarm("a3", 12)]).is_empty(),
-            "the same id does not post twice"
+        let fresh = state.absorb(
+            &[gate("a2", 11), gate("a3", 12)],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            100,
         );
+        assert_eq!(fresh.fresh.len(), 1, "only what arrived after the baseline");
+        assert_eq!(fresh.fresh[0].id, "a3");
+        let again = state.absorb(
+            &[gate("a3", 12)],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            100,
+        );
+        assert!(again.fresh.is_empty(), "the same key does not post twice");
     }
 
     #[test]
     fn an_empty_first_pass_still_ends_the_baseline() {
         let mut state = DesktopState::default();
-        assert!(state.absorb(&[]).is_empty());
-        let fresh = state.absorb(&[alarm("a1", 10)]);
+        assert!(state.absorb(&[], Policy::Silent, 0, 100).fresh.is_empty());
+        let fresh = state.absorb(
+            &[gate("a1", 10)],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            100,
+        );
         assert_eq!(
-            fresh.len(),
+            fresh.fresh.len(),
             1,
             "an install with no alarms still announces the first one"
         );
@@ -115,31 +170,116 @@ mod tests {
     fn a_restart_with_a_saved_state_does_not_replay_old_alarms() {
         let path = temp("restart");
         let mut state = DesktopState::default();
-        state.absorb(&[alarm("a1", 10)]);
+        state.absorb(&[gate("a1", 10)], Policy::Silent, 0, 100);
         state.save(&path).expect("save");
         let mut reloaded = DesktopState::load(&path);
-        let replay = reloaded.absorb(&[alarm("a1", 10), alarm("a2", 12)]);
+        let replay = reloaded.absorb(
+            &[gate("a1", 10), gate("a2", 12)],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            100,
+        );
         assert_eq!(
-            replay.len(),
+            replay.fresh.len(),
             1,
             "only the alarm that arrived after the restart"
         );
-        assert_eq!(replay[0].id, "a2");
+        assert_eq!(replay.fresh[0].id, "a2");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
-    fn the_seen_list_stays_bounded() {
+    fn thirty_alarms_from_before_this_run_produce_one_summary_and_no_toast() {
+        let path = temp("downtime");
         let mut state = DesktopState::default();
-        let many: Vec<DesktopAlarm> = (0..KEEP + 40)
-            .map(|index| alarm(&format!("a{index}"), index as i64))
+        state.absorb(&[gate("first", 6_000_000)], Policy::Silent, 0, 6_000_000);
+        state.save(&path).expect("save");
+        let mut reloaded = DesktopState::load(&path);
+        let run_start = 6_003_600;
+        let cutoff = run_start - 60 - OVERLAP_SECS;
+        let missed: Vec<DesktopAlarm> = (0..30)
+            .map(|index| gate(&format!("m{index}"), 6_000_000 + index * 60))
             .collect();
-        state.absorb(&many);
-        assert_eq!(state.seen.len(), KEEP);
+        let batch = reloaded.absorb(&missed, Policy::Notify { cutoff }, 0, run_start);
         assert!(
-            !state.seen.contains(&"a0".to_string()),
-            "the oldest ids fall off"
+            batch.fresh.is_empty(),
+            "a run that starts after a downtime must not toast every missed alarm"
         );
-        assert!(state.seen.contains(&format!("a{}", KEEP + 39)));
+        assert_eq!(batch.skipped, 30, "the summary counts them instead");
+        let during_run = reloaded.absorb(
+            &[gate("live", run_start + 5)],
+            Policy::Notify { cutoff },
+            0,
+            run_start,
+        );
+        assert_eq!(
+            during_run.fresh.len(),
+            1,
+            "what happens during the run toasts"
+        );
+    }
+
+    #[test]
+    fn two_devices_that_share_an_alarm_id_both_post() {
+        let mut state = DesktopState::default();
+        state.absorb(&[], Policy::Silent, 0, 100);
+        let batch = state.absorb(
+            &[
+                alarm("DEV0001", "0", "261027171005", 10),
+                alarm("DEV0002", "0", "261027171005", 10),
+            ],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            100,
+        );
+        assert_eq!(batch.fresh.len(), 2, "the key carries the device serial");
+    }
+
+    #[test]
+    fn a_window_full_of_alarms_does_not_let_an_id_come_back() {
+        let mut state = DesktopState::default();
+        state.absorb(&[], Policy::Silent, 0, 100_000);
+        let window: Vec<DesktopAlarm> = (0..600)
+            .map(|index| gate(&format!("a{index}"), 90_000 + index))
+            .collect();
+        let first = state.absorb(&window, Policy::Notify { cutoff: i64::MIN }, 0, 100_000);
+        assert_eq!(
+            first.fresh.len(),
+            600,
+            "every alarm in the window posts once"
+        );
+        let second = state.absorb(&window, Policy::Notify { cutoff: i64::MIN }, 0, 100_000);
+        assert!(
+            second.fresh.is_empty(),
+            "nothing comes back however many alarms the window holds"
+        );
+        assert_eq!(state.seen.len(), 600);
+    }
+
+    #[test]
+    fn the_watermark_never_moves_past_the_check_time() {
+        let mut state = DesktopState::default();
+        let now = 1_000;
+        state.absorb(
+            &[gate("future", now + 100_000)],
+            Policy::Notify { cutoff: i64::MIN },
+            0,
+            now,
+        );
+        assert_eq!(
+            state.last_seen,
+            now + OVERLAP_SECS,
+            "one device with a clock far ahead cannot push the window past every other device"
+        );
+    }
+
+    #[test]
+    fn a_seen_alarm_older_than_the_floor_is_forgotten() {
+        let mut state = DesktopState::default();
+        state.absorb(&[gate("old", 10)], Policy::Silent, 0, 100);
+        assert_eq!(state.seen.len(), 1);
+        let batch = state.absorb(&[], Policy::Silent, 50, 100);
+        assert!(batch.changed, "dropping an entry is a change worth saving");
+        assert!(state.seen.is_empty(), "the floor is the window start");
     }
 }
