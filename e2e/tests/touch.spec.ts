@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Locator } from '@playwright/test'
 import { playing, scenarioUrl, signIn } from './app'
+import { overflowFindings, smallTargets, walkScreens } from './layout'
 
 const SCREENS: Record<string, (page: Page) => Promise<Locator[]>> = {
   signin: async (page) => {
@@ -27,18 +28,16 @@ const SCREENS: Record<string, (page: Page) => Promise<Locator[]>> = {
   },
 }
 
-test('a coarse pointer gets 44 px targets on every top bar and stream control', async ({ page }) => {
-  await signIn(page, 'many')
-  await playing(page)
+test('a coarse pointer gets 44 px targets and no overflow on every screen and overlay', async ({ page }) => {
+  test.setTimeout(120_000)
   expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true)
-  const small = await page.evaluate(() =>
-    [...document.querySelectorAll<HTMLElement>('#watch .topbar button, #controls button')]
-      .filter((node) => node.offsetParent !== null)
-      .map((node) => ({ id: node.dataset.testid || node.id || node.className, box: node.getBoundingClientRect() }))
-      .filter(({ box }) => box.width < 44 || box.height < 44)
-      .map(({ id, box }) => id + ' ' + Math.round(box.width) + 'x' + Math.round(box.height)),
-  )
-  expect(small).toEqual([])
+  const findings: string[] = []
+  await walkScreens(page, async (state) => {
+    const found = [...(await smallTargets(page)).map((line) => 'small ' + line), ...(await overflowFindings(page))]
+    console.log(`RESULT ${test.info().project.name} | ${state} | ${found.length ? 'fail: ' + found.join('; ') : 'pass'}`)
+    findings.push(...found.map((line) => state + ': ' + line))
+  })
+  expect(findings).toEqual([])
 })
 
 for (const [name, open] of Object.entries(SCREENS)) {

@@ -1,5 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
-import { scenarioUrl, signIn, playing } from './app'
+import { test, expect } from '@playwright/test'
+import { signIn } from './app'
+import { overflowFindings, walkScreens } from './layout'
 
 const VIEWPORTS = [
   { width: 320, height: 568 },
@@ -15,57 +16,18 @@ const VIEWPORTS = [
   { width: 1920, height: 1080 },
 ]
 
-const SCREENS: Record<string, (page: Page) => Promise<void>> = {
-  signin: async (page) => {
-    await page.goto(scenarioUrl('one'))
-    await expect(page.getByTestId('signin')).toBeVisible()
-  },
-  live: async (page) => {
-    await signIn(page, 'one')
-    await playing(page)
-  },
-  devices: async (page) => {
-    await signIn(page, 'many')
-    await expect(page.getByTestId('live')).toBeVisible()
-  },
-  grid: async (page) => {
-    await signIn(page, 'many')
-    await page.getByTestId('grid-toggle').click()
-    await expect(page.getByTestId('grid-tile')).toHaveCount(5)
-  },
-  settings: async (page) => {
-    await signIn(page, 'one')
-    await page.getByTestId('open-settings').click()
-    await expect(page.getByTestId('settings')).toBeVisible()
-  },
-}
-
-async function overflow(page: Page) {
-  return page.evaluate(() => {
-    const root = document.scrollingElement as HTMLElement
-    const width = root.clientWidth
-    const wide = [...document.querySelectorAll<HTMLElement>('body *')]
-      .filter((node) => {
-        if (!node.offsetParent && getComputedStyle(node).position !== 'fixed') return false
-        const box = node.getBoundingClientRect()
-        return box.width > 0 && (box.right > width + 1 || box.left < -1)
-      })
-      .slice(0, 5)
-      .map((node) => (node.dataset.testid || node.id || node.className || node.tagName) + '@' + Math.round(node.getBoundingClientRect().right))
-    return { scroll: root.scrollWidth, client: width, wide }
-  })
-}
-
-for (const [name, open] of Object.entries(SCREENS)) {
-  for (const viewport of VIEWPORTS) {
-    test(`${name} has no horizontal scroll at ${viewport.width}x${viewport.height}`, async ({ page }) => {
-      await page.setViewportSize(viewport)
-      await open(page)
-      const seen = await overflow(page)
-      expect(seen.scroll, JSON.stringify(seen)).toBeLessThanOrEqual(seen.client)
-      expect(seen.wide, JSON.stringify(seen)).toEqual([])
+for (const viewport of VIEWPORTS) {
+  test(`every screen and overlay stays inside ${viewport.width}x${viewport.height}`, async ({ page }) => {
+    test.setTimeout(120_000)
+    await page.setViewportSize(viewport)
+    const findings: string[] = []
+    await walkScreens(page, async (state) => {
+      const found = await overflowFindings(page)
+      console.log(`RESULT ${test.info().project.name} ${viewport.width}x${viewport.height} | ${state} | ${found.length ? 'fail: ' + found.join('; ') : 'pass'}`)
+      findings.push(...found.map((line) => state + ': ' + line))
     })
-  }
+    expect(findings).toEqual([])
+  })
 }
 
 for (const [width, columns] of [
