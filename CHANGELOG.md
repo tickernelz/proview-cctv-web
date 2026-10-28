@@ -150,6 +150,16 @@ stability before 1.0.
   now keeps what arrived in a buffer that survives a cancelled read and hands a
   frame out only once its header and declared body have both arrived, which also
   covers the settings and control reads that share the type.
+- Recorded playback no longer stops after the primed frames when the device
+  pauses mid-frame. `playback::Session::recv` read the header and the body with
+  the same two exact reads, and the clip route stops priming on a 3 s read
+  deadline and then keeps that session for the rest of the window; a frame cut
+  short by the deadline left its body to be read as the next header, decode
+  failed and the pump ended. The session now keeps arrived bytes in a buffer
+  that outlives a cancelled read, so the pump picks up the interrupted frame
+  where the prime loop stopped. Two tests stall past an 80 ms deadline in the
+  middle of a header and of a body before finishing the frame: both fail with
+  `early eof` on the old reader and pass on the new one.
 
 ## 0.3.5 — 2026-10-28
 
