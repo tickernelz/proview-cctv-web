@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { nextTick, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
 import { sessionLost, state as page } from '../legacy/app.js'
@@ -30,8 +30,6 @@ const launcher = addLauncher({
   onClick: () => (open.value ? close() : show()),
 })
 
-const cameraName = computed(() => cameras.value.find((camera) => camera.id === form.device)?.name || form.device)
-
 function localDay() {
   const now = new Date()
   return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
@@ -42,14 +40,9 @@ async function show() {
   launcher.pressed = true
   await nextTick()
   dayInput.value?.focus()
-  try {
-    cameras.value = await api<Camera[]>('/api/devices')
-    const wanted = cameras.value.find((camera) => camera.id === page.selectedId) || cameras.value[0]
-    if (!cameras.value.some((camera) => camera.id === form.device)) form.device = wanted ? wanted.id : ''
-  } catch (error) {
-    if (sessionLost(error)) return close(false)
-    fail(error)
-  }
+  cameras.value = page.devices as Camera[]
+  const wanted = cameras.value.find((camera) => camera.id === page.selectedId) || cameras.value[0]
+  if (!cameras.value.some((camera) => camera.id === form.device)) form.device = wanted ? wanted.id : ''
 }
 
 function close(returnFocus = true) {
@@ -69,14 +62,17 @@ async function load() {
   if (result.phase === 'loading') return
   result.phase = 'loading'
   result.recordings = []
-  const query = new URLSearchParams({ day: form.day, channel: '0' })
+  const day = form.day
+  const camera = cameras.value.find((entry) => entry.id === form.device)?.name || form.device
+  const query = new URLSearchParams({ day, channel: '0' })
   if (form.device) query.set('device', form.device)
   try {
     const listing = await api<Listing>('/api/recordings?' + query.toString())
     result.recordings = listing.recordings || []
-    result.message = result.recordings.length
-      ? result.recordings.length + (result.recordings.length === 1 ? ' clip' : ' clips')
-      : listing.notice || 'No cloud clips for ' + cameraName.value + ' on ' + form.day + '.'
+    const count = result.recordings.length
+    result.message = count
+      ? [count + (count === 1 ? ' clip' : ' clips'), camera, day].filter(Boolean).join(' · ')
+      : listing.notice || 'No cloud clips for ' + camera + ' on ' + day + '.'
     result.phase = 'done'
   } catch (error) {
     if (sessionLost(error)) return close(false)

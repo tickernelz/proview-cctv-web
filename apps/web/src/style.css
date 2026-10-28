@@ -163,7 +163,6 @@ kbd { display: inline-block; min-width: 18px; padding: 1px var(--s1); border-rad
 .btn { min-height: max(40px, var(--hit)); padding: 0 var(--s4); border-radius: var(--r-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); font-size: var(--t-15); transition: opacity var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease), filter var(--dur-1) var(--ease); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .btn[aria-busy="true"] { opacity: 0.7; cursor: progress; }
-.btn[aria-busy="true"] { cursor: progress; }
 .btn-fill { background: var(--accent); color: var(--accent-ink); font-weight: 500; }
 .btn-fill:hover:not(:disabled) { filter: brightness(1.08); }
 .auth-form .btn-fill { width: 100%; }

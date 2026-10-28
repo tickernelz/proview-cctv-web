@@ -60,7 +60,7 @@ test('Load shows that it is loading, lists the clips, and sends one request', as
   release()
   await expect(panel.getByTestId('recordings-item')).toHaveCount(2)
   await expect(panel.getByTestId('recordings-item').first()).toHaveText('2026-10-27 08:00:001m 35s · 3.1 MB')
-  await expect(page.getByTestId('recordings-status')).toHaveText('2 clips')
+  await expect(page.getByTestId('recordings-status')).toHaveText('2 clips · Gate camera · 2026-10-27')
   await expect(load).toHaveAttribute('aria-busy', 'false')
   await expect(load).toHaveText('Load')
   await expect(load).toBeFocused()
@@ -76,6 +76,58 @@ test('an empty day says so for the chosen camera and day', async ({ page }) => {
   await page.getByTestId('recordings-load').click()
   await expect(page.getByTestId('recordings-status')).toHaveText('No cloud clips for Gate camera on 2026-10-26.')
   await expect(page.getByTestId('recordings-list')).toHaveCount(0)
+})
+
+test('the answer names the camera and day that were asked, even when the form changed while loading', async ({ page }) => {
+  const requests: string[] = []
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  await page.route(/\/api\/recordings\?/, async (route) => {
+    requests.push(new URL(route.request().url()).search)
+    await held
+    await route.fulfill({ json: { recordings: [] } })
+  })
+  await signIn(page, 'many')
+  await playing(page)
+  await openPanel(page)
+  await expect(page.getByTestId('recordings-camera')).toHaveValue('gate')
+  await page.getByTestId('recordings-day').fill('2026-10-26')
+  await page.getByTestId('recordings-load').click()
+  await expect(page.getByTestId('recordings-load')).toHaveAttribute('aria-busy', 'true')
+  await page.getByTestId('recordings-camera').selectOption('porch')
+  await page.getByTestId('recordings-day').fill('2026-10-20')
+  release()
+  await expect(page.getByTestId('recordings-status')).toHaveText('No cloud clips for Gate camera on 2026-10-26.')
+  expect(requests).toEqual(['?day=2026-10-26&channel=0&device=gate'])
+})
+
+test('opening Cloud again does not ask the server for the camera list', async ({ page }) => {
+  await signIn(page, 'many')
+  await playing(page)
+  let devices = 0
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/devices') devices += 1
+  })
+  for (let round = 0; round < 3; round += 1) {
+    await openPanel(page)
+    await expect(page.getByTestId('recordings-camera').locator('option')).toHaveCount(5)
+    await page.getByTestId('recordings-close').click()
+    await expect(page.getByTestId('recordings-panel')).toBeHidden()
+  }
+  expect(devices).toBe(0)
+})
+
+test('Escape in the panel over the device sheet closes only the panel', async ({ page }) => {
+  await signIn(page, 'one')
+  await playing(page)
+  const panel = await openPanel(page)
+  await page.evaluate(() => (window as unknown as { proviewDeviceAdmin: { open(): void } }).proviewDeviceAdmin.open())
+  const sheet = page.locator('#device-admin')
+  await expect(sheet).toBeVisible()
+  await page.getByTestId('recordings-day').focus()
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(sheet).toBeVisible()
 })
 
 test('a failed load is an error with the server reason, not a grey note', async ({ page }) => {
