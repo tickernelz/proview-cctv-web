@@ -274,7 +274,7 @@ impl CloudProvider {
             let Ok(Ok((header, payload))) = frame else {
                 break;
             };
-            if header.id != crate::dvrip::msg::LOGIN {
+            if header.id != crate::dvrip::msg::LOGIN_REPLY {
                 continue;
             }
             let body = crate::media::dhav::trim_nul(&payload);
@@ -1420,7 +1420,10 @@ mod login_tests {
                         MONITOR_CLAIM_REPLY,
                         json_reply(serde_json::json!({ "Ret": 100 })),
                     ),
-                    (msg::LOGIN, json_reply(serde_json::json!({ "Ret": 999 }))),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 999 })),
+                    ),
                 ];
             }
             Vec::new()
@@ -1437,37 +1440,28 @@ mod login_tests {
     }
 
     #[tokio::test]
-    async fn a_late_login_reply_is_drained_before_the_password_login() {
+    async fn the_password_login_skips_a_late_claim_reply() {
         let (address, peer) = serve_scripted(|_, id, _| {
-            if id == msg::MONITOR {
-                return vec![(
-                    msg::LOGIN,
-                    json_reply(serde_json::json!({
-                        "Ret": 100,
-                        "AdminToken": "STALE",
-                        "SessionID": "0x11111111"
-                    })),
-                )];
-            }
             if id == msg::LOGIN {
-                return vec![(
-                    msg::LOGIN,
-                    json_reply(serde_json::json!({
-                        "Ret": 100,
-                        "AdminToken": "REAL",
-                        "SessionID": "0x22222222"
-                    })),
-                )];
+                return vec![
+                    (
+                        MONITOR_CLAIM_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 100 })),
+                    ),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "REAL",
+                            "SessionID": "0x22222222"
+                        })),
+                    ),
+                ];
             }
             Vec::new()
         })
         .await;
         let mut connection = connect(&address).await;
-        connection
-            .send_plain(msg::MONITOR_CHANNEL, msg::MONITOR, &serde_json::json!({}))
-            .await
-            .expect("seed the late reply");
-        CloudProvider::drain_late_frames(&mut connection).await;
         let reply = connection
             .login_reply("admin", "pass")
             .await
@@ -1476,5 +1470,82 @@ mod login_tests {
         assert_eq!(connection.session(), 0x2222_2222);
         drop(connection);
         peer.await.expect("peer task");
+    }
+
+    #[tokio::test]
+    async fn device_login_falls_back_with_the_password_reply_not_the_token_one() {
+        let serial = "zha4173-stale-token";
+        let dir = std::env::temp_dir().join("zha4173-login-tests-tokens");
+        std::fs::create_dir_all(&dir).expect("token dir");
+        let mut provider = provider();
+        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir));
+        provider
+            .tokens
+            .put(serial, "expired-token")
+            .expect("stored token");
+        std::env::set_var("PROVIEW_DEVICE_SERIAL", serial);
+        std::env::set_var("PROVIEW_DEVICE_USER", "admin");
+        std::env::set_var("PROVIEW_DEVICE_PASS", "secret");
+        let entry = crate::cloud::types::CloudDevice {
+            uuid: serial.to_string(),
+            nickname: String::new(),
+            username: "admin".to_string(),
+            code: None,
+            model: None,
+            channel: None,
+            channel_num: None,
+            extra: serde_json::Map::new(),
+        };
+
+        let (address, peer) = serve_scripted(|_, id, body| {
+            if id == msg::MONITOR {
+                return vec![(
+                    MONITOR_CLAIM_REPLY,
+                    json_reply(serde_json::json!({ "Ret": 100 })),
+                )];
+            }
+            if id == msg::LOGIN {
+                if body.first() == Some(&b'{') {
+                    return vec![(
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "REAL",
+                            "SessionID": "0x22222222"
+                        })),
+                    )];
+                }
+                return vec![
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 106 })),
+                    ),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "STALE",
+                            "SessionID": "0x11111111"
+                        })),
+                    ),
+                ];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        let note = provider
+            .device_login(&mut connection, &entry)
+            .await
+            .expect("the password login finishes the session");
+        std::env::remove_var("PROVIEW_DEVICE_SERIAL");
+        std::env::remove_var("PROVIEW_DEVICE_USER");
+        std::env::remove_var("PROVIEW_DEVICE_PASS");
+        assert!(note.contains("password login ret 100"), "{note}");
+        assert!(note.contains("token dropped"), "{note}");
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+        peer.await.expect("peer task");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
