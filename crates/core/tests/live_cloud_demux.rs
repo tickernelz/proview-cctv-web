@@ -309,7 +309,7 @@ fn ffprobe(path: &std::path::Path, extra: &[&str]) -> Option<String> {
 }
 
 #[test]
-fn the_keyed_cloud_bodies_demux_to_the_plain_capture() {
+fn live_cloud_keyed_bodies_demux_to_the_plain_capture() {
     let plain = drain(&mut LiveDemux::new(), &fixture(PLAIN));
     let mut keyed = LiveDemux::keyed(MATERIAL).expect("material");
     let keyed_es = drain(&mut keyed, &fixture(KEYED));
@@ -369,7 +369,7 @@ fn the_keyed_cloud_bodies_demux_to_the_plain_capture() {
 }
 
 #[test]
-fn the_fmp4_carries_an_hvc1_track_and_one_fragment_per_gop() {
+fn live_cloud_fmp4_carries_an_hvc1_track_and_one_fragment_per_gop() {
     let mut keyed = LiveDemux::keyed(MATERIAL).expect("material");
     let es = drain(&mut keyed, &fixture(KEYED));
     let mp4 = fmp4(&es, 12);
@@ -415,7 +415,7 @@ fn the_fmp4_carries_an_hvc1_track_and_one_fragment_per_gop() {
 }
 
 #[test]
-fn the_demuxed_cloud_stream_becomes_an_fmp4_that_ffprobe_reads() {
+fn live_cloud_fmp4_is_read_by_ffprobe() {
     let mut keyed = LiveDemux::keyed(MATERIAL).expect("material");
     let es = drain(&mut keyed, &fixture(KEYED));
     let mp4 = fmp4(&es, 12);
