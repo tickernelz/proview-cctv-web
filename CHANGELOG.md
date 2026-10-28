@@ -58,6 +58,22 @@ stability before 1.0.
 
 ### Fixed
 
+- A vendor token the cloud revokes is reported as a session that ended instead of
+  a cloud failure. The device list answered code `-4004` as a plain rejection
+  (`session expired; sign in again`), so the desktop watcher logged it at warn and
+  never posted its pause notification, while a route that reads the device list
+  answered `502` on the provider path and `400` on the routes that call the client
+  themselves. `msdlistCode` now yields `CloudError::Expired`, the variant `refresh`
+  already returned, and every route that reads the device list answers `401`:
+  `GET /api/devices`, `GET /api/cloud-path`, `GET /api/recordings` and
+  `GET /api/stream` where those answered `502`, and
+  `GET /api/cloud/device-attributes`, `GET /api/cloud/alarms` and its picture
+  route where those answered `400`. A live attempt on `GET /api/stream` now stops
+  at that error instead of running the diagnostic walk, so its failure body carries
+  no `stage`, `detail`, `elapsed_ms` or `stages`. The watcher reads the check as
+  `AlarmReadError::SignedOut` and posts the same single pause notification per
+  span. The vendor token is a 30-day JWT, so the path is reached only when the
+  cloud revokes it before the hour-long session store expires.
 - A desktop alarm check that loses the session no longer goes quiet. The shared
   session expires `PROVIEW_SESSION_TTL` seconds after sign-in (an hour by
   default) and reading it does not renew it, so an app kept in the tray stopped
