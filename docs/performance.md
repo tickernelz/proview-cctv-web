@@ -474,5 +474,7 @@ Settings no longer counts as signing out: the last answer, the seen ids and
 the picture probe result are kept, and coming back checks only when the last
 check is older than `pollSeconds` (otherwise the remaining time is scheduled).
 Main stopped its timer on Settings and restarted the full 20 s on return, so a
-user moving between Live and Settings saw no check at all there. e2e at this change: 177 passed, 1 skipped, 1.5 min locally; node web
-tests 46/46.
+user moving between Live and Settings saw no check at all there.
+
+e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
+46/46.
