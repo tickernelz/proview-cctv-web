@@ -1,25 +1,21 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { PER_BROWSER, type Scenario } from '../scenarios.mjs'
 
 export const ACCOUNT = { email: 'fixture@example.invalid', password: 'fixture-password' }
 
 const servers = JSON.parse(process.env.PROVIEW_E2E_SERVERS ?? '{}') as Record<string, string>
 
-export const serverFor0 = (scenario: Scenario) => servers[scenario] + '/'
-
-async function serverFor(scenario: Scenario, page: Page): Promise<string> {
-  let name: string = scenario
-  if (PER_BROWSER.includes(scenario)) {
-    const agent = await page.evaluate(() => navigator.userAgent)
-    name = scenario + '-' + (/Chrome\//.test(agent) ? 'chromium' : 'webkit')
-  }
+function serverBase(scenario: Scenario): string {
+  const name = PER_BROWSER.includes(scenario) ? scenario + '-' + test.info().project.name : scenario
   const base = servers[name]
   if (!base) throw new Error('no fixture server named ' + name + '; the global setup did not run')
   return base
 }
 
+export const scenarioUrl = (scenario: Scenario) => serverBase(scenario) + '/'
+
 export async function signIn(page: Page, scenario: Scenario): Promise<string> {
-  const base = await serverFor(scenario, page)
+  const base = serverBase(scenario)
   await page.goto(base + '/')
   const status = await page.evaluate(
     (account) =>

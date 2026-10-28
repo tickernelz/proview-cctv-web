@@ -1,8 +1,8 @@
-import { test, expect, type Page } from '@playwright/test'
-import { ACCOUNT, serverFor0, signIn } from './app'
+import { test, expect } from '@playwright/test'
+import { ACCOUNT, scenarioUrl, signIn } from './app'
 
 test('signing in with the fixture account opens Live on the first camera', async ({ page }) => {
-  await page.goto(serverFor0('one'))
+  await page.goto(scenarioUrl('one'))
   await expect(page.getByTestId('signin')).toBeVisible()
   await page.getByTestId('signin-email').fill(ACCOUNT.email)
   await page.getByTestId('signin-password').fill(ACCOUNT.password)
@@ -13,7 +13,7 @@ test('signing in with the fixture account opens Live on the first camera', async
 })
 
 test('a wrong password answers 401 and keeps the form with the reason', async ({ page }) => {
-  await page.goto(serverFor0('one'))
+  await page.goto(scenarioUrl('one'))
   await page.getByTestId('signin-email').fill(ACCOUNT.email)
   await page.getByTestId('signin-password').fill('not-the-password')
   const [reply] = await Promise.all([page.waitForResponse('**/api/login'), page.getByTestId('signin-submit').click()])
