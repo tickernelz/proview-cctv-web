@@ -268,9 +268,56 @@ impl Provider for CloudProvider {
                 }
             }
         };
-        let _ = (channel, high, StreamKind::Rtsp);
+        let device_channel = channel.saturating_sub(1) as u8;
+        let stream = if high { "Main" } else { "Sub" };
+        let session = connection.session();
+        let session_id = format!("0x{session:08x}");
+        let claim = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Claim",
+                "Parameter": {
+                    "Channel": device_channel,
+                    "CombinMode": "CONNECT_ALL",
+                    "StreamType": stream,
+                    "TransMode": "TCP",
+                },
+            },
+            "SessionID": session_id,
+        });
+        connection
+            .send_plain(
+                crate::dvrip::msg::MONITOR_CHANNEL,
+                crate::dvrip::msg::MONITOR,
+                &claim,
+            )
+            .await
+            .map_err(|error| ProviderError::Upstream(format!("monitor claim failed: {error:?}")))?;
+        let start = crate::media::live::start_body(session, device_channel, stream);
+        connection
+            .send_plain(0, crate::dvrip::msg::MONITOR_START, &start)
+            .await
+            .map_err(|error| ProviderError::Upstream(format!("monitor start failed: {error:?}")))?;
+
+        let mut demux = crate::media::live::LiveDemux::new();
+        let mut bytes = 0usize;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while std::time::Instant::now() < deadline {
+            let frame =
+                tokio::time::timeout(std::time::Duration::from_secs(3), connection.recv()).await;
+            match frame {
+                Ok(Ok((header, payload))) if header.id == crate::media::live::LIVE_MEDIA_ID => {
+                    bytes += demux.push(&payload).len();
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        let stats = demux.stats();
+        let _ = (login, StreamKind::Rtsp);
         Err(ProviderError::Upstream(format!(
-            "live media is not wired yet: relay accepted for {dest}, {login}, cipher and start pending"
+            "live media from the cloud relay for {dest}: {} keyframes, {} deltas, {} dropped, {bytes} elementary bytes",
+            stats.keyframes, stats.deltas, stats.dropped
         )))
     }
 
