@@ -269,6 +269,26 @@ fn fmp4(es: &[u8], fps: u32) -> Vec<u8> {
     out
 }
 
+fn top_level(data: &[u8]) -> Vec<([u8; 4], usize)> {
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    while at + 8 <= data.len() {
+        let len = u32::from_be_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]) as usize;
+        if len < 8 || at + len > data.len() {
+            break;
+        }
+        let mut kind = [0u8; 4];
+        kind.copy_from_slice(&data[at + 4..at + 8]);
+        out.push((kind, len));
+        at += len;
+    }
+    out
+}
+
+fn find(data: &[u8], needle: &[u8]) -> Option<usize> {
+    data.windows(needle.len()).position(|w| w == needle)
+}
+
 fn ffprobe(path: &std::path::Path, extra: &[&str]) -> Option<String> {
     let output = Command::new("ffprobe")
         .args(["-v", "error"])
@@ -345,6 +365,52 @@ fn the_keyed_cloud_bodies_demux_to_the_plain_capture() {
         6,
         3,
         4
+    ));
+}
+
+#[test]
+fn the_fmp4_carries_an_hvc1_track_and_one_fragment_per_gop() {
+    let mut keyed = LiveDemux::keyed(MATERIAL).expect("material");
+    let es = drain(&mut keyed, &fixture(KEYED));
+    let mp4 = fmp4(&es, 12);
+
+    let kinds: Vec<String> = top_level(&mp4)
+        .iter()
+        .map(|(kind, _)| String::from_utf8_lossy(kind).to_string())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["ftyp", "moov", "moof", "mdat", "moof", "mdat"],
+        "an init segment and one fragment per GOP"
+    );
+
+    let stsd = find(&mp4, b"stsd").expect("a sample description box");
+    assert_eq!(
+        &mp4[stsd + 16..stsd + 20],
+        b"hvc1",
+        "the first sample entry names HEVC"
+    );
+    let width = u16::from_be_bytes([mp4[stsd + 44], mp4[stsd + 45]]);
+    let height = u16::from_be_bytes([mp4[stsd + 46], mp4[stsd + 47]]);
+    assert_eq!((width, height), (1280, 720));
+
+    let hvcc = find(&mp4, b"hvcC").expect("an hvcC configuration box");
+    let config = &mp4[hvcc..];
+    for kind in [32u8, 33, 34] {
+        assert!(
+            config.windows(2).any(|pair| pair == [0x80 | kind, 0x00]),
+            "hvcC names the parameter set array {kind}"
+        );
+    }
+
+    let samples: usize = top_level(&mp4)
+        .iter()
+        .filter(|(kind, _)| kind == b"moof")
+        .count();
+    report(&format!(
+        "live_cloud structure: mp4={} boxes={} hvc1={width}x{height} fragments={samples}",
+        mp4.len(),
+        kinds.len()
     ));
 }
 
