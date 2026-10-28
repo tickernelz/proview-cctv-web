@@ -132,6 +132,7 @@ async function api(path, options = {}) {
     const error = new Error(message);
     error.status = response.status;
     if (body && body.code) error.code = body.code;
+    if (body) error.body = body;
     throw error;
   }
   return body;
@@ -399,9 +400,16 @@ async function signedIn() {
   state.signedIn = true;
   state.account = me.account || null;
   el('account').textContent = state.account || 'Signed in';
-  showScreen('watch');
+  if (state.screen !== 'settings') {
+    showScreen('watch');
+  }
   await loadMode();
   await loadDevices();
+  if (state.screen === 'settings') {
+    stopAll();
+    renderSettingsChrome();
+    return;
+  }
   route(location.hash, false);
 }
 
@@ -746,6 +754,7 @@ function setStage(name, detail = {}) {
   const code = name === 'error' && detail.code ? detail.code : '';
   el('well-code').hidden = !code;
   el('well-code').textContent = code;
+  renderStage(name === 'error' ? detail.stage : null);
   el('well-actions').hidden = name !== 'error';
   el('check-password').hidden = !(name === 'error' && /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || '')));
   el('record').disabled = name !== 'playing';
@@ -904,7 +913,90 @@ async function cloudPathDetail(deviceId) {
   }
 }
 
-function explainStreamError(error) {
+function stageLine(attempt) {
+  return 'Failed at ' + attempt.stage + ' after ' + attempt.elapsed_ms + ' ms: ' + attempt.detail;
+}
+
+function stageTrailInline(attempt) {
+  return (
+    'Stages: ' +
+    (attempt.stages || [])
+      .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' ' + entry.elapsed_ms + ' ms')
+      .join(' · ')
+  );
+}
+
+function stageTrail(attempt) {
+  return (attempt.stages || [])
+    .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' in ' + entry.elapsed_ms + ' ms: ' + entry.detail)
+    .join('\n');
+}
+
+function stagePanel() {
+  let line = el('well-stage');
+  if (!line) {
+    line = document.createElement('p');
+    line.className = 'mono';
+    line.id = 'well-stage';
+    const code = el('well-code');
+    if (code && code.parentNode) {
+      code.parentNode.insertBefore(line, code.nextSibling);
+    }
+  }
+  if (!el('well-stage-copy')) {
+    const button = document.createElement('button');
+    button.className = 'btn btn-text inv';
+    button.id = 'well-stage-copy';
+    button.type = 'button';
+    button.textContent = 'Copy the stage detail';
+    button.addEventListener('click', copyStageDetail);
+    const actions = el('well-actions');
+    if (actions) {
+      actions.appendChild(button);
+    }
+  }
+  return line;
+}
+
+function renderStage(attempt) {
+  const line = stagePanel();
+  const button = el('well-stage-copy');
+  state.stage.attempt = attempt && attempt.stages && attempt.stages.length ? attempt : null;
+  line.textContent = state.stage.attempt ? stageTrailInline(state.stage.attempt) : '';
+  line.hidden = !attempt;
+  if (button) {
+    button.hidden = !state.stage.attempt;
+    button.textContent = 'Copy the stage detail';
+  }
+}
+
+async function copyStageDetail() {
+  const attempt = state.stage.attempt;
+  if (!attempt) {
+    return;
+  }
+  const head = attempt.stage
+    ? stageLine(attempt)
+    : 'No stage failed; the provider stopped: ' + (attempt.message || 'no message');
+  const text = head + '\n' + stageTrail(attempt);
+  const button = el('well-stage-copy');
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button) {
+      button.textContent = 'Copied';
+      window.setTimeout(() => {
+        button.textContent = 'Copy the stage detail';
+      }, 2000);
+    }
+  } catch (error) {
+    setControlStatus('The browser refused the clipboard: ' + error.message);
+  }
+}
+
+function explainStreamError(error, attempt) {
+  if (attempt && attempt.stage) {
+    return stageLine(attempt);
+  }
   if (error.status === 501) {
     return 'Live video is not wired yet: the device transport is still being built, so there is no frame to show.';
   }
@@ -1853,8 +1945,10 @@ async function requestStream() {
     if (sessionLost(error)) {
       return;
     }
-    const base = explainStreamError(error);
-    setStage('error', { text: base, code: error.message });
+    const attempt =
+      error.body && Array.isArray(error.body.stages) && error.body.stages.length ? error.body : null;
+    const base = explainStreamError(error, attempt);
+    setStage('error', { text: base, code: error.message, stage: attempt });
     console.error('stream request failed', error);
     if (error.status === 501 && camera.device) {
       const deviceId = camera.device.id;
@@ -1865,6 +1959,7 @@ async function requestStream() {
         setStage('error', {
           text: base + ' Cloud reach: ' + detail + '.',
           code: error.message,
+          stage: attempt,
         });
       });
     }
@@ -2175,9 +2270,35 @@ function setSettingsStatus(message, bad = false) {
   box.classList.toggle('warn-text', bad);
 }
 
-function renderSettings(view) {
+function settingsCaret() {
+  const active = document.activeElement;
+  if (!active || !active.dataset || !active.dataset.key || !active.closest('#settings-fields')) {
+    return null;
+  }
+  const caret =
+    typeof active.selectionStart === 'number' ? { start: active.selectionStart, end: active.selectionEnd } : null;
+  return { key: active.dataset.key, caret };
+}
+
+function restoreSettingsCaret(focus) {
+  const input = document.querySelector('#settings-fields [data-key="' + focus.key + '"]');
+  if (!input) {
+    return;
+  }
+  input.focus();
+  if (!focus.caret) {
+    return;
+  }
+  try {
+    input.setSelectionRange(focus.caret.start, focus.caret.end);
+  } catch {}
+}
+
+function renderSettings(view, options = {}) {
   settingsView = view;
   const host = el('settings-fields');
+  const typed = options.reset ? new Map() : new Map(Object.entries(settingsPayload()));
+  const focus = options.reset ? null : settingsCaret();
   host.replaceChildren();
   settingsInitial = new Map();
   settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
@@ -2271,6 +2392,15 @@ function renderSettings(view) {
       settingsInitial.set(field.key, { secret: field.secret, set: field.set, value: input.value });
     }
   }
+  for (const [key, value] of typed) {
+    const input = host.querySelector('[data-key="' + key + '"]');
+    if (input) {
+      input.value = value;
+    }
+  }
+  if (focus) {
+    restoreSettingsCaret(focus);
+  }
   renderSaveBar();
 }
 
@@ -2288,9 +2418,14 @@ function settingsPayload() {
   return payload;
 }
 
+function desktopControl() {
+  const control = window.__PROVIEW_DESKTOP__;
+  return control && typeof control.token === 'string' && control.token ? control : null;
+}
+
 function renderSaveBar() {
   const changed = Object.keys(settingsPayload()).length;
-  const restart = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  const restart = Boolean(desktopControl());
   el('settings-discard').hidden = changed === 0;
   el('settings-save').hidden = changed === 0;
   el('settings-restart').hidden = !(changed === 0 && pendingRestart > 0 && restart);
@@ -2350,7 +2485,7 @@ async function saveSettings() {
   try {
     const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
     pendingRestart += keys.filter((key) => settingsRestartKeys.has(key)).length;
-    renderSettings(view);
+    renderSettings(view, { reset: true });
     setSettingsStatus('Saved ' + keys.length + ' field' + (keys.length === 1 ? '' : 's') + ' to ' + (view.path || 'this run') + '.');
   } catch (error) {
     setSettingsStatus('Could not save: ' + error.message, true);
@@ -2384,15 +2519,19 @@ function showSection(name, focus) {
   }
 }
 
-function openSettings(section, options = {}) {
-  stopAll();
-  showScreen('settings');
+function renderSettingsChrome() {
   el('settings-back-label').textContent = state.signedIn ? 'Live' : 'Sign in';
-  showSection(section || state.section, options.focus);
-  renderPrefsIntoForm();
   renderMode();
   renderCameraInfo();
   renderControlAvailability();
+}
+
+function openSettings(section, options = {}) {
+  stopAll();
+  showScreen('settings');
+  showSection(section || state.section, options.focus);
+  renderPrefsIntoForm();
+  renderSettingsChrome();
   loadSettings();
   if (!options.focus) {
     el('settings-back').focus();
@@ -2692,6 +2831,9 @@ el('signout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST' });
   } catch {}
   state.stage.lastFrameAt = 0;
+  if (settingsView) {
+    renderSettings(settingsView, { reset: true });
+  }
   showSignin();
   await loadMode();
 });
@@ -2703,7 +2845,7 @@ el('settings-back').addEventListener('click', () => leaveSettings());
 el('settings-save').addEventListener('click', () => saveSettings());
 el('settings-discard').addEventListener('click', () => {
   if (settingsView) {
-    renderSettings(settingsView);
+    renderSettings(settingsView, { reset: true });
   }
 });
 el('settings-fields').addEventListener('input', () => renderSaveBar());
@@ -2712,7 +2854,13 @@ el('settings-restart').addEventListener('click', async () => {
   const button = el('settings-restart');
   setBusy(button, true, 'Restarting…');
   try {
-    await window.__TAURI__.core.invoke('restart_app');
+    await api('/api/desktop/restart', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-proview-desktop-token': desktopControl().token,
+      },
+    });
   } catch (error) {
     setSettingsStatus('Could not restart: ' + error.message, true);
     setBusy(button, false, '');

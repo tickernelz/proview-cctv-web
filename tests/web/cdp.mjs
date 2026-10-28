@@ -183,7 +183,7 @@ export async function startBrowser(extraArgs = []) {
         await call('Fetch.enable', { patterns: intercept.patterns });
         listeners.add(async (data) => {
           if (data.sessionId !== sessionId || data.method !== 'Fetch.requestPaused') return;
-          const answer = await intercept.respond(data.params.request.url);
+          const answer = await intercept.respond(data.params.request.url, data.params.request);
           const raw = answer && answer.raw;
           const headers = raw
             ? [

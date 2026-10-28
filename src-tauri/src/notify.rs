@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 
-use proview_server::desktop::DesktopAlarm;
+use proview_server::desktop_alarms::DesktopAlarm;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_notification::{ActionPerformed, NotificationExt};
@@ -11,9 +11,29 @@ pub const ALARM_EVENT: &str = "desktop-alarm";
 
 static NEXT_ID: AtomicI32 = AtomicI32::new(1);
 
+enum Target {
+    Alarm(DesktopAlarm),
+    Sheet,
+}
+
 #[derive(Default)]
 pub struct Pending {
-    alarms: Mutex<HashMap<i32, DesktopAlarm>>,
+    targets: Mutex<HashMap<i32, Target>>,
+}
+
+impl Pending {
+    fn remember(&self, id: i32, target: Target) {
+        if let Ok(mut map) = self.targets.lock() {
+            if map.len() >= 128 {
+                map.clear();
+            }
+            map.insert(id, target);
+        }
+    }
+
+    fn take(&self, id: i32) -> Option<Target> {
+        self.targets.lock().ok().and_then(|mut map| map.remove(&id))
+    }
 }
 
 pub fn install(app: &AppHandle) -> Result<(), tauri_plugin_notification::Error> {
@@ -44,29 +64,21 @@ fn on_tap(app: &AppHandle, action: &ActionPerformed) {
     let Some(notification) = action.notification() else {
         return;
     };
-    let id = notification.id();
-    let alarm = app.try_state::<Pending>().and_then(|pending| {
-        pending
-            .alarms
-            .lock()
-            .ok()
-            .and_then(|mut map| map.remove(&id))
-    });
+    let target = app
+        .try_state::<Pending>()
+        .and_then(|pending| pending.take(notification.id()));
     crate::tray::focus_main(app);
-    if let Some(alarm) = alarm {
-        dispatch(app, ALARM_EVENT, alarm);
+    match target {
+        Some(Target::Alarm(alarm)) => dispatch(app, ALARM_EVENT, alarm),
+        Some(Target::Sheet) => dispatch(app, ALARM_EVENT, Option::<DesktopAlarm>::None),
+        None => {}
     }
 }
 
 pub fn post(app: &AppHandle, alarm: &DesktopAlarm) {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     if let Some(pending) = app.try_state::<Pending>() {
-        if let Ok(mut map) = pending.alarms.lock() {
-            if map.len() >= 128 {
-                map.clear();
-            }
-            map.insert(id, alarm.clone());
-        }
+        pending.remember(id, Target::Alarm(alarm.clone()));
     }
     let title = format!("{} · {}", alarm.device, alarm.event);
     let body = if alarm.time.trim().is_empty() {
@@ -86,7 +98,14 @@ pub fn post_message(app: &AppHandle, title: &str, body: &str) {
 
 pub fn summary(app: &AppHandle, count: usize) {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let title = format!("{count} alarm while PROVIEW was closed");
+    if let Some(pending) = app.try_state::<Pending>() {
+        pending.remember(id, Target::Sheet);
+    }
+    let title = if count == 1 {
+        "1 alarm came in while PROVIEW was not watching".to_string()
+    } else {
+        format!("{count} alarms came in while PROVIEW was not watching")
+    };
     show(app, id, &title, "Open the alarm sheet to review them.");
     tracing::info!(count, "notification posted");
 }

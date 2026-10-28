@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use proview_server::desktop::DesktopAlarm;
+use proview_server::desktop_alarms::DesktopAlarm;
 use serde::{Deserialize, Serialize};
 
 pub const OVERLAP_SECS: i64 = 120;
@@ -35,6 +35,8 @@ pub struct DesktopState {
     pub seen: Vec<SeenAlarm>,
     #[serde(default)]
     pub last_seen: i64,
+    #[serde(default)]
+    pub baseline_done: bool,
     #[serde(default)]
     pub tray_hint: bool,
 }
@@ -72,6 +74,9 @@ impl DesktopState {
         };
         let ceiling = now + OVERLAP_SECS;
         for entry in entries {
+            if entry.utc_time < floor {
+                continue;
+            }
             let key = entry.key();
             if self.seen.iter().any(|seen| seen.key == key) {
                 continue;
@@ -93,6 +98,7 @@ impl DesktopState {
                 }
             }
         }
+        self.baseline_done = true;
         batch
     }
 }
@@ -152,7 +158,12 @@ mod tests {
     #[test]
     fn an_empty_first_pass_still_ends_the_baseline() {
         let mut state = DesktopState::default();
+        assert!(!state.baseline_done);
         assert!(state.absorb(&[], Policy::Silent, 0, 100).fresh.is_empty());
+        assert!(
+            state.baseline_done,
+            "an empty first pass still ends the baseline"
+        );
         let fresh = state.absorb(
             &[gate("a1", 10)],
             Policy::Notify { cutoff: i64::MIN },
@@ -164,6 +175,38 @@ mod tests {
             1,
             "an install with no alarms still announces the first one"
         );
+    }
+
+    #[test]
+    fn the_baseline_flag_survives_a_restart() {
+        let path = temp("baseline");
+        let mut state = DesktopState::default();
+        state.absorb(&[], Policy::Silent, 0, 100);
+        state.save(&path).expect("save");
+        let reloaded = DesktopState::load(&path);
+        assert!(reloaded.baseline_done, "the next run is not a baseline run");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn an_alarm_below_the_floor_is_ignored_instead_of_posting_again() {
+        let mut state = DesktopState::default();
+        state.absorb(&[], Policy::Silent, 0, 100_000);
+        let old = gate("old18h", 90_000);
+        let floor = 95_000;
+        let first = state.absorb(
+            std::slice::from_ref(&old),
+            Policy::Notify { cutoff: i64::MIN },
+            floor,
+            100_000,
+        );
+        assert!(
+            first.fresh.is_empty(),
+            "the centre may keep returning it; the floor decides"
+        );
+        let second = state.absorb(&[old], Policy::Notify { cutoff: i64::MIN }, floor, 100_000);
+        assert!(second.fresh.is_empty());
+        assert!(!second.changed, "nothing was recorded either");
     }
 
     #[test]

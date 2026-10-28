@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Native desktop shell for PROVIEW CCTV"
 
+[features]
+restart-probe = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

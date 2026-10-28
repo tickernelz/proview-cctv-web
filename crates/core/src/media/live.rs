@@ -1,5 +1,7 @@
 use serde_json::{json, Value};
 
+use crate::media::livecipher::LiveCipher;
+
 pub const LIVE_MEDIA_ID: u16 = 0x0584;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,11 +42,19 @@ pub struct LiveStats {
 #[derive(Debug, Default)]
 pub struct LiveDemux {
     pending: Option<Pending>,
+    cipher: Option<LiveCipher>,
     stats: LiveStats,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingKind {
+    Keyframe,
+    Delta,
 }
 
 #[derive(Debug)]
 struct Pending {
+    kind: PendingKind,
     declared: usize,
     payload: Vec<u8>,
 }
@@ -56,6 +66,14 @@ const RECORD_MAX: usize = 8 * 1024 * 1024;
 impl LiveDemux {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn keyed(material: &str) -> Option<Self> {
+        let cipher = LiveCipher::derive(material)?;
+        Some(Self {
+            cipher: Some(cipher),
+            ..Self::default()
+        })
     }
 
     pub fn stats(&self) -> &LiveStats {
@@ -84,13 +102,13 @@ impl LiveDemux {
                     return out;
                 }
                 self.pending = Some(Pending {
+                    kind: PendingKind::Keyframe,
                     declared,
                     payload: body[KEYFRAME_HEADER..].to_vec(),
                 });
                 self.drain_pending(&mut out);
             }
             LiveClass::Delta => {
-                self.stats.deltas += 1;
                 if body.len() <= DELTA_HEADER {
                     self.stats.dropped += 1;
                     return out;
@@ -104,11 +122,13 @@ impl LiveDemux {
                 if body.len() - DELTA_HEADER >= declared {
                     self.flush_pending(&mut out, true);
                     let payload = &body[DELTA_HEADER..DELTA_HEADER + declared];
+                    self.stats.deltas += 1;
                     self.stats.elementary_bytes += payload.len() as u64;
                     out.extend_from_slice(payload);
                 } else {
                     self.flush_pending(&mut out, true);
                     self.pending = Some(Pending {
+                        kind: PendingKind::Delta,
                         declared,
                         payload: body[DELTA_HEADER..].to_vec(),
                     });
@@ -143,15 +163,27 @@ impl LiveDemux {
     }
 
     fn flush_pending(&mut self, out: &mut Vec<u8>, truncated: bool) {
-        if let Some(mut pending) = self.pending.take() {
-            if truncated && pending.payload.len() < pending.declared {
-                self.stats.dropped += 1;
-            }
-            pending.payload.truncate(pending.declared);
-            self.stats.keyframes += 1;
-            self.stats.elementary_bytes += pending.payload.len() as u64;
-            out.extend_from_slice(&pending.payload);
+        let Some(mut pending) = self.pending.take() else {
+            return;
+        };
+        if truncated && pending.payload.len() < pending.declared {
+            self.stats.dropped += 1;
+            return;
         }
+        pending.payload.truncate(pending.declared);
+        match pending.kind {
+            PendingKind::Keyframe => {
+                if let Some(cipher) = &self.cipher {
+                    cipher.mask(&mut pending.payload, pending.declared as u32);
+                }
+                self.stats.keyframes += 1;
+            }
+            PendingKind::Delta => {
+                self.stats.deltas += 1;
+            }
+        }
+        self.stats.elementary_bytes += pending.payload.len() as u64;
+        out.extend_from_slice(&pending.payload);
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
@@ -248,20 +280,62 @@ mod tests {
     }
 
     #[test]
-    fn a_delta_interrupting_an_incomplete_keyframe_is_not_lost() {
+    fn a_delta_interrupting_an_incomplete_keyframe_keeps_only_the_delta() {
         let head = keyframe_head(32, &[1, 2, 3, 4]);
         let body = delta(&[0, 0, 0, 1, 0x02, 0x01]);
         let mut demux = LiveDemux::new();
         assert!(demux.push(&head).is_empty());
         let out = demux.push(&body);
-        assert_eq!(out, vec![1, 2, 3, 4, 0, 0, 0, 1, 0x02, 0x01]);
+        assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01]);
         assert_eq!(
             demux.stats().dropped,
             1,
-            "the short keyframe is counted as dropped"
+            "the short keyframe is dropped whole, never half-emitted"
         );
+        assert_eq!(demux.stats().keyframes, 0);
+        assert_eq!(demux.stats().deltas, 1);
+    }
+
+    #[test]
+    fn a_keyed_demux_unmasks_the_head_of_a_keyframe_and_leaves_a_delta_alone() {
+        let material = "zha4084-fixture-material-0000000001";
+        let cipher = LiveCipher::derive(material).expect("material");
+        let plain: Vec<u8> = (0..300u32).map(|i| ((i * 5 + 3) & 0xff) as u8).collect();
+        let mut masked = plain.clone();
+        cipher.mask(&mut masked, 300);
+        assert_ne!(&masked[..128], &plain[..128]);
+        assert_eq!(&masked[128..], &plain[128..]);
+
+        let head = keyframe_head(300, &masked);
+        let body = delta(&[0, 0, 0, 1, 0x02, 0x01, 0xd0]);
+        let mut demux = LiveDemux::keyed(material).expect("keyed demux");
+        let mut out = demux.push(&head);
+        out.extend(demux.push(&body));
+        assert_eq!(out[..300], plain[..]);
+        assert_eq!(&out[300..], &[0, 0, 0, 1, 0x02, 0x01, 0xd0]);
         assert_eq!(demux.stats().keyframes, 1);
         assert_eq!(demux.stats().deltas, 1);
+        assert_eq!(demux.stats().elementary_bytes, 307);
+    }
+
+    #[test]
+    fn a_keyed_demux_without_the_material_stays_plain() {
+        assert!(LiveDemux::keyed("too short").is_none());
+        let plain = [0u8, 0, 1, 0x40, 0x01, 0x0c];
+        let head = keyframe_head(plain.len(), &plain);
+        let mut demux = LiveDemux::new();
+        assert_eq!(demux.push(&head), plain.to_vec());
+    }
+
+    #[test]
+    fn a_truncated_keyframe_at_finish_is_dropped_whole() {
+        let head = keyframe_head(64, &[9, 8, 7, 6]);
+        let mut demux = LiveDemux::new();
+        assert!(demux.push(&head).is_empty());
+        assert!(demux.finish().is_empty());
+        assert_eq!(demux.stats().dropped, 1);
+        assert_eq!(demux.stats().keyframes, 0);
+        assert_eq!(demux.stats().elementary_bytes, 0);
     }
 
     #[test]
@@ -303,6 +377,8 @@ mod tests {
         out.extend(demux.push(tail));
         assert_eq!(out.len(), payload.len());
         assert_eq!(demux.stats().dropped, 0);
+        assert_eq!(demux.stats().deltas, 1);
+        assert_eq!(demux.stats().keyframes, 0);
     }
 
     #[test]
