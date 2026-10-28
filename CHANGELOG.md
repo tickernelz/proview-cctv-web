@@ -98,6 +98,18 @@ stability before 1.0.
 
 ### Fixed
 
+- A camera that refuses the device token is no longer offered one. The `AdminToken`
+  a password login returns was stored for every serial, so a camera that answers
+  `Ret` 117 (or 137, as the live unit here does) to the token login paid the token
+  attempt plus a second tunnel on every open, forever: nothing could make that token
+  work, and the token the fallback stored in its place was refused the same way.
+  `CloudProvider` now records the refusal against the serial — 117 and 137 are the
+  two answers that mean this device will not take tokens — stops offering a token to
+  that serial for the life of the process, and no longer stores the `AdminToken` a
+  password login hands back for it, so the next open goes straight to the password
+  login on its first tunnel. A device that accepts the token keeps the fast path, any
+  other non-100 answer still drops the token and tries again on the next open, and an
+  accepted token clears the mark.
 - The password fallback after a stale device token opens its own tunnel instead of
   reusing the socket the token login left behind. A token reply and a password
   reply carry the same message id (`1001`), so a token reply that arrived after the
