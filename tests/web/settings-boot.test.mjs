@@ -20,6 +20,17 @@ const COUNT_SETTINGS = `(() => {
   };
 })();`;
 
+const STREAM_COUNT = `(() => {
+  const real = window.fetch.bind(window);
+  window.__streams = 0;
+  window.fetch = (target, options) => {
+    const url = typeof target === 'string' ? target : (target && target.url) || '';
+    if (url.indexOf('/api/stream') !== -1) {
+      window.__streams += 1;
+    }
+    return real(target, options);
+  };
+})();`;
 
 const HOLD_SIGNIN = `(() => {
   const real = window.fetch.bind(window);
@@ -126,19 +137,23 @@ test('Settings opened during a held sign-in keeps the edits and starts no stream
       assert.equal(await page.evaluate(FIELD + '.value'), TYPED);
       assert.equal(await page.evaluate('state.screen'), 'settings');
       await page.evaluate('window.__release()');
-      await page.wait('state.devices.length === 1', 'the boot to read the devices', BUDGET);
-      await new Promise((done) => setTimeout(done, 200));
+      await page.wait(
+        "state.signedIn && document.getElementById('settings-back-label').textContent === 'Live'",
+        'the boot to finish',
+        BUDGET,
+      );
       assert.equal(await page.evaluate('state.signedIn'), true);
       assert.equal(await page.evaluate('state.screen'), 'settings');
       assert.equal(await page.evaluate(FIELD + '.value'), TYPED);
       assert.equal(await page.evaluate("document.getElementById('settings-save').hidden"), false);
-      assert.equal(await page.evaluate(OPEN_SOCKETS), 0);
+      assert.equal(await page.evaluate('window.__streams'), 0);
+      assert.equal(await page.evaluate('window.__sockets.length'), 0);
       await page.evaluate("document.getElementById('settings-discard').click()");
       await page.evaluate("document.getElementById('settings-back').click()");
       await page.wait("document.getElementById('well').dataset.state === 'playing'", 'the stream after leaving Settings', BUDGET);
       assert.equal(await page.evaluate(OPEN_SOCKETS), 1);
     },
-    { init: [HOLD_SIGNIN], ready: false },
+    { init: [STREAM_COUNT, HOLD_SIGNIN], ready: false },
   );
 });
 
