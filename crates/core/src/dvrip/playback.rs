@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,6 +21,7 @@ pub const DOWNLOAD_DATA: u16 = 0x0592;
 pub const PAGE_FILES: usize = 64;
 pub const MAX_FILES: usize = 2048;
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
+const READ_BUFFER: usize = 256 * 1024;
 
 #[derive(Debug)]
 pub enum PlaybackError {
@@ -219,6 +221,7 @@ pub struct Session {
     stream: TcpStream,
     session: u32,
     sequence: u32,
+    read_buf: BytesMut,
 }
 
 impl Session {
@@ -228,6 +231,7 @@ impl Session {
             stream,
             session: 0,
             sequence: 0,
+            read_buf: BytesMut::with_capacity(READ_BUFFER),
         }
     }
 
@@ -271,17 +275,26 @@ impl Session {
     }
 
     pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), PlaybackError> {
-        let mut header_bytes = [0u8; HEADER_LEN];
-        self.stream.read_exact(&mut header_bytes).await?;
-        let header = Header::decode(&header_bytes)?;
-        let mut body = vec![0u8; header.length as usize];
-        if header.length > 0 {
-            self.stream.read_exact(&mut body).await?;
+        loop {
+            if self.read_buf.len() >= HEADER_LEN {
+                let header = Header::decode(&self.read_buf[..HEADER_LEN])?;
+                let wanted = HEADER_LEN + header.length as usize;
+                if self.read_buf.len() >= wanted {
+                    let frame = self.read_buf.split_to(wanted);
+                    if header.session != 0 {
+                        self.session = header.session;
+                    }
+                    return Ok((header, frame[HEADER_LEN..].to_vec()));
+                }
+            }
+            let read = self.stream.read_buf(&mut self.read_buf).await?;
+            if read == 0 {
+                return Err(PlaybackError::Io(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed",
+                )));
+            }
         }
-        if header.session != 0 {
-            self.session = header.session;
-        }
-        Ok((header, body))
     }
 
     async fn await_json(&mut self, wait: Duration) -> Result<Value, PlaybackError> {
@@ -1215,5 +1228,73 @@ mod tests {
                 .and_then(Value::as_str),
             Some("/idea0/a.h264")
         );
+    }
+
+    async fn session_pair() -> (Session, tokio::net::TcpListener) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(address).await.unwrap();
+        (Session::open(stream), listener)
+    }
+
+    fn sample_header() -> [u8; HEADER_LEN] {
+        Header {
+            session: 0x0000_2a2a,
+            sequence: 7,
+            channel: 3,
+            end: true,
+            id: 1000,
+            length: 5,
+        }
+        .encode()
+    }
+
+    #[tokio::test]
+    async fn session_recv_resumes_after_a_half_header_timeout() {
+        let (mut session, listener) = session_pair().await;
+        let header = sample_header();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(&header[..10]).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            socket.write_all(&header[10..]).await.unwrap();
+            socket.write_all(b"hello").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        let first = session.frame(Duration::from_millis(80)).await;
+        assert_eq!(first.expect("a stall is not an io error"), None);
+        let resumed = tokio::time::timeout(Duration::from_secs(2), session.recv())
+            .await
+            .expect("the resumed read must not hang")
+            .expect("frame after the timeout");
+        assert_eq!(resumed.0.session, 0x0000_2a2a);
+        assert_eq!(resumed.0.id, 1000);
+        assert_eq!(resumed.1, b"hello");
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_recv_resumes_after_a_half_body_timeout() {
+        let (mut session, listener) = session_pair().await;
+        let header = sample_header();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(&header).await.unwrap();
+            socket.write_all(b"hel").await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            socket.write_all(b"lo").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        let first = session.frame(Duration::from_millis(80)).await;
+        assert_eq!(first.expect("a stall is not an io error"), None);
+        let resumed = tokio::time::timeout(Duration::from_secs(2), session.recv())
+            .await
+            .expect("the resumed read must not hang")
+            .expect("frame after the timeout");
+        assert_eq!(resumed.0.length, 5);
+        assert_eq!(resumed.1, b"hello");
+        peer.await.unwrap();
     }
 }

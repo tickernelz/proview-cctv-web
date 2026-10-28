@@ -45,6 +45,20 @@ stability before 1.0.
 
 ### Changed
 
+- The page scripts are ES modules bundled by Vite into one hashed
+  `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40,396 B in one).
+  `/app.js`, `/grid.js` and the other per-script URLs answer 404. The talk
+  script's `startTalk`/`stopTalk` used to replace the older copies in `app.js`
+  through the shared global scope; those dead copies are removed and `app.js`
+  imports the talk module's.
+- The page moved from `web/` to a Vite app in `apps/web`. `npm run build`
+  emits `apps/web/dist/` with a hashed stylesheet, and the server embeds that
+  directory with `rust-embed` instead of one route per file, so build the page
+  before `cargo` (see README). The scripts are served unchanged; `/tokens.css`
+  and `/style.css` became one `/assets/index-<hash>.css`. CI and release jobs
+  run `npm ci --include=dev && npm run build` with an npm cache, and `cargo tauri build` does
+  the same through `beforeBuildCommand`. `PROVIEW_WEB_DEV=1 cargo tauri dev`
+  opens the desktop window on the Vite dev server for hot reload.
 - One `CloudProvider` per process, and a 30 s window over the account device
   list, so one viewer open costs one `msdlistCode` instead of three. The provider
   was built per request — a fresh `reqwest::Client` and a reload of the
@@ -150,6 +164,20 @@ stability before 1.0.
   now keeps what arrived in a buffer that survives a cancelled read and hands a
   frame out only once its header and declared body have both arrived, which also
   covers the settings and control reads that share the type.
+- Recorded playback no longer stops after the primed frames when the device
+  pauses mid-frame. `playback::Session::recv` read the header and the body with
+  the same two exact reads, and the clip route stops priming on a 3 s read
+  deadline and then keeps that session for the rest of the window; a frame cut
+  short by the deadline left its body to be read as the next header, decode
+  failed and the pump ended. The session now keeps arrived bytes in a buffer
+  that outlives a cancelled read, so the pump picks up the interrupted frame
+  where the prime loop stopped. Two tests stall past an 80 ms deadline in the
+  middle of a header and of a body before finishing the frame: both fail with
+  `early eof` on the old reader and pass on the new one. The buffer starts at
+  256 KiB rather than empty, because a buffer that grows mid-stream moves the
+  half frame it already holds on every refill: on a loopback flood the read
+  median falls from 20.4 to 5.3 us per 32 KiB frame and from 7.4 to 1.1 us per
+  8 KiB frame (release, 21 samples, 256 frames each).
 
 ## 0.3.5 — 2026-10-28
 

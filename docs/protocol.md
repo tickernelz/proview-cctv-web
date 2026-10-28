@@ -1739,7 +1739,7 @@ default it used to guess.
 
 ### 9A.5 How the route reads the binding without stalling the picture
 
-`/api/lens` sits on the path that starts the live stream (`web/app.js` awaits it
+`/api/lens` sits on the path that starts the live stream (`apps/web/src/legacy/app.js` awaits it
 before it asks for the stream), so it never waits on the camera: it answers from
 the cache, falls back to the measured default when the cache holds nothing, and
 asks for a refresh in the background. One refresh is one DVRIP session bounded

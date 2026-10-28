@@ -149,6 +149,15 @@ fn restart_probe() -> Option<std::path::PathBuf> {
     Some(marker)
 }
 
+const WEB_DEV_API_PORT: u16 = 8787;
+
+fn web_dev_url(app: &tauri::App) -> Option<tauri::Url> {
+    if !cfg!(debug_assertions) || std::env::var_os("PROVIEW_WEB_DEV").is_none() {
+        return None;
+    }
+    app.config().build.dev_url.clone()
+}
+
 fn main() {
     if flag("--version") || flag("-V") {
         println!("proview-desktop {}", env!("CARGO_PKG_VERSION"));
@@ -180,9 +189,14 @@ fn main() {
             let settings = SettingsStore::load(data_dir.as_deref());
             settings.apply_env();
             let config = config_from_keychain();
+            let web_dev = web_dev_url(app);
             let options = ServeOptions {
                 address: "127.0.0.1".to_string(),
-                port: 0,
+                port: if web_dev.is_some() {
+                    WEB_DEV_API_PORT
+                } else {
+                    0
+                },
                 secret_key: Some(local_secret()),
                 data_dir: data_dir.clone(),
             };
@@ -194,7 +208,10 @@ fn main() {
                 settings.clone(),
                 control,
             ))?;
-            let url: tauri::Url = format!("http://{}/", server.address).parse()?;
+            let url: tauri::Url = match web_dev {
+                Some(url) => url,
+                None => format!("http://{}/", server.address).parse()?,
+            };
             tracing::info!(%url, "serving the local session");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("PROVIEW CCTV")
