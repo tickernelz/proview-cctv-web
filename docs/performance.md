@@ -420,11 +420,11 @@ above, baseline origin/main 98db3a5 (Vue and Tailwind compiled, nothing mounted)
 
 | File | main 98db3a5 | Live in Vue | Delta | Budget |
 |---|---:|---:|---:|---:|
-| JS (one hashed chunk) | 39,469 B | 106,827 B | +67,358 B | +80 KB |
+| JS (one hashed chunk) | 39,469 B | 106,865 B | +67,396 B | +80 KB |
 | CSS (one hashed file) | 7,004 B | 7,115 B | +111 B | +20 KB |
 
 The JS delta is the first mounted Vue app: the Vue runtime, Reka UI with
 `@vueuse/core` and floating-ui for menu placement. Later screens reuse all of
 it, so they add only their own components. Icons stay in the inline sprite
 (`Icon.vue` renders `<use href="#i-name">`), so no icon package ships.
-e2e at this change: 131 passed, 1 skipped, 1.2 min locally; node web tests 46/46.
+e2e at this change: 139 passed, 1 skipped, 1.3 min locally; node web tests 46/46.

@@ -27,7 +27,9 @@ stability before 1.0.
   one component over a reactive store, menus from Reka UI 2.11.0 placed by
   floating-ui so they stay inside the window at every width. Ids, test ids,
   keyboard shortcuts and the look are unchanged (screenshot baselines pass
-  as they were). The page JS grows by 67 KB gzip for the Vue runtime and Reka
+  as they were). Keys pressed in an open menu stay in the menu: Escape closes
+  the menu without closing the pan and tilt pad or the device sheet, and arrows
+  move through the menu instead of panning the camera. The page JS grows by 67 KB gzip for the Vue runtime and Reka
   UI, inside the 80 KB budget; later Vue screens reuse it.
 
 ### Added

@@ -1,0 +1,64 @@
+import { test, expect } from '@playwright/test'
+import { openLive, playing, signIn } from './app'
+
+for (const menu of ['lens', 'quality']) {
+  test(`keys in the ${menu} menu stay in the menu: arrows do not pan, Escape leaves the pad open`, async ({ page }) => {
+    const calls = await openLive(page)
+    await page.getByTestId('ctl-move').click()
+    const pad = page.getByTestId('ptz-pad')
+    await expect(pad).toBeVisible()
+    const trigger = page.getByTestId(menu + '-pick')
+    await trigger.click()
+    await expect(page.getByTestId(menu + '-menu')).toBeVisible()
+    await page.keyboard.press('ArrowDown')
+    await expect(page.getByTestId(menu + '-menu').getByRole('menuitemradio').first()).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId(menu + '-menu')).toBeHidden()
+    await expect(trigger).toBeFocused()
+    await expect(pad).toBeVisible()
+    await expect(page.getByTestId('ctl-move')).toHaveAttribute('aria-pressed', 'true')
+    await page.keyboard.press('Escape')
+    await expect(pad).toBeHidden()
+    await expect(page.getByTestId('ctl-move')).toHaveAttribute('aria-pressed', 'false')
+    expect(calls.filter((call) => call.includes('/ptz'))).toEqual([])
+  })
+}
+
+test('Sound turns the picture audio on and off', async ({ page }) => {
+  await signIn(page, 'one')
+  await playing(page)
+  const sound = page.getByTestId('ctl-mute')
+  const video = page.getByTestId('live-video')
+  await expect(sound).toHaveAttribute('aria-pressed', 'false')
+  expect(await video.evaluate((node: HTMLVideoElement) => node.muted)).toBe(true)
+  await sound.click()
+  await expect(sound).toHaveAttribute('aria-pressed', 'true')
+  await expect(sound.locator('use')).toHaveAttribute('href', '#i-speaker')
+  expect(await video.evaluate((node: HTMLVideoElement) => node.muted)).toBe(false)
+  await sound.click()
+  await expect(sound).toHaveAttribute('aria-pressed', 'false')
+  await expect(sound.locator('use')).toHaveAttribute('href', '#i-speaker-off')
+  expect(await video.evaluate((node: HTMLVideoElement) => node.muted)).toBe(true)
+})
+
+test('the quality menu switches the stream to SD and back to HD', async ({ page }) => {
+  await signIn(page, 'one')
+  await playing(page)
+  const pick = page.getByTestId('quality-pick')
+  const menu = page.getByTestId('quality-menu')
+  await expect(pick).toHaveText(/Quality HD/)
+  for (const [label, quality] of [['SD', 'sub'], ['HD', 'main']]) {
+    await pick.click()
+    const stream = page.waitForRequest((request) => request.url().includes('/api/stream?') && request.url().includes('quality=' + quality), { timeout: 10_000 })
+    await menu.getByTestId('quality-option').filter({ hasText: label }).click()
+    await stream
+    await expect(menu).toBeHidden()
+    await expect(pick).toHaveText(new RegExp('Quality ' + label))
+    await expect(pick).toBeFocused()
+    await playing(page)
+    await pick.click()
+    await expect(menu.getByTestId('quality-option').filter({ hasText: label })).toHaveAttribute('aria-checked', 'true')
+    await page.keyboard.press('Escape')
+    await expect(menu).toBeHidden()
+  }
+})

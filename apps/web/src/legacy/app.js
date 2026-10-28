@@ -1,8 +1,6 @@
 import { api } from '../lib/api';
 import { StreamPlayer } from '../lib/stream-player';
-import { live } from '../live/store';
-
-export { api, StreamPlayer };
+import { live, menuOpen } from '../live/store';
 import { startTalk, stopTalk } from './talk.js';
 
 export const el = (id) => document.getElementById(id);
@@ -2357,7 +2355,7 @@ function onWatchKey(event) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented) {
+  if (event.defaultPrevented || menuOpen()) {
     return;
   }
   if (state.screen === 'watch') {

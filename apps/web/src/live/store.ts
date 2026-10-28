@@ -45,6 +45,8 @@ export const live = reactive({
   },
 })
 
+export const menuOpen = () => document.querySelector('.menu-panel[data-state="open"]') !== null
+
 export function addLauncher(launcher: Launcher): Launcher {
   live.launchers.push(launcher)
   return live.launchers[live.launchers.length - 1]

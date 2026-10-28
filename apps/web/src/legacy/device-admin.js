@@ -1,4 +1,4 @@
-import { addLauncher } from '../live/store';
+import { addLauncher, menuOpen } from '../live/store';
 
 (function deviceAdmin() {
   'use strict';
@@ -300,7 +300,7 @@ import { addLauncher } from '../live/store';
   sheet.querySelector('.sheet-h .iconbtn').innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>';
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && !sheet.hidden) close();
+    if (event.key === 'Escape' && !sheet.hidden && !menuOpen()) close();
   });
 
   window.proviewDeviceAdmin = { open, close, refresh };

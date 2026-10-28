@@ -35,3 +35,41 @@ export async function signIn(page: Page, scenario: Scenario): Promise<string> {
 export async function playing(page: Page) {
   await expect(page.getByTestId('live-well')).toHaveAttribute('data-state', 'playing', { timeout: 20_000 })
 }
+
+const supported = (feature: string, lens: string) => ({ feature, lens, backend: 'dvrip', state: 'supported', evidence: 'e2e fixture' })
+
+export async function fakeDeviceControls(page: Page) {
+  const calls: string[] = []
+  let light = 'off'
+  await page.route(/\/api\/device\/controls/, async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    calls.push(request.method() + ' ' + url.pathname + url.search)
+    const json = (body: unknown) => route.fulfill({ json: body })
+    if (url.pathname === '/api/device/controls') {
+      return json({
+        onvif: false,
+        dvrip: true,
+        capabilities: [supported('ptz move', 'bottom'), supported('ptz preset', 'bottom'), supported('white light', 'device')],
+      })
+    }
+    if (url.pathname.endsWith('/presets')) return json([{ token: '1', name: 'Gate' }, { token: '2', name: 'Driveway' }])
+    if (url.pathname.endsWith('/preset/goto')) return json({ ok: true })
+    if (url.pathname.endsWith('/ptz/stop')) return json({ detail: 'Stopped.' })
+    if (url.pathname.endsWith('/ptz')) return json({ lens: url.searchParams.get('lens'), backend: 'dvrip', hold_ms: 600 })
+    if (url.pathname.endsWith('/light')) {
+      if (request.method() === 'POST') light = url.searchParams.get('mode') ?? light
+      return json({ mode: light })
+    }
+    return route.fulfill({ status: 404, json: { message: 'not faked' } })
+  })
+  return calls
+}
+
+export async function openLive(page: Page) {
+  const calls = await fakeDeviceControls(page)
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('ctl-move')).toBeEnabled()
+  return calls
+}

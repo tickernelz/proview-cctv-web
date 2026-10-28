@@ -204,7 +204,10 @@ The lens and quality menus on Live are Reka UI `DropdownMenu` (Vue): they open
 above the control row, aligned to the trigger's end, shift inside an 8 px
 viewport margin, and keep `#lens-pick`, `#quality-pick`, `#lens-menu` and
 `#quality-menu` as ids. Reka brings the same keys (arrows, Home/End, Escape and
-Tab close and return focus). The menus below are still the page's own.
+Tab close and return focus). While one of them is open, the page's own keys
+(Escape for the pad and the device sheet, arrows for pan and tilt, letter
+shortcuts) step aside, so Escape closes only the menu. The menus below are
+still the page's own.
 
 Other menus use the Popover API when `HTMLElement.prototype.showPopover` exists
 (light dismiss and top layer from the platform) and a `hidden`-toggle with an
