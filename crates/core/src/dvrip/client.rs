@@ -327,6 +327,21 @@ impl Connection {
         Err(DvrError::NoReply)
     }
 
+    async fn await_reply_of(&mut self, reply: u16, attempts: usize) -> Result<Value, DvrError> {
+        for _ in 0..attempts {
+            let (header, payload) = self.recv().await?;
+            if header.id != reply {
+                continue;
+            }
+            if let Ok(value) = parse_json(&payload) {
+                if value.is_object() {
+                    return Ok(value);
+                }
+            }
+        }
+        Err(DvrError::NoReply)
+    }
+
     pub async fn login_token(
         &mut self,
         token: &str,
@@ -418,7 +433,8 @@ impl Connection {
             "PassWord": sofia_hash(password),
             "UserName": user,
         });
-        let reply = self.request(msg::LOGIN, body).await?;
+        self.send_json(msg::LOGIN, &body).await?;
+        let reply = self.await_reply_of(msg::LOGIN_REPLY, 8).await?;
         let ret = ret_of(&reply)?;
         if ret == 200 {
             let realm = field(&reply, &["Realm"])
