@@ -283,6 +283,7 @@
     type: 'button', class: 'ctl', id: 'device-admin-open', title: 'Device names, groups, sharing, passwords',
     onclick: open,
   }, [node('span', { text: 'Devices' })]);
+  launcher.insertAdjacentHTML('afterbegin', '<svg class="i" aria-hidden="true"><use href="#i-cctv"></use></svg>');
   const controls = document.getElementById('controls');
   if (controls) controls.insertBefore(launcher, controls.querySelector('.spacer'));
 

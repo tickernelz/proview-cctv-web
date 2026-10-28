@@ -1,32 +1,16 @@
 (function () {
   'use strict';
 
-  const style = document.createElement('style');
-  style.textContent = [
-    '#recordings-launcher[aria-pressed="true"]{background:var(--bg-2,#ececec);color:var(--ink,#111);box-shadow:inset 0 0 0 1px var(--line,#c8c8c8)}',
-    '#recordings-panel{position:fixed;right:16px;bottom:72px;z-index:61;width:min(420px,calc(100vw - 32px));max-height:min(70vh,560px);',
-    'overflow:auto;padding:16px;border-radius:16px;background:var(--bg,#fff);color:var(--ink,#111);border:1px solid var(--line,#d0d0d0);',
-    'box-shadow:var(--shadow-menu,0 18px 48px rgba(0,0,0,.35));font:inherit}',
-    '#recordings-panel header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}',
-    '#recordings-panel form{display:grid;gap:8px;margin-bottom:10px}',
-    '#recordings-panel label{display:grid;gap:4px;font-size:.85rem}',
-    '#recordings-panel input,#recordings-panel select,#recordings-panel button{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line,#c8c8c8);background:var(--bg,#fff);color:var(--ink,#111)}',
-    '#recordings-panel button[type=submit]{background:var(--live,#b3123c);color:#fff;border-color:transparent;cursor:pointer}',
-    '#recordings-panel ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}',
-    '#recordings-panel li{display:flex;justify-content:space-between;gap:10px;padding:8px;border-radius:8px;background:var(--line-soft,rgba(0,0,0,.05));font-variant-numeric:tabular-nums}',
-    '#recordings-panel li span:last-child{opacity:.8}'
-  ].join('');
-  document.head.appendChild(style);
 
   const panel = document.createElement('section');
   panel.id = 'recordings-panel';
   panel.hidden = true;
   panel.setAttribute('aria-label', 'Cloud recordings');
   panel.innerHTML = [
-    '<header><strong>Recordings</strong><button type="button" data-close aria-label="Close recordings">×</button></header>',
+    '<header><strong>Recordings</strong><button class="iconbtn" type="button" data-close aria-label="Close recordings"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></header>',
     '<form data-form><label>Day <input type="date" name="day" required></label>',
     '<label>Camera <select name="device" aria-label="Camera"></select></label>',
-    '<button type="submit">Load</button></form>',
+    '<button class="btn btn-fill" type="submit">Load</button></form>',
     '<p data-status role="status">Choose a day and load the cloud list.</p>',
     '<ul data-list></ul>'
   ].join('');
@@ -39,7 +23,7 @@
   launcher.className = 'ctl';
   launcher.setAttribute('aria-pressed', 'false');
   launcher.setAttribute('aria-controls', 'recordings-panel');
-  launcher.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg><span>Cloud</span>';
+  launcher.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-cloud"></use></svg><span>Cloud</span>';
   if (!controls) return;
   const spacer = controls.querySelector('.spacer');
   controls.insertBefore(launcher, spacer || null);

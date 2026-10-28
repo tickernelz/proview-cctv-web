@@ -1,4 +1,5 @@
 import { defineConfig, type Plugin } from 'vite'
+import { iconSprite } from './icons'
 
 const api = 'http://127.0.0.1:8787'
 
@@ -13,7 +14,7 @@ const desktopToken = (): Plugin => ({
 })
 
 export default defineConfig({
-  plugins: [desktopToken()],
+  plugins: [iconSprite(), desktopToken()],
   build: {
     target: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],
     cssTarget: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],

@@ -6,46 +6,56 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0f1112;
-  --bg-2: #1b1d1f;
-  --bg-3: #242629;
-  --line: #37393c;
-  --line-soft: #2d2f32;
-  --ink: #f1f2f4;
-  --ink-2: #cacccf;
-  --ink-3: #a6a9ae;
+  --bg: #0e1013;
+  --bg-2: #171a1f;
+  --bg-3: #21252b;
+  --line: #3c414a;
+  --line-soft: #2c3037;
+  --ink: #eef0f3;
+  --ink-2: #c4c9d0;
+  --ink-3: #9da4ae;
   --stage: #030405;
   --stage-ink: #cfd1d3;
   --stage-ink-2: #96989c;
+  --accent: #74b4ff;
+  --accent-ink: #061423;
+  --accent-soft: rgb(116 180 255 / 0.14);
   --live: #fc665f;
   --ok: #6cce8a;
   --warn: #edb95d;
   --bad: #fb7172;
-  --focus: #7dc3ff;
+  --focus: #74b4ff;
   --live-soft: rgb(252 102 95 / 0.16);
-  --shadow-menu: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 10px 24px -12px rgb(0 0 0 / 0.7), 0 2px 6px -2px rgb(0 0 0 / 0.5);
+  --badge: #c9363c;
+  --badge-ink: #ffffff;
+  --shadow-menu: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 16px 32px -16px rgb(0 0 0 / 0.75), 0 2px 6px -2px rgb(0 0 0 / 0.5);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #dfe0e2;
-  --bg-2: #f0f1f2;
-  --bg-3: #d3d5d7;
-  --line: #b0b2b5;
-  --line-soft: #bdbec1;
-  --ink: #1c1e21;
-  --ink-2: #424447;
-  --ink-3: #5e6166;
+  --bg: #f2f3f5;
+  --bg-2: #ffffff;
+  --bg-3: #e5e7eb;
+  --line: #b3b8c0;
+  --line-soft: #c9cdd3;
+  --ink: #14171c;
+  --ink-2: #3b414a;
+  --ink-3: #5a616b;
   --stage: #030405;
   --stage-ink: #d6d8da;
   --stage-ink-2: #9c9fa2;
+  --accent: #0b5fbd;
+  --accent-ink: #ffffff;
+  --accent-soft: rgb(11 95 189 / 0.10);
   --live: #b10d1a;
   --ok: #176b39;
   --warn: #875a04;
   --bad: #b9232d;
-  --focus: #0072cb;
+  --focus: #0b5fbd;
   --live-soft: rgb(177 13 26 / 0.10);
-  --shadow-menu: 0 10px 24px -14px rgb(28 30 33 / 0.35), 0 2px 6px -3px rgb(28 30 33 / 0.25);
+  --badge: #c4252b;
+  --badge-ink: #ffffff;
+  --shadow-menu: 0 16px 32px -18px rgb(20 23 28 / 0.35), 0 2px 6px -3px rgb(20 23 28 / 0.22);
 }
 
 :root {
@@ -56,16 +66,17 @@
   --f-sans: "Plex Sans", ui-sans-serif, system-ui, sans-serif;
   --f-mono: "Plex Mono", ui-monospace, monospace;
 
-  --t-11: 11px;
+  --t-12: 12px;
   --t-13: 13px;
   --t-14: 14px;
   --t-15: 15px;
   --t-17: 17px;
   --t-21: 21px;
   --t-30: 30px;
+  --t-11: var(--t-12);
 
   --s1: 4px;
-  --s2: 6px;
+  --s2: 8px;
   --s3: 8px;
   --s4: 12px;
   --s5: 16px;
@@ -75,13 +86,13 @@
   --s9: 40px;
   --s10: 56px;
 
-  --r-sm: 4px;
-  --r-md: 6px;
-  --r-lg: 10px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
 
-  --dur-1: 120ms;
-  --dur-2: 180ms;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-1: 160ms;
+  --dur-2: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
 
   --topbar: 56px;
   --bar: 64px;
