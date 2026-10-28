@@ -45,12 +45,18 @@ stability before 1.0.
 
 ### Changed
 
+- The page scripts are ES modules bundled by Vite into one hashed
+  `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40,396 B in one).
+  `/app.js`, `/grid.js` and the other per-script URLs answer 404. The talk
+  script's `startTalk`/`stopTalk` used to replace the older copies in `app.js`
+  through the shared global scope; those dead copies are removed and `app.js`
+  imports the talk module's.
 - The page moved from `web/` to a Vite app in `apps/web`. `npm run build`
   emits `apps/web/dist/` with a hashed stylesheet, and the server embeds that
   directory with `rust-embed` instead of one route per file, so build the page
   before `cargo` (see README). The scripts are served unchanged; `/tokens.css`
   and `/style.css` became one `/assets/index-<hash>.css`. CI and release jobs
-  run `npm ci && npm run build` with an npm cache, and `cargo tauri build` does
+  run `npm ci --include=dev && npm run build` with an npm cache, and `cargo tauri build` does
   the same through `beforeBuildCommand`. `PROVIEW_WEB_DEV=1 cargo tauri dev`
   opens the desktop window on the Vite dev server for hot reload.
 - One `CloudProvider` per process, and a 30 s window over the account device
@@ -64,6 +70,21 @@ stability before 1.0.
   camera bound or unbound inside those 30 s still answers correctly. The vendor
   identity stays per request: `PROVIEW_APP_UUID/KEY/SECRET` saved in Settings
   after start reach the next call, as they did before the provider was shared.
+- Parallel cold opens in one session share a single device list, including when
+  the list lacks the camera and when the cloud fails. The window was read before
+  the fetch, so N tiles of a grid opening at once could each miss it and each ask
+  `msdlistCode`; a `tokio::sync` mutex per vendor session now gates the fetch, and
+  a waiter adopts whatever the winner produced when that finished after the
+  waiter started. That is one call per burst for hits, for serials the account
+  does not list, and for a failed or timed-out list — the failure is handed to
+  every waiter instead of being retried one at a time, so a grid against a dead
+  cloud no longer waits N times the 20 s request timeout. A sequential open still
+  asks again, and an explicit refresh (`/api/devices`) never adopts: it waits its
+  turn and then asks, so a camera bound or a nickname changed while another fetch
+  was running is still in the list it returns. The cost of adoption is that a
+  camera bound inside one round trip is not seen by the opens already waiting,
+  which the next open or `/api/devices` picks up. A gate is dropped once no
+  caller holds it, so the map cannot grow with every session that opens a camera.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`

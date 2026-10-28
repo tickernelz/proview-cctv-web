@@ -1,5 +1,7 @@
-const el = (id) => document.getElementById(id);
-const enc = encodeURIComponent;
+import { startTalk, stopTalk } from './talk.js';
+
+export const el = (id) => document.getElementById(id);
+export const enc = encodeURIComponent;
 
 const PREFS_KEY = 'pvw_prefs_v2';
 const LIVE_WINDOW_SECONDS = 12;
@@ -11,7 +13,7 @@ const SIGNIN_STAGE = 'The picture appears here as soon as a camera answers.';
 
 document.documentElement.dataset.popover = POPOVER ? 'native' : 'fallback';
 
-const state = {
+export const state = {
   screen: 'boot',
   view: 'live',
   section: 'playback',
@@ -72,11 +74,11 @@ function savePrefs() {
   } catch {}
 }
 
-function hms(time) {
+export function hms(time) {
   return new Date(time).toLocaleTimeString([], { hour12: false });
 }
 
-function hm(time) {
+export function hm(time) {
   return new Date(time).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
 }
 
@@ -90,7 +92,7 @@ function icon(name, extra) {
   return svg;
 }
 
-function make(tag, className, text) {
+export function make(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
@@ -112,7 +114,7 @@ function setBusy(button, busy, label) {
   }
 }
 
-async function api(path, options = {}) {
+export async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
@@ -138,7 +140,7 @@ async function api(path, options = {}) {
   return body;
 }
 
-function sessionLost(error) {
+export function sessionLost(error) {
   if (!error || error.status !== 401 || !state.signedIn) {
     return false;
   }
@@ -551,7 +553,7 @@ function lensMeta() {
   return state.lens ? 'single lens' : '';
 }
 
-function deviceStatus(device) {
+export function deviceStatus(device) {
   if (!device) {
     return { known: false, online: false, detail: '' };
   }
@@ -560,7 +562,7 @@ function deviceStatus(device) {
   return { known, online: Boolean(device.online), detail: device.online_detail || '' };
 }
 
-function statusLine(device) {
+export function statusLine(device) {
   const status = deviceStatus(device);
   if (status.detail) {
     return status.detail;
@@ -637,7 +639,7 @@ function renderCameraMenu() {
   menu.append(refresh, add);
 }
 
-function openCamera(index) {
+export function openCamera(index) {
   const camera = state.cameras[index];
   if (!camera) {
     return;
@@ -797,7 +799,7 @@ function captionText() {
   return '';
 }
 
-function renderCaption() {
+export function renderCaption() {
   const camera = currentCamera();
   const name = camera ? camera.name : '';
   if (el('caption-name').textContent !== name) {
@@ -1021,7 +1023,7 @@ function explainStreamError(error, attempt) {
 
 const MEDIA_SOURCE_TYPE = 'video/mp4; codecs="avc1.42E01E"';
 
-class StreamPlayer {
+export class StreamPlayer {
   constructor(video, onState) {
     this.video = video;
     this.onState = onState || (() => {});
@@ -1783,7 +1785,7 @@ async function probeControlChannel(device) {
   renderControlAvailability();
 }
 
-function setControlStatus(message) {
+export function setControlStatus(message) {
   el('control-status').textContent = message || '';
 }
 
@@ -2008,7 +2010,7 @@ function renderCameraInfo() {
     : 'No stream ticket yet.';
 }
 
-function shortStreamError(error) {
+export function shortStreamError(error) {
   if (error.code === 'misconfigured') {
     return error.message;
   }
@@ -2142,74 +2144,7 @@ function toggleRecord() {
   renderRecord();
 }
 
-const talk = { active: false, stream: null, context: null, frame: 0 };
-
-async function startTalk() {
-  const button = el('talk');
-  if (talk.active || button.disabled || state.view !== 'live') {
-    return;
-  }
-  talk.active = true;
-  button.classList.add('talk-on');
-  button.setAttribute('aria-pressed', 'true');
-  el('level').hidden = false;
-  renderCaption();
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    if (!talk.active) {
-      stream.getTracks().forEach((track) => track.stop());
-      return;
-    }
-    const context = new AudioContext();
-    const analyser = context.createAnalyser();
-    analyser.fftSize = 256;
-    context.createMediaStreamSource(stream).connect(analyser);
-    talk.stream = stream;
-    talk.context = context;
-    const samples = new Uint8Array(analyser.fftSize);
-    const bars = el('level').children;
-    const draw = () => {
-      analyser.getByteTimeDomainData(samples);
-      let sum = 0;
-      for (const sample of samples) {
-        const value = (sample - 128) / 128;
-        sum += value * value;
-      }
-      const lit = Math.min(5, Math.round(Math.sqrt(sum / samples.length) * 20));
-      for (let index = 0; index < bars.length; index += 1) {
-        bars[index].classList.toggle('on', index < lit);
-      }
-      el('level').dataset.level = String(lit);
-      talk.frame = requestAnimationFrame(draw);
-    };
-    draw();
-  } catch (error) {
-    stopTalk();
-    setControlStatus('The microphone did not open: ' + error.message);
-  }
-}
-
-function stopTalk() {
-  if (!talk.active) {
-    return;
-  }
-  talk.active = false;
-  cancelAnimationFrame(talk.frame);
-  if (talk.stream) {
-    talk.stream.getTracks().forEach((track) => track.stop());
-  }
-  if (talk.context) {
-    talk.context.close();
-  }
-  talk.stream = null;
-  talk.context = null;
-  const button = el('talk');
-  button.classList.remove('talk-on');
-  button.setAttribute('aria-pressed', 'false');
-  el('level').hidden = true;
-  el('level').dataset.level = '0';
-  renderCaption();
-}
+export const talk = { active: false, stream: null, context: null, frame: 0 };
 
 async function toggleFullscreen() {
   const target = state.view === 'grid' ? el('tiles') : el('well');
@@ -3091,3 +3026,5 @@ applyTheme();
 renderControlAvailability();
 tick();
 signedIn();
+
+Object.assign(window, { openSettings, showSection, state, signedIn, loadSettings, setQuality });

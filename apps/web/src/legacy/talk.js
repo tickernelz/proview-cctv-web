@@ -1,3 +1,5 @@
+import { renderCaption, setControlStatus, state, talk } from './app.js';
+
 const TALK_RATE = 8000;
 const TALK_FRAME = 320;
 const TALK_WORKLET = `
@@ -189,7 +191,7 @@ function openSocket() {
   });
 }
 
-async function startTalk() {
+export async function startTalk() {
   const shared = talkUi();
   const button = document.getElementById('talk');
   if (!shared || shared.active || (button && button.disabled)) {
@@ -241,7 +243,7 @@ async function startTalk() {
   }
 }
 
-function stopTalk() {
+export function stopTalk() {
   const shared = talkUi();
   const wasActive = Boolean(shared && shared.active) || uplink.socket !== null;
   if (uplink.socket && uplink.socket.readyState === WebSocket.OPEN) {

@@ -10,7 +10,7 @@ use super::types::{
     CODE_BAD_CREDENTIALS, CODE_TOKEN_EXPIRED,
 };
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum CloudError {
     #[error("{0}")]
     Rejected(String),

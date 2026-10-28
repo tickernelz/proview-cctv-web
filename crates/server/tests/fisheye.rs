@@ -259,7 +259,12 @@ fn dewarp_returns_a_bitmap_with_the_fixture_spokes_on_their_columns() {
 #[test]
 fn fisheye_script_is_served() {
     let client = client();
-    let response = client.get("/fisheye.js").dispatch();
+    let page = client.get("/").dispatch().into_string().unwrap();
+    let start = page
+        .find("/assets/index-")
+        .expect("the page links its bundle");
+    let end = start + page[start..].find(".js").expect("a script bundle") + 3;
+    let response = client.get(page[start..end].to_string()).dispatch();
     assert_eq!(response.status(), Status::Ok);
     let body = response.into_string().unwrap();
     assert!(body.contains("ProviewFisheye"));
