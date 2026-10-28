@@ -428,3 +428,16 @@ The JS delta is the first mounted Vue app: the Vue runtime, Reka UI with
 it, so they add only their own components. Icons stay in the inline sprite
 (`Icon.vue` renders `<use href="#i-name">`), so no icon package ships.
 e2e at this change: 139 passed, 1 skipped, 1.3 min locally; node web tests 46/46.
+
+### Cloud recordings in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/recordings/RecordingsPanel.vue` replaces `legacy/recordings.js`. Same method,
+baseline origin/main 05fe8a3:
+
+| File | main 05fe8a3 | Recordings in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 106,865 B | 107,380 B | +515 B |
+| CSS | 7,115 B | 7,131 B | +16 B |
+
+e2e at this change: 159 passed, 1 skipped (5 recordings specs and 8 screenshot
+baselines added), 1.4 min locally; node web tests 46/46.

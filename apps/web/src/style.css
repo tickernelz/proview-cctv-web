@@ -162,6 +162,7 @@ kbd { display: inline-block; min-width: 18px; padding: 1px var(--s1); border-rad
 
 .btn { min-height: max(40px, var(--hit)); padding: 0 var(--s4); border-radius: var(--r-md); display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); font-size: var(--t-15); transition: opacity var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease), filter var(--dur-1) var(--ease); }
 .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn[aria-busy="true"] { opacity: 0.7; cursor: progress; }
 .btn[aria-busy="true"] { cursor: progress; }
 .btn-fill { background: var(--accent); color: var(--accent-ink); font-weight: 500; }
 .btn-fill:hover:not(:disabled) { filter: brightness(1.08); }
@@ -346,6 +347,8 @@ select.text-input { background: var(--bg-2); }
 #recordings-panel form { display: grid; gap: var(--s2); padding: var(--s3) var(--s4); }
 #recordings-panel label { display: grid; gap: var(--s1); font-size: var(--t-13); color: var(--ink-2); }
 #recordings-panel [data-status] { padding: 0 var(--s4) var(--s2); font-size: var(--t-13); color: var(--ink-3); }
+#recordings-panel .err { color: var(--bad); }
+#recordings-panel header strong { flex: 1; }
 #recordings-panel ul { list-style: none; margin: 0; padding: 0 var(--s4) var(--s3); display: grid; gap: var(--s1); overflow: auto; }
 #recordings-panel li { display: flex; justify-content: space-between; gap: var(--s2); padding: var(--s2) var(--s2); border-radius: var(--r-md); background: var(--bg-3); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
 #recordings-panel li span:last-child { color: var(--ink-3); }

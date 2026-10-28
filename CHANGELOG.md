@@ -29,8 +29,16 @@ stability before 1.0.
   keyboard shortcuts and the look are unchanged (screenshot baselines pass
   as they were). Keys pressed in an open menu stay in the menu: Escape closes
   the menu without closing the pan and tilt pad or the device sheet, and arrows
-  move through the menu instead of panning the camera. The page JS grows by 67 KB gzip for the Vue runtime and Reka
-  UI, inside the 80 KB budget; later Vue screens reuse it.
+  move through the menu instead of panning the camera. The page JS grows by
+  67 KB gzip for the Vue runtime and Reka UI, inside the 80 KB budget; later Vue
+  screens reuse it.
+- Cloud recordings is a Vue panel (ZHA-4181): it opens on the camera on screen
+  instead of the first in the list, puts focus in Day and hands it back to Cloud
+  on Escape or Close (Escape did nothing before), shows "Loading…" on the button
+  and ignores a second press instead of sending the same request twice, names
+  the camera and day when a day is empty, shows a failed load in red with the
+  warning icon instead of grey text, and returns to sign-in when the session
+  ended. The title reads "Cloud recordings".
 
 ### Added
 
