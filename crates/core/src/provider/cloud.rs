@@ -128,6 +128,7 @@ impl CloudProvider {
         &self,
         connection: &mut crate::dvrip::client::Connection,
         entry: &crate::cloud::types::CloudDevice,
+        credential: DeviceCredential,
     ) -> Result<String, ProviderError> {
         let serial = entry.uuid.trim().to_string();
         let control = crate::media::dhav::MediaCipher::channel();
@@ -152,7 +153,7 @@ impl CloudProvider {
             connection.set_session(0);
             Self::drain_late_frames(connection).await;
         }
-        let (user, pass) = match device_credential_for(&serial, entry) {
+        let (user, pass) = match credential {
             DeviceCredential::Allowed { user, pass } => (user, pass),
             DeviceCredential::Refused(reason) => {
                 return Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
@@ -381,7 +382,9 @@ impl CloudProvider {
             )));
         }
         let mut connection = tunnel.into_connection();
-        self.device_login(&mut connection, &entry).await?;
+        let credential = device_credential_for(entry.uuid.trim(), &entry);
+        self.device_login(&mut connection, &entry, credential)
+            .await?;
         let device_channel = channel.saturating_sub(1) as u8;
         let stream = if high { "Main" } else { "Sub" };
         let claim = serde_json::json!({
@@ -1472,20 +1475,27 @@ mod login_tests {
         peer.await.expect("peer task");
     }
 
+    struct TokenDir(std::path::PathBuf);
+
+    impl Drop for TokenDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[tokio::test]
     async fn device_login_falls_back_with_the_password_reply_not_the_token_one() {
-        let serial = "zha4173-stale-token";
-        let dir = std::env::temp_dir().join("zha4173-login-tests-tokens");
-        std::fs::create_dir_all(&dir).expect("token dir");
+        let serial = "serial-one";
+        let dir = TokenDir(
+            std::env::temp_dir().join(format!("proview-login-tests-{}", std::process::id())),
+        );
+        std::fs::create_dir_all(&dir.0).expect("token dir");
         let mut provider = provider();
-        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir));
+        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir.0));
         provider
             .tokens
             .put(serial, "expired-token")
             .expect("stored token");
-        std::env::set_var("PROVIEW_DEVICE_SERIAL", serial);
-        std::env::set_var("PROVIEW_DEVICE_USER", "admin");
-        std::env::set_var("PROVIEW_DEVICE_PASS", "secret");
         let entry = crate::cloud::types::CloudDevice {
             uuid: serial.to_string(),
             nickname: String::new(),
@@ -1534,18 +1544,18 @@ mod login_tests {
         })
         .await;
         let mut connection = connect(&address).await;
+        let credential = DeviceCredential::Allowed {
+            user: "admin".to_string(),
+            pass: "secret".to_string(),
+        };
         let note = provider
-            .device_login(&mut connection, &entry)
+            .device_login(&mut connection, &entry, credential)
             .await
             .expect("the password login finishes the session");
-        std::env::remove_var("PROVIEW_DEVICE_SERIAL");
-        std::env::remove_var("PROVIEW_DEVICE_USER");
-        std::env::remove_var("PROVIEW_DEVICE_PASS");
         assert!(note.contains("password login ret 100"), "{note}");
         assert!(note.contains("token dropped"), "{note}");
         assert_eq!(connection.session(), 0x2222_2222);
         drop(connection);
         peer.await.expect("peer task");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
