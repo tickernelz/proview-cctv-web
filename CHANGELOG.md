@@ -51,7 +51,11 @@ stability before 1.0.
   device-token store each time — and `/api/stream`, `/ws/live` and the cold
   start each asked the vendor for the device list again. `/ws/live` and the
   cold start now read the entry the ticket walked, keyed by the vendor session
-  and answered per serial.
+  and answered per serial. A serial the window does not carry is asked again
+  instead of refused, and a fresh `/api/devices` fetch replaces the window, so a
+  camera bound or unbound inside those 30 s still answers correctly. The vendor
+  identity stays per request: `PROVIEW_APP_UUID/KEY/SECRET` saved in Settings
+  after start reach the next call, as they did before the provider was shared.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`

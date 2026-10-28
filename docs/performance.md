@@ -273,9 +273,13 @@ that answers `msdlistCode` and nothing else:
 `crates/server/tests/live_scope.rs` measures the row: one ticket, then two
 socket opens on the camera the account owns, and one `msdlistCode` request
 arrives. The window is 30 s per vendor session, and the next call after it
-closes asks the cloud again; `crates/core/src/provider/cloud.rs` carries the
-three tests behind that sentence (one session pays one list for every serial, a
-second session pays its own, an entry older than the window is fetched again).
+closes asks the cloud again, a serial the window does not carry is asked again
+rather than refused, and a fresh device-list fetch (`/api/devices`) replaces the
+window; `crates/core/src/provider/cloud.rs` carries the six tests behind those
+sentences (one session pays one list for every serial, a second session pays its
+own, an entry older than the window is fetched again, a serial bound inside the
+window is recognised, a refresh replaces the window, a serial a refresh drops
+stops answering).
 No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
 the fix removes two of those round trips and three client builds per open.
 

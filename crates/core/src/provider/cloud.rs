@@ -24,7 +24,10 @@ struct SessionEntries {
 }
 
 pub struct CloudProvider {
-    client: EnvelopeClient,
+    http: reqwest::Client,
+    base: String,
+    identity: Option<Identity>,
+    counter: Arc<std::sync::atomic::AtomicU32>,
     status: StatusClient,
     tokens: crate::cloud::DeviceTokenStore,
     entries: Mutex<HashMap<String, SessionEntries>>,
@@ -33,17 +36,34 @@ pub struct CloudProvider {
 
 impl CloudProvider {
     pub fn new(cfg: &Config) -> Self {
-        Self::with_identity(cfg, Identity::resolve())
+        Self::with_identity_override(cfg, None)
     }
 
     pub fn with_identity(cfg: &Config, identity: Identity) -> Self {
+        Self::with_identity_override(cfg, Some(identity))
+    }
+
+    fn with_identity_override(cfg: &Config, identity: Option<Identity>) -> Self {
         Self {
-            client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
+            http: crate::cloud::envelope::http(),
+            base: cfg.cloud_base.clone(),
+            identity,
+            counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             status: StatusClient::new(STATUS_HOST),
             tokens: crate::cloud::DeviceTokenStore::load(None),
             entries: Mutex::new(HashMap::new()),
             entry_ttl: SESSION_ENTRY_TTL,
         }
+    }
+
+    fn envelope(&self) -> EnvelopeClient {
+        let identity = self.identity.clone().unwrap_or_else(Identity::resolve);
+        EnvelopeClient::with_shared(
+            identity,
+            self.base.clone(),
+            self.http.clone(),
+            self.counter.clone(),
+        )
     }
 
     #[cfg(test)]
@@ -82,15 +102,17 @@ impl CloudProvider {
         );
     }
 
-    async fn session_entries(
+    async fn fetch_entries(
         &self,
         session: &VendorSession,
     ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
         let token = self.token(session)?;
-        if let Some(devices) = self.cached_entries(token) {
-            return Ok(devices);
-        }
-        let devices = Arc::new(self.client.device_list(token).await.map_err(map_cloud)?);
+        let devices = Arc::new(
+            self.envelope()
+                .device_list(token)
+                .await
+                .map_err(map_cloud)?,
+        );
         self.remember_entries(token, devices.clone());
         Ok(devices)
     }
@@ -267,11 +289,14 @@ impl CloudProvider {
         session: &VendorSession,
         device: &str,
     ) -> Result<Option<CloudDevice>, ProviderError> {
-        let devices = self.session_entries(session).await?;
-        Ok(devices
-            .iter()
-            .find(|entry| entry.uuid == device.trim())
-            .cloned())
+        let serial = device.trim();
+        if let Some(devices) = self.cached_entries(self.token(session)?) {
+            if let Some(found) = devices.iter().find(|entry| entry.uuid == serial) {
+                return Ok(Some(found.clone()));
+            }
+        }
+        let devices = self.fetch_entries(session).await?;
+        Ok(devices.iter().find(|entry| entry.uuid == serial).cloned())
     }
 
     pub async fn owns(&self, session: &VendorSession, device: &str) -> Result<bool, ProviderError> {
@@ -686,13 +711,13 @@ impl Provider for CloudProvider {
     }
 
     async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
-        if !self.client.identity().is_complete() {
+        let envelope = self.envelope();
+        if !envelope.identity().is_complete() {
             return Err(ProviderError::Misconfigured(
                 MISSING_CLOUD_IDENTITY.to_string(),
             ));
         }
-        let tokens = self
-            .client
+        let tokens = envelope
             .login_envelope(user, pass)
             .await
             .map_err(map_cloud)?;
@@ -703,8 +728,7 @@ impl Provider for CloudProvider {
     }
 
     async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
-        let token = self.token(session)?;
-        let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        let devices = self.fetch_entries(session).await?;
         let mut pending = tokio::task::JoinSet::new();
         for (index, device) in devices.iter().enumerate() {
             let status = self.status.clone();
@@ -1137,20 +1161,24 @@ mod entry_cache_tests {
 
     struct Stub {
         base: String,
+        rows: Arc<Mutex<Vec<String>>>,
         hits: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         handle: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Stub {
-        fn start() -> Self {
+        fn start(rows: &[&str]) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("stub listener");
             let address = listener.local_addr().expect("stub address");
             listener.set_nonblocking(true).expect("stub non blocking");
+            let rows: Arc<Mutex<Vec<String>>> =
+                Arc::new(Mutex::new(rows.iter().map(|row| row.to_string()).collect()));
             let hits = Arc::new(AtomicUsize::new(0));
             let stop = Arc::new(AtomicBool::new(false));
             let counted = hits.clone();
             let ending = stop.clone();
+            let listing = rows.clone();
             let handle = std::thread::spawn(move || {
                 while !ending.load(Ordering::Relaxed) {
                     let (stream, _) = match listener.accept() {
@@ -1160,15 +1188,21 @@ mod entry_cache_tests {
                             continue;
                         }
                     };
-                    serve(stream, &counted);
+                    serve(stream, &listing, &counted);
                 }
             });
             Self {
                 base: format!("http://{address}"),
+                rows,
                 hits,
                 stop,
                 handle: Some(handle),
             }
+        }
+
+        fn set_rows(&self, rows: &[&str]) {
+            let mut held = self.rows.lock().expect("rows");
+            *held = rows.iter().map(|row| row.to_string()).collect();
         }
 
         fn hits(&self) -> usize {
@@ -1185,7 +1219,7 @@ mod entry_cache_tests {
         }
     }
 
-    fn serve(stream: TcpStream, hits: &AtomicUsize) {
+    fn serve(stream: TcpStream, rows: &Mutex<Vec<String>>, hits: &AtomicUsize) {
         let _ = stream.set_nonblocking(false);
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let Ok(mut writer) = stream.try_clone() else {
@@ -1213,7 +1247,15 @@ mod entry_cache_tests {
         if request_line.contains("msdlistCode") {
             hits.fetch_add(1, Ordering::Relaxed);
         }
-        let payload = "{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{\"mine\":[{\"uuid\":\"serial-one\",\"nickname\":\"camera\"},{\"uuid\":\"serial-two\",\"nickname\":\"camera\"}]}}";
+        let serials = rows.lock().expect("rows").clone();
+        let entries: Vec<String> = serials
+            .iter()
+            .map(|serial| format!("{{\"uuid\":\"{serial}\",\"nickname\":\"camera\"}}"))
+            .collect();
+        let payload = format!(
+            "{{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{{\"mine\":[{}]}}}}",
+            entries.join(",")
+        );
         let response = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             payload.len(),
@@ -1237,27 +1279,23 @@ mod entry_cache_tests {
 
     #[tokio::test]
     async fn one_session_asks_for_the_device_list_once_for_every_serial() {
-        let stub = Stub::start();
+        let stub = Stub::start(&["serial-one", "serial-two"]);
         let provider = provider(&stub);
         let session = session("probe", "access");
 
         assert!(provider.owns(&session, "serial-one").await.expect("first"));
         assert!(provider.owns(&session, "serial-one").await.expect("second"));
         assert!(provider.owns(&session, "serial-two").await.expect("third"));
-        assert!(!provider
-            .owns(&session, "serial-three")
-            .await
-            .expect("fourth"));
         assert_eq!(
             stub.hits(),
             1,
-            "one session must pay one device list for every serial"
+            "one session must pay one device list for every serial it owns"
         );
     }
 
     #[tokio::test]
     async fn another_session_pays_its_own_device_list() {
-        let stub = Stub::start();
+        let stub = Stub::start(&["serial-one"]);
         let provider = provider(&stub);
 
         assert!(provider
@@ -1272,8 +1310,8 @@ mod entry_cache_tests {
     }
 
     #[tokio::test]
-    async fn an_entry_older_than_the_window_is_fetched_again() {
-        let stub = Stub::start();
+    async fn an_entry_older_than_the_window_is_fetched_again_for_a_serial_it_owns() {
+        let stub = Stub::start(&["serial-one"]);
         let provider = provider(&stub).with_entry_ttl(Duration::from_millis(50));
         let session = session("probe", "access");
 
@@ -1281,5 +1319,68 @@ mod entry_cache_tests {
         std::thread::sleep(Duration::from_millis(120));
         assert!(provider.owns(&session, "serial-one").await.expect("second"));
         assert_eq!(stub.hits(), 2, "a closed window asks the cloud again");
+    }
+
+    #[tokio::test]
+    async fn a_serial_the_window_does_not_carry_is_asked_again() {
+        let stub = Stub::start(&["serial-one"]);
+        let provider = provider(&stub);
+        let session = session("probe", "access");
+
+        assert!(provider.owns(&session, "serial-one").await.expect("first"));
+        stub.set_rows(&["serial-one", "serial-two"]);
+        assert!(
+            provider
+                .owns(&session, "serial-two")
+                .await
+                .expect("new one"),
+            "a camera bound inside the window must open"
+        );
+        assert_eq!(
+            stub.hits(),
+            2,
+            "a serial the cached list does not carry is a miss, not a refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_fetch_replaces_the_window_for_every_serial() {
+        let stub = Stub::start(&["serial-one"]);
+        let provider = provider(&stub);
+        let session = session("probe", "access");
+
+        assert!(provider.owns(&session, "serial-one").await.expect("first"));
+        stub.set_rows(&["serial-one", "serial-two"]);
+        provider.fetch_entries(&session).await.expect("refresh");
+        assert!(
+            provider
+                .owns(&session, "serial-two")
+                .await
+                .expect("new one"),
+            "the refreshed list must answer without another call"
+        );
+        assert_eq!(
+            stub.hits(),
+            2,
+            "the refresh is the second call, the lookup is free"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_serial_removed_by_a_refresh_stops_answering() {
+        let stub = Stub::start(&["serial-one", "serial-two"]);
+        let provider = provider(&stub);
+        let session = session("probe", "access");
+
+        assert!(provider.owns(&session, "serial-one").await.expect("first"));
+        stub.set_rows(&["serial-two"]);
+        provider.fetch_entries(&session).await.expect("refresh");
+        assert!(
+            !provider
+                .owns(&session, "serial-one")
+                .await
+                .expect("unbound"),
+            "a camera the account no longer lists must stop opening"
+        );
     }
 }

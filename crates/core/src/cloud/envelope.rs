@@ -333,7 +333,15 @@ pub struct EnvelopeClient {
     base: String,
     platform: String,
     identity: Identity,
-    counter: AtomicU32,
+    counter: std::sync::Arc<AtomicU32>,
+}
+
+pub fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .expect("envelope http client")
 }
 
 impl EnvelopeClient {
@@ -342,11 +350,20 @@ impl EnvelopeClient {
     }
 
     pub fn with_base(identity: Identity, base: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .expect("envelope http client");
+        Self::with_shared(
+            identity,
+            base,
+            http(),
+            std::sync::Arc::new(AtomicU32::new(0)),
+        )
+    }
+
+    pub fn with_shared(
+        identity: Identity,
+        base: impl Into<String>,
+        http: reqwest::Client,
+        counter: std::sync::Arc<AtomicU32>,
+    ) -> Self {
         let base = base.into().trim_end_matches('/').to_string();
         Self {
             http,
@@ -357,7 +374,7 @@ impl EnvelopeClient {
             },
             platform: PLATFORM_BASE.to_string(),
             identity,
-            counter: AtomicU32::new(0),
+            counter,
         }
     }
 
