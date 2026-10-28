@@ -46,14 +46,16 @@
   const bell = document.createElement('button');
   bell.type = 'button';
   bell.className = 'iconbtn alarm-bell';
+  bell.dataset.testid = 'alarm-bell';
   bell.hidden = true;
   bell.setAttribute('aria-haspopup', 'dialog');
   bell.setAttribute('aria-label', 'Alarm messages');
   bell.title = 'Alarm messages';
-  bell.innerHTML = '<span aria-hidden="true">&#128276;</span><span class="badge" hidden>0</span>';
+  bell.innerHTML = '<span aria-hidden="true">&#128276;</span><span class="badge" data-testid="alarm-badge" hidden>0</span>';
 
   const sheet = document.createElement('section');
   sheet.className = 'alarm-sheet';
+  sheet.dataset.testid = 'alarm-center';
   sheet.hidden = true;
   sheet.setAttribute('role', 'dialog');
   sheet.setAttribute('aria-label', 'Alarm messages');
@@ -61,7 +63,7 @@
     '<div class="alarm-head"><h2>Alarm messages</h2><span class="grow"></span><button type="button" data-close aria-label="Close">Close</button></div>',
     '<div class="alarm-bar"><select data-device aria-label="Camera"></select><select data-hours aria-label="Window"><option value="24">24 h</option><option value="168">7 days</option></select><span data-window></span></div>',
     '<div class="alarm-list" data-list role="list"></div>',
-    '<div class="alarm-foot"><span data-status>not polled yet</span><span class="grow"></span><button type="button" data-alerts>Notify me</button></div>',
+    '<div class="alarm-foot"><span data-status data-testid="alarm-status">not polled yet</span><span class="grow"></span><button type="button" data-alerts>Notify me</button></div>',
   ].join('');
 
   const topbar = document.querySelector('#watch .topbar');
@@ -137,6 +139,7 @@
       const row = document.createElement('div');
       const focused = Boolean(STATE.focus) && STATE.focus === entry.id;
       row.className = 'alarm-row' + (focused ? ' focus' : '');
+      row.dataset.testid = 'alarm-row';
       row.dataset.id = entry.id || '';
       row.setAttribute('role', 'listitem');
       if (focused && STATE.focusShown !== entry.id) {

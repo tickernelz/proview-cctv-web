@@ -147,6 +147,7 @@ function gridBar() {
   const group = make('div', 'grid-seg');
   group.setAttribute('role', 'group');
   group.setAttribute('aria-label', 'Grid layout');
+  group.dataset.testid = 'grid-layout';
   for (const layout of GRID_LAYOUTS) {
     const button = make('button', '', layout.label);
     button.type = 'button';
@@ -327,12 +328,14 @@ function gridBuildTile(view, index) {
   const camera = state.cameras.find((entry) => entry.key === gridTileKey(view));
   const tile = make('article', 'tile');
   tile.dataset.key = gridTileKey(view);
+  tile.dataset.testid = 'grid-tile';
   const open = make('button', 'tile-open');
   open.type = 'button';
   open.setAttribute('aria-label', 'Open ' + camera.name + ' in Live');
   open.addEventListener('click', () => openCamera(state.cameras.indexOf(camera)));
   const well = make('div', 'well');
   const video = document.createElement('video');
+  video.dataset.testid = 'grid-tile-video';
   video.playsInline = true;
   video.muted = true;
   video.hidden = true;
@@ -355,7 +358,9 @@ function gridBuildTile(view, index) {
     'This tile plays the ' + (view.quality === 'main' ? 'main stream' : 'sub stream') + '. Switch it.',
   );
   pick.addEventListener('click', () => gridToggleQuality(gridTileKey(view)));
-  meta.append(left, pick, make('span', 'right'));
+  const clock = make('span', 'right');
+  clock.dataset.testid = 'grid-tile-clock';
+  meta.append(left, pick, clock);
   tile.append(open, well, meta);
   tile.dataset.index = String(index);
   return tile;
