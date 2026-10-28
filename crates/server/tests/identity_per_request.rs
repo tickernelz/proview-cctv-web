@@ -19,14 +19,17 @@ const SAVED: [(&str, &str); 3] = [
 ];
 
 type Hits = Arc<AtomicUsize>;
+type SeenUuid = Arc<std::sync::Mutex<String>>;
 
-fn fake_cloud() -> (String, Hits, Arc<std::sync::atomic::AtomicBool>) {
+fn fake_cloud() -> (String, Hits, SeenUuid, Arc<std::sync::atomic::AtomicBool>) {
     let listener = StdListener::bind("127.0.0.1:0").expect("fake cloud listener");
     let address = listener.local_addr().expect("fake cloud address");
     listener.set_nonblocking(true).expect("non blocking");
     let hits: Hits = Arc::new(AtomicUsize::new(0));
+    let seen: SeenUuid = Arc::new(std::sync::Mutex::new(String::new()));
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let counted = hits.clone();
+    let recorded = seen.clone();
     let ending = stop.clone();
     std::thread::spawn(move || {
         while !ending.load(Ordering::Relaxed) {
@@ -37,13 +40,13 @@ fn fake_cloud() -> (String, Hits, Arc<std::sync::atomic::AtomicBool>) {
                     continue;
                 }
             };
-            serve(stream, &counted);
+            serve(stream, &counted, &recorded);
         }
     });
-    (format!("http://{address}"), hits, stop)
+    (format!("http://{address}"), hits, seen, stop)
 }
 
-fn serve(stream: TcpStream, hits: &AtomicUsize) {
+fn serve(stream: TcpStream, hits: &AtomicUsize, seen: &SeenUuid) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let Ok(mut writer) = stream.try_clone() else {
@@ -55,13 +58,18 @@ fn serve(stream: TcpStream, hits: &AtomicUsize) {
         return;
     }
     let mut length = 0usize;
+    let mut uuid = String::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
             break;
         }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+        let lower = line.to_ascii_lowercase();
+        if let Some(value) = lower.strip_prefix("content-length:") {
             length = value.trim().parse().unwrap_or(0);
+        }
+        if lower.starts_with("uuid:") {
+            uuid = line[5..].trim().to_string();
         }
     }
     let mut body = vec![0u8; length];
@@ -70,6 +78,7 @@ fn serve(stream: TcpStream, hits: &AtomicUsize) {
     }
     let payload = if request_line.contains("loginExist") {
         hits.fetch_add(1, Ordering::Relaxed);
+        *seen.lock().expect("seen") = uuid;
         "{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{\"accessToken\":\"access\",\"refreshToken\":\"refresh\"}}"
     } else {
         "{\"code\":2000,\"msg\":\"SUCCESS\",\"data\":{}}"
@@ -123,7 +132,7 @@ fn the_platform_identity_is_read_per_request_not_frozen_at_start() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("temp dir");
 
-    let (base, hits, stop) = fake_cloud();
+    let (base, hits, seen, stop) = fake_cloud();
     let settings = SettingsStore::load(Some(&dir));
     settings.apply_env();
     let client = Client::tracked(proview_server::build_with_state(
@@ -166,6 +175,11 @@ fn the_platform_identity_is_read_per_request_not_frozen_at_start() {
         hits.load(Ordering::Relaxed),
         1,
         "the saved identity made the login call"
+    );
+    assert_eq!(
+        seen.lock().expect("seen").as_str(),
+        "uuid-saved-at-runtime",
+        "the login must be signed with the identity saved after start, not the built-in one"
     );
 
     for (key, _) in SAVED {
