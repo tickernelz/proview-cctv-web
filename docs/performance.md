@@ -404,8 +404,8 @@ servers restarted before each cold run, three rounds:
 | tester-army/e2e 0.21.3 + @e2e-dev/web 0.15.3, `--strict-cache` | 76 / 64 / 54 s | 70 / 72 / 76 s | 71 s |
 | @playwright/test 1.64.1 | 45 / 43 / 50 s | 44 / 42 / 46 s | 44.5 s |
 
-CI (GitHub Actions, run 40726996679 at 1edca06): job `e2e` 219 s including the
-container pull, Rust build and `npm ci`; it runs beside `check` (224 s), so the
-pipeline wall is 227 s against 385 s on main 7510ccd (that run waited on a 357 s
-macOS desktop job). With the responsive and touch specs the suite is 218 tests,
-1.6 min locally.
+CI, run 40726996679 at 1edca06: job `e2e` 219 s (container init 38 s, cached
+`cargo build` 64 s, tests 66 s). It runs beside `check` (224 s), so the
+pipeline wall is 227 s; main 7510ccd took 385 s, held by a 357 s macOS desktop
+job. The slowest single test is 4.9 s (WebKit, alarms). With the responsive and touch
+specs the suite is 218 tests, 1.6 min locally.

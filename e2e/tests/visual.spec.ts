@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test'
 import { test, expect, type Page } from '@playwright/test'
-import { playing, serverFor0, signIn } from './app'
+import { playing, scenarioUrl, signIn } from './app'
 
 const VIEWPORTS = [
   { width: 1440, height: 900 },
@@ -12,7 +12,7 @@ type Open = (page: Page) => Promise<Locator[]>
 
 const SCREENS: Record<string, Open> = {
   signin: async (page) => {
-    await page.goto(serverFor0('one'))
+    await page.goto(scenarioUrl('one'))
     await expect(page.getByTestId('signin')).toBeVisible()
     return []
   },
@@ -30,7 +30,7 @@ const SCREENS: Record<string, Open> = {
     await signIn(page, 'many')
     await page.getByTestId('grid-toggle').click()
     await expect(page.getByTestId('grid-tile')).toHaveCount(5)
-    return [page.getByTestId('grid-tile-video'), page.getByTestId('grid-tile-clock'), page.getByTestId('grid-count')]
+    return [page.getByTestId('grid-tile-video'), page.getByTestId('grid-count')]
   },
   settings: async (page) => {
     await signIn(page, 'one')
@@ -60,7 +60,7 @@ const SCREENS: Record<string, Open> = {
     await signIn(page, 'one')
     await page.getByTestId('alarm-bell').click()
     await expect(page.getByTestId('alarm-row')).toHaveCount(2)
-    return [page.getByTestId('live-frame'), page.getByTestId('live-state'), page.getByTestId('alarm-status')]
+    return [page.getByTestId('live-frame'), page.getByTestId('live-state')]
   },
 }
 
@@ -75,8 +75,7 @@ for (const [name, open] of Object.entries(SCREENS)) {
         expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(theme)
         await page.evaluate(() => document.fonts.ready.then(() => true))
         await expect(page).toHaveScreenshot(shot + '.png', {
-          maxDiffPixelRatio: 0.002,
-          mask: [...mask, page.getByTestId('live-clock')],
+          mask,
         })
       })
     }

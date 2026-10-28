@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { playing, signIn } from './app'
 
 test('the live tile shows a decoded frame from the camera', async ({ page }) => {

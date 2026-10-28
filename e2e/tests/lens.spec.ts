@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { playing, signIn } from './app'
 
 test('the lens menu switches from both lenses to the top lens and to the bottom lens', async ({ page }) => {

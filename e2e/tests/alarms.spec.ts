@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { signIn } from './app'
 
 const ALARMS = {
@@ -42,4 +42,15 @@ test('an empty alarm window keeps the badge off and says so', async ({ page }) =
   await expect(page.getByTestId('alarm-status')).toContainText('0 alarms')
   await expect(page.getByTestId('alarm-center').getByTestId('alarm-row')).toHaveCount(0)
   await expect(page.getByTestId('alarm-badge')).toBeHidden()
+})
+
+test('Notify me asks for permission and says when notifications are on', async ({ page, context, browserName }) => {
+  test.skip(browserName !== 'chromium', 'only Chromium grants the notifications permission in Playwright')
+  await context.grantPermissions(['notifications'])
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))
+  await signIn(page, 'one')
+  await page.getByTestId('alarm-bell').click()
+  const notify = page.getByTestId('alarm-center').getByRole('button', { name: 'Notify me', exact: true })
+  await notify.click()
+  await expect(page.getByTestId('alarm-center').getByRole('button', { name: 'Notifications on', exact: true })).toBeVisible()
 })

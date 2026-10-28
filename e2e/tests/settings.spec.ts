@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { signIn } from './app'
 
 test('a field that needs a restart is saved and the bar asks for the restart', async ({ page }) => {
@@ -9,7 +9,7 @@ test('a field that needs a restart is saved and the bar asks for the restart', a
   await expect(page.getByTestId('settings-status')).not.toHaveText('Not loaded yet.')
   const field = page.getByTestId('setting-PROVIEW_LISTEN')
   await expect(field).toBeVisible()
-  const listen = '127.0.0.1:' + (9700 + Math.floor(Math.random() * 200))
+  const listen = '127.0.0.1:' + (9700 + test.info().retry)
   await field.fill(listen)
   await expect(page.getByTestId('settings-save')).toBeVisible()
   await page.getByTestId('settings-save').click()
@@ -33,7 +33,7 @@ test('the desktop build restarts through its local route after the save', async 
   await signIn(page, 'desktop')
   await page.getByTestId('open-settings').click()
   await page.getByTestId('settings').getByRole('link', { name: 'Configuration', exact: true }).click()
-  await page.getByTestId('setting-PROVIEW_LISTEN').fill('127.0.0.1:' + (9900 + Math.floor(Math.random() * 90)))
+  await page.getByTestId('setting-PROVIEW_LISTEN').fill('127.0.0.1:' + (9800 + test.info().retry))
   await page.getByTestId('settings-save').click()
   await expect(page.getByTestId('save-state')).toContainText('Restart the app to apply 1 field')
   await page.getByTestId('settings-restart').click()

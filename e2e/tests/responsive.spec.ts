@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { serverFor0, signIn, playing } from './app'
+import { scenarioUrl, signIn, playing } from './app'
 
 const VIEWPORTS = [
   { width: 320, height: 568 },
@@ -17,7 +17,7 @@ const VIEWPORTS = [
 
 const SCREENS: Record<string, (page: Page) => Promise<void>> = {
   signin: async (page) => {
-    await page.goto(serverFor0('one'))
+    await page.goto(scenarioUrl('one'))
     await expect(page.getByTestId('signin')).toBeVisible()
   },
   live: async (page) => {
