@@ -43,6 +43,53 @@ jobs:
           timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/restart.test.mjs tests/web/settings-boot.test.mjs tests/web/desktop-settings.test.mjs tests/web/stream-orphan.test.mjs tests/web/stream-misconfigured.test.mjs
       - run: cargo build --release -p proview-server
 
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host
+    env:
+      CI: '1'
+      OPENSSL_NO_VENDOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential pkg-config libssl-dev curl ca-certificates >/dev/null
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: e2e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            e2e/package-lock.json
+      - name: Build the web app
+        working-directory: apps/web
+        run: |
+          npm ci --include=dev
+          npm run build
+      - run: cargo build -p proview-server
+      - name: Install the e2e harness
+        working-directory: e2e
+        run: npm ci --include=dev
+      - name: e2e (Chromium and WebKit, fixture servers)
+        working-directory: e2e
+        run: npx --no-install playwright test
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: |
+            e2e/test-results/
+            e2e/playwright-report/
+          retention-days: 7
+
   desktop-smoke:
     strategy:
       fail-fast: false

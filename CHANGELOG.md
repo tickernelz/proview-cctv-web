@@ -7,7 +7,30 @@ stability before 1.0.
 
 ## Unreleased
 
+### Changed
+
+- The page has a refined look (ZHA-4181): one icon family (Lucide, built into
+  the inline sprite, so no icon runtime ships), a blue accent for what is
+  pressed, selected, checked or primary, no text under 12 px, tabular numbers on
+  clocks and timestamps, a 4 px spacing grid and 160/200 ms motion that
+  `prefers-reduced-motion` still switches off. The alarm sheet, playback and
+  cloud recordings follow the light theme now: they used to inject their own
+  dark colours. The alarm bell is an icon instead of an emoji. Every token pair
+  passes AA (`tools/contrast.py`, 76 pairs). Design notes in `DESIGN.md`, the
+  options considered in `docs/design/redesign-v2/`, the library decision in
+  ADR 0002.
+- Every screen fits from 320 to 1920 px wide: sign-in becomes one column below
+  900 px, settings stacks below 768/640 px, the top bar tightens below 480 px,
+  and "every camera" uses 1, 2 or 4 columns by width instead of 3 everywhere.
+  Buttons in the top bar and the control row are 44 px on touch screens.
+
 ### Added
+
+- An end-to-end suite (`e2e/`, Playwright 1.64.1) against the served build with
+  the fixture provider: sign-in, devices, live, lenses, PTZ and presets, record,
+  white light and flip, settings, alarms and the grid, in Chromium and WebKit,
+  plus a viewport gate from 320 to 1920 px, touch-screen projects and screenshot
+  baselines in both themes. CI runs it as the `e2e` job.
 
 - Desktop alarm notifications and the tray. The desktop process polls the alarm
   centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
@@ -76,6 +99,21 @@ stability before 1.0.
   camera bound or unbound inside those 30 s still answers correctly. The vendor
   identity stays per request: `PROVIEW_APP_UUID/KEY/SECRET` saved in Settings
   after start reach the next call, as they did before the provider was shared.
+- Parallel cold opens in one session share a single device list, including when
+  the list lacks the camera and when the cloud fails. The window was read before
+  the fetch, so N tiles of a grid opening at once could each miss it and each ask
+  `msdlistCode`; a `tokio::sync` mutex per vendor session now gates the fetch, and
+  a waiter adopts whatever the winner produced when that finished after the
+  waiter started. That is one call per burst for hits, for serials the account
+  does not list, and for a failed or timed-out list — the failure is handed to
+  every waiter instead of being retried one at a time, so a grid against a dead
+  cloud no longer waits N times the 20 s request timeout. A sequential open still
+  asks again, and an explicit refresh (`/api/devices`) never adopts: it waits its
+  turn and then asks, so a camera bound or a nickname changed while another fetch
+  was running is still in the list it returns. The cost of adoption is that a
+  camera bound inside one round trip is not seen by the opens already waiting,
+  which the next open or `/api/devices` picks up. A gate is dropped once no
+  caller holds it, so the map cannot grow with every session that opens a camera.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`
@@ -89,6 +127,40 @@ stability before 1.0.
 
 ### Fixed
 
+- A camera that refuses the device token is no longer offered one. The `AdminToken`
+  a password login returns was stored for every serial, so a camera that answers
+  `Ret` 117 (or 137, as the live unit here does) to the token login paid the token
+  attempt plus a second tunnel on every open, forever: nothing could make that token
+  work, and the token the fallback stored in its place was refused the same way.
+  `CloudProvider` now records the refusal against the serial — 117 and 137 are the
+  two answers that mean this device will not take tokens — stops offering a token to
+  that serial for the life of the process, and no longer stores the `AdminToken` a
+  password login hands back for it, so the next open goes straight to the password
+  login on its first tunnel. A device that accepts the token keeps the fast path, any
+  other non-100 answer still drops the token and tries again on the next open, and an
+  accepted token clears the mark.
+- The password fallback after a stale device token opens its own tunnel instead of
+  reusing the socket the token login left behind. A token reply and a password
+  reply carry the same message id (`1001`), so a token reply that arrived after the
+  token loop gave up — or after the six 80 ms drains that used to run before the
+  fallback — was read as the password reply: the session belonged to the old login,
+  `AdminToken` was never issued, and the stream ran on a session the password never
+  owned. The tunnel setup in `CloudProvider::open_media` (status query,
+  `access_server`, `agent_request`, `assign`, `handshake_frame`, `tunnel::open`,
+  `accepted`) is split in two: a relay lookup (status query, access server) and
+  a dial (assign, handshake, accepted). The fallback only dials again, so a stale
+  token no longer repeats the pub-status fan-out whose answer it already has, and
+  `drain_late_frames` is gone. Measured on the live relay: a second tunnel in one
+  viewer open is accepted with the same `session_id` (`ErrorNum 200`), the first
+  tunnel stays up and keeps its claim; a stale token leaves one pub-status fan-out
+  per open and costs one dial, `assign` 73–98 ms plus handshake 22–45 ms. The
+  `open_media` wall on the device, three samples each, was 564–701 ms with no
+  stored token and 653–986 ms with a stale one, against the drain's 80 ms floor
+  and 480 ms worst case; this device refuses stored `AdminToken`s (`Ret` 137), so
+  the accepted-token arm has no live sample. Against a peer that answers the token login
+  700 ms late — later than the whole drain — the pre-fix code returns a session
+  owned by the late reply and stores its `AdminToken`; the fixed code answers the
+  password login on the second connection.
 - A vendor token the cloud revokes is reported as a session that ended instead of
   a cloud failure. The device list answered code `-4004` as a plain rejection
   (`session expired; sign in again`), so the desktop watcher logged it at warn and

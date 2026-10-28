@@ -269,17 +269,37 @@ that answers `msdlistCode` and nothing else:
 | `GET /ws/live`, same viewer | 1 `msdlistCode` + a new client and token-store load | 0 |
 | cold start (`open_media`) | 1 `msdlistCode` + a new client and token-store load | 0 |
 | total per viewer open | 3 | 1 |
+| N parallel cold opens, one session | N `msdlistCode` | 1 |
+| N parallel opens for serials the list lacks | N `msdlistCode`, N x RTT | 1 |
+| N parallel opens against a failing cloud | N `msdlistCode`, N x failure | 1 |
 
 `crates/server/tests/live_scope.rs` measures the row: one ticket, then two
 socket opens on the camera the account owns, and one `msdlistCode` request
 arrives. The window is 30 s per vendor session, and the next call after it
 closes asks the cloud again, a serial the window does not carry is asked again
 rather than refused, and a fresh device-list fetch (`/api/devices`) replaces the
-window; `crates/core/src/provider/cloud.rs` carries the six tests behind those
+window; `crates/core/src/provider/cloud.rs` carries the twelve tests behind those
 sentences (one session pays one list for every serial, a second session pays its
 own, an entry older than the window is fetched again, a serial bound inside the
 window is recognised, a refresh replaces the window, a serial a refresh drops
-stops answering).
+stops answering, three parallel cold opens on one session pay one list, four
+parallel opens for serials the list lacks pay one, four parallel opens against a
+failing cloud pay one and return in one failure's time, a refresh that arrives
+while another fetch is running asks again, a failure is not remembered for the
+next open, and the gate map does not grow with each session).
+The fetch is single-flight per vendor session: a `tokio::sync` mutex per token
+gates it and is dropped once no caller holds it, so the winner asks the cloud and
+a lookup waiter adopts what it produced. Adoption is keyed on when the caller
+arrived, not on the serial: a list or a failure that finished after the caller
+started waiting is the answer, so a burst of opens pays one call whether it hits,
+misses or fails, and a waiter never queues behind an attempt that already
+finished. An explicit refresh — `GET /api/devices`, `devices()` — never adopts:
+it waits for the gate and then asks, so a camera bound or a nickname changed
+while another fetch was running is still in the list it returns. A sequential
+open still refetches, which is what keeps the refetch-miss above a miss and not a
+refusal; the cost of adoption is that a camera bound inside one round trip is not
+seen by the opens already waiting, and the next open or `/api/devices` picks it
+up.
 No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
 the fix removes two of those round trips and three client builds per open.
 
@@ -359,3 +379,33 @@ NALs, because every length prefix becomes a `00 00 00 01` start code. `ffprobe
 them, the same bytes are unreadable: `ffprobe -f hevc` answers `hevc,0,0,N/A`
 with "missing picture in access unit with size 70906", so the conversion is what
 makes the artifact verify, not decoration.
+
+## Web bundle and e2e suite (measured 2026-10-28, ZHA-4181)
+
+Bundle: `npm run build` in `apps/web`, then `gzip -9c <file> | wc -c` per file.
+Baseline is origin/main 6405caf; v2 is the redesign commit 89976a1 (lucide
+sprite, tokens v2, no injected stylesheets).
+
+| File | main 6405caf | v2 89976a1 | Delta | Budget |
+|---|---:|---:|---:|---:|
+| JS (one hashed chunk) | 40,396 B | 39,133 B | -1,263 B | +80 KB |
+| CSS (one hashed file) | 5,450 B | 6,792 B | +1,342 B | +20 KB |
+| index.html (inline sprite) | 6,336 B | 7,104 B | +768 B | - |
+
+JS shrank because three scripts no longer carry their CSS as strings; the CSS
+grew by the same rules moved into `style.css` plus the accent states.
+
+e2e harness, same 84 tests (36 functional + 48 screenshots, Chromium + WebKit),
+2 workers, retry 1, `mcr.microsoft.com/playwright:v1.64.1-noble`, fixture
+servers restarted before each cold run, three rounds:
+
+| Harness | Cold | Warm | Median |
+|---|---|---|---|
+| tester-army/e2e 0.21.3 + @e2e-dev/web 0.15.3, `--strict-cache` | 76 / 64 / 54 s | 70 / 72 / 76 s | 71 s |
+| @playwright/test 1.64.1 | 45 / 43 / 50 s | 44 / 42 / 46 s | 44.5 s |
+
+CI, run 40726996679 at 1edca06: job `e2e` 219 s (container init 38 s, cached
+`cargo build` 64 s, tests 66 s). It runs beside `check` (224 s), so the
+pipeline wall is 227 s; main 7510ccd took 385 s, held by a 357 s macOS desktop
+job. The slowest single test is 4.9 s (WebKit, alarms). With the responsive and touch
+specs the suite is 218 tests, 1.6 min locally.

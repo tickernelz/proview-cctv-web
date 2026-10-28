@@ -149,6 +149,7 @@ function gridBar() {
   const group = make('div', 'grid-seg');
   group.setAttribute('role', 'group');
   group.setAttribute('aria-label', 'Grid layout');
+  group.dataset.testid = 'grid-layout';
   for (const layout of GRID_LAYOUTS) {
     const button = make('button', '', layout.label);
     button.type = 'button';
@@ -315,11 +316,26 @@ function gridSetLayout(value) {
   gridSave();
 }
 
+const GRID_WIDE = window.matchMedia('(min-width: 1024px)');
+const GRID_MEDIUM = window.matchMedia('(min-width: 640px)');
+
+function gridAutoColumns(count) {
+  return Math.min(count, GRID_WIDE.matches ? 4 : GRID_MEDIUM.matches ? 2 : 1);
+}
+
+for (const query of [GRID_WIDE, GRID_MEDIUM]) {
+  query.addEventListener('change', () => {
+    if (gridView.spec && gridLayout(gridView.spec.layout).value === 'auto') {
+      gridApplyLayout();
+    }
+  });
+}
+
 function gridApplyLayout() {
   const tiles = el('tiles');
   const layout = gridLayout(gridView.spec ? gridView.spec.layout : 'auto');
   const count = Math.max(1, gridView.spec ? gridView.spec.tiles.length : 1);
-  const columns = layout.columns || Math.ceil(Math.sqrt(count));
+  const columns = layout.columns || gridAutoColumns(count);
   tiles.dataset.layout = layout.value;
   tiles.style.gridTemplateColumns = 'repeat(' + columns + ', minmax(0, 1fr))';
   tiles.style.gridTemplateRows = 'repeat(' + Math.ceil(count / columns) + ', minmax(0, 1fr))';
@@ -329,12 +345,14 @@ function gridBuildTile(view, index) {
   const camera = state.cameras.find((entry) => entry.key === gridTileKey(view));
   const tile = make('article', 'tile');
   tile.dataset.key = gridTileKey(view);
+  tile.dataset.testid = 'grid-tile';
   const open = make('button', 'tile-open');
   open.type = 'button';
   open.setAttribute('aria-label', 'Open ' + camera.name + ' in Live');
   open.addEventListener('click', () => openCamera(state.cameras.indexOf(camera)));
   const well = make('div', 'well');
   const video = document.createElement('video');
+  video.dataset.testid = 'grid-tile-video';
   video.playsInline = true;
   video.muted = true;
   video.hidden = true;
@@ -357,7 +375,9 @@ function gridBuildTile(view, index) {
     'This tile plays the ' + (view.quality === 'main' ? 'main stream' : 'sub stream') + '. Switch it.',
   );
   pick.addEventListener('click', () => gridToggleQuality(gridTileKey(view)));
-  meta.append(left, pick, make('span', 'right'));
+  const clock = make('span', 'right');
+  clock.dataset.testid = 'grid-tile-clock';
+  meta.append(left, pick, clock);
   tile.append(open, well, meta);
   tile.dataset.index = String(index);
   return tile;

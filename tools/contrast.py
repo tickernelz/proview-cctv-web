@@ -37,6 +37,18 @@ PAIRS = [
     ('focus ring on page', 'focus', 'bg', GRAPHIC, 3.0),
     ('focus ring on bar', 'focus', 'bg-2', GRAPHIC, 3.0),
     ('focus ring on stage', 'focus', 'stage', GRAPHIC, 3.0),
+    ('ink-3 on hover', 'ink-3', 'bg-3', TEXT, 4.5),
+    ('accent-ink on accent (primary button)', 'accent-ink', 'accent', TEXT, 4.5),
+    ('accent on page', 'accent', 'bg', TEXT, 4.5),
+    ('accent on bar', 'accent', 'bg-2', TEXT, 4.5),
+    ('ink on accent-soft over page', 'ink', 'accent-soft@bg', TEXT, 4.5),
+    ('ink on accent-soft over bar', 'ink', 'accent-soft@bg-2', TEXT, 4.5),
+    ('ink-2 on accent-soft over bar', 'ink-2', 'accent-soft@bg-2', TEXT, 4.5),
+    ('accent mark on accent-soft over bar', 'accent', 'accent-soft@bg-2', GRAPHIC, 3.0),
+    ('switch thumb on accent', 'accent-ink', 'accent', GRAPHIC, 3.0),
+    ('badge-ink on badge', 'badge-ink', 'badge', TEXT, 4.5),
+    ('badge on bar', 'badge', 'bg', GRAPHIC, 3.0),
+    ('line on bar (input border)', 'line', 'bg-2', GRAPHIC, 1.6),
 ]
 
 

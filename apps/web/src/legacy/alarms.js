@@ -18,50 +18,28 @@
 
   const desktop = () => Boolean(window.__TAURI__);
 
-  const css = document.createElement('style');
-  css.textContent = [
-    '.alarm-bell{position:relative}',
-    '.alarm-bell[hidden]{display:none}',
-    '.alarm-bell .badge{position:absolute;top:-2px;right:-2px;min-width:16px;height:16px;border-radius:999px;background:#e0533d;color:#fff;font-size:10px;line-height:16px;text-align:center;padding:0 4px}',
-    '.alarm-sheet{position:fixed;inset:auto 18px 74px auto;width:min(420px,calc(100vw - 36px));max-height:min(70vh,640px);z-index:41;display:flex;flex-direction:column;border-radius:14px;border:1px solid var(--line,#2c3140);background:var(--bg-1,#101218);color:inherit;box-shadow:0 18px 48px rgba(0,0,0,.5);overflow:hidden}',
-    '.alarm-sheet[hidden]{display:none}',
-    '.alarm-head{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line,#2c3140)}',
-    '.alarm-head h2{margin:0;font-size:14px;font-weight:600}',
-    '.alarm-head .grow{flex:1}',
-    '.alarm-head button,.alarm-foot button{background:transparent;border:1px solid var(--line,#2c3140);border-radius:8px;color:inherit;font:inherit;font-size:12px;padding:4px 8px;cursor:pointer}',
-    '.alarm-bar{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line,#2c3140);font-size:12px;color:var(--dim,#96a0b5)}',
-    '.alarm-bar select{background:var(--bg-1,#101218);color:inherit;border:1px solid var(--line,#2c3140);border-radius:8px;font:inherit;font-size:12px;padding:3px 6px}',
-    '.alarm-list{overflow:auto;padding:6px 0}',
-    '.alarm-row{display:grid;grid-template-columns:64px 1fr;gap:10px;padding:8px 14px;align-items:center}',
-    '.alarm-row .thumb{width:64px;height:48px;border-radius:6px;background:#20242e}',
-    '.alarm-row .what{font-size:13px}',
-    '.alarm-row .when{font-variant-numeric:tabular-nums;font-size:12px;color:var(--dim,#96a0b5)}',
-    '.alarm-row .chan{font-size:11px;color:var(--dim,#96a0b5)}',
-    '.alarm-row.focus{background:var(--bg-3,#1a1e28)}',
-    '.alarm-foot{margin-top:auto;border-top:1px solid var(--line,#2c3140);padding:8px 14px;font-size:11px;color:var(--dim,#96a0b5);display:flex;gap:8px;align-items:center}',
-    '.alarm-foot .grow{flex:1}',
-  ].join('\n');
-  document.head.appendChild(css);
 
   const bell = document.createElement('button');
   bell.type = 'button';
   bell.className = 'iconbtn alarm-bell';
+  bell.dataset.testid = 'alarm-bell';
   bell.hidden = true;
   bell.setAttribute('aria-haspopup', 'dialog');
   bell.setAttribute('aria-label', 'Alarm messages');
   bell.title = 'Alarm messages';
-  bell.innerHTML = '<span aria-hidden="true">&#128276;</span><span class="badge" hidden>0</span>';
+  bell.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-bell"></use></svg><span class="badge" data-testid="alarm-badge" hidden>0</span>';
 
   const sheet = document.createElement('section');
   sheet.className = 'alarm-sheet';
+  sheet.dataset.testid = 'alarm-center';
   sheet.hidden = true;
   sheet.setAttribute('role', 'dialog');
   sheet.setAttribute('aria-label', 'Alarm messages');
   sheet.innerHTML = [
-    '<div class="alarm-head"><h2>Alarm messages</h2><span class="grow"></span><button type="button" data-close aria-label="Close">Close</button></div>',
+    '<div class="alarm-head"><h2>Alarm messages</h2><span class="grow"></span><button class="iconbtn" type="button" data-close aria-label="Close"><svg class="i" aria-hidden="true"><use href="#i-x"></use></svg></button></div>',
     '<div class="alarm-bar"><select data-device aria-label="Camera"></select><select data-hours aria-label="Window"><option value="24">24 h</option><option value="168">7 days</option></select><span data-window></span></div>',
     '<div class="alarm-list" data-list role="list"></div>',
-    '<div class="alarm-foot"><span data-status>not polled yet</span><span class="grow"></span><button type="button" data-alerts>Notify me</button></div>',
+    '<div class="alarm-foot"><span data-status data-testid="alarm-status">not polled yet</span><span class="grow"></span><button class="btn btn-line" type="button" data-alerts>Notify me</button></div>',
   ].join('');
 
   const topbar = document.querySelector('#watch .topbar');
@@ -137,6 +115,7 @@
       const row = document.createElement('div');
       const focused = Boolean(STATE.focus) && STATE.focus === entry.id;
       row.className = 'alarm-row' + (focused ? ' focus' : '');
+      row.dataset.testid = 'alarm-row';
       row.dataset.id = entry.id || '';
       row.setAttribute('role', 'listitem');
       if (focused && STATE.focusShown !== entry.id) {

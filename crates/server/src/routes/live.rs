@@ -899,6 +899,7 @@ mod tests {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: base,
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "secret".to_string(),
             fixture_dir: "fixtures".to_string(),
@@ -945,6 +946,7 @@ mod tests {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: base,
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "secret".to_string(),
             fixture_dir: "fixtures".to_string(),
@@ -975,6 +977,7 @@ mod tests {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: base,
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "secret".to_string(),
             fixture_dir: "fixtures".to_string(),
@@ -1016,6 +1019,7 @@ mod tests {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: "http://127.0.0.1:1".to_string(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "secret".to_string(),
             fixture_dir: "fixtures".to_string(),
@@ -1044,6 +1048,7 @@ mod tests {
         let cfg = Config {
             provider: ProviderKind::Proview,
             cloud_base: "http://127.0.0.1:1".to_string(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: String::new(),
             fixture_dir: "fixtures".to_string(),
