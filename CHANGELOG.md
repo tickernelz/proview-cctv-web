@@ -159,7 +159,11 @@ stability before 1.0.
   that outlives a cancelled read, so the pump picks up the interrupted frame
   where the prime loop stopped. Two tests stall past an 80 ms deadline in the
   middle of a header and of a body before finishing the frame: both fail with
-  `early eof` on the old reader and pass on the new one.
+  `early eof` on the old reader and pass on the new one. The buffer starts at
+  256 KiB rather than empty, because a buffer that grows mid-stream moves the
+  half frame it already holds on every refill: on a loopback flood the read
+  median falls from 20.4 to 5.3 us per 32 KiB frame and from 7.4 to 1.1 us per
+  8 KiB frame (release, 21 samples, 256 frames each).
 
 ## 0.3.5 — 2026-10-28
 

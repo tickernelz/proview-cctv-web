@@ -21,6 +21,7 @@ pub const DOWNLOAD_DATA: u16 = 0x0592;
 pub const PAGE_FILES: usize = 64;
 pub const MAX_FILES: usize = 2048;
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
+const READ_BUFFER: usize = 256 * 1024;
 
 #[derive(Debug)]
 pub enum PlaybackError {
@@ -230,7 +231,7 @@ impl Session {
             stream,
             session: 0,
             sequence: 0,
-            read_buf: BytesMut::new(),
+            read_buf: BytesMut::with_capacity(READ_BUFFER),
         }
     }
 
