@@ -23,6 +23,12 @@ struct SessionEntries {
     devices: Arc<Vec<CloudDevice>>,
 }
 
+struct RelayTarget {
+    rps: String,
+    host: String,
+    port: u16,
+}
+
 pub struct CloudProvider {
     http: reqwest::Client,
     base: String,
@@ -128,6 +134,7 @@ impl CloudProvider {
         &self,
         mut connection: crate::dvrip::client::Connection,
         entry: &crate::cloud::types::CloudDevice,
+        credential: DeviceCredential,
         reopen: F,
     ) -> Result<(crate::dvrip::client::Connection, String), ProviderError>
     where
@@ -155,28 +162,38 @@ impl CloudProvider {
                     note = format!("stored device token failed: {error}, token dropped");
                 }
             }
+            let (user, pass) = credential_pair(&credential, &note)?;
             drop(connection);
-            connection = reopen().await?;
-        }
-        let (user, pass) = match device_credential_for(&serial, entry) {
-            DeviceCredential::Allowed { user, pass } => (user, pass),
-            DeviceCredential::Refused(reason) => {
-                return Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
-            }
-        };
-        let reply = connection
-            .login_reply(&user, &pass)
-            .await
-            .map_err(|error| {
-                ProviderError::Upstream(format!("{note}, password registration failed: {error:?}"))
+            connection = reopen().await.map_err(|error| {
+                ProviderError::Upstream(format!("{note}, the second tunnel failed: {error}"))
             })?;
+            return self
+                .password_login(connection, &serial, &user, &pass, note)
+                .await;
+        }
+        let (user, pass) = credential_pair(&credential, &note)?;
+        self.password_login(connection, &serial, &user, &pass, note)
+            .await
+    }
+
+    async fn password_login(
+        &self,
+        mut connection: crate::dvrip::client::Connection,
+        serial: &str,
+        user: &str,
+        pass: &str,
+        note: String,
+    ) -> Result<(crate::dvrip::client::Connection, String), ProviderError> {
+        let reply = connection.login_reply(user, pass).await.map_err(|error| {
+            ProviderError::Upstream(format!("{note}, password registration failed: {error:?}"))
+        })?;
         let issued = reply
             .get("AdminToken")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let stored = match issued {
-            Some(token) => self.tokens.put(&serial, token).is_ok(),
+            Some(token) => self.tokens.put(serial, token).is_ok(),
             None => false,
         };
         let summary = format!(
@@ -314,10 +331,7 @@ impl CloudProvider {
         Ok(self.entry_of(session, device).await?.is_some())
     }
 
-    async fn open_tunnel(
-        &self,
-        entry: &CloudDevice,
-    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+    async fn relay_target(&self, entry: &CloudDevice) -> Result<RelayTarget, ProviderError> {
         let rps = entry
             .extra
             .get("rps")
@@ -344,10 +358,18 @@ impl CloudProvider {
                 state.summary()
             )));
         };
+        Ok(RelayTarget { rps, host, port })
+    }
+
+    async fn dial(
+        &self,
+        entry: &CloudDevice,
+        target: &RelayTarget,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
         let client_token = rps_client::client_token();
         let session_id = rps_client::session_id();
         let request = p2p::agent_request(
-            &rps,
+            &target.rps,
             &client_token,
             &entry.uuid,
             p2p::AGENT_SERVICE_MEDIA,
@@ -355,12 +377,12 @@ impl CloudProvider {
             p2p::AGENT_STEP_MEDIA,
         );
         let agent = rps_client::AccessClient::new()
-            .assign(&host, port, &request)
+            .assign(&target.host, target.port, &request)
             .await
             .map_err(|error| {
                 ProviderError::Upstream(format!("agent assignment failed: {error}"))
             })?;
-        let frame = p2p::handshake_frame(&rps, &client_token, &entry.uuid, &session_id);
+        let frame = p2p::handshake_frame(&target.rps, &client_token, &entry.uuid, &session_id);
         let tunnel = rps_client::open(&agent, &frame)
             .await
             .map_err(|error| ProviderError::Upstream(format!("relay handshake failed: {error}")))?;
@@ -384,9 +406,11 @@ impl CloudProvider {
         let Some(entry) = self.entry_of(session, device).await? else {
             return Err(ProviderError::UnknownDevice(device.to_string()));
         };
-        let connection = self.open_tunnel(&entry).await?;
+        let target = self.relay_target(&entry).await?;
+        let connection = self.dial(&entry, &target).await?;
+        let credential = device_credential_for(entry.uuid.trim(), &entry);
         let (mut connection, login_note) = self
-            .device_login(connection, &entry, || self.open_tunnel(&entry))
+            .device_login(connection, &entry, credential, || self.dial(&entry, &target))
             .await?;
         tracing::debug!(device = %entry.uuid, %login_note, "cloud device login");
         let device_channel = channel.saturating_sub(1) as u8;
@@ -636,6 +660,18 @@ fn unready_reason(stored_token: bool, credential: &DeviceCredential) -> Option<S
     match credential {
         DeviceCredential::Allowed { .. } => None,
         DeviceCredential::Refused(reason) => Some(reason.clone()),
+    }
+}
+
+fn credential_pair(
+    credential: &DeviceCredential,
+    note: &str,
+) -> Result<(String, String), ProviderError> {
+    match credential {
+        DeviceCredential::Allowed { user, pass } => Ok((user.clone(), pass.clone())),
+        DeviceCredential::Refused(reason) => {
+            Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
+        }
     }
 }
 
@@ -1481,12 +1517,30 @@ mod login_tests {
         peer.await.expect("peer task");
     }
 
-    const SERIAL: &str = "zha4183-tunnel-reopen";
+    const SERIAL: &str = "serial-tunnel-reopen";
 
-    fn credential_env() {
-        std::env::set_var("PROVIEW_DEVICE_SERIAL", SERIAL);
-        std::env::set_var("PROVIEW_DEVICE_USER", "admin");
-        std::env::set_var("PROVIEW_DEVICE_PASS", "secret");
+    fn device_credential() -> DeviceCredential {
+        DeviceCredential::Allowed {
+            user: "admin".to_string(),
+            pass: "secret".to_string(),
+        }
+    }
+
+    struct TokenDir(std::path::PathBuf);
+
+    impl TokenDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("proview-tokens-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("token dir");
+            Self(dir)
+        }
+    }
+
+    impl Drop for TokenDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     fn entry(serial: &str) -> crate::cloud::types::CloudDevice {
@@ -1502,12 +1556,10 @@ mod login_tests {
         }
     }
 
-    fn provider_with_store(tag: &str) -> (CloudProvider, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("zha4183-tokens-{tag}"));
-        std::fs::create_dir_all(&dir).expect("token dir");
+    fn provider_with_store(dir: &TokenDir) -> CloudProvider {
         let mut provider = provider();
-        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir));
-        (provider, dir)
+        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir.0));
+        provider
     }
 
     struct LoginPeer {
@@ -1701,9 +1753,9 @@ mod login_tests {
 
     #[tokio::test]
     async fn device_login_reopens_the_tunnel_before_the_password_login() {
-        credential_env();
         let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
-        let (provider, dir) = provider_with_store("reopen");
+        let dir = TokenDir::new("reopen");
+        let provider = provider_with_store(&dir);
         provider
             .tokens
             .put(SERIAL, "expired-token")
@@ -1720,7 +1772,7 @@ mod login_tests {
         };
         let first = connect(&peer.address).await;
         let (connection, note) = provider
-            .device_login(first, &entry(SERIAL), reopen)
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
             .await
             .expect("the password login finishes the session");
         assert_eq!(
@@ -1745,14 +1797,13 @@ mod login_tests {
             "the password login must run on the reopened tunnel: {events:?}"
         );
         drop(connection);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn device_login_keeps_the_tunnel_when_the_stored_token_is_accepted() {
-        credential_env();
         let peer = LoginPeer::start(100, Duration::from_millis(700)).await;
-        let (provider, dir) = provider_with_store("accepted");
+        let dir = TokenDir::new("accepted");
+        let provider = provider_with_store(&dir);
         provider
             .tokens
             .put(SERIAL, "live-token")
@@ -1771,7 +1822,7 @@ mod login_tests {
         };
         let first = connect(&peer.address).await;
         let (connection, note) = provider
-            .device_login(first, &entry(SERIAL), reopen)
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
             .await
             .expect("the token login finishes the session");
         assert_eq!(connection.session(), 0x3333_3333);
@@ -1782,14 +1833,13 @@ mod login_tests {
             .iter()
             .any(|event| event.contains("password_login")));
         drop(connection);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn device_login_without_a_stored_token_keeps_the_first_tunnel() {
-        credential_env();
         let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
-        let (provider, dir) = provider_with_store("bare");
+        let dir = TokenDir::new("bare");
+        let provider = provider_with_store(&dir);
         let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let reopen = {
             let reopened = reopened.clone();
@@ -1804,13 +1854,95 @@ mod login_tests {
         };
         let first = connect(&peer.address).await;
         let (connection, note) = provider
-            .device_login(first, &entry(SERIAL), reopen)
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
             .await
             .expect("the password login finishes the session");
         assert_eq!(connection.session(), 0x2222_2222);
         assert!(note.contains("no stored device token"), "{note}");
         assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(connection);
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn device_login_reports_the_token_note_when_the_second_tunnel_fails() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("reopen-failure");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "expired-token")
+            .expect("stored token");
+        let first = connect(&peer.address).await;
+        let error = match provider
+            .device_login(first, &entry(SERIAL), device_credential(), || async {
+                Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                    "the relay refused the second tunnel".to_string(),
+                ))
+            })
+            .await
+        {
+            Ok(_) => panic!("a second tunnel that never opened must fail the login"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("token dropped"), "{message}");
+        assert!(message.contains("the second tunnel failed"), "{message}");
+        assert!(
+            provider.tokens.get(SERIAL).is_none(),
+            "the stale token stays dropped when the second tunnel fails"
+        );
+        assert!(
+            !peer
+                .events()
+                .iter()
+                .any(|event| event.contains("password_login")),
+            "the password login never runs on the discarded tunnel: {:?}",
+            peer.events()
+        );
+    }
+
+    #[tokio::test]
+    async fn device_login_refuses_a_password_less_device_before_reopening() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("reopen-refused");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "expired-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "the token tunnel must not be reopened".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let error = match provider
+            .device_login(
+                first,
+                &entry(SERIAL),
+                DeviceCredential::Refused("no camera user and password".to_string()),
+                reopen,
+            )
+            .await
+        {
+            Ok(_) => panic!("a device with no password must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("no camera user and password"),
+            "{error}"
+        );
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the refusal is decided before the second tunnel is opened"
+        );
     }
 }
