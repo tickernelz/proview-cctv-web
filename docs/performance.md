@@ -431,7 +431,7 @@ e2e at this change: 139 passed, 1 skipped, 1.3 min locally; node web tests 46/46
 
 ### Cloud recordings in Vue (measured 2026-10-29, ZHA-4181)
 
-`src/recordings/RecordingsPanel.vue` replaces `legacy/recordings.js`. Same method,
+`src/live/RecordingsPanel.vue` replaces `legacy/recordings.js`. Same method,
 baseline origin/main 05fe8a3:
 
 | File | main 05fe8a3 | Recordings in Vue | Delta |

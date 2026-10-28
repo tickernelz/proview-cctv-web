@@ -176,7 +176,7 @@ the open camera: this computer lost its network, the open camera is offline in t
 list, the camera list could not be read. Retry now is the only action.
 
 **Cloud recordings.** A panel above the control row (Vue,
-`src/recordings/RecordingsPanel.vue`), opened by Cloud. It opens on the camera on
+`src/live/RecordingsPanel.vue`), opened by Cloud. It opens on the camera on
 screen with focus in Day; Escape or Close returns focus to Cloud. Load reads
 "Loading…" with `aria-busy` and keeps focus while one request runs (a second
 press does nothing). An empty day names the camera and the day; a failed load is
