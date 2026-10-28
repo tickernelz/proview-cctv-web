@@ -17,7 +17,6 @@ use proview_core::session::Store;
 use proview_core::source::{Fmp4Splitter, Piece};
 use rocket::http::{ContentType, CookieJar, Status};
 use rocket::request::Request;
-use rocket::response::content::RawJavaScript;
 use rocket::response::{self, Responder, Response};
 use rocket::serde::json::Json;
 use rocket::State;
@@ -39,12 +38,7 @@ const DOWNLOAD_GAP: Duration = Duration::from_secs(20);
 const DOWNLOAD_LIMIT: u64 = 512 * 1024 * 1024;
 
 pub fn routes() -> Vec<rocket::route::Route> {
-    routes![files, script]
-}
-
-#[get("/playback.js")]
-pub fn script() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../../web/playback.js"))
+    routes![files]
 }
 
 #[derive(Serialize)]
@@ -853,7 +847,12 @@ mod tests {
     #[test]
     fn the_browser_script_is_served_next_to_the_app() {
         let rocket = client();
-        let response = rocket.get("/playback.js").dispatch();
+        let page = rocket.get("/").dispatch().into_string().expect("page");
+        let start = page
+            .find("/assets/index-")
+            .expect("the page links its bundle");
+        let end = start + page[start..].find(".js").expect("a script bundle") + 3;
+        let response = rocket.get(page[start..end].to_string()).dispatch();
         assert_eq!(response.status(), Status::Ok);
         let body = response.into_string().expect("body");
         assert!(body.contains("/ws/playback"));

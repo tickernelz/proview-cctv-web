@@ -135,7 +135,7 @@ horizontal handedness the quad evidence settles.
 
 Source coordinates use the pixel-area convention: column `c` covers `[c, c+1)`, so the
 geometric centre of a 512 px frame is 256.0 and `RgbFrame::sample` subtracts 0.5 before
-interpolating. `fixtures/fisheye/make.py` and `web/fisheye.js` use the same centre.
+interpolating. `fixtures/fisheye/make.py` and `apps/web/src/legacy/fisheye.js` use the same centre.
 
 `FisheyeGL_BuildFullPanoMap` (0xa2c8) sizes the pano from the output height and the field
 of view (`width = height * aspect / 360`, constant `0x43b40000` = 360.0), and
@@ -194,13 +194,13 @@ stops sampling the lens centre and the covered half moves to the other side.
 
 ### Live frame
 
-`web/fisheye.js` carries the same math into WebGL2. `attachLive` wraps the application's
+`apps/web/src/legacy/fisheye.js` carries the same math into WebGL2. `attachLive` wraps the application's
 own `<video id="video">` element in an overlay canvas and dewarpes every animation frame.
 It is opt-in through the URL (`?fisheye=equirect|ptz`, plus `mount`, `pan`, `tilt`, `fov`)
 and publishes itself as `window.ProviewFisheyeLive`, so it changes nothing until asked.
 `crates/server/src/routes/fisheye.rs` exposes the model document, a source map and a
 fixture render. Two limits are deliberate and
-recorded in the parity row: nothing in `web/app.js` calls the renderer yet, so no live
+recorded in the parity row: nothing in `apps/web/src/legacy/app.js` calls the renderer yet, so no live
 frame reaches either path, and `MountType` is decoded but does not rotate the map, so
 ceiling, table and wall mount produce the same panorama.
 

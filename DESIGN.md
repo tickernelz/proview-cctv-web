@@ -3,7 +3,7 @@
 Direction B, "Window": the app is one window onto one camera. The picture is the
 page; above it sits one line (the camera name, which is also the camera picker,
 and three icons), below it one caption line and one row of controls. There is no
-side panel. The source of truth for every value is `web/tokens.css`; this file
+side panel. The source of truth for every value is `apps/web/src/tokens.css`; this file
 says why the values are what they are. The full study, with the rejected
 directions A and C, is `docs/design/redesign-v1/proview-redesign-v1.pdf`.
 
@@ -53,7 +53,7 @@ depend on what the WebView parses.
 
 ### Contrast
 
-`python3 tools/contrast.py` parses `web/tokens.css`, composites every alpha
+`python3 tools/contrast.py` parses `apps/web/src/tokens.css`, composites every alpha
 token over its real background, and exits non-zero when a pair falls under its
 floor; CI runs it in the `check` job. Floors: 4.5:1 for text (11 px text
 included), 3:1 for dots and the focus ring, 1.6:1 for `--line` and 1.4:1 for
@@ -75,7 +75,7 @@ reports, all passing:
 ## Type
 
 IBM Plex Sans and IBM Plex Mono, bundled as five latin-subset woff2 files in
-`web/fonts/` with `OFL.txt` (SIL OFL 1.1, © IBM Corp.), served by the server at
+`apps/web/public/fonts/` with `OFL.txt` (SIL OFL 1.1, © IBM Corp.), served by the server at
 `/fonts/*` and so inside the desktop app too. `system-ui` would mean Segoe, SF
 or Cantarell depending on the WebView; bundling keeps one face on every OS and
 works offline.

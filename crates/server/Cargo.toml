@@ -18,6 +18,7 @@ path = "src/main.rs"
 proview-core = { path = "../core" }
 rocket = { version = "0.5.1", features = ["json", "secrets"] }
 rocket_ws = "0.1"
+rust-embed = { version = "8", features = ["debug-embed", "include-exclude"] }
 bytes.workspace = true
 futures-util.workspace = true
 serde.workspace = true
