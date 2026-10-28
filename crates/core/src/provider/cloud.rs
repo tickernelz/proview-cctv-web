@@ -217,6 +217,7 @@ impl CloudProvider {
         &self,
         connection: &mut crate::dvrip::client::Connection,
         entry: &crate::cloud::types::CloudDevice,
+        credential: DeviceCredential,
     ) -> Result<String, ProviderError> {
         let serial = entry.uuid.trim().to_string();
         let control = crate::media::dhav::MediaCipher::channel();
@@ -239,8 +240,9 @@ impl CloudProvider {
                 }
             }
             connection.set_session(0);
+            Self::drain_late_frames(connection).await;
         }
-        let (user, pass) = match device_credential_for(&serial, entry) {
+        let (user, pass) = match credential {
             DeviceCredential::Allowed { user, pass } => (user, pass),
             DeviceCredential::Refused(reason) => {
                 return Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
@@ -265,6 +267,17 @@ impl CloudProvider {
             "{note}, password login ret 100, device token stored {stored}, session 0x{:08x}",
             connection.session()
         ))
+    }
+
+    async fn drain_late_frames(connection: &mut crate::dvrip::client::Connection) {
+        for _ in 0..6 {
+            match tokio::time::timeout(std::time::Duration::from_millis(80), connection.recv())
+                .await
+            {
+                Ok(Ok(_)) => continue,
+                _ => break,
+            }
+        }
     }
 
     async fn token_login(
@@ -348,9 +361,12 @@ impl CloudProvider {
         while std::time::Instant::now() < deadline {
             let frame =
                 tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv()).await;
-            let Ok(Ok((_, payload))) = frame else {
+            let Ok(Ok((header, payload))) = frame else {
                 break;
             };
+            if header.id != crate::dvrip::msg::LOGIN_REPLY {
+                continue;
+            }
             let body = crate::media::dhav::trim_nul(&payload);
             let plain = serde_json::from_slice::<serde_json::Value>(body)
                 .ok()
@@ -455,7 +471,9 @@ impl CloudProvider {
             )));
         }
         let mut connection = tunnel.into_connection();
-        self.device_login(&mut connection, &entry).await?;
+        let credential = device_credential_for(entry.uuid.trim(), &entry);
+        self.device_login(&mut connection, &entry, credential)
+            .await?;
         let device_channel = channel.saturating_sub(1) as u8;
         let stream = if high { "Main" } else { "Sub" };
         let claim = serde_json::json!({
@@ -1661,5 +1679,162 @@ mod entry_cache_tests {
             "the next open must meet the cloud again, not a remembered failure"
         );
         assert_eq!(stub.hits(), 2, "the retry is the second call");
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::dvrip::fake::{connect, json_reply, serve_scripted};
+    use crate::dvrip::msg;
+
+    fn provider() -> CloudProvider {
+        let cfg = Config::from_env();
+        CloudProvider::with_identity(&cfg, Identity::new("test-uuid", "test-key", "test-secret"))
+    }
+
+    #[tokio::test]
+    async fn token_login_ignores_a_reply_carrying_another_message_id() {
+        let (address, peer) = serve_scripted(|_, id, _| {
+            if id == msg::LOGIN {
+                return vec![
+                    (
+                        MONITOR_CLAIM_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 100 })),
+                    ),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 999 })),
+                    ),
+                ];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        let control = crate::media::dhav::MediaCipher::channel();
+        let ret = provider()
+            .token_login(&mut connection, "stale-token", &control)
+            .await;
+        assert_eq!(ret, Ok(999));
+        drop(connection);
+        peer.await.expect("peer task");
+    }
+
+    #[tokio::test]
+    async fn the_password_login_skips_a_late_claim_reply() {
+        let (address, peer) = serve_scripted(|_, id, _| {
+            if id == msg::LOGIN {
+                return vec![
+                    (
+                        MONITOR_CLAIM_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 100 })),
+                    ),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "REAL",
+                            "SessionID": "0x22222222"
+                        })),
+                    ),
+                ];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        let reply = connection
+            .login_reply("admin", "pass")
+            .await
+            .expect("the password login reads its own reply");
+        assert_eq!(reply["AdminToken"].as_str(), Some("REAL"));
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+        peer.await.expect("peer task");
+    }
+
+    struct TokenDir(std::path::PathBuf);
+
+    impl Drop for TokenDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn device_login_falls_back_with_the_password_reply_not_the_token_one() {
+        let serial = "serial-one";
+        let dir = TokenDir(
+            std::env::temp_dir().join(format!("proview-login-tests-{}", std::process::id())),
+        );
+        std::fs::create_dir_all(&dir.0).expect("token dir");
+        let mut provider = provider();
+        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir.0));
+        provider
+            .tokens
+            .put(serial, "expired-token")
+            .expect("stored token");
+        let entry = crate::cloud::types::CloudDevice {
+            uuid: serial.to_string(),
+            nickname: String::new(),
+            username: "admin".to_string(),
+            code: None,
+            model: None,
+            channel: None,
+            channel_num: None,
+            extra: serde_json::Map::new(),
+        };
+
+        let (address, peer) = serve_scripted(|_, id, body| {
+            if id == msg::MONITOR {
+                return vec![(
+                    MONITOR_CLAIM_REPLY,
+                    json_reply(serde_json::json!({ "Ret": 100 })),
+                )];
+            }
+            if id == msg::LOGIN {
+                if body.first() == Some(&b'{') {
+                    return vec![(
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "REAL",
+                            "SessionID": "0x22222222"
+                        })),
+                    )];
+                }
+                return vec![
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 106 })),
+                    ),
+                    (
+                        msg::LOGIN_REPLY,
+                        json_reply(serde_json::json!({
+                            "Ret": 100,
+                            "AdminToken": "STALE",
+                            "SessionID": "0x11111111"
+                        })),
+                    ),
+                ];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        let credential = DeviceCredential::Allowed {
+            user: "admin".to_string(),
+            pass: "secret".to_string(),
+        };
+        let note = provider
+            .device_login(&mut connection, &entry, credential)
+            .await
+            .expect("the password login finishes the session");
+        assert!(note.contains("password login ret 100"), "{note}");
+        assert!(note.contains("token dropped"), "{note}");
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+        peer.await.expect("peer task");
     }
 }
