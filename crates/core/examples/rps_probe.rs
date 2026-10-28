@@ -147,7 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(error) => eprintln!("plainq failed: {error:?}"),
             }
             match tokio::time::timeout(std::time::Duration::from_secs(5), connection.recv()).await {
-                Ok(Ok((h, p))) => eprintln!("plainq reply id=0x{:04x} {}", h.id, String::from_utf8_lossy(&p[..p.len().min(80)])),
+                Ok(Ok((h, p))) => eprintln!(
+                    "plainq reply id=0x{:04x} {}",
+                    h.id,
+                    String::from_utf8_lossy(&p[..p.len().min(80)])
+                ),
                 other => eprintln!("plainq reply: {other:?}"),
             }
             let start = serde_json::json!({

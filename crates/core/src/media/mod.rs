@@ -3,6 +3,7 @@ pub mod dhav;
 pub mod fmp4;
 pub mod h264;
 pub mod hevc;
+pub mod livecipher;
 pub mod nal;
 pub mod ps;
 pub mod rtp;
