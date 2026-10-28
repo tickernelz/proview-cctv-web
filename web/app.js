@@ -132,6 +132,7 @@ async function api(path, options = {}) {
     const error = new Error(message);
     error.status = response.status;
     if (body && body.code) error.code = body.code;
+    if (body) error.body = body;
     throw error;
   }
   return body;
@@ -746,6 +747,7 @@ function setStage(name, detail = {}) {
   const code = name === 'error' && detail.code ? detail.code : '';
   el('well-code').hidden = !code;
   el('well-code').textContent = code;
+  renderStage(name === 'error' ? detail.stage : null);
   el('well-actions').hidden = name !== 'error';
   el('check-password').hidden = !(name === 'error' && /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || '')));
   el('record').disabled = name !== 'playing';
@@ -904,7 +906,87 @@ async function cloudPathDetail(deviceId) {
   }
 }
 
-function explainStreamError(error) {
+function stageLine(attempt) {
+  return 'Failed at ' + attempt.stage + ' after ' + attempt.elapsed_ms + ' ms: ' + attempt.detail;
+}
+
+function stageTrailInline(attempt) {
+  return (
+    'Stages: ' +
+    (attempt.stages || [])
+      .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' ' + entry.elapsed_ms + ' ms')
+      .join(' · ')
+  );
+}
+
+function stageTrail(attempt) {
+  return (attempt.stages || [])
+    .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' in ' + entry.elapsed_ms + ' ms: ' + entry.detail)
+    .join('\n');
+}
+
+function stagePanel() {
+  let line = el('well-stage');
+  if (!line) {
+    line = document.createElement('p');
+    line.className = 'mono';
+    line.id = 'well-stage';
+    const code = el('well-code');
+    if (code && code.parentNode) {
+      code.parentNode.insertBefore(line, code.nextSibling);
+    }
+  }
+  if (!el('well-stage-copy')) {
+    const button = document.createElement('button');
+    button.className = 'btn btn-text inv';
+    button.id = 'well-stage-copy';
+    button.type = 'button';
+    button.textContent = 'Copy the stage detail';
+    button.addEventListener('click', copyStageDetail);
+    const actions = el('well-actions');
+    if (actions) {
+      actions.appendChild(button);
+    }
+  }
+  return line;
+}
+
+function renderStage(attempt) {
+  const line = stagePanel();
+  const button = el('well-stage-copy');
+  state.stage.attempt = attempt || null;
+  line.textContent = attempt ? stageTrailInline(attempt) : '';
+  line.hidden = !attempt;
+  if (button) {
+    button.hidden = !attempt;
+    button.textContent = 'Copy the stage detail';
+  }
+}
+
+async function copyStageDetail() {
+  const attempt = state.stage.attempt;
+  if (!attempt) {
+    return;
+  }
+  const text = stageLine(attempt) + '\n' + stageTrail(attempt);
+  const button = el('well-stage-copy');
+  try {
+    await navigator.clipboard.writeText(text);
+    if (button) {
+      button.textContent = 'Copied';
+      window.setTimeout(() => {
+        button.textContent = 'Copy the stage detail';
+      }, 2000);
+    }
+  } catch (error) {
+    setControlStatus('The browser refused the clipboard: ' + error.message);
+  }
+}
+
+function explainStreamError(error, attempt) {
+  if (attempt && attempt.stage) {
+    return stageLine(attempt);
+  }
   if (error.status === 501) {
     return 'Live video is not wired yet: the device transport is still being built, so there is no frame to show.';
   }
@@ -1853,8 +1935,9 @@ async function requestStream() {
     if (sessionLost(error)) {
       return;
     }
-    const base = explainStreamError(error);
-    setStage('error', { text: base, code: error.message });
+    const attempt = error.body && error.body.stage ? error.body : null;
+    const base = explainStreamError(error, attempt);
+    setStage('error', { text: base, code: error.message, stage: attempt });
     console.error('stream request failed', error);
     if (error.status === 501 && camera.device) {
       const deviceId = camera.device.id;
@@ -1865,6 +1948,7 @@ async function requestStream() {
         setStage('error', {
           text: base + ' Cloud reach: ' + detail + '.',
           code: error.message,
+          stage: attempt,
         });
       });
     }
