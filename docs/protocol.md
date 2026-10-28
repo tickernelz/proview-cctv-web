@@ -1309,6 +1309,50 @@ cached value back through `FUN_DevGetLocalEncToken`.
 Until that answer exists, the cloud `stream()` path stops at `Ret 137` and the
 LAN-free live row stays `partial` in `docs/parity.md`.
 
+### 4C.24 Media flows through the cloud provider, and the frame id was the gate
+
+`CloudProvider::stream` carried live media for the first time on 2026-10-28:
+
+```
+GET /api/stream?device=7f92970ddf5282743hrc&channel=1&quality=main
+502 in 9.21 s
+  "stored device token ret 137, password registration ret 100, device token stored true,
+   session 0x000000ba, claim reply seen session 0x000000ba,
+   3 keyframes, 64 deltas, 0 dropped, 1025971 elementary bytes"
+```
+
+The bytes are real video, and the reason every earlier attempt saw zero is one
+constant: `OPMonitor Start` goes out as **msgid 1410 (`0x0582`)**, while the claim
+is 1413 (`0x0585`). `stream()` was sending the start body under `msg::MONITOR`
+(1413), so the device parsed it as a second claim and never opened the stream. With
+`msg::MONITOR_START` the media follows immediately. The same mistake explained the
+`Action1:"Start"` restatement: the body was right, the frame id was wrong.
+
+Sequence that works, in order, on one relay tunnel:
+
+1. `login` (Sofia, MD5, channel 0, msgid 1000) with the device user and password.
+   `Ret 100`, and the reply carries the device's own `AdminToken` (44 characters).
+2. `OPMonitor Claim` on channel 99 (msgid 1413) with `DHParameter.RandomStrA`.
+3. Reply 1414 on channel 99.
+4. `OPMonitor Start` on channel 0 (msgid **1410**) with `CombinMode NONE`,
+   `StreamType` from the quality, `TransMode TCP`.
+5. Media arrives as msgid 1412 on channel 0 and feeds `media::live::LiveDemux`.
+
+#### The device token the device issues does not work as a TOKEN login
+
+The registration reply of step 1 is the only place a fresh client can obtain a
+device token, and it is the same 44-character shape as the cloud row of 4C.23. Using
+it for the app's `EncryptType:"TOKEN"` login answers `Ret 137`, measured twice, on
+the same device that answers `Ret 100` to the password login. The 16-character token
+the phone app uses is therefore device-side state that no API in the SDK or the
+account cloud issues; the app received it once, at bind time.
+
+Consequence, stated plainly: for this camera, the account-issued token path cannot
+replace the password login. The provider keeps the registered token in an encrypted
+per-device store (`cloud/device_tokens.rs`: AES-256-GCM, key file 0600, serial bound
+as associated data, `forget` to revoke) and uses it first, but the working session
+comes from the password login the app itself performs at bind.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

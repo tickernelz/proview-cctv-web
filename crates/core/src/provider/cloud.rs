@@ -15,6 +15,7 @@ use crate::config::Config;
 pub struct CloudProvider {
     client: EnvelopeClient,
     status: StatusClient,
+    tokens: crate::cloud::DeviceTokenStore,
 }
 
 impl CloudProvider {
@@ -26,6 +27,9 @@ impl CloudProvider {
         Self {
             client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             status: StatusClient::new(STATUS_HOST),
+            tokens: crate::cloud::DeviceTokenStore::load(
+                cfg.data_dir.as_deref().map(std::path::Path::new),
+            ),
         }
     }
 
@@ -35,6 +39,164 @@ impl CloudProvider {
                 "the session carries no cloud token; sign in again".to_string(),
             )
         })
+    }
+    async fn device_login(
+        &self,
+        connection: &mut crate::dvrip::client::Connection,
+        entry: &crate::cloud::types::CloudDevice,
+    ) -> Result<String, ProviderError> {
+        let serial = entry.uuid.trim().to_string();
+        let control = crate::media::dhav::MediaCipher::channel();
+        let mut note = String::from("no stored device token");
+        if let Some(token) = self.tokens.get(&serial) {
+            match self.token_login(connection, &token, &control).await {
+                Ok(100) => {
+                    return Ok(format!(
+                        "stored device token ret 100, session 0x{:08x}",
+                        connection.session()
+                    ))
+                }
+                Ok(ret) => note = format!("stored device token ret {ret}"),
+                Err(error) => note = format!("stored device token failed: {error}"),
+            }
+        }
+        let user = match std::env::var("PROVIEW_DEVICE_USER")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            Some(name) => name,
+            None => entry.username.trim().to_string(),
+        };
+        let pass = std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default();
+        if user.is_empty() || pass.is_empty() {
+            return Err(ProviderError::Misconfigured(format!(
+                "{note}; registering a device token needs PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS"
+            )));
+        }
+        let reply = connection
+            .login_reply(&user, &pass)
+            .await
+            .map_err(|error| {
+                ProviderError::Upstream(format!("{note}, password registration failed: {error:?}"))
+            })?;
+        let issued = reply
+            .get("AdminToken")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let stored = match issued {
+            Some(token) => self.tokens.put(&serial, token).is_ok(),
+            None => false,
+        };
+        Ok(format!(
+            "{note}, password registration ret 100, device token stored {stored}, session 0x{:08x}",
+            connection.session()
+        ))
+    }
+
+    async fn token_login(
+        &self,
+        connection: &mut crate::dvrip::client::Connection,
+        token: &str,
+        control: &crate::media::dhav::MediaCipher,
+    ) -> Result<i64, String> {
+        connection.set_session(CLAIM_SESSION);
+        let pre_claim = serde_json::json!({
+            "Name": "OPMonitor",
+            "OPMonitor": {
+                "Action": "Claim",
+                "Parameter": {
+                    "Channel": 0,
+                    "CombinMode": "CONNECT_ALL",
+                    "StreamType": "Main",
+                    "TransMode": "TCP",
+                },
+            },
+            "DHParameter": { "RandomStrA": crate::provider::rps::random_lower(4) },
+            "SessionID": format!("0x{CLAIM_SESSION:08x}"),
+        });
+        connection
+            .send_plain(
+                crate::dvrip::msg::MONITOR_CHANNEL,
+                crate::dvrip::msg::MONITOR,
+                &pre_claim,
+            )
+            .await
+            .map_err(|error| format!("pre-claim failed: {error:?}"))?;
+        let caps = await_frame(connection, MONITOR_CLAIM_REPLY, 5).await;
+        let device_key = caps
+            .as_deref()
+            .and_then(|payload| control.decrypt_body(payload))
+            .and_then(|raw| {
+                serde_json::from_slice::<serde_json::Value>(crate::media::dhav::trim_nul(&raw)).ok()
+            })
+            .and_then(|value| {
+                value
+                    .get("PublicKey")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            });
+        connection.set_session(0);
+        let sealed_from = device_key.clone().or_else(|| {
+            std::env::var("PROVIEW_DEVICE_MODULUS")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|modulus| format!("{modulus},010001"))
+        });
+        let communicate_key = match sealed_from.as_deref() {
+            Some(pair) => {
+                let (modulus, exponent) = pair.split_once(',').unwrap_or((pair, "010001"));
+                crate::dvrip::crypto::communicate_key(
+                    modulus.trim(),
+                    exponent.trim(),
+                    &rps_client::session_key(),
+                )?
+            }
+            None => String::new(),
+        };
+        let login_body = serde_json::json!({
+            "EncryptType": "TOKEN",
+            "LoginType": "DVRIP-FutureHome",
+            "UserName": token,
+            "PassWord": "",
+            "CommunicateKey": communicate_key,
+            "User-Agent": format!("Funv1.2.2c-And-{}", rps_client::session_key()),
+        });
+        connection
+            .send_encrypted(
+                control,
+                crate::dvrip::msg::MONITOR_CHANNEL,
+                crate::dvrip::msg::LOGIN,
+                &login_body,
+            )
+            .await
+            .map_err(|error| format!("encrypted login failed: {error:?}"))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        while std::time::Instant::now() < deadline {
+            let frame =
+                tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv()).await;
+            let Ok(Ok((_, payload))) = frame else {
+                break;
+            };
+            let body = crate::media::dhav::trim_nul(&payload);
+            let plain = serde_json::from_slice::<serde_json::Value>(body)
+                .ok()
+                .or_else(|| {
+                    control.decrypt_body(body).and_then(|raw| {
+                        serde_json::from_slice::<serde_json::Value>(crate::media::dhav::trim_nul(
+                            &raw,
+                        ))
+                        .ok()
+                    })
+                });
+            if let Some(reply) = plain {
+                if let Some(ret) = reply.get("Ret").and_then(serde_json::Value::as_i64) {
+                    return Ok(ret);
+                }
+            }
+        }
+        Err("the device answered no login reply".to_string())
     }
 }
 
@@ -255,202 +417,9 @@ impl Provider for CloudProvider {
         }
         let dest = tunnel.reply.dest_ip.clone();
         let mut connection = tunnel.into_connection();
-        let access = self.token(session)?.to_string();
-        let device_id = entry
-            .extra
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                ProviderError::Upstream(format!(
-                    "relay accepted for {dest}, the device list carries no id to request a device token for"
-                ))
-            })?;
-        let device_token = match std::env::var("PROVIEW_TOKEN_SOURCE").as_deref() {
-            Ok("env") => std::env::var("PROVIEW_DEVICE_TOKEN").map_err(|_| {
-                ProviderError::Misconfigured(
-                    "PROVIEW_TOKEN_SOURCE=env needs PROVIEW_DEVICE_TOKEN".to_string(),
-                )
-            })?,
-            Ok("mdlist") => entry
-                .extra
-                .get("deviceToken")
-                .and_then(|value| value.get("AdminToken"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    ProviderError::Upstream(format!(
-                        "relay accepted for {dest}, the device list carries no AdminToken"
-                    ))
-                })?,
-            Ok("platform") => {
-                self.client
-                    .device_token(&access, device_id)
-                    .await
-                    .map_err(|error| {
-                        ProviderError::Upstream(format!("account device token failed: {error}"))
-                    })?
-            }
-            _ => self
-                .client
-                .device_login_token(&access, &entry.uuid)
-                .await
-                .map_err(|error| {
-                    ProviderError::Upstream(format!("account login token failed: {error}"))
-                })?,
-        };
-        let device_user = entry.username.trim();
-        if device_user.is_empty() {
-            return Err({
-                ProviderError::Upstream(format!(
-                    "relay accepted for {dest}, the device list carries no username to log in with"
-                ))
-            });
-        }
+        let login = self.device_login(&mut connection, entry).await?;
         let device_channel = channel.saturating_sub(1) as u8;
         let stream = if high { "Main" } else { "Sub" };
-        let control = crate::media::dhav::MediaCipher::channel();
-        connection.set_session(CLAIM_SESSION);
-        let pre_claim = serde_json::json!({
-            "Name": "OPMonitor",
-            "OPMonitor": {
-                "Action": "Claim",
-                "Parameter": {
-                    "Channel": device_channel,
-                    "CombinMode": "CONNECT_ALL",
-                    "StreamType": stream,
-                    "TransMode": "TCP",
-                },
-            },
-            "DHParameter": { "RandomStrA": crate::provider::rps::random_lower(4) },
-            "SessionID": format!("0x{CLAIM_SESSION:08x}"),
-        });
-        connection
-            .send_plain(
-                crate::dvrip::msg::MONITOR_CHANNEL,
-                crate::dvrip::msg::MONITOR,
-                &pre_claim,
-            )
-            .await
-            .map_err(|error| {
-                ProviderError::Upstream(format!(
-                    "relay accepted for {dest}, pre-claim failed: {error:?}"
-                ))
-            })?;
-        let caps = await_frame(&mut connection, MONITOR_CLAIM_REPLY, 5).await;
-        let device_key = caps
-            .as_deref()
-            .and_then(|payload| control.decrypt_body(payload))
-            .and_then(|raw| {
-                serde_json::from_slice::<serde_json::Value>(crate::media::dhav::trim_nul(&raw)).ok()
-            })
-            .and_then(|value| {
-                value
-                    .get("PublicKey")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            });
-        connection.set_session(0);
-        let sealed_from = device_key.clone().or_else(|| {
-            std::env::var("PROVIEW_DEVICE_MODULUS")
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-                .map(|modulus| format!("{modulus},010001"))
-        });
-        let mut seal_error = String::from("no device key");
-        let communicate_key = sealed_from
-            .as_deref()
-            .map(|pair| {
-                let (modulus, exponent) = pair.split_once(',').unwrap_or((pair, "010001"));
-                match crate::dvrip::crypto::communicate_key(
-                    modulus.trim(),
-                    exponent.trim(),
-                    &rps_client::session_key(),
-                ) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        seal_error = error;
-                        String::new()
-                    }
-                }
-            })
-            .unwrap_or_default();
-        let login_body = serde_json::json!({
-            "EncryptType": "TOKEN",
-            "LoginType": "DVRIP-FutureHome",
-            "UserName": device_token,
-            "PassWord": "",
-            "CommunicateKey": communicate_key,
-            "User-Agent": format!("Funv1.2.2c-And-{}", rps_client::session_key()),
-        });
-        connection
-            .send_encrypted(
-                &control,
-                crate::dvrip::msg::MONITOR_CHANNEL,
-                crate::dvrip::msg::LOGIN,
-                &login_body,
-            )
-            .await
-            .map_err(|error| {
-                ProviderError::Upstream(format!(
-                    "relay accepted for {dest}, encrypted login failed: {error:?}"
-                ))
-            })?;
-        let caps_note = match caps.as_deref() {
-            Some(payload) => format!(
-                "{} bytes, opened {}, key {}",
-                payload.len(),
-                if control.decrypt_body(payload).is_some() {
-                    "yes"
-                } else {
-                    "no"
-                },
-                if device_key.is_some() { "yes" } else { "no" }
-            ),
-            None => "missing".to_string(),
-        };
-        let mut ids: Vec<String> = Vec::new();
-        let mut login_ret = String::from("-");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
-        while std::time::Instant::now() < deadline {
-            let frame =
-                tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv()).await;
-            let Ok(Ok((header, payload))) = frame else {
-                break;
-            };
-            ids.push(format!("0x{:04x}/{}", header.id, payload.len()));
-            let body = crate::media::dhav::trim_nul(&payload);
-            let plain = serde_json::from_slice::<serde_json::Value>(body)
-                .ok()
-                .or_else(|| {
-                    control.decrypt_body(body).and_then(|raw| {
-                        serde_json::from_slice::<serde_json::Value>(crate::media::dhav::trim_nul(
-                            &raw,
-                        ))
-                        .ok()
-                    })
-                });
-            if let Some(reply) = plain {
-                if let Some(ret) = reply.get("Ret") {
-                    login_ret = format!(
-                        "{} {}",
-                        ret,
-                        String::from_utf8_lossy(crate::media::dhav::trim_nul(&payload))
-                            .chars()
-                            .take(140)
-                            .collect::<String>()
-                    );
-                    break;
-                }
-            }
-        }
-        let login = format!(
-            "caps {caps_note}, encrypted token login (token {} chars, communicate key {}) ret {login_ret} session 0x{:08x} frames [{}]",
-            device_token.chars().count(),
-            if communicate_key.is_empty() { format!("none: {seal_error}") } else if device_key.is_some() { "sealed from caps".to_string() } else { "sealed from env".to_string() },
-            connection.session(),
-            ids.join(" ")
-        );
         let claim = serde_json::json!({
             "Name": "OPMonitor",
             "OPMonitor": {
@@ -466,11 +435,7 @@ impl Provider for CloudProvider {
             "SessionID": format!("0x{:08x}", connection.session()),
         });
         connection
-            .send_plain(
-                crate::dvrip::msg::MONITOR_CHANNEL,
-                crate::dvrip::msg::MONITOR,
-                &claim,
-            )
+            .send_plain(0, crate::dvrip::msg::MONITOR, &claim)
             .await
             .map_err(|error| {
                 ProviderError::Upstream(format!(
@@ -489,8 +454,7 @@ impl Provider for CloudProvider {
         let start = serde_json::json!({
             "Name": "OPMonitor",
             "OPMonitor": {
-                "Action": "Claim",
-                "Action1": "Start",
+                "Action": "Start",
                 "Parameter": {
                     "Channel": device_channel,
                     "CombinMode": "NONE",
@@ -501,7 +465,7 @@ impl Provider for CloudProvider {
             "SessionID": format!("0x{session:08x}"),
         });
         connection
-            .send_plain(0, crate::dvrip::msg::MONITOR, &start)
+            .send_plain(0, crate::dvrip::msg::MONITOR_START, &start)
             .await
             .map_err(|error| ProviderError::Upstream(format!("monitor start failed: {error:?}")))?;
         let mut demux = crate::media::live::LiveDemux::new();
