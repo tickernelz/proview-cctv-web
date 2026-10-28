@@ -400,9 +400,16 @@ async function signedIn() {
   state.signedIn = true;
   state.account = me.account || null;
   el('account').textContent = state.account || 'Signed in';
-  showScreen('watch');
+  if (state.screen !== 'settings') {
+    showScreen('watch');
+  }
   await loadMode();
   await loadDevices();
+  if (state.screen === 'settings') {
+    stopAll();
+    renderSettingsChrome();
+    return;
+  }
   route(location.hash, false);
 }
 
@@ -2263,9 +2270,35 @@ function setSettingsStatus(message, bad = false) {
   box.classList.toggle('warn-text', bad);
 }
 
-function renderSettings(view) {
+function settingsCaret() {
+  const active = document.activeElement;
+  if (!active || !active.dataset || !active.dataset.key || !active.closest('#settings-fields')) {
+    return null;
+  }
+  const caret =
+    typeof active.selectionStart === 'number' ? { start: active.selectionStart, end: active.selectionEnd } : null;
+  return { key: active.dataset.key, caret };
+}
+
+function restoreSettingsCaret(focus) {
+  const input = document.querySelector('#settings-fields [data-key="' + focus.key + '"]');
+  if (!input) {
+    return;
+  }
+  input.focus();
+  if (!focus.caret) {
+    return;
+  }
+  try {
+    input.setSelectionRange(focus.caret.start, focus.caret.end);
+  } catch {}
+}
+
+function renderSettings(view, options = {}) {
   settingsView = view;
   const host = el('settings-fields');
+  const typed = options.reset ? new Map() : new Map(Object.entries(settingsPayload()));
+  const focus = options.reset ? null : settingsCaret();
   host.replaceChildren();
   settingsInitial = new Map();
   settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
@@ -2320,6 +2353,15 @@ function renderSettings(view) {
       host.append(row);
       settingsInitial.set(field.key, { secret: field.secret, set: field.set, value: input.value });
     }
+  }
+  for (const [key, value] of typed) {
+    const input = host.querySelector('[data-key="' + key + '"]');
+    if (input) {
+      input.value = value;
+    }
+  }
+  if (focus) {
+    restoreSettingsCaret(focus);
   }
   renderSaveBar();
 }
@@ -2404,7 +2446,7 @@ async function saveSettings() {
   try {
     const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
     pendingRestart += keys.filter((key) => settingsRestartKeys.has(key)).length;
-    renderSettings(view);
+    renderSettings(view, { reset: true });
     setSettingsStatus('Saved ' + keys.length + ' field' + (keys.length === 1 ? '' : 's') + ' to ' + (view.path || 'this run') + '.');
   } catch (error) {
     setSettingsStatus('Could not save: ' + error.message, true);
@@ -2438,15 +2480,19 @@ function showSection(name, focus) {
   }
 }
 
-function openSettings(section, options = {}) {
-  stopAll();
-  showScreen('settings');
+function renderSettingsChrome() {
   el('settings-back-label').textContent = state.signedIn ? 'Live' : 'Sign in';
-  showSection(section || state.section, options.focus);
-  renderPrefsIntoForm();
   renderMode();
   renderCameraInfo();
   renderControlAvailability();
+}
+
+function openSettings(section, options = {}) {
+  stopAll();
+  showScreen('settings');
+  showSection(section || state.section, options.focus);
+  renderPrefsIntoForm();
+  renderSettingsChrome();
   loadSettings();
   if (!options.focus) {
     el('settings-back').focus();
@@ -2746,6 +2792,9 @@ el('signout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST' });
   } catch {}
   state.stage.lastFrameAt = 0;
+  if (settingsView) {
+    renderSettings(settingsView, { reset: true });
+  }
   showSignin();
   await loadMode();
 });
@@ -2757,7 +2806,7 @@ el('settings-back').addEventListener('click', () => leaveSettings());
 el('settings-save').addEventListener('click', () => saveSettings());
 el('settings-discard').addEventListener('click', () => {
   if (settingsView) {
-    renderSettings(settingsView);
+    renderSettings(settingsView, { reset: true });
   }
 });
 el('settings-fields').addEventListener('input', () => renderSaveBar());
