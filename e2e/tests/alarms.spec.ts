@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { playing, signIn } from './app'
+import { ACCOUNT, playing, signIn } from './app'
 
 const ALARMS = {
   serial: 'gate',
@@ -21,6 +21,26 @@ const ALARMS = {
 }
 
 const EMPTY = { ...ALARMS, total: 0, entries: [] }
+
+const PICTURED = {
+  ...ALARMS,
+  entries: ALARMS.entries.map((entry) => ({ ...entry, picture: { object: '003_gate_' + entry.id + '.jpeg', bucket: 'OSS_pic' } })),
+}
+
+async function countVendorCalls(page: Page) {
+  const calls = { alarms: 0, pictures: 0 }
+  await page.route(/\/api\/cloud\/alarms\/picture/, (route) => {
+    calls.pictures += 1
+    return route.fulfill({ status: 200, contentType: 'image/jpeg', body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) })
+  })
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => {
+    calls.alarms += 1
+    return route.fulfill({ json: PICTURED })
+  })
+  return calls
+}
+
+const settled = (page: Page) => page.evaluate(() => fetch('/api/health').then((reply) => reply.status))
 
 const serialOf = (url: string) => new URL(url).searchParams.get('sn')
 
@@ -60,6 +80,54 @@ test('an empty alarm window keeps the badge off and names the camera and window'
   await expect(page.getByTestId('alarm-status')).toContainText('0 alarms')
   await expect(centre.getByTestId('alarm-row')).toHaveCount(0)
   await expect(page.getByTestId('alarm-badge')).toBeHidden()
+})
+
+test('going to Settings and back does not ask the vendor again while the last check is fresh', async ({ page }) => {
+  const calls = await countVendorCalls(page)
+  await signIn(page, 'one')
+  await expect(page.getByTestId('alarm-badge')).toHaveText('3')
+  await expect.poll(() => calls.pictures).toBe(1)
+  await settled(page)
+  expect(calls).toEqual({ alarms: 1, pictures: 1 })
+  for (let round = 0; round < 3; round += 1) {
+    await page.getByTestId('open-settings').click()
+    await expect(page.getByTestId('settings')).toBeVisible()
+    await page.getByTestId('settings-back').click()
+    await expect(page.getByTestId('live')).toBeVisible()
+    await settled(page)
+  }
+  expect(calls).toEqual({ alarms: 1, pictures: 1 })
+  await expect(page.getByTestId('alarm-badge')).toHaveText('3')
+})
+
+test('signing out and in again checks the new session at once', async ({ page }) => {
+  const calls = await countVendorCalls(page)
+  await signIn(page, 'one')
+  await expect(page.getByTestId('alarm-badge')).toHaveText('3')
+  await page.getByTestId('open-settings').click()
+  await page.getByRole('link', { name: 'Connection', exact: true }).click()
+  await page.locator('#signout').click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await page.getByTestId('signin-email').fill(ACCOUNT.email)
+  await page.getByTestId('signin-password').fill(ACCOUNT.password)
+  await page.getByTestId('signin-submit').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect.poll(() => calls.alarms).toBe(2)
+  await expect(page.getByTestId('alarm-badge')).toHaveText('3')
+})
+
+test('Notify me without notification support says so on the button, not as an alarm error', async ({ page }) => {
+  await page.addInitScript(() => {
+    delete (window as unknown as { Notification?: unknown }).Notification
+  })
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))
+  await signIn(page, 'one')
+  await openAlarms(page)
+  await expect(page.getByTestId('alarm-status')).toContainText('3 alarms')
+  await page.getByTestId('alarm-notify').click()
+  await expect(page.getByTestId('alarm-notify')).toHaveText('Notifications unavailable')
+  await expect(page.getByTestId('alarm-error')).toHaveCount(0)
+  await expect(page.getByTestId('alarm-status')).toContainText('3 alarms')
 })
 
 test('the centre takes focus, and Escape or Close hands it back to the bell', async ({ page }) => {

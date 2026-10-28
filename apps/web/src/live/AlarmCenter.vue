@@ -11,7 +11,7 @@ type Device = { id: string; name?: string; channels?: number }
 type Query = { serial: string; hours: number }
 
 const desktop = Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__)
-const signedIn = ref(false)
+const watching = ref(false)
 const open = computed(() => live.sheet === 'alarms')
 const bell = ref<HTMLButtonElement>()
 const sheet = ref<HTMLElement>()
@@ -38,6 +38,7 @@ let seen = new Set<string>()
 let primed = ''
 let timer = 0
 let pollSeconds = 20
+let lastCheck = 0
 let ticket = 0
 let inflight: Query | null = null
 let alertsOn = false
@@ -132,7 +133,7 @@ function fail(message: string) {
 }
 
 async function poll() {
-  if (!signedIn.value || !query.serial) return
+  if (!watching.value || !query.serial) return
   if (document.hidden && !alertsOn) return
   const asked: Query = { serial: query.serial, hours: query.hours }
   if (inflight && inflight.serial === asked.serial && inflight.hours === asked.hours) return
@@ -154,6 +155,7 @@ async function poll() {
     const reply = await fetch(url, { credentials: 'same-origin' })
     const body: Listing = await reply.json().catch(() => ({}))
     if (mine !== ticket) return
+    lastCheck = Date.now()
     if (!reply.ok) {
       fail(body.message || (reply.status === 401 ? 'alarms come from the vendor cloud; sign in with the cloud account' : 'the alarm centre answered ' + reply.status))
       return
@@ -173,6 +175,7 @@ async function poll() {
     view.phase = 'ok'
     if (pictures.state === 'unknown') probePictures()
   } catch (error) {
+    if (mine === ticket) lastCheck = Date.now()
     if (mine === ticket) fail('the alarm centre could not be reached: ' + (error instanceof Error ? error.message : String(error)))
   } finally {
     if (mine === ticket) {
@@ -182,12 +185,19 @@ async function poll() {
   }
 }
 
-function schedule() {
+function schedule(delay = Math.max(5, pollSeconds) * 1000) {
   clearTimeout(timer)
   timer = 0
-  if (!signedIn.value || !query.serial) return
+  if (!watching.value || !query.serial) return
   if (document.hidden && !alertsOn) return
-  timer = window.setTimeout(poll, Math.max(5, pollSeconds) * 1000)
+  timer = window.setTimeout(poll, delay)
+}
+
+function resume() {
+  if (timer || inflight) return
+  const due = lastCheck + Math.max(5, pollSeconds) * 1000 - Date.now()
+  if (!lastCheck || due <= 0) poll()
+  else schedule(due)
 }
 
 function forget() {
@@ -235,7 +245,7 @@ function focusAlarm(detail: { id?: string; serial?: string; device?: string } = 
 
 async function enableAlerts() {
   if (typeof Notification === 'undefined') {
-    fail('this browser has no notification support')
+    alertLabel.value = 'Notifications unavailable'
     return
   }
   const permission = await Notification.requestPermission()
@@ -244,19 +254,10 @@ async function enableAlerts() {
   schedule()
 }
 
-function syncSignedIn() {
-  const watchView = document.getElementById('watch')
-  signedIn.value = Boolean(watchView) && !watchView!.hidden
-  if (signedIn.value) {
-    syncDevices()
-    if (!timer && !inflight) poll()
-    return
-  }
-  close(false)
-  clearTimeout(timer)
-  timer = 0
+function reset() {
   ticket += 1
   inflight = null
+  lastCheck = 0
   devices.value = []
   extra.value = null
   query.serial = ''
@@ -265,6 +266,20 @@ function syncSignedIn() {
   view.entries = []
   view.checked = ''
   forget()
+}
+
+function syncScreen() {
+  if (!page.signedIn) reset()
+  const watchView = document.getElementById('watch')
+  watching.value = Boolean(watchView) && !watchView!.hidden
+  if (watching.value) {
+    syncDevices()
+    resume()
+    return
+  }
+  close(false)
+  clearTimeout(timer)
+  timer = 0
 }
 
 watch(
@@ -294,19 +309,22 @@ watch(
 )
 
 onMounted(() => {
-  const watchView = document.getElementById('watch')
-  if (watchView) new MutationObserver(syncSignedIn).observe(watchView, { attributes: true, attributeFilter: ['hidden'] })
+  const screens = new MutationObserver(syncScreen)
+  for (const id of ['watch', 'signin']) {
+    const screen = document.getElementById(id)
+    if (screen) screens.observe(screen, { attributes: true, attributeFilter: ['hidden'] })
+  }
   window.addEventListener('proview:devices', () => {
-    if (!signedIn.value) return
+    if (!watching.value) return
     syncDevices()
-    if (!timer && !inflight) poll()
+    resume()
   })
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && signedIn.value) poll()
+    if (document.visibilityState === 'visible' && watching.value) resume()
     else schedule()
   })
   window.addEventListener('desktop-alarm', (event) => focusAlarm((event as CustomEvent).detail || {}))
-  syncSignedIn()
+  syncScreen()
 })
 </script>
 
@@ -316,7 +334,7 @@ onMounted(() => {
     class="iconbtn alarm-bell"
     type="button"
     data-testid="alarm-bell"
-    :hidden="!signedIn"
+    :hidden="!watching"
     aria-haspopup="dialog"
     aria-controls="alarm-sheet"
     :aria-expanded="open"
