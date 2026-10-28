@@ -30,29 +30,6 @@ async function openConfiguration(page) {
   await page.wait(FIELD + ' !== null', 'the server address field', BUDGET);
 }
 
-async function settle(page) {
-  const snapshot = () =>
-    page.evaluate(
-      "document.querySelectorAll('#settings-fields .row').length + ':' + document.getElementById('settings-status').textContent",
-    );
-  const end = Date.now() + BUDGET;
-  let last = await snapshot();
-  let since = Date.now();
-  for (;;) {
-    await new Promise((done) => setTimeout(done, 50));
-    const now = await snapshot();
-    if (now !== last) {
-      last = now;
-      since = Date.now();
-    } else if (Date.now() - since >= 500) {
-      return;
-    }
-    if (Date.now() > end) {
-      throw new Error('the settings view never settled: ' + last);
-    }
-  }
-}
-
 async function watch(page, expression, what, deadline = BUDGET) {
   const end = Date.now() + deadline;
   for (;;) {
@@ -73,7 +50,6 @@ async function watch(page, expression, what, deadline = BUDGET) {
 
 async function saveARestartField(page) {
   await openConfiguration(page);
-  await settle(page);
   await page.evaluate(`(() => {
     const input = ${FIELD};
     input.value = ${JSON.stringify(LISTEN)};
