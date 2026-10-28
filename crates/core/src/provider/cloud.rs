@@ -17,6 +17,7 @@ use crate::cloud::CloudError;
 const MONITOR_CLAIM_REPLY: u16 = 0x0586;
 const CLAIM_SESSION: u32 = 0x0001_869f;
 const SESSION_ENTRY_TTL: Duration = Duration::from_secs(30);
+const TOKEN_REFUSAL_RETS: [i64; 2] = [117, 137];
 
 use crate::config::Config;
 
@@ -40,6 +41,7 @@ pub struct CloudProvider {
     counter: Arc<std::sync::atomic::AtomicU32>,
     status: StatusClient,
     tokens: crate::cloud::DeviceTokenStore,
+    token_refusals: Mutex<HashMap<String, i64>>,
     entries: Mutex<HashMap<String, SessionEntries>>,
     gates: Mutex<HashMap<String, Gate>>,
     entry_ttl: Duration,
@@ -62,6 +64,7 @@ impl CloudProvider {
             counter: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             status: StatusClient::new(STATUS_HOST),
             tokens: crate::cloud::DeviceTokenStore::load(None),
+            token_refusals: Mutex::new(HashMap::new()),
             entries: Mutex::new(HashMap::new()),
             gates: Mutex::new(HashMap::new()),
             entry_ttl: SESSION_ENTRY_TTL,
@@ -219,6 +222,34 @@ impl CloudProvider {
             )
         })
     }
+    fn token_refusal(&self, serial: &str) -> Option<i64> {
+        let refusals = match self.token_refusals.lock() {
+            Ok(refusals) => refusals,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        refusals.get(serial).copied()
+    }
+
+    fn remember_token_refusal(&self, serial: &str, ret: i64) -> bool {
+        if !TOKEN_REFUSAL_RETS.contains(&ret) {
+            return false;
+        }
+        let mut refusals = match self.token_refusals.lock() {
+            Ok(refusals) => refusals,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        refusals.insert(serial.to_string(), ret);
+        true
+    }
+
+    fn forget_token_refusal(&self, serial: &str) {
+        let mut refusals = match self.token_refusals.lock() {
+            Ok(refusals) => refusals,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        refusals.remove(serial);
+    }
+
     async fn device_login<F, Fut>(
         &self,
         mut connection: crate::dvrip::client::Connection,
@@ -232,34 +263,53 @@ impl CloudProvider {
     {
         let serial = entry.uuid.trim().to_string();
         let control = crate::media::dhav::MediaCipher::channel();
-        let mut note = String::from("no stored device token");
-        if let Some(token) = self.tokens.get(&serial) {
-            match self.token_login(&mut connection, &token, &control).await {
-                Ok(100) => {
-                    let note = format!(
-                        "stored device token ret 100, session 0x{:08x}",
-                        connection.session()
-                    );
-                    return Ok((connection, note));
-                }
-                Ok(ret) => {
+        let note = match self.token_refusal(&serial) {
+            Some(ret) => {
+                if self.tokens.get(&serial).is_some() {
                     let _ = self.tokens.forget(&serial);
-                    note = format!("stored device token ret {ret}, token dropped");
                 }
-                Err(error) => {
-                    let _ = self.tokens.forget(&serial);
-                    note = format!("stored device token failed: {error}, token dropped");
-                }
+                format!("the device refused a token login (ret {ret}), no token is offered")
             }
-            let (user, pass) = credential_pair(&credential, &note)?;
-            drop(connection);
-            connection = reopen().await.map_err(|error| {
-                ProviderError::Upstream(format!("{note}, the second tunnel failed: {error}"))
-            })?;
-            return self
-                .password_login(connection, &serial, &user, &pass, note)
-                .await;
-        }
+            None => match self.tokens.get(&serial) {
+                Some(token) => {
+                    let note = match self.token_login(&mut connection, &token, &control).await {
+                        Ok(100) => {
+                            let note = format!(
+                                "stored device token ret 100, session 0x{:08x}",
+                                connection.session()
+                            );
+                            self.forget_token_refusal(&serial);
+                            return Ok((connection, note));
+                        }
+                        Ok(ret) => {
+                            let _ = self.tokens.forget(&serial);
+                            if self.remember_token_refusal(&serial, ret) {
+                                format!(
+                                    "stored device token ret {ret}, the device refuses it, token dropped"
+                                )
+                            } else {
+                                format!("stored device token ret {ret}, token dropped")
+                            }
+                        }
+                        Err(error) => {
+                            let _ = self.tokens.forget(&serial);
+                            format!("stored device token failed: {error}, token dropped")
+                        }
+                    };
+                    let (user, pass) = credential_pair(&credential, &note)?;
+                    drop(connection);
+                    connection = reopen().await.map_err(|error| {
+                        ProviderError::Upstream(format!(
+                            "{note}, the second tunnel failed: {error}"
+                        ))
+                    })?;
+                    return self
+                        .password_login(connection, &serial, &user, &pass, note)
+                        .await;
+                }
+                None => String::from("no stored device token"),
+            },
+        };
         let (user, pass) = credential_pair(&credential, &note)?;
         self.password_login(connection, &serial, &user, &pass, note)
             .await
@@ -282,8 +332,10 @@ impl CloudProvider {
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let stored = match issued {
-            Some(token) => self.tokens.put(serial, token).is_ok(),
-            None => false,
+            Some(token) if self.token_refusal(serial).is_none() => {
+                self.tokens.put(serial, token).is_ok()
+            }
+            _ => false,
         };
         let summary = format!(
             "{note}, password login ret 100, device token stored {stored}, session 0x{:08x}",
@@ -2225,5 +2277,143 @@ mod login_tests {
             0,
             "the refusal is decided before the second tunnel is opened"
         );
+    }
+
+    type Reopen = Box<
+        dyn FnOnce() -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<
+                        Output = Result<crate::dvrip::client::Connection, ProviderError>,
+                    >,
+                >,
+            > + Send,
+    >;
+
+    fn reopening_to(address: String, count: Arc<std::sync::atomic::AtomicUsize>) -> Reopen {
+        Box::new(move || {
+            count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let address = address.clone();
+            Box::pin(async move { Ok::<_, ProviderError>(connect(&address).await) })
+        })
+    }
+
+    fn counted(events: &[String], needle: &str) -> usize {
+        events.iter().filter(|event| event.contains(needle)).count()
+    }
+
+    #[tokio::test]
+    async fn a_device_that_refuses_the_token_is_never_offered_one_again() {
+        let peer = LoginPeer::start(137, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("refused");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "refused-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(
+                first,
+                &entry(SERIAL),
+                device_credential(),
+                reopening_to(peer.address.clone(), reopened.clone()),
+            )
+            .await
+            .expect("the password login finishes the session after the refusal");
+        assert!(note.contains("the device refuses it"), "{note}");
+        assert!(note.contains("device token stored false"), "{note}");
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the refusal costs exactly one new tunnel"
+        );
+        assert!(
+            provider.tokens.get(SERIAL).is_none(),
+            "an AdminToken the device refuses must not be stored"
+        );
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+
+        let second = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(
+                second,
+                &entry(SERIAL),
+                device_credential(),
+                reopening_to(peer.address.clone(), reopened.clone()),
+            )
+            .await
+            .expect("the second open reaches the password login on its first tunnel");
+        assert!(note.contains("no token is offered"), "{note}");
+        assert!(note.contains("device token stored false"), "{note}");
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a device that refuses tokens must not pay a second tunnel on the next open"
+        );
+        assert!(provider.tokens.get(SERIAL).is_none(), "{note}");
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+
+        let events = peer.events();
+        assert_eq!(
+            counted(&events, ":token_login"),
+            1,
+            "only the first open may offer the doomed token: {events:?}"
+        );
+        assert_eq!(counted(&events, ":password_login"), 2, "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_on_one_device_leaves_the_token_path_for_another() {
+        const OTHER: &str = "serial-two";
+        let refused = LoginPeer::start(137, Duration::from_millis(700)).await;
+        let accepted = LoginPeer::start(100, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("mixed");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "refused-token")
+            .expect("stored token");
+        provider
+            .tokens
+            .put(OTHER, "live-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let first = connect(&refused.address).await;
+        provider
+            .device_login(
+                first,
+                &entry(SERIAL),
+                device_credential(),
+                reopening_to(refused.address.clone(), reopened.clone()),
+            )
+            .await
+            .expect("the refused device still logs in");
+
+        let second = connect(&accepted.address).await;
+        let (connection, note) = provider
+            .device_login(
+                second,
+                &entry(OTHER),
+                device_credential(),
+                reopening_to(accepted.address.clone(), reopened.clone()),
+            )
+            .await
+            .expect("the accepting device keeps the token path");
+        assert!(note.contains("stored device token ret 100"), "{note}");
+        assert_eq!(connection.session(), 0x3333_3333);
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the accepting device must not pay a second tunnel"
+        );
+        let events = accepted.events();
+        assert_eq!(counted(&events, ":token_login"), 1, "{events:?}");
+        assert_eq!(counted(&events, ":password_login"), 0, "{events:?}");
+        drop(connection);
     }
 }
