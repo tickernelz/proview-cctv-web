@@ -81,15 +81,25 @@ stability before 1.0.
   first later check whose error says the session is gone posts one *Alarm
   notifications paused — open PROVIEW and sign in* notification and logs at warn,
   once per span; the next successful check re-arms it, and a launch that has not
-  checked successfully yet announces nothing, because the session store is empty
-  at every start. A recovery after two failed checks in a row summarizes the gap
-  in one notification instead of replaying the backlog alarm by alarm, while a
-  single missed check still toasts; the rule counts checks rather than seconds,
-  so timer jitter cannot flip it. The remembered
-  window and the device cache now belong to the signed-in account, so an account
-  switch drops both and starts the run over, and an empty first pass reports a
-  state change so the baseline mark is saved by the watcher rather than only by
-  a direct `save()`.
+  checked successfully yet announces nothing from the check, because the session
+  store is empty at every start. A recovery after two failed checks in a row
+  summarizes the gap in one notification instead of replaying the backlog alarm
+  by alarm, while a single missed check still toasts; the rule counts checks
+  rather than seconds, so timer jitter cannot flip it. The remembered window and
+  the device cache now belong to the signed-in account, so an account switch
+  drops both and starts the run over, and an empty first pass reports a state
+  change so the baseline mark is saved by the watcher rather than only by a
+  direct `save()`.
+- A window with no session and no successful check now says so when it goes to
+  the tray. With alarm notifications on, the first close or minimize to the tray
+  posts the same *Alarm notifications paused — open PROVIEW and sign in*
+  notification the failing check posts, and the rest of that run stays quiet;
+  the still-running hint waits for a later hide instead of stacking a second
+  notification. It reads the live session store, so a page that has signed in
+  stays silent even before its first check, and a run that has checked
+  successfully leaves the pause to the check path. The run now lives in the
+  desktop shell, so the window event reads the same `last_ok` the check keeps
+  instead of a copy.
 - The desktop **Restart the app** button restarts the app again. The window is
   served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
   the `restart_app` IPC command was refused and the button did nothing. The page
