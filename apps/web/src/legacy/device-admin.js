@@ -1,3 +1,5 @@
+import { addLauncher } from '../live/store';
+
 (function deviceAdmin() {
   'use strict';
 
@@ -294,14 +296,8 @@
 
   document.body.append(sheet);
 
-  const launcher = node('button', {
-    type: 'button', class: 'ctl', id: 'device-admin-open', title: 'Device names, groups, sharing, passwords',
-    onclick: open,
-  }, [node('span', { text: 'Devices' })]);
-  launcher.insertAdjacentHTML('afterbegin', '<svg class="i" aria-hidden="true"><use href="#i-cctv"></use></svg>');
+  addLauncher({ id: 'device-admin-open', label: 'Devices', icon: 'cctv', slot: 'start', title: 'Device names, groups, sharing, passwords', onClick: open });
   sheet.querySelector('.sheet-h .iconbtn').innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>';
-  const controls = document.getElementById('controls');
-  if (controls) controls.insertBefore(launcher, controls.querySelector('.spacer'));
 
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !sheet.hidden) close();

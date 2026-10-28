@@ -97,13 +97,19 @@ code, kbd, .mono { font-family: var(--f-mono); font-size: var(--t-11); letter-sp
 .level i:nth-child(3).on { height: 12px; }
 .level i:nth-child(1).on, .level i:nth-child(5).on { height: 5px; }
 
-.menu { position: fixed; inset: auto; margin: 0; min-width: 300px; max-width: min(420px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow: auto; padding: var(--s2); border: 0; background: var(--bg-2); color: var(--ink); border-radius: var(--r-lg); box-shadow: var(--shadow-menu), inset 0 0 0 1px var(--line); z-index: 30; }
+.menu, .menu-panel { min-width: 300px; max-width: min(420px, calc(100vw - 16px)); overflow: auto; padding: var(--s2); border: 0; background: var(--bg-2); color: var(--ink); border-radius: var(--r-lg); box-shadow: var(--shadow-menu), inset 0 0 0 1px var(--line); z-index: 30; }
+.menu { position: fixed; inset: auto; margin: 0; max-height: calc(100vh - 16px); }
+.menu-panel { max-height: var(--reka-dropdown-menu-content-available-height, calc(100vh - 16px)); outline: none; animation: menu-in var(--dur-2) var(--ease); }
 .menu[popover]:popover-open, .menu:not([popover]) { animation: menu-in var(--dur-2) var(--ease); }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-4px); } }
-@media (prefers-reduced-motion: reduce) { .menu[popover]:popover-open, .menu:not([popover]) { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .menu[popover]:popover-open, .menu:not([popover]), .menu-panel { animation: none; } }
 .menu-h { padding: var(--s2) var(--s3); font-size: var(--t-11); font-family: var(--f-mono); color: var(--ink-3); }
 .menu-row { display: flex; align-items: center; gap: var(--s2); min-height: 48px; padding: 0 var(--s3); border-radius: var(--r-md); width: 100%; }
-.menu-row:hover, .menu-row:focus-visible, .menu-row[aria-checked="true"] { background: var(--bg-3); }
+.menu-row:hover, .menu-row:focus-visible, .menu-row[data-highlighted], .menu-row[aria-checked="true"] { background: var(--bg-3); }
+.menu-panel .menu-row { cursor: pointer; outline: none; }
+.menu-panel .menu-row[data-highlighted] { box-shadow: inset 0 0 0 2px var(--focus); }
+.menu-check { width: 16px; height: 16px; flex: none; display: grid; place-items: center; color: var(--accent); }
+.live-bar { display: contents; }
 .menu-row:focus-visible { outline-offset: -2px; }
 .menu-row .name { font-size: var(--t-15); }
 .menu-row .meta { margin-left: auto; font-family: var(--f-mono); font-size: var(--t-11); color: var(--ink-3); }

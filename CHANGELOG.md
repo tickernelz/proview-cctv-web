@@ -23,6 +23,12 @@ stability before 1.0.
   900 px, settings stacks below 768/640 px, the top bar tightens below 480 px,
   and "every camera" uses 1, 2 or 4 columns by width instead of 3 everywhere.
   Buttons in the top bar and the control row are 44 px on touch screens.
+- Live's caption, control row and lens and quality menus are Vue now (ZHA-4181):
+  one component over a reactive store, menus from Reka UI 2.11.0 placed by
+  floating-ui so they stay inside the window at every width. Ids, test ids,
+  keyboard shortcuts and the look are unchanged (screenshot baselines pass
+  as they were). The page JS grows by 67 KB gzip for the Vue runtime and Reka
+  UI, inside the 80 KB budget; later Vue screens reuse it.
 
 ### Added
 

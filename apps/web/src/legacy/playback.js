@@ -1,3 +1,5 @@
+import { addLauncher } from '../live/store';
+
 (function () {
   const MEDIA_TYPE = 'video/mp4; codecs="avc1.42E01E"';
 
@@ -559,24 +561,7 @@
     if (overlay) overlay.hidden = true;
   }
 
-  function mount() {
-    const controls = el('controls');
-    if (!controls || el('pb-open')) return;
-    const button = make('button', 'ctl');
-    button.id = 'pb-open';
-    button.type = 'button';
-    button.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-history"></use></svg><span>Playback</span>';
-    button.addEventListener('click', open);
-    const anchor = el('move');
-    if (anchor) controls.insertBefore(button, anchor);
-    else controls.append(button);
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', mount, { once: true });
-  } else {
-    mount();
-  }
+  addLauncher({ id: 'pb-open', label: 'Playback', icon: 'history', slot: 'end', onClick: open });
   window.addEventListener('hashchange', () => {
     if ((location.hash || '').replace(/^#/, '') === 'playback') open();
   });

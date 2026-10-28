@@ -1,5 +1,6 @@
 import { api } from '../lib/api';
 import { StreamPlayer } from '../lib/stream-player';
+import { live } from '../live/store';
 
 export { api, StreamPlayer };
 import { startTalk, stopTalk } from './talk.js';
@@ -737,8 +738,8 @@ function setStage(name, detail = {}) {
   renderStage(name === 'error' ? detail.stage : null);
   el('well-actions').hidden = name !== 'error';
   el('check-password').hidden = !(name === 'error' && /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || '')));
-  el('record').disabled = name !== 'playing';
-  el('snapshot').disabled = !showing;
+  live.record.disabled = name !== 'playing';
+  live.snapshotDisabled = !showing;
   if (name !== 'playing' && name !== 'stalled') {
     stopRecording();
   }
@@ -778,19 +779,12 @@ function captionText() {
 
 export function renderCaption() {
   const camera = currentCamera();
-  const name = camera ? camera.name : '';
-  if (el('caption-name').textContent !== name) {
-    el('caption-name').textContent = name;
-  }
-  const text = captionText();
-  if (el('caption-state').textContent !== text) {
-    el('caption-state').textContent = text;
-  }
+  live.camera = camera ? camera.name : '';
+  live.state = captionText();
   renderFlag();
 }
 
 function renderFlag() {
-  const flag = el('caption-flag');
   const name = state.stage.name;
   let text = '';
   let tone = '';
@@ -814,12 +808,8 @@ function renderFlag() {
     const lag = liveLag();
     text = lag === null ? '' : lag.toFixed(1) + ' s behind';
   }
-  flag.className = tone;
-  flag.replaceChildren();
-  if (tone === 'rec') {
-    flag.append(make('span', 'dot rec'));
-  }
-  flag.append(document.createTextNode(text));
+  live.flag.text = text;
+  live.flag.tone = tone;
 }
 
 function elapsed(since) {
@@ -846,12 +836,12 @@ function renderFsLine() {
 
 function tick() {
   const now = hms(Date.now());
-  el('clock').textContent = now;
+  live.clock = now;
   if (!el('fs-line').hidden) {
     renderFsLine();
   }
   if (state.recorder) {
-    el('record').querySelector('span').textContent = elapsed(state.recordStart);
+    live.record.elapsed = elapsed(state.recordStart);
   }
   renderFlag();
   for (const tile of document.querySelectorAll('.tile[data-state="playing"] .tile-meta .right')) {
@@ -1271,33 +1261,16 @@ function renderLensPicker() {
   if (!pair && state.lensView !== 'combined') {
     state.lensView = 'combined';
   }
-  el('lens-pick').hidden = !pair;
-  el('lens-pick-label').textContent = lensViewLabel();
+  live.lens.shown = pair;
+  live.lens.label = lensViewLabel();
   el('lens-source').textContent = lensNote();
   el('lens-source').title = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : '';
   el('lens-roles-note').hidden = entries.some((entry) => entry.role !== 'unknown');
-  const menu = el('lens-menu');
-  menu.replaceChildren(make('div', 'menu-h', 'Lens · L cycles'));
-  const options = [{ value: 'combined', name: 'Both lenses', sub: 'the frame as the camera sends it' }].concat(
+  live.lens.options = [{ value: 'combined', name: 'Both lenses', sub: 'the frame as the camera sends it' }].concat(
     entries.map((entry) => ({ value: String(entry.index), name: entry.label, sub: lensSub(entry) })),
   );
-  for (const option of options) {
-    const row = make('button', 'menu-row');
-    row.type = 'button';
-    row.tabIndex = -1;
-    row.setAttribute('role', 'menuitemradio');
-    row.setAttribute('aria-checked', String(option.value === String(state.lensView)));
-    row.dataset.testid = 'lens-option';
-    const col = make('span', 'col');
-    col.append(make('span', 'name', option.name), make('span', 'sub', option.sub));
-    row.append(icon('check', 'i-16'), col);
-    row.addEventListener('click', () => {
-      closeFloating(true);
-      chooseLens(option.value);
-    });
-    menu.append(row);
-  }
-  menu.append(make('div', 'menu-sep'), make('p', 'menu-note', lensNote()));
+  live.lens.value = String(state.lensView);
+  live.lens.note = lensNote();
   renderSwitcher();
   renderCaption();
 }
@@ -1383,10 +1356,14 @@ function renderControlAvailability() {
   }
   for (const button of document.querySelectorAll('[data-requires="device"]')) {
     const verdict = buttonVerdict(button);
+    if (button.closest('#controls') && live.gate[button.dataset.act]) {
+      live.gate[button.dataset.act] = { ok: verdict.ok, why: verdict.why };
+      continue;
+    }
     button.disabled = !verdict.ok;
     button.title = verdict.why;
   }
-  if (state.padOpen && el('move').disabled) {
+  if (state.padOpen && !live.gate.move.ok) {
     closePad();
   }
   renderCapabilities();
@@ -1588,12 +1565,12 @@ async function sendControl(action) {
 }
 
 function openPad() {
-  if (el('move').disabled || state.view !== 'live') {
+  if (!live.gate.move.ok || state.view !== 'live') {
     return;
   }
   state.padOpen = true;
   el('pad').hidden = false;
-  el('move').setAttribute('aria-pressed', 'true');
+  live.padOpen = true;
   setControlStatus('');
   loadPresets();
   renderCaption();
@@ -1605,7 +1582,7 @@ function closePad() {
   }
   state.padOpen = false;
   el('pad').hidden = true;
-  el('move').setAttribute('aria-pressed', 'false');
+  live.padOpen = false;
   renderCaption();
 }
 
@@ -1753,10 +1730,7 @@ export function shortStreamError(error) {
 function renderMute() {
   const video = el('video');
   video.muted = state.muted;
-  const button = el('mute');
-  button.setAttribute('aria-pressed', String(!state.muted));
-  button.querySelector('use').setAttribute('href', state.muted ? '#i-speaker-off' : '#i-speaker');
-  button.title = (state.muted ? 'Sound is off' : 'Sound is on') + ' (M)';
+  live.muted = state.muted;
 }
 
 function toggleMute() {
@@ -1810,13 +1784,8 @@ function stopRecording() {
 }
 
 function renderRecord() {
-  const button = el('record');
-  const on = Boolean(state.recorder);
-  button.classList.toggle('rec-on', on);
-  button.setAttribute('aria-pressed', String(on));
-  button.setAttribute('aria-label', on ? 'Stop recording' : 'Record');
-  button.querySelector('span').textContent = on ? elapsed(state.recordStart) : 'Record';
-  button.querySelector('span').classList.toggle('mono', on);
+  live.record.on = Boolean(state.recorder);
+  live.record.elapsed = live.record.on ? elapsed(state.recordStart) : '';
   renderFlag();
 }
 
@@ -2246,11 +2215,7 @@ function renderPrefsIntoForm() {
   el('set-osd').checked = state.prefs.osd;
   el('set-muted').checked = state.prefs.muted;
   el('set-flip').checked = state.prefs.flip;
-  el('quality-pick-label').textContent = 'Quality ' + (state.prefs.quality === 'sub' ? 'SD' : 'HD');
-  for (const row of el('quality-menu').querySelectorAll('[data-quality]')) {
-    row.setAttribute('aria-checked', String(row.dataset.quality === state.prefs.quality));
-    row.tabIndex = -1;
-  }
+  live.quality = state.prefs.quality;
 }
 
 function setQuality(quality) {
@@ -2375,8 +2340,8 @@ function onWatchKey(event) {
     g: () => (el('grid-toggle').disabled ? null : setView(state.view === 'grid' ? 'live' : 'grid')),
     f: () => toggleFullscreen(),
     m: () => toggleMute(),
-    r: () => (el('record').disabled ? null : toggleRecord()),
-    s: () => (el('snapshot').disabled ? null : captureSnapshot()),
+    r: () => (live.record.disabled ? null : toggleRecord()),
+    s: () => (live.snapshotDisabled ? null : captureSnapshot()),
     l: () => cycleLens(),
     q: () => setQuality(state.prefs.quality === 'sub' ? 'main' : 'sub'),
     v: () => togglePad(),
@@ -2580,20 +2545,7 @@ el('check-password').addEventListener('click', () => {
 });
 el('switcher').addEventListener('click', () => toggleFloating(el('camera-menu'), el('switcher'), renderCameraMenu));
 el('grid-toggle').addEventListener('click', () => setView(state.view === 'grid' ? 'live' : 'grid'));
-el('lens-pick').addEventListener('click', () => toggleFloating(el('lens-menu'), el('lens-pick'), renderLensPicker));
-el('quality-pick').addEventListener('click', () => toggleFloating(el('quality-menu'), el('quality-pick'), renderPrefsIntoForm));
-for (const row of el('quality-menu').querySelectorAll('[data-quality]')) {
-  row.addEventListener('click', () => {
-    closeFloating(true);
-    setQuality(row.dataset.quality);
-  });
-}
 el('keys-close').addEventListener('click', () => closeFloating(false));
-el('mute').addEventListener('click', toggleMute);
-el('record').addEventListener('click', toggleRecord);
-el('snapshot').addEventListener('click', captureSnapshot);
-el('move').addEventListener('click', togglePad);
-el('fullscreen').addEventListener('click', toggleFullscreen);
 el('grid-fullscreen').addEventListener('click', toggleFullscreen);
 el('light').addEventListener('click', toggleWhiteLight);
 el('run-checks').addEventListener('click', runChecks);
@@ -2607,30 +2559,16 @@ document.querySelector('.skip').addEventListener('click', (event) => {
   (first || el('controls')).focus();
 });
 
-const talkButton = el('talk');
-talkButton.addEventListener('pointerdown', (event) => {
-  if (event.button !== 0) {
-    return;
-  }
-  talkButton.setPointerCapture(event.pointerId);
-  startTalk();
-});
-for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
-  talkButton.addEventListener(type, () => stopTalk());
-}
-talkButton.addEventListener('keydown', (event) => {
-  if (event.key === ' ' || event.key === 'Enter') {
-    event.preventDefault();
-    if (!event.repeat) {
-      startTalk();
-    }
-  }
-});
-talkButton.addEventListener('keyup', (event) => {
-  if (event.key === ' ' || event.key === 'Enter') {
-    event.preventDefault();
-    stopTalk();
-  }
+Object.assign(live.actions, {
+  startTalk,
+  stopTalk,
+  toggleMute,
+  toggleRecord,
+  captureSnapshot,
+  togglePad,
+  toggleFullscreen,
+  chooseLens,
+  setQuality,
 });
 
 for (const button of document.querySelectorAll('[data-theme-toggle]')) {

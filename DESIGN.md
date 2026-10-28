@@ -200,7 +200,13 @@ switching camera keeps focus where it was.
 
 ## Menus and the WebView
 
-Menus use the Popover API when `HTMLElement.prototype.showPopover` exists
+The lens and quality menus on Live are Reka UI `DropdownMenu` (Vue): they open
+above the control row, aligned to the trigger's end, shift inside an 8 px
+viewport margin, and keep `#lens-pick`, `#quality-pick`, `#lens-menu` and
+`#quality-menu` as ids. Reka brings the same keys (arrows, Home/End, Escape and
+Tab close and return focus). The menus below are still the page's own.
+
+Other menus use the Popover API when `HTMLElement.prototype.showPopover` exists
 (light dismiss and top layer from the platform) and a `hidden`-toggle with an
 outside-pointer handler otherwise; `<html data-popover>` records which path
 ran. Both paths share the same roving focus (arrows wrap, Home/End, Escape and
