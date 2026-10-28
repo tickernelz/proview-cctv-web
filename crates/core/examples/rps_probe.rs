@@ -154,24 +154,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ),
                 other => eprintln!("plainq reply: {other:?}"),
             }
+            let mut parameter = serde_json::json!({
+                "Channel": 0,
+                "CombinMode": "NONE",
+                "StreamType": "Main",
+                "TransMode": "TCP",
+            });
+            if std::env::var("PROVIEW_VEKEY").is_ok() {
+                parameter["VEKEY1"] = serde_json::Value::String(rps::random_lower(60));
+            }
             let start = serde_json::json!({
                 "Name": "OPMonitor",
-                "OPMonitor": {
-                    "Action": "Start",
-                    "Parameter": {
-                        "Channel": 0,
-                        "CombinMode": "NONE",
-                        "StreamType": "Main",
-                        "TransMode": "TCP",
-                        "VEKEY1": rps::random_lower(60),
-                    },
-                },
+                "OPMonitor": { "Action": "Start", "Parameter": parameter },
                 "SessionID": format!("0x{:08x}", connection.session()),
             });
             match connection.send_plain(0, 0x0582, &start).await {
-                Ok(()) => eprintln!("plainstart sent"),
+                Ok(()) => eprintln!(
+                    "plainstart sent (vekey={})",
+                    std::env::var("PROVIEW_VEKEY").is_ok()
+                ),
                 Err(error) => eprintln!("plainstart failed: {error:?}"),
             }
+            let mut dump = std::fs::File::create("/tmp/live_bodies.bin").ok();
+            let mut written = 0usize;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+            while std::time::Instant::now() < deadline {
+                match tokio::time::timeout(std::time::Duration::from_secs(3), connection.recv())
+                    .await
+                {
+                    Ok(Ok((header, payload))) => {
+                        if header.id == 0x0584 {
+                            if let Some(file) = dump.as_mut() {
+                                use std::io::Write;
+                                let _ = file.write_all(&(payload.len() as u32).to_le_bytes());
+                                let _ = file.write_all(&payload);
+                                written += payload.len();
+                            }
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            eprintln!("media    {written} bytes on 0x0584 in 8 s");
         }
         let encrypted_login = std::env::var("PROVIEW_ENCRYPTED_LOGIN").is_ok();
         if encrypted_login {
