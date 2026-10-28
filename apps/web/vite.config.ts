@@ -1,3 +1,5 @@
+import tailwindcss from '@tailwindcss/vite'
+import vue from '@vitejs/plugin-vue'
 import { defineConfig, type Plugin } from 'vite'
 import { iconSprite } from './icons'
 
@@ -14,10 +16,10 @@ const desktopToken = (): Plugin => ({
 })
 
 export default defineConfig({
-  plugins: [iconSprite(), desktopToken()],
+  plugins: [iconSprite(), vue(), tailwindcss(), desktopToken()],
   build: {
-    target: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],
-    cssTarget: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],
+    target: ['chrome111', 'edge111', 'firefox128', 'safari16.4'],
+    cssTarget: ['chrome111', 'edge111', 'firefox128', 'safari16.4'],
   },
   server: {
     cors: false,

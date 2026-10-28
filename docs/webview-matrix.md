@@ -8,7 +8,7 @@ never assumed. Recorded clips still travel over HTTP.
 | Webview | Platform | H.264 fMP4 | H.265 | Notes |
 |---|---|---|---|---|
 | WebView2 (Chromium) | Windows 10/11 | yes | yes, if the OS has the HEVC codec extension | hardware decode via Media Foundation |
-| WKWebView | macOS 12+ | yes | yes on Apple silicon for most profiles | hardware decode via VideoToolbox |
+| WKWebView | macOS 13.3+ | yes | yes on Apple silicon for most profiles | hardware decode via VideoToolbox |
 | WebKitGTK | Linux | yes, when a GStreamer H.264 decoder is installed (`gstreamer1.0-libav`, or `gstreamer1-plugin-openh264` on Fedora) | not guaranteed | distro dependent; the app surfaces a clear message instead of a black frame |
 | Chromium / Edge | any | yes | depends on build | WebCodecs available |
 | Firefox | any | yes via MSE | depends on build | no WebCodecs for H.265 |
@@ -31,13 +31,22 @@ WebView2 and WKWebView have **not** been exercised yet; that is tracked in
 
 ## Page floor (CSS and JS)
 
-`apps/web/src/style.css` already needs `:has()` and `:focus-visible`, so the
-page's floor is Chrome/Edge 105, Firefox 121 and Safari/WKWebView 15.4 (macOS
-12.3, iOS 15.4). `apps/web/vite.config.ts` pins both `build.target` (the bundled
-scripts) and `build.cssTarget` to that floor so neither the JS transform nor the
-Lightning CSS minifier rewrites code into syntax newer than the source: with Vite's default target (`baseline-widely-available`, Safari 16.4) it
-turned `@media (max-width: 640px)` into `@media (width <= 640px)`, which Safari
-before 16.4 ignores. Raising the floor means changing both places.
+The page is built with Tailwind CSS v4 (`@tailwindcss/vite`), whose output
+needs cascade layers, `@property` and `color-mix()`. Its documented floor is
+Chrome 111, Safari 16.4 and Firefox 128
+(https://tailwindcss.com/docs/compatibility), so that is the page's floor:
+Chrome/Edge 111, Firefox 128, Safari/WKWebView 16.4. `apps/web/vite.config.ts`
+pins `build.target` (scripts) and `build.cssTarget` (Lightning CSS) to it, so the
+build may emit syntax up to that floor (for example `@media (width <= 640px)`)
+and nothing newer. Raising the floor means changing both places.
+
+The desktop shell enforces it on macOS: WKWebView is the system WebKit, and
+macOS 13.3 is the first release that ships Safari 16.4, so
+`bundle.macOS.minimumSystemVersion` is `13.3` in `src-tauri/tauri.conf.json`.
+Older macOS with Safari updated to 16.4 would render the page, but the installer
+cannot check the Safari version. Windows (WebView2, evergreen Chromium) and
+Linux (WebKitGTK 2.50 on Ubuntu 22.04 and newer) are above the floor. In server
+mode an older browser gets an unstyled or partly styled page.
 
 ## Why fMP4 and not HLS first
 

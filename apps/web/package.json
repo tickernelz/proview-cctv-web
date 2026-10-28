@@ -4,12 +4,19 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p . && vite build"
+    "build": "vue-tsc -p . && vite build"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
     "@types/node": "26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
     "lucide-static": "1.63.0",
+    "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.3.5"
+    "vite": "^8.3.5",
+    "vue-tsc": "^3.3.13"
+  },
+  "dependencies": {
+    "vue": "^3.5.44"
   }
 }
