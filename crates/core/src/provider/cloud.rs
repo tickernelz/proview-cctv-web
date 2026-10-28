@@ -149,17 +149,34 @@ impl CloudProvider {
         self.gates.lock().map(|gates| gates.len()).unwrap_or(0)
     }
 
-    async fn entries_once(&self, token: &str) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
+    async fn entries_once(
+        &self,
+        session: &VendorSession,
+        adopt: bool,
+    ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
+        let entries = self.entries_guarded(session, adopt).await;
+        self.release_gates();
+        entries
+    }
+
+    async fn entries_guarded(
+        &self,
+        session: &VendorSession,
+        adopt: bool,
+    ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
+        let token = self.token(session)?;
         let gate = self.gate(token);
         let arrived = Instant::now();
         let mut flight = gate.lock().await;
-        if let Some((at, error)) = flight.as_ref() {
-            if *at >= arrived {
-                return Err(map_cloud(error.clone()));
+        if adopt {
+            if let Some((at, error)) = flight.as_ref() {
+                if *at >= arrived {
+                    return Err(map_cloud(error.clone()));
+                }
             }
-        }
-        if let Some(devices) = self.entries_since(token, arrived) {
-            return Ok(devices);
+            if let Some(devices) = self.entries_since(token, arrived) {
+                return Ok(devices);
+            }
         }
         match self.envelope().device_list(token).await {
             Ok(devices) => {
@@ -179,10 +196,14 @@ impl CloudProvider {
         &self,
         session: &VendorSession,
     ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
-        let token = self.token(session)?;
-        let entries = self.entries_once(token).await;
-        self.release_gates();
-        entries
+        self.entries_once(session, false).await
+    }
+
+    async fn fetch_entries_shared(
+        &self,
+        session: &VendorSession,
+    ) -> Result<Arc<Vec<CloudDevice>>, ProviderError> {
+        self.entries_once(session, true).await
     }
 
     fn token<'a>(&self, session: &'a VendorSession) -> Result<&'a str, ProviderError> {
@@ -363,7 +384,7 @@ impl CloudProvider {
                 return Ok(Some(found.clone()));
             }
         }
-        let devices = self.fetch_entries(session).await?;
+        let devices = self.fetch_entries_shared(session).await?;
         Ok(devices.iter().find(|entry| entry.uuid == serial).cloned())
     }
 
@@ -1344,6 +1365,7 @@ mod entry_cache_tests {
         if length > 0 && reader.read_exact(&mut body).is_err() {
             return;
         }
+        let serials = rows.lock().expect("rows").clone();
         if request_line.contains("msdlistCode") {
             hits.fetch_add(1, Ordering::Relaxed);
             if !delay.is_zero() {
@@ -1358,7 +1380,6 @@ mod entry_cache_tests {
             let _ = writer.write_all(response.as_bytes());
             return;
         }
-        let serials = rows.lock().expect("rows").clone();
         let entries: Vec<String> = serials
             .iter()
             .map(|serial| format!("{{\"uuid\":\"{serial}\",\"nickname\":\"camera\"}}"))
@@ -1601,6 +1622,30 @@ mod entry_cache_tests {
             "waiters must share the failure instead of queuing behind it, took {:?}",
             started.elapsed()
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refresh_during_another_fetch_asks_the_cloud_again() {
+        let stub = Stub::with_delay(&["serial-one"], Duration::from_millis(300));
+        let provider = Arc::new(provider(&stub));
+        let held = Arc::new(session("probe", "access"));
+
+        let opener = {
+            let provider = Arc::clone(&provider);
+            let held = Arc::clone(&held);
+            tokio::spawn(async move { provider.owns(&held, "serial-one").await })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        stub.set_rows(&["serial-one", "serial-two"]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let refreshed = provider.fetch_entries(&held).await.expect("refresh");
+        assert!(
+            refreshed.iter().any(|entry| entry.uuid == "serial-two"),
+            "an explicit refresh must carry a camera bound while the other fetch ran"
+        );
+        assert!(opener.await.expect("joined").expect("owns"));
+        assert_eq!(stub.hits(), 2, "the refresh is the second call");
     }
 
     #[tokio::test]

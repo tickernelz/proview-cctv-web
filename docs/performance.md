@@ -278,24 +278,28 @@ socket opens on the camera the account owns, and one `msdlistCode` request
 arrives. The window is 30 s per vendor session, and the next call after it
 closes asks the cloud again, a serial the window does not carry is asked again
 rather than refused, and a fresh device-list fetch (`/api/devices`) replaces the
-window; `crates/core/src/provider/cloud.rs` carries the eleven tests behind those
+window; `crates/core/src/provider/cloud.rs` carries the twelve tests behind those
 sentences (one session pays one list for every serial, a second session pays its
 own, an entry older than the window is fetched again, a serial bound inside the
 window is recognised, a refresh replaces the window, a serial a refresh drops
 stops answering, three parallel cold opens on one session pay one list, four
 parallel opens for serials the list lacks pay one, four parallel opens against a
-failing cloud pay one and return in one failure's time, a failure is not
-remembered for the next open, and the gate map does not grow with each session).
+failing cloud pay one and return in one failure's time, a refresh that arrives
+while another fetch is running asks again, a failure is not remembered for the
+next open, and the gate map does not grow with each session).
 The fetch is single-flight per vendor session: a `tokio::sync` mutex per token
 gates it and is dropped once no caller holds it, so the winner asks the cloud and
-the waiters adopt what it produced. Adoption is keyed on when the caller arrived,
-not on the serial: a list or a failure that finished after the caller started
-waiting is the answer, so a burst pays one call whether it hits, misses or fails,
-and a waiter never queues behind an attempt that already finished. A sequential
-caller still refetches, which is what keeps the refetch-miss above a miss and not
-a refusal; the cost of adoption is that a camera bound inside one round trip is
-not seen by the opens already waiting, and the next open or `/api/devices` picks
-it up.
+a lookup waiter adopts what it produced. Adoption is keyed on when the caller
+arrived, not on the serial: a list or a failure that finished after the caller
+started waiting is the answer, so a burst of opens pays one call whether it hits,
+misses or fails, and a waiter never queues behind an attempt that already
+finished. An explicit refresh — `GET /api/devices`, `devices()` — never adopts:
+it waits for the gate and then asks, so a camera bound or a nickname changed
+while another fetch was running is still in the list it returns. A sequential
+open still refetches, which is what keeps the refetch-miss above a miss and not a
+refusal; the cost of adoption is that a camera bound inside one round trip is not
+seen by the opens already waiting, and the next open or `/api/devices` picks it
+up.
 No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
 the fix removes two of those round trips and three client builds per open.
 
