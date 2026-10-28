@@ -1141,6 +1141,88 @@ P-frame, an audio frame or a JPEG still already arrives in the clear and must no
 be masked. ZHA-4072 carries the measurement — `ffprobe` reads `hevc 2304x2592`
 on a recorded capture once the window is undone.
 
+### 4C.21 The app's own live sequence, byte for byte (`PCAPdroid_27_Okt_21_18_10.pcap`)
+
+Read from the phone capture, media sessions are plain TCP to `<agent>:6611` after
+the 4C.7 handshake. One session, in order:
+
+1. `0x0585` on channel 99, plaintext JSON, NUL terminated, header session
+   `0x0001869f`: `{"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Parameter":
+   {"Channel":0,"CombinMode":"CONNECT_ALL","StreamType":"Main","TransMode":"TCP"}},
+   "DHParameter":{"RandomStrA":"..."},"SessionID":"0x0001869f"}` (206 bytes).
+2. Device answers `0x0586`, 961 bytes, **AES-128-CBC with the vendor constant key,
+   zero IV, base64, NUL terminated**. Opened, it is the capability block:
+
+   ```
+   { "Bits":1024, "DataEncryptionType":{"AES":true,"AESV2":true,"VEKEY1":true},
+     "EncryptAlgo":"RSA_V1.5",
+     "LoginEncryptionType":{"MD5":true,"NONE":true,"RSA":true,"TOKEN":true},
+     "NotEncryptMsgID":[1000,1001,1008,...,1412,1413,1414,1422,1424,1425,1426,1432,1433,1434,1435,1449,1522,1572,1576,1580,1582,1645,2062,2063,2123,2140,3016,3502],
+     "PublicKey":"<512 hex modulus>,010001", "Ret":100 }
+   ```
+
+   The device's RSA key arrives **in this reply**, so the sealing key is a session
+   value, not a constant that has to be scraped once.
+3. Client sends `0x03e8` on channel 99, encrypted with the same constant key,
+   base64, NUL, zero padded: 432 ciphertext bytes for a 420-byte body.
+   Opened body:
+
+   ```
+   {"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"<16 chars>",
+    "PassWord":"","CommunicateKey":"<256 hex>","User-Agent":"Funv1.2.2c-And-<16 chars>"}
+   ```
+
+4. Device answers `0x03e9` **plaintext**, 128 bytes:
+   `{"AliveInterval":30,"ChannelNum":1,"DeviceType":"IPC","ExtraChannel":0,"Ret":100,"SessionID":"0x00000157"}`.
+5. Media runs on a **second** 6611 connection opened with the same handshake: a
+   single `0x0585` on channel 0, plaintext, 181 bytes,
+   `{"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Action1":"Start","Parameter":
+   {"Channel":0,"CombinMode":"NONE","StreamType":"Main","TransMode":"TCP"}},
+   "SessionID":"0x00000157"}` — header session equals that id. Device answers
+   `0x0586` 67 bytes `{"Name":"OPMonitor","Ret":100,...}` and immediately streams
+   `0x0584` bodies of 8192 bytes whose first bytes are `00 00 01 fc ...`, i.e. the
+   DHAV record header `media::live` already classifies. **No `VEKEY1`, no AES**:
+   the app's own media is plaintext.
+6. Two-way audio is a claim on `0x059a` (`OPTalk`, channel 0) followed by `0x0598`
+   audio bodies; playback is a claim on `0x0590` (`OPPlayBack`). Both reuse the
+   same session id and relay connection shape.
+
+Header layout confirmed from these frames: `ff 01 00 00`, session `u32` LE at 4,
+sequence `u32` LE at 8 (the app advances it by 8), channel at 12, flags at 13
+(zero on every frame above), msg id `u16` LE at 14, body length `u32` LE at 16.
+
+### 4C.22 What the same sequence does from this box, and where it stops
+
+`provider/cloud.rs` now follows 4C.21 exactly: pre-claim, open the caps reply,
+seal `CommunicateKey` with the key that reply carries, encrypted token login,
+then the `Action1:"Start"` claim. Measured outcomes on the test camera, one
+attempt per configuration:
+
+| login body | credentials | reply |
+|---|---|---|
+| plaintext, channel 99 | account `deviceToken` (44 chars) | `Ret 117` |
+| encrypted, constant key, no pre-claim | account `deviceToken` | `Ret 117` |
+| encrypted, constant key, after pre-claim, `CommunicateKey` sealed from caps | 16-char token from the app capture | `Ret 137` |
+| encrypted, constant key, after pre-claim, sealed | random 16-char token + `User-Agent` | `Ret 137` |
+| plaintext Sofia, channel 0 | device password (`secrets/device.env`) | `Ret 100`, media flows |
+
+So the framing, the cipher, the padding and the key source are now reproduced;
+what the device still rejects is the **token value**. Two facts narrow it:
+
+- `/deviceToken/get` answers a 128-character value that percent-decodes to a
+  base64 of `bd7f4c9210|686a56d64b54e0bac464932...` (35 printable bytes, two
+  pipe-separated fields of 10 and 24 characters). That is not the app's
+  16-character user token, and it is different on every call.
+- The app obtains its token locally: `ca/c.smali` calls
+  `FunSDK.DevGetLocalEncToken(serial)` before the device login, so the token is a
+  client-side derivation over data the app already has, not a network value.
+
+Next step is that function: recover `DevGetLocalEncToken` with `rea` (ghidra on
+`libFunSDK.so`, dex on `FunSDK.smali`) and reproduce the derivation in
+`dvrip::crypto`. The measured primitive stays the reference: the same relay,
+claim, start and demux path already carries media when the device accepts the
+login.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

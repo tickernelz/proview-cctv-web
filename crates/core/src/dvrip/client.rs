@@ -211,6 +211,10 @@ impl Connection {
         self.session
     }
 
+    pub fn set_session(&mut self, session: u32) {
+        self.session = session;
+    }
+
     fn next_sequence(&mut self) -> u32 {
         self.sequence = self.sequence.wrapping_add(1);
         self.sequence
