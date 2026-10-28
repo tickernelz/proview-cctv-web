@@ -101,6 +101,59 @@ async fn start_plain(dir: &Path) -> Running {
 }
 
 #[test]
+fn a_foreign_host_gets_nothing() {
+    let dir = temp_dir("host");
+    block_on(async {
+        let (running, mut restarts) = start_desktop(&dir).await;
+        let client = Client::new();
+        let authority = running.base.trim_start_matches("http://").to_string();
+        let foreign = format!(
+            "rebind.example:{}",
+            authority.rsplit(':').next().unwrap_or("80")
+        );
+
+        let refused = client
+            .post(format!("{}/api/desktop/restart", running.base))
+            .header("host", &foreign)
+            .header(HEADER, TOKEN)
+            .send()
+            .await
+            .expect("foreign host")
+            .status();
+        assert_eq!(refused, reqwest::StatusCode::FORBIDDEN);
+        assert!(restarts.try_recv().is_err(), "a foreign host restarted");
+
+        let page = client
+            .get(format!("{}/", running.base))
+            .header("host", &foreign)
+            .send()
+            .await
+            .expect("page")
+            .text()
+            .await
+            .expect("body");
+        assert!(
+            !page.contains("window.__PROVIEW_DESKTOP__"),
+            "a foreign host read the token"
+        );
+        assert!(page.contains("</html>"), "the page lost its tail");
+
+        let own = client
+            .get(format!("{}/", running.base))
+            .send()
+            .await
+            .expect("page")
+            .text()
+            .await
+            .expect("body");
+        assert!(own.contains(TOKEN), "the bound authority lost its token");
+
+        running.shutdown.notify();
+    });
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn only_the_page_token_starts_a_restart() {
     let dir = temp_dir("token");
     block_on(async {

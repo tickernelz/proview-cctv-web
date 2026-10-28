@@ -105,6 +105,10 @@ test('the desktop page restarts through the local route with its token', async (
       'the busy label',
       BUDGET,
     );
+    const deadline = Date.now() + BUDGET;
+    while (seen.length === 0 && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 50));
+    }
     assert.equal(seen.length, 1);
     assert.equal(seen[0].method, 'POST');
     assert.equal(headerValue(seen[0], 'x-proview-desktop-token'), TOKEN);

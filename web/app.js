@@ -2764,16 +2764,14 @@ el('settings-fields').addEventListener('input', () => renderSaveBar());
 el('settings-fields').addEventListener('change', () => renderSaveBar());
 el('settings-restart').addEventListener('click', async () => {
   const button = el('settings-restart');
-  const control = desktopControl();
-  if (!control) {
-    setSettingsStatus('Close the app and open it again to apply the saved fields.', true);
-    return;
-  }
   setBusy(button, true, 'Restarting…');
   try {
     await api('/api/desktop/restart', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-proview-desktop-token': control.token },
+      headers: {
+        'content-type': 'application/json',
+        'x-proview-desktop-token': desktopControl().token,
+      },
     });
   } catch (error) {
     setSettingsStatus('Could not restart: ' + error.message, true);

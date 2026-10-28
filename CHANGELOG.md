@@ -15,9 +15,11 @@ stability before 1.0.
   now posts to `POST /api/desktop/restart` with the per-run token the desktop
   shell writes into the served page (`window.__PROVIEW_DESKTOP__`), and Rust
   calls `app.restart()`; the command and its IPC registration are gone, and no
-  capability was widened to the served origin. A server build carries no token,
-  so its view still says to restart the process instead of offering a button
-  that cannot work.
+  capability was widened to the served origin. The route and the page accept
+  only the authority the shell bound (`127.0.0.1:<port>`), so a name that
+  re-binds to loopback gets a 403 and a page without the token. A server build
+  carries no token, so its view still says to restart the process instead of
+  offering a button that cannot work.
 
 ## 0.3.4 — 2026-10-28
 

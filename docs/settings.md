@@ -34,7 +34,9 @@ Settings view and returned by `GET /api/settings`.
    `POST /api/desktop/restart` with the per-run token the shell writes into the
    served page (`window.__PROVIEW_DESKTOP__`), and the shell calls `app.restart()`;
    the standalone server mounts no such route and its view says to restart the
-   process instead.
+   process instead. Both the route and the page answer only the authority the
+   shell bound (`127.0.0.1:<port>`): a request whose `Host` is anything else gets
+   a 403, and `GET /` serves the page without the token.
 3. Secret values (`PROVIEW_DEVICE_PASS`, `ROCKET_SECRET_KEY`) are never returned: the
    API reports `set: true` and `value: null`. An empty input leaves a stored secret
    alone; sending an empty string for a non-secret key clears it.

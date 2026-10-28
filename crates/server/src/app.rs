@@ -155,6 +155,7 @@ async fn serve_with_control(
     let port = reserve_port(&opts.address, opts.port);
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
     let accounts = crate::routes::cloud_bind::AccountStore::load(opts.data_dir.as_deref());
+    let control = control.map(|control| control.for_authority(format!("{}:{port}", opts.address)));
     let rig = build_with_control(
         figment(&opts, port),
         config,

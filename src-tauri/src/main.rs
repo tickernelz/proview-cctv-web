@@ -116,8 +116,10 @@ fn config_from_keychain() -> Config {
     config
 }
 
+#[cfg(feature = "restart-probe")]
 const RESTART_PROBE: &str = include_str!("restart_probe.js");
 
+#[cfg(feature = "restart-probe")]
 fn restart_probe() -> Option<std::path::PathBuf> {
     if !flag("--restart-probe") {
         return None;
@@ -147,6 +149,7 @@ fn main() {
         std::process::exit(code);
     }
 
+    #[cfg(feature = "restart-probe")]
     let probe = restart_probe();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -176,7 +179,7 @@ fn main() {
             ))?;
             let url: tauri::Url = format!("http://{}/", server.address).parse()?;
             tracing::info!(%url, "serving the local session");
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
                 .title("PROVIEW CCTV")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(880.0, 600.0)
@@ -188,13 +191,19 @@ fn main() {
                     quitting.restart();
                 }
             });
+            #[cfg(feature = "restart-probe")]
             if probe.is_some() {
-                let window = window.clone();
+                let main = app.get_webview_window("main");
                 handle.spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
                     tracing::info!("probe: driving the Restart the app button");
-                    if let Err(error) = window.eval(RESTART_PROBE) {
-                        tracing::error!(%error, "probe: the driver did not run");
+                    match main {
+                        Some(window) => {
+                            if let Err(error) = window.eval(RESTART_PROBE) {
+                                tracing::error!(%error, "probe: the driver did not run");
+                            }
+                        }
+                        None => tracing::error!("probe: no window to drive"),
                     }
                 });
             }
