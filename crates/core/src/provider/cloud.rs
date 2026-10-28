@@ -8,13 +8,12 @@ use crate::cloud::status::{self, StatusClient, STATUS_HOST};
 use crate::cloud::CloudError;
 
 const MONITOR_CLAIM_REPLY: u16 = 0x0586;
+
 use crate::config::Config;
 
 pub struct CloudProvider {
     client: EnvelopeClient,
     status: StatusClient,
-    device_user: String,
-    device_pass: String,
 }
 
 impl CloudProvider {
@@ -26,8 +25,6 @@ impl CloudProvider {
         Self {
             client: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             status: StatusClient::new(STATUS_HOST),
-            device_user: cfg.device_user.clone(),
-            device_pass: cfg.device_pass.clone(),
         }
     }
 
@@ -239,11 +236,70 @@ impl Provider for CloudProvider {
         }
         let dest = tunnel.reply.dest_ip.clone();
         let mut connection = tunnel.into_connection();
-        let login = match connection.login(&self.device_user, &self.device_pass).await {
-            Ok(ok) => format!("password login, session 0x{:08x}", ok.session),
+        let access = self.token(session)?.to_string();
+        let device_id = entry
+            .extra
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                ProviderError::Upstream(format!(
+                    "relay accepted for {dest}, the device list carries no id to request a device token for"
+                ))
+            })?;
+        let device_token = match std::env::var("PROVIEW_TOKEN_SOURCE").as_deref() {
+            Ok("mdlist") => entry
+                .extra
+                .get("deviceToken")
+                .and_then(|value| value.get("AdminToken"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, the device list carries no AdminToken"
+                    ))
+                })?,
+            _ => self
+                .client
+                .device_token(&access, device_id)
+                .await
+                .map_err(|error| {
+                    ProviderError::Upstream(format!("account device token failed: {error}"))
+                })?,
+        };
+        let device_user = entry.username.trim();
+        if device_user.is_empty() {
+            return Err({
+                ProviderError::Upstream(format!(
+                    "relay accepted for {dest}, the device list carries no username to log in with"
+                ))
+            });
+        }
+        let login = match connection
+            .login_body(serde_json::json!({
+                "EncryptType": "MD5",
+                "LoginType": "DVRIP-Web",
+                "PassWord": "",
+                "UserName": device_user,
+                "Token": device_token,
+            }))
+            .await
+        {
+            Ok(reply) => {
+                let ret = reply
+                    .get("Ret")
+                    .and_then(serde_json::Value::as_i64)
+                    .unwrap_or_default();
+                if ret != 100 {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, account device token login returned ret {ret}"
+                    )));
+                }
+                format!("account token login for {device_user}, ret {ret}")
+            }
             Err(error) => {
                 return Err(ProviderError::Upstream(format!(
-                    "relay accepted for {dest}, device login failed: {error:?}"
+                    "relay accepted for {dest}, account device token login failed: {error:?}"
                 )))
             }
         };
