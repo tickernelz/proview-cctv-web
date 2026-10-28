@@ -14,6 +14,12 @@ pub struct LiveCipher {
     key: [u8; KEY_BYTES],
 }
 
+impl std::fmt::Debug for LiveCipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LiveCipher")
+    }
+}
+
 impl LiveCipher {
     pub fn derive(material: &str) -> Option<Self> {
         let raw = material.as_bytes();
