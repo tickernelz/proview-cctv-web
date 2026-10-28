@@ -117,14 +117,19 @@ adding an answer.
 A successful ticket drops the attempt for that (device, channel), so
 `/api/live/stats` never shows a failure that a later attempt disproved.
 
-The vendor relay allows one session per device, so a walk is single-flight per
-(device, channel): a second failure for the same pair waits for the walk already
-running and then reuses its report instead of opening a second relay session.
+The vendor relay allows one session per device, and the walk no longer depends on
+the channel — it stops at the device login and never claims a monitor — so the
+walk is single-flight **per device**: a second failure for any channel of that
+device waits for the walk already running and then reuses its report instead of
+opening a second relay session. The reused report is returned with the channel
+the caller asked for; its ledger row stays per (device, channel) so
+`/api/live/stats` still lists each channel that failed.
+
 The window is 5 s (`WALK_COOLDOWN`); a reused report keeps its original `at`.
-The whole walk shares one 8 s budget (`WALK_DEADLINE`); each stage takes what is
-left of it, capped at `STAGE_LIMIT` (8 s), and a stage that outlives the budget
-reports `the walk spent its 8000 ms budget before this stage`. A wedged vendor
-therefore cannot hold `/api/stream` open past that budget.
+The whole walk shares one 8 s budget (`WALK_DEADLINE`): each stage takes what is
+left of it, and a stage that starts with nothing left reports `the walk spent its
+8000 ms budget before this stage`. A wedged vendor therefore cannot hold
+`/api/stream` open past that budget.
 
 ## 5. The walk, and what it duplicates
 
@@ -147,10 +152,13 @@ lane head, same stub and same account:
 
 | Failure | base `4d9ff07` | lane head | Walk's share |
 |---|---|---|---|
-| cloud base refused | 1.38-1.77 ms | 1.05-1.08 ms | below the noise floor, one refused socket |
-| device list without an rps id | 2.79-2.98 ms | 3.26-4.40 ms | 0.5-1.4 ms, one extra device list |
+| cloud base refused | 1.38-1.77 ms | 1.05-2.05 ms | below the noise floor, one refused socket |
+| device list without an rps id | 2.79-2.98 ms | 3.42-5.41 ms | 0.5-2.4 ms, one extra device list |
 | stub ok, vendor status silent | 1.03-2.07 s | 2.05-4.02 s | 1.0-2.0 s, the walk repeats the status query |
-| 4 parallel calls, one channel | 4 stub calls, 3.09 s wall | 5 stub calls, 4.02 s wall | exactly one walk for all four |
+| 4 parallel calls, one channel | 4 stub calls, 3.09 s wall | 5 stub calls, 4.13 s wall | exactly one walk for all four |
+
+Both columns are the same six runs per binary; the lane column is the binary at
+`ffdc902`, which is the commit this table ships with.
 
 The third row is the worst case today and it is the vendor's status query, not
 the walk's bookkeeping. The 8 s budget caps a wedged vendor below that.

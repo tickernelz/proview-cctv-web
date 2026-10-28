@@ -35,7 +35,6 @@ pub const STAGES: [&str; 8] = [
     "first_frame",
 ];
 
-const STAGE_LIMIT: Duration = Duration::from_secs(8);
 const WALK_DEADLINE: Duration = Duration::from_secs(8);
 const WALK_COOLDOWN: Duration = Duration::from_millis(5_000);
 
@@ -129,7 +128,7 @@ struct Held {
 #[derive(Default)]
 pub struct Ledger {
     entries: Mutex<HashMap<Key, Held>>,
-    gates: Mutex<HashMap<Key, Arc<AsyncMutex<()>>>>,
+    gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 }
 
 impl Ledger {
@@ -137,13 +136,13 @@ impl Ledger {
         Self::default()
     }
 
-    pub fn gate(&self, key: &Key) -> Arc<AsyncMutex<()>> {
+    pub fn gate(&self, device: &str) -> Arc<AsyncMutex<()>> {
         let mut gates = match self.gates.lock() {
             Ok(gates) => gates,
             Err(poisoned) => poisoned.into_inner(),
         };
         gates
-            .entry(key.clone())
+            .entry(device.to_string())
             .or_insert_with(|| Arc::new(AsyncMutex::new(())))
             .clone()
     }
@@ -161,8 +160,11 @@ impl Ledger {
                 attempt,
             },
         );
+        let live: std::collections::HashSet<String> =
+            entries.keys().map(|key| key.device.clone()).collect();
+        drop(entries);
         if let Ok(mut gates) = self.gates.lock() {
-            gates.retain(|held, gate| held != &key || Arc::strong_count(gate) > 1);
+            gates.retain(|device, gate| Arc::strong_count(gate) > 1 || live.contains(device));
         }
     }
 
@@ -171,23 +173,45 @@ impl Ledger {
         if let Ok(mut entries) = self.entries.lock() {
             entries.remove(&key);
         }
-        if let Ok(mut gates) = self.gates.lock() {
-            gates.remove(&key);
-        }
     }
 
-    pub fn last(&self, session: &str, key: &Key) -> Option<Attempt> {
+    pub fn last(&self, session: &str, device: &str, channel: u32) -> Option<Attempt> {
         let entries = self.entries.lock().ok()?;
-        let held = entries.get(key)?;
+        let held = entries.get(&Key::new(device, channel))?;
         if held.session != session {
             return None;
         }
         Some(held.attempt.clone())
     }
 
-    pub fn fresh(&self, session: &str, key: &Key, window: Duration) -> Option<Attempt> {
-        self.last(session, key)
-            .filter(|attempt| unix_ms().saturating_sub(attempt.at) < window.as_millis() as u64)
+    pub fn fresh(
+        &self,
+        session: &str,
+        device: &str,
+        channel: u32,
+        window: Duration,
+    ) -> Option<Attempt> {
+        let now = unix_ms();
+        let window_ms = window.as_millis() as u64;
+        let entries = self.entries.lock().ok()?;
+        entries
+            .iter()
+            .filter(|(key, held)| {
+                key.device == device
+                    && held.session == session
+                    && now.saturating_sub(held.attempt.at) < window_ms
+            })
+            .max_by_key(|(_, held)| held.attempt.at)
+            .map(|(_, held)| {
+                let mut attempt = held.attempt.clone();
+                attempt.channel = channel;
+                attempt
+            })
+    }
+
+    #[cfg(test)]
+    fn gate_count(&self) -> usize {
+        self.gates.lock().map(|gates| gates.len()).unwrap_or(0)
     }
 
     pub fn attempts(&self, session: &str) -> Vec<Attempt> {
@@ -268,12 +292,9 @@ impl<'a> Walk<'a> {
                 WALK_DEADLINE.as_millis()
             ))
         } else {
-            match timeout(left.min(STAGE_LIMIT), future).await {
+            match timeout(left, future).await {
                 Ok(outcome) => outcome,
-                Err(_) => Err(format!(
-                    "no answer within {} ms",
-                    left.min(STAGE_LIMIT).as_millis()
-                )),
+                Err(_) => Err(format!("no answer within {} ms", left.as_millis())),
             }
         };
         let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -558,10 +579,9 @@ async fn diagnose(
     channel: u32,
     high: bool,
 ) -> Attempt {
-    let key = Key::new(device, channel);
-    let gate = ledger().gate(&key);
+    let gate = ledger().gate(device);
     let _held = gate.lock().await;
-    if let Some(previous) = ledger().fresh(session, &key, WALK_COOLDOWN) {
+    if let Some(previous) = ledger().fresh(session, device, channel, WALK_COOLDOWN) {
         return previous;
     }
     let attempt = Walk::new(cfg, vendor, device, channel, high).run().await;
@@ -751,9 +771,48 @@ mod tests {
     }
 
     #[test]
+    fn the_gate_map_does_not_grow_with_every_failing_key() {
+        let ledger = Ledger::new();
+        for index in 0..50 {
+            let device = format!("cam-{index}");
+            let gate = ledger.gate(&device);
+            drop(gate);
+            ledger.record(
+                "session-a",
+                Attempt {
+                    device: device.clone(),
+                    channel: 1,
+                    at: unix_ms(),
+                    stage: Some("device_list"),
+                    detail: "refused".to_string(),
+                    elapsed_ms: 1,
+                    stages: vec![report("device_list", false)],
+                },
+            );
+            ledger.forget(&device, 1);
+        }
+        ledger.record(
+            "session-a",
+            Attempt {
+                device: "last".to_string(),
+                channel: 1,
+                at: unix_ms(),
+                stage: None,
+                detail: String::new(),
+                elapsed_ms: 0,
+                stages: Vec::new(),
+            },
+        );
+        assert!(
+            ledger.gate_count() <= 2,
+            "the gate map kept {} entries",
+            ledger.gate_count()
+        );
+    }
+
+    #[test]
     fn a_ledger_entry_belongs_to_the_session_that_made_it() {
         let ledger = Ledger::new();
-        let key = Key::new("cam", 1);
         ledger.record(
             "session-a",
             Attempt {
@@ -767,18 +826,30 @@ mod tests {
             },
         );
         assert_eq!(
-            ledger.last("session-a", &key).map(|attempt| attempt.stage),
+            ledger
+                .last("session-a", "cam", 1)
+                .map(|attempt| attempt.stage),
             Some(Some("tunnel"))
         );
-        assert!(ledger.last("session-b", &key).is_none());
+        assert!(ledger.last("session-b", "cam", 1).is_none());
         assert!(ledger
-            .fresh("session-a", &key, Duration::from_secs(30))
+            .fresh("session-a", "cam", 1, Duration::from_secs(30))
             .is_some());
-        assert!(ledger.fresh("session-a", &key, Duration::ZERO).is_none());
         assert!(ledger
-            .fresh("session-b", &key, Duration::from_secs(30))
+            .fresh("session-a", "cam", 1, Duration::ZERO)
             .is_none());
-        assert!(ledger.last("session-a", &Key::new("cam", 4)).is_none());
+        assert!(ledger
+            .fresh("session-b", "cam", 1, Duration::from_secs(30))
+            .is_none());
+        assert!(ledger.last("session-a", "cam", 4).is_none());
+        let reused = ledger
+            .fresh("session-a", "cam", 4, Duration::from_secs(30))
+            .expect("the same device answers for another channel");
+        assert_eq!(reused.channel, 4);
+        assert_eq!(reused.stage, Some("tunnel"));
+        assert!(ledger
+            .fresh("session-a", "other-cam", 1, Duration::from_secs(30))
+            .is_none());
         assert_eq!(ledger.attempts("session-a").len(), 1);
         assert!(ledger.attempts("session-b").is_empty());
         ledger.forget("cam", 1);
@@ -888,6 +959,49 @@ mod tests {
             .stages
             .iter()
             .any(|row| row.stage == "status_cluster"));
+    }
+
+    #[tokio::test]
+    async fn four_parallel_channels_of_one_device_share_a_single_walk() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let base = stub_cloud(requests.clone(), "[]").await;
+        let cfg = Config {
+            provider: ProviderKind::Proview,
+            cloud_base: base,
+            device_user: "admin".to_string(),
+            device_pass: "secret".to_string(),
+            fixture_dir: "fixtures".to_string(),
+            device_host: None,
+            device_rtsp: None,
+            device_onvif: None,
+            session_ttl_secs: 3600,
+        };
+        let session = VendorSession {
+            account: "grid@example.invalid".to_string(),
+            token: Some("token".to_string()),
+        };
+        let mut handles = Vec::new();
+        for channel in 1..=4 {
+            let cfg = cfg.clone();
+            let session = session.clone();
+            handles.push(tokio::spawn(async move {
+                diagnose(&cfg, "grid-session", &session, "grid-cam", channel, true).await
+            }));
+        }
+        let mut channels = Vec::new();
+        for handle in handles {
+            let attempt = handle.await.expect("walk task");
+            assert_eq!(attempt.device, "grid-cam");
+            assert_eq!(attempt.stage, Some("device_list"));
+            channels.push(attempt.channel);
+        }
+        assert_eq!(requests.load(AtomicOrdering::SeqCst), 1);
+        channels.sort_unstable();
+        assert_eq!(channels, vec![1, 2, 3, 4]);
+        ledger().forget("grid-cam", 1);
+        ledger().forget("grid-cam", 2);
+        ledger().forget("grid-cam", 3);
+        ledger().forget("grid-cam", 4);
     }
 
     #[tokio::test]
