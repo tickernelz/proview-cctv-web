@@ -20,6 +20,7 @@ proven and what is not.
 | Server-side session (private cookie → in-memory vendor session) | works |
 | Settings view: every server key, from the sign-in screen, saved to `settings.json` | works, saves merge, secrets never read back |
 | Desktop app (Tauri 2): Settings, mode choice, "Restart the app" | built by CI for 7 targets; launched on Linux (WebKitGTK 2.54, Xvfb) for v0.3.0, signs in and renders; live H.264 there needs the GStreamer H.264 decoder (`docs/webview-matrix.md`) |
+| Desktop alarm notifications and tray | works from the desktop process: one native system notification per new alarm (keyed by device, channel and id; survives a restart; one summary after a gap), tray with Open / Live / Quit, a single instance, close-to-tray on and minimize-to-tray off by default, all four switches in Settings; `docs/desktop-notifications.md` states what a headless box could and could not measure |
 | Web UI (v0.3.0): one camera fills the window, camera menu, lens menu, every-camera view, move pad, keyboard shortcuts (`?`), Settings as a screen | works; `DESIGN.md` |
 | DVRIP framing, login handshake, session | works, tested against the camera at `192.168.0.100` (`Ret: 100`) and a mock |
 | Annex-B NAL splitter, H.264/H.265 detection, SPS parse | works, tested |
@@ -65,8 +66,11 @@ password: fixture-password
 Configuration lives in the app. Values are written to `settings.json` in the
 data directory, each save merges into what is already stored, and a key that is
 read once at startup is marked "needs restart" in the view — the desktop build
-offers a **Restart the app** button for those, a server says to restart the
-process. Keys read per request apply as soon as they are saved.
+offers a **Restart the app** button for those and restarts the shell through
+`POST /api/desktop/restart` with the per-run token the served page carries (no
+IPC, which the loopback origin is refused; the route and the page take only the
+bound `127.0.0.1:<port>` authority), a server says to restart the process. Keys
+read per request apply as soon as they are saved.
 `docs/settings.md` lists every key, the precedence rule and the API.
 
 ## Cloud account login: the signed v3 envelope, in this repository

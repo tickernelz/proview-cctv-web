@@ -1,8 +1,11 @@
 use proview_core::config::{Config, ProviderKind};
 use proview_core::provider::{
     self, local::LocalProvider, Mode, Provider, ProviderError, ProviderSource, Router,
+    VendorSession,
 };
 use proview_core::source::RtspTarget;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 fn config(kind: ProviderKind, device_rtsp: Option<&str>) -> Config {
     Config {
@@ -214,4 +217,73 @@ async fn the_stream_ticket_names_its_source() {
         .await
         .is_err());
     assert!(local.stream(&session, "../etc", 1, true).await.is_err());
+}
+
+async fn stub_vendor(body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("stub listener");
+    let address = listener.local_addr().expect("stub address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 4096];
+                let _ = socket.read(&mut buffer).await;
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            });
+        }
+    });
+    format!("http://{address}")
+}
+
+fn session() -> VendorSession {
+    VendorSession {
+        account: "probe@example.invalid".to_string(),
+        token: Some("revoked-token".to_string()),
+    }
+}
+
+#[tokio::test]
+async fn a_revoked_cloud_token_is_expired_at_the_provider() {
+    let mut cfg = cloud_config(None);
+    cfg.cloud_base = stub_vendor(r#"{"code":-4004,"msg":"token revoked"}"#).await;
+    let provider = provider::cloud::CloudProvider::with_identity(
+        &cfg,
+        proview_core::cloud::Identity::new("probe-uuid", "probe-key", "probe-secret"),
+    );
+    let error = provider
+        .devices(&session())
+        .await
+        .expect_err("a revoked token cannot list devices");
+    assert!(
+        matches!(error, ProviderError::Expired),
+        "the route layer turns this into 401, so it must not arrive as a generic upstream failure: {error}"
+    );
+}
+
+#[tokio::test]
+async fn another_cloud_refusal_stays_an_upstream_failure() {
+    let mut cfg = cloud_config(None);
+    cfg.cloud_base = stub_vendor(r#"{"code":-1001,"msg":"device list refused"}"#).await;
+    let provider = provider::cloud::CloudProvider::with_identity(
+        &cfg,
+        proview_core::cloud::Identity::new("probe-uuid", "probe-key", "probe-secret"),
+    );
+    let error = provider
+        .devices(&session())
+        .await
+        .expect_err("a refusal cannot list devices");
+    assert!(
+        matches!(error, ProviderError::Upstream(_)),
+        "only the expired code is a lost session: {error}"
+    );
 }

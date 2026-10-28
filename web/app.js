@@ -400,9 +400,16 @@ async function signedIn() {
   state.signedIn = true;
   state.account = me.account || null;
   el('account').textContent = state.account || 'Signed in';
-  showScreen('watch');
+  if (state.screen !== 'settings') {
+    showScreen('watch');
+  }
   await loadMode();
   await loadDevices();
+  if (state.screen === 'settings') {
+    stopAll();
+    renderSettingsChrome();
+    return;
+  }
   route(location.hash, false);
 }
 
@@ -1026,6 +1033,7 @@ class StreamPlayer {
     this.stalled = false;
     this.metadataTimer = null;
     this.announced = false;
+    this.onMetadata = null;
   }
 
   expectFirstFrame() {
@@ -1036,6 +1044,7 @@ class StreamPlayer {
         return;
       }
       this.announced = true;
+      this.onMetadata = null;
       if (this.metadataTimer) {
         window.clearTimeout(this.metadataTimer);
         this.metadataTimer = null;
@@ -1047,6 +1056,7 @@ class StreamPlayer {
       announce();
       return;
     }
+    this.onMetadata = announce;
     video.addEventListener('loadedmetadata', announce, { once: true });
     this.metadataTimer = window.setTimeout(() => {
       if (!this.announced) {
@@ -1097,6 +1107,10 @@ class StreamPlayer {
 
   destroy() {
     this.stopWatchdog();
+    if (this.onMetadata) {
+      this.video.removeEventListener('loadedmetadata', this.onMetadata);
+      this.onMetadata = null;
+    }
     if (this.metadataTimer) {
       window.clearTimeout(this.metadataTimer);
       this.metadataTimer = null;
@@ -1176,6 +1190,9 @@ class StreamPlayer {
     video.src = this.url;
 
     media.addEventListener('sourceopen', () => {
+      if (this.media !== media) {
+        return;
+      }
       let buffer;
       try {
         buffer = media.addSourceBuffer(MEDIA_SOURCE_TYPE);
@@ -1920,15 +1937,19 @@ async function requestStream() {
   if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
     return;
   }
+  const previous = state.players.get('stage');
+  if (previous) {
+    previous.destroy();
+    state.players.delete('stage');
+  }
   const player = stagePlayer();
-  player.destroy();
   state.ticket = null;
   setStage('loading');
   try {
     const ticket = await api(
       '/api/stream?device=' + enc(camera.device.id) + '&channel=' + enc(camera.channel) + '&quality=' + enc(state.prefs.quality),
     );
-    if (currentCamera() !== camera) {
+    if (currentCamera() !== camera || state.players.get('stage') !== player) {
       return;
     }
     state.ticket = ticket;
@@ -2263,14 +2284,42 @@ function setSettingsStatus(message, bad = false) {
   box.classList.toggle('warn-text', bad);
 }
 
-function renderSettings(view) {
+function settingsCaret() {
+  const active = document.activeElement;
+  if (!active || !active.dataset || !active.dataset.key || !active.closest('#settings-fields')) {
+    return null;
+  }
+  const caret =
+    typeof active.selectionStart === 'number' ? { start: active.selectionStart, end: active.selectionEnd } : null;
+  return { key: active.dataset.key, caret };
+}
+
+function restoreSettingsCaret(focus) {
+  const input = document.querySelector('#settings-fields [data-key="' + focus.key + '"]');
+  if (!input) {
+    return;
+  }
+  input.focus();
+  if (!focus.caret) {
+    return;
+  }
+  try {
+    input.setSelectionRange(focus.caret.start, focus.caret.end);
+  } catch {}
+}
+
+function renderSettings(view, options = {}) {
   settingsView = view;
   const host = el('settings-fields');
+  const typed = options.reset ? new Map() : new Map(Object.entries(settingsPayload()));
+  const focus = options.reset ? null : settingsCaret();
   host.replaceChildren();
   settingsInitial = new Map();
   settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
+  const inDesktop = Boolean(window.__TAURI__);
   const groups = new Map();
   for (const field of view.fields) {
+    if (field.group === 'Desktop' && !inDesktop) continue;
     if (!groups.has(field.group)) groups.set(field.group, []);
     groups.get(field.group).push(field);
   }
@@ -2279,6 +2328,37 @@ function renderSettings(view) {
     for (const field of fields) {
       const id = settingsInputId(field.key);
       const row = make('div', 'row');
+      if (field.kind === 'toggle') {
+        const label = make('div', 'lab', field.label);
+        if (field.hint) {
+          const hint = make('span', 'hint', field.hint);
+          hint.style.display = 'block';
+          label.append(hint);
+        }
+        const box = make('label', 'switchrow');
+        const box_input = make('input', '');
+        box_input.type = 'checkbox';
+        box_input.id = id;
+        box_input.dataset.key = field.key;
+        box_input.dataset.secret = 'false';
+        box_input.checked = (field.value || field.default || 'off') === 'on';
+        const state = make('span', '', box_input.checked ? 'On' : 'Off');
+        box_input.addEventListener('change', () => {
+          state.textContent = box_input.checked ? 'On' : 'Off';
+          renderSaveBar();
+        });
+        box.append(box_input, state);
+        const column = make('div', 'ctl-col');
+        column.append(box);
+        row.append(label, column);
+        host.append(row);
+        settingsInitial.set(field.key, {
+          secret: false,
+          set: field.set,
+          value: box_input.checked ? 'on' : 'off',
+        });
+        continue;
+      }
       const label = make('label', 'lab', field.label);
       label.setAttribute('for', id);
       if (field.restart) {
@@ -2303,6 +2383,11 @@ function renderSettings(view) {
       } else {
         input = make('input', 'text-input' + (field.kind !== 'secret' && MONO_KEY.test(field.key) ? ' mono-input' : ''));
         input.type = field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text';
+        if (field.kind === 'number') {
+          if (field.min !== null && field.min !== undefined) input.min = String(field.min);
+          if (field.max !== null && field.max !== undefined) input.max = String(field.max);
+          if (field.default) input.placeholder = field.default;
+        }
         if (field.kind === 'secret') {
           input.placeholder = field.set ? 'stored, type to replace' : 'not set';
           input.autocomplete = 'new-password';
@@ -2321,6 +2406,15 @@ function renderSettings(view) {
       settingsInitial.set(field.key, { secret: field.secret, set: field.set, value: input.value });
     }
   }
+  for (const [key, value] of typed) {
+    const input = host.querySelector('[data-key="' + key + '"]');
+    if (input) {
+      input.value = value;
+    }
+  }
+  if (focus) {
+    restoreSettingsCaret(focus);
+  }
   renderSaveBar();
 }
 
@@ -2330,16 +2424,22 @@ function settingsPayload() {
     const key = input.dataset.key;
     const secret = input.dataset.secret === 'true';
     const initial = settingsInitial.get(key) || { secret, set: false, value: '' };
-    if (secret && input.value === '') continue;
-    if (!secret && input.value === initial.value) continue;
-    payload[key] = input.value;
+    const value = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value;
+    if (secret && value === '') continue;
+    if (!secret && value === initial.value) continue;
+    payload[key] = value;
   }
   return payload;
 }
 
+function desktopControl() {
+  const control = window.__PROVIEW_DESKTOP__;
+  return control && typeof control.token === 'string' && control.token ? control : null;
+}
+
 function renderSaveBar() {
   const changed = Object.keys(settingsPayload()).length;
-  const restart = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
+  const restart = Boolean(desktopControl());
   el('settings-discard').hidden = changed === 0;
   el('settings-save').hidden = changed === 0;
   el('settings-restart').hidden = !(changed === 0 && pendingRestart > 0 && restart);
@@ -2399,7 +2499,7 @@ async function saveSettings() {
   try {
     const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
     pendingRestart += keys.filter((key) => settingsRestartKeys.has(key)).length;
-    renderSettings(view);
+    renderSettings(view, { reset: true });
     setSettingsStatus('Saved ' + keys.length + ' field' + (keys.length === 1 ? '' : 's') + ' to ' + (view.path || 'this run') + '.');
   } catch (error) {
     setSettingsStatus('Could not save: ' + error.message, true);
@@ -2433,15 +2533,19 @@ function showSection(name, focus) {
   }
 }
 
-function openSettings(section, options = {}) {
-  stopAll();
-  showScreen('settings');
+function renderSettingsChrome() {
   el('settings-back-label').textContent = state.signedIn ? 'Live' : 'Sign in';
-  showSection(section || state.section, options.focus);
-  renderPrefsIntoForm();
   renderMode();
   renderCameraInfo();
   renderControlAvailability();
+}
+
+function openSettings(section, options = {}) {
+  stopAll();
+  showScreen('settings');
+  showSection(section || state.section, options.focus);
+  renderPrefsIntoForm();
+  renderSettingsChrome();
   loadSettings();
   if (!options.focus) {
     el('settings-back').focus();
@@ -2741,6 +2845,9 @@ el('signout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST' });
   } catch {}
   state.stage.lastFrameAt = 0;
+  if (settingsView) {
+    renderSettings(settingsView, { reset: true });
+  }
   showSignin();
   await loadMode();
 });
@@ -2752,7 +2859,7 @@ el('settings-back').addEventListener('click', () => leaveSettings());
 el('settings-save').addEventListener('click', () => saveSettings());
 el('settings-discard').addEventListener('click', () => {
   if (settingsView) {
-    renderSettings(settingsView);
+    renderSettings(settingsView, { reset: true });
   }
 });
 el('settings-fields').addEventListener('input', () => renderSaveBar());
@@ -2761,7 +2868,13 @@ el('settings-restart').addEventListener('click', async () => {
   const button = el('settings-restart');
   setBusy(button, true, 'Restarting…');
   try {
-    await window.__TAURI__.core.invoke('restart_app');
+    await api('/api/desktop/restart', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-proview-desktop-token': desktopControl().token,
+      },
+    });
   } catch (error) {
     setSettingsStatus('Could not restart: ' + error.message, true);
     setBusy(button, false, '');
@@ -2949,6 +3062,13 @@ if (typeof ResizeObserver === 'function') {
 document.addEventListener('fullscreenchange', () => {
   layoutLensCrop();
   renderFsLine();
+});
+
+window.addEventListener('desktop-live', () => {
+  if (state.signedIn) {
+    showScreen('watch');
+    setView('live');
+  }
 });
 
 state.muted = state.prefs.muted;

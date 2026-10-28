@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Native desktop shell for PROVIEW CCTV"
 
+[features]
+restart-probe = []
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -13,7 +16,9 @@ tauri-build = { version = "2", features = [] }
 proview-core = { path = "../crates/core" }
 proview-server = { path = "../crates/server" }
 keyring.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
 tokio.workspace = true
 rand.workspace = true
 tracing.workspace = true
@@ -21,3 +26,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 serde.workspace = true
 serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8"

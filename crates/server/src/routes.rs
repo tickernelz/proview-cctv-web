@@ -104,8 +104,14 @@ pub fn live() -> Vec<rocket::route::Route> {
 }
 
 #[get("/")]
-fn index() -> RawHtml<&'static str> {
-    RawHtml(include_str!("../../../web/index.html"))
+fn index(
+    control: &State<Option<crate::desktop::DesktopControl>>,
+    host: crate::desktop::PageHost,
+) -> RawHtml<&'static str> {
+    RawHtml(match control.inner().as_ref() {
+        Some(control) if control.serves(&host.0) => control.page(),
+        _ => crate::desktop::INDEX,
+    })
 }
 
 #[get("/app.js")]

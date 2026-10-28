@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 use rocket::http::Status;
 use rocket::serde::json::Json;
@@ -268,7 +268,64 @@ pub const FIELDS: &[Field] = &[
         "Only for a build made from source without a baked cloud identity; release builds carry one.",
         false,
     ),
+    field(
+        "PROVIEW_DESKTOP_ALARM_NOTIFY",
+        "Alarm notifications",
+        "Desktop",
+        Kind::Toggle,
+        &[],
+        "Raise one system notification per new alarm while the desktop app is running.",
+        false,
+    ),
+    field(
+        "PROVIEW_DESKTOP_ALARM_INTERVAL",
+        "Alarm check interval",
+        "Desktop",
+        Kind::Number,
+        &[],
+        "Seconds between alarm checks while the desktop app runs, 15 to 3600; 60 when empty.",
+        false,
+    ),
+    field(
+        "PROVIEW_DESKTOP_CLOSE_TO_TRAY",
+        "Keep running when the window closes",
+        "Desktop",
+        Kind::Toggle,
+        &[],
+        "Closing the window leaves the app in the system tray instead of quitting it.",
+        false,
+    ),
+    field(
+        "PROVIEW_DESKTOP_MINIMIZE_TO_TRAY",
+        "Hide to tray when minimized",
+        "Desktop",
+        Kind::Toggle,
+        &[],
+        "Minimizing takes the window off the taskbar and leaves the tray icon.",
+        false,
+    ),
 ];
+
+pub fn default_of(key: &str) -> Option<&'static str> {
+    match key {
+        "PROVIEW_DESKTOP_ALARM_NOTIFY" => Some("off"),
+        "PROVIEW_DESKTOP_ALARM_INTERVAL" => Some("60"),
+        "PROVIEW_DESKTOP_CLOSE_TO_TRAY" => Some("on"),
+        "PROVIEW_DESKTOP_MINIMIZE_TO_TRAY" => Some("off"),
+        _ => None,
+    }
+}
+
+pub fn bounds_of(key: &str) -> Option<(u64, u64)> {
+    match key {
+        "PROVIEW_DESKTOP_ALARM_INTERVAL" => Some((15, 3600)),
+        _ => None,
+    }
+}
+
+fn exports_env(key: &str) -> bool {
+    !key.starts_with("PROVIEW_DESKTOP_")
+}
 
 pub fn field_for(key: &str) -> Option<&'static Field> {
     FIELDS.iter().find(|field| field.key == key)
@@ -293,6 +350,9 @@ pub struct FieldView {
     pub secret: bool,
     pub set: bool,
     pub value: Option<String>,
+    pub default: Option<String>,
+    pub min: Option<u64>,
+    pub max: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -302,11 +362,11 @@ pub struct SettingsView {
     pub fields: Vec<FieldView>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SettingsStore {
     path: Option<PathBuf>,
-    values: RwLock<BTreeMap<String, String>>,
-    grid: RwLock<Option<serde_json::Value>>,
+    values: Arc<RwLock<BTreeMap<String, String>>>,
+    grid: Arc<RwLock<Option<serde_json::Value>>>,
 }
 
 impl SettingsStore {
@@ -325,9 +385,18 @@ impl SettingsStore {
             .unwrap_or_default();
         Self {
             path,
-            values: RwLock::new(file.values),
-            grid: RwLock::new(file.grid),
+            values: Arc::new(RwLock::new(file.values)),
+            grid: Arc::new(RwLock::new(file.grid)),
         }
+    }
+
+    pub fn value(&self, key: &str) -> Option<String> {
+        let values = self.values.read().expect("settings lock");
+        values
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
     }
 
     pub fn grid_spec(&self) -> crate::routes::grid::GridSpec {
@@ -374,7 +443,7 @@ impl SettingsStore {
     pub fn apply_env(&self) {
         let values = self.values.read().expect("settings lock");
         for (key, value) in values.iter() {
-            if value.trim().is_empty() || field_for(key).is_none() {
+            if value.trim().is_empty() || field_for(key).is_none() || !exports_env(key) {
                 continue;
             }
             if env::var_os(key).is_none() {
@@ -420,6 +489,9 @@ impl SettingsStore {
                     secret,
                     set: is_set,
                     value,
+                    default: default_of(field.key).map(str::to_string),
+                    min: bounds_of(field.key).map(|(low, _)| low),
+                    max: bounds_of(field.key).map(|(_, high)| high),
                 }
             })
             .collect();
@@ -441,9 +513,17 @@ impl SettingsStore {
             }
             match field.kind {
                 Kind::Number => {
-                    trimmed
+                    let number = trimmed
                         .parse::<u64>()
                         .map_err(|_| format!("{} expects a whole number", field.label))?;
+                    if let Some((low, high)) = bounds_of(key) {
+                        if number < low || number > high {
+                            return Err(format!(
+                                "{} must be between {low} and {high}",
+                                field.label
+                            ));
+                        }
+                    }
                 }
                 Kind::Select if !field.options.contains(&trimmed) => {
                     return Err(format!(
@@ -451,6 +531,9 @@ impl SettingsStore {
                         field.label,
                         field.options.join(", ")
                     ));
+                }
+                Kind::Toggle if trimmed != "on" && trimmed != "off" => {
+                    return Err(format!("{} is either on or off", field.label));
                 }
                 _ => {}
             }
@@ -465,12 +548,14 @@ impl SettingsStore {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 next.remove(&key);
-                if env::var_os(&key).is_some() {
+                if exports_env(&key) && env::var_os(&key).is_some() {
                     env::remove_var(&key);
                 }
             } else {
                 next.insert(key.clone(), trimmed.to_string());
-                env::set_var(&key, trimmed);
+                if exports_env(&key) {
+                    env::set_var(&key, trimmed);
+                }
             }
         }
         self.persist(&next, grid.as_ref())?;
@@ -679,6 +764,86 @@ mod tests {
             .expect("ffmpeg field");
         assert!(!field.set);
         env::remove_var("PROVIEW_FFMPEG");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_desktop_keys_carry_a_group_and_a_default() {
+        for key in [
+            "PROVIEW_DESKTOP_ALARM_NOTIFY",
+            "PROVIEW_DESKTOP_ALARM_INTERVAL",
+            "PROVIEW_DESKTOP_CLOSE_TO_TRAY",
+            "PROVIEW_DESKTOP_MINIMIZE_TO_TRAY",
+        ] {
+            let field = field_for(key).expect(key);
+            assert_eq!(field.group, "Desktop", "{key}");
+            assert!(default_of(key).is_some(), "{key} needs a default");
+        }
+        assert_eq!(default_of("PROVIEW_DESKTOP_CLOSE_TO_TRAY"), Some("on"));
+        assert_eq!(default_of("PROVIEW_DESKTOP_MINIMIZE_TO_TRAY"), Some("off"));
+        assert_eq!(default_of("PROVIEW_DESKTOP_ALARM_INTERVAL"), Some("60"));
+        assert_eq!(default_of("PROVIEW_DESKTOP_ALARM_NOTIFY"), Some("off"));
+    }
+
+    #[test]
+    fn desktop_toggles_take_on_or_off_and_the_interval_stays_in_range() {
+        let (store, dir) = temp_store("desktop");
+        let mut bad_toggle = BTreeMap::new();
+        bad_toggle.insert(
+            "PROVIEW_DESKTOP_CLOSE_TO_TRAY".to_string(),
+            "maybe".to_string(),
+        );
+        assert!(store.update(bad_toggle).is_err());
+        let mut too_fast = BTreeMap::new();
+        too_fast.insert(
+            "PROVIEW_DESKTOP_ALARM_INTERVAL".to_string(),
+            "2".to_string(),
+        );
+        assert!(store.update(too_fast).is_err());
+        let mut too_slow = BTreeMap::new();
+        too_slow.insert(
+            "PROVIEW_DESKTOP_ALARM_INTERVAL".to_string(),
+            "99999".to_string(),
+        );
+        assert!(store.update(too_slow).is_err());
+        let mut good = BTreeMap::new();
+        good.insert("PROVIEW_DESKTOP_ALARM_NOTIFY".to_string(), "on".to_string());
+        good.insert(
+            "PROVIEW_DESKTOP_ALARM_INTERVAL".to_string(),
+            "90".to_string(),
+        );
+        store.update(good).expect("the desktop values save");
+        assert_eq!(
+            store.value("PROVIEW_DESKTOP_ALARM_NOTIFY").as_deref(),
+            Some("on")
+        );
+        assert_eq!(
+            store.value("PROVIEW_DESKTOP_ALARM_INTERVAL").as_deref(),
+            Some("90")
+        );
+        let view = store.view();
+        let interval = view
+            .fields
+            .iter()
+            .find(|field| field.key == "PROVIEW_DESKTOP_ALARM_INTERVAL")
+            .expect("interval field");
+        assert_eq!(interval.min, Some(15));
+        assert_eq!(interval.max, Some(3600));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_clone_reads_the_same_values_as_the_original() {
+        let (store, dir) = temp_store("clone");
+        let shared = store.clone();
+        let mut values = BTreeMap::new();
+        values.insert("PROVIEW_DESKTOP_ALARM_NOTIFY".to_string(), "on".to_string());
+        store.update(values).expect("update");
+        assert_eq!(
+            shared.value("PROVIEW_DESKTOP_ALARM_NOTIFY").as_deref(),
+            Some("on"),
+            "the desktop shell holds a clone of the store the server writes"
+        );
         let _ = fs::remove_dir_all(dir);
     }
 

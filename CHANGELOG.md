@@ -5,6 +5,122 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- Desktop alarm notifications and the tray. The desktop process polls the alarm
+  centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
+  native system notification per new alarm — device, event and time — so the
+  alarm arrives with the window minimized or closed to the tray. An alarm is
+  keyed by device serial, channel and id, since an id is a one-second local
+  timestamp that two cameras or two channels can share. What was announced is
+  kept in `desktop-state.json` and expired by the age of the alarm, never by the
+  number of entries, so an id cannot fall off a list and come back; an alarm
+  older than the requested window is ignored whether or not it was announced, so
+  the centre returning one again cannot re-post it. A run — the process starting
+  with notifications on, or the switch turning on — treats what arrived before
+  its first **successful** check as history and posts one summary instead of a
+  toast per missed alarm; a check that fails before the window has signed in
+  does not count, and a fresh install's baseline mark is saved even when that
+  pass found nothing. A click focuses the window and opens that alarm in the
+  Alarm messages sheet where the platform reports clicks, and a click on the
+  summary opens the sheet with no alarm marked. The tray carries Open, Live and
+  Quit; a left click on it focuses the window, and a second launch focuses the
+  running window instead of starting a second server. Closing the window keeps
+  the app running (default), minimizing hides it (off by default), a macOS Dock
+  click brings it back, and the first close announces once that the app is still
+  in the tray. A tray that cannot be built — including a Linux box without the
+  AppIndicator library — turns both behaviours off rather than hiding a window
+  with no way back. Four new keys, `PROVIEW_DESKTOP_ALARM_NOTIFY`,
+  `PROVIEW_DESKTOP_ALARM_INTERVAL`, `PROVIEW_DESKTOP_CLOSE_TO_TRAY` and
+  `PROVIEW_DESKTOP_MINIMIZE_TO_TRAY`, sit under Settings → Configuration →
+  Desktop, are read by the shell, never exported into the environment, and stay
+  out of the page on a self-hosted server.
+- `docs/desktop-notifications.md` records what a headless box measured (the
+  watcher, dedupe, catch-up and floor tests, the app posting and the page
+  receiving its event under Xvfb) and what it could not (a notification or a
+  click seen on Windows, macOS or a real Linux desktop, and cost per check on a
+  real account).
+
+### Changed
+
+- The desktop shell hands events to the page through `WebviewWindow::eval` and a
+  DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
+  remote origin and a capability only covers the local one, so `event.listen`
+  was refused and a click never reached the sheet. The app therefore ships no
+  capability file at all.
+- The FCM row of `docs/parity.md` is `not needed` for the desktop build: the
+  native notification path replaces the vendor push, which stays relevant only to
+  a mobile build registered in the vendor Firebase project. The local
+  notification row names the desktop process as the main path and the browser
+  Notification API as the web fallback.
+
+### Fixed
+
+- A vendor token the cloud revokes is reported as a session that ended instead of
+  a cloud failure. The device list answered code `-4004` as a plain rejection
+  (`session expired; sign in again`), so the desktop watcher logged it at warn and
+  never posted its pause notification, while a route that reads the device list
+  answered `502` on the provider path and `400` on the routes that call the client
+  themselves. `msdlistCode` now yields `CloudError::Expired`, the variant `refresh`
+  already returned, and every route that reads the device list answers `401`:
+  `GET /api/devices`, `GET /api/cloud-path`, `GET /api/recordings` and
+  `GET /api/stream` where those answered `502`, and
+  `GET /api/cloud/device-attributes`, `GET /api/cloud/alarms` and its picture
+  route where those answered `400`. A live attempt on `GET /api/stream` now stops
+  at that error instead of running the diagnostic walk, so its failure body carries
+  no `stage`, `detail`, `elapsed_ms` or `stages`. The watcher reads the check as
+  `AlarmReadError::SignedOut` and posts the same single pause notification per
+  span. The vendor token is a 30-day JWT, so the path is reached only when the
+  cloud revokes it before the hour-long session store expires.
+- A desktop alarm check that loses the session no longer goes quiet. The shared
+  session expires `PROVIEW_SESSION_TTL` seconds after sign-in (an hour by
+  default) and reading it does not renew it, so an app kept in the tray stopped
+  checking with one debug line and nothing else. Once a check has succeeded, the
+  first later check whose error says the session is gone posts one *Alarm
+  notifications paused — open PROVIEW and sign in* notification and logs at warn,
+  once per span; the next successful check re-arms it, and a launch that has not
+  checked successfully yet announces nothing, because the session store is empty
+  at every start. A recovery after two failed checks in a row summarizes the gap
+  in one notification instead of replaying the backlog alarm by alarm, while a
+  single missed check still toasts; the rule counts checks rather than seconds,
+  so timer jitter cannot flip it. The remembered
+  window and the device cache now belong to the signed-in account, so an account
+  switch drops both and starts the run over, and an empty first pass reports a
+  state change so the baseline mark is saved by the watcher rather than only by
+  a direct `save()`.
+- The desktop **Restart the app** button restarts the app again. The window is
+  served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
+  the `restart_app` IPC command was refused and the button did nothing. The page
+  now posts to `POST /api/desktop/restart` with the per-run token the desktop
+  shell writes into the served page (`window.__PROVIEW_DESKTOP__`), and Rust
+  calls `app.restart()`; the command and its IPC registration are gone, and no
+  capability was widened to the served origin. The route and the page accept
+  only the authority the shell bound (`127.0.0.1:<port>`), so a name that
+  re-binds to loopback gets a 403 and a page without the token. A server build
+  carries no token, so its view still says to restart the process instead of
+  offering a button that cannot work.
+- Opening **Settings** while the boot request for the live stream is still
+  waiting no longer leaves a player behind. `requestStream` held the player it
+  built across the `await /api/stream`, so the `stopAll()` from the Settings
+  screen destroyed it and removed it from `state.players`, and the reply still
+  called `player.play()`: a `/ws/live` socket opened with nothing left in the
+  app able to close it, and the ticket it stored described a camera no screen
+  was showing. Every request now builds its own stage player (the one it
+  replaces is destroyed and unregistered first), so a reply is dropped when the
+  stage no longer owns the player it belongs to; that also covers two quality
+  switches whose replies land out of order, where the older reply used to keep
+  an unowned `/ws/live` socket alive and, in the other order, overwrite the
+  ticket with the quality the user had already left. A `sourceopen` that
+  arrives after `destroy()` opens no socket at all. A player replaced before
+  its first frame now takes its `loadedmetadata` listener with it, so the
+  watchdog it would have started on that event cannot outlive it and report
+  `stalled` on a later load that has not shown a frame yet.
+  `tests/web/stream-orphan.test.mjs` covers the Settings case, the late
+  `sourceopen`, both overlap orders and the replaced player; it fails on
+  6c70754 and passes after this change.
+
 ## 0.3.4 — 2026-10-28
 
 ### Added

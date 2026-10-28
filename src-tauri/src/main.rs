@@ -1,14 +1,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod desktop_settings;
+mod desktop_state;
 mod keychain;
+mod notify;
+mod shell;
+mod tray;
+mod watcher;
+
+use std::sync::Arc;
 
 use proview_core::config::Config;
+use proview_server::settings::SettingsStore;
 use proview_server::ServeOptions;
 use rand::RngCore;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tracing_subscriber::prelude::*;
 
 use crate::keychain::{Credentials, OsKeychain, SecretStore};
+use crate::shell::DesktopShell;
 
 fn init_log(dir: Option<&std::path::Path>) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -116,9 +126,27 @@ fn config_from_keychain() -> Config {
     config
 }
 
-#[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+#[cfg(feature = "restart-probe")]
+const RESTART_PROBE: &str = include_str!("restart_probe.js");
+
+#[cfg(feature = "restart-probe")]
+fn restart_probe() -> Option<std::path::PathBuf> {
+    if !flag("--restart-probe") {
+        return None;
+    }
+    let marker = std::env::var("PROVIEW_RESTART_PROBE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("proview-restart-probe.marker"));
+    if marker.exists() {
+        let _ = std::fs::remove_file(&marker);
+        println!("restart probe: the app came back, app.restart() ran");
+        std::process::exit(0);
+    }
+    match std::fs::write(&marker, std::process::id().to_string()) {
+        Ok(()) => println!("restart probe: marker {} written", marker.display()),
+        Err(error) => eprintln!("restart probe: no marker at {}: {error}", marker.display()),
+    }
+    Some(marker)
 }
 
 fn main() {
@@ -131,6 +159,9 @@ fn main() {
         std::process::exit(code);
     }
 
+    #[cfg(feature = "restart-probe")]
+    let probe = restart_probe();
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -138,21 +169,31 @@ fn main() {
     let handle = runtime.handle().clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tray::focus_main(app);
+        }))
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let data_dir = app.path().app_data_dir().ok();
             init_log(data_dir.as_deref());
             tracing::info!(data = ?data_dir, version = env!("CARGO_PKG_VERSION"), "starting");
-            let settings = proview_server::settings::SettingsStore::load(data_dir.as_deref());
+            let settings = SettingsStore::load(data_dir.as_deref());
             settings.apply_env();
             let config = config_from_keychain();
             let options = ServeOptions {
                 address: "127.0.0.1".to_string(),
                 port: 0,
                 secret_key: Some(local_secret()),
-                data_dir,
+                data_dir: data_dir.clone(),
             };
-            let server =
-                handle.block_on(proview_server::serve_with_state(options, config, settings))?;
+            let (control, mut restarts) =
+                proview_server::desktop::DesktopControl::new(local_secret());
+            let (server, sessions) = handle.block_on(proview_server::serve_desktop_shared(
+                options,
+                config,
+                settings.clone(),
+                control,
+            ))?;
             let url: tauri::Url = format!("http://{}/", server.address).parse()?;
             tracing::info!(%url, "serving the local session");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
@@ -160,11 +201,127 @@ fn main() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(880.0, 600.0)
                 .build()?;
+            let quitting = app.handle().clone();
+            handle.spawn(async move {
+                if restarts.recv().await.is_some() {
+                    tracing::info!("the page asked for a restart");
+                    quitting.restart();
+                }
+            });
+            let state_path = data_dir.map(|dir| dir.join("desktop-state.json"));
+            let shell = Arc::new(DesktopShell::new(settings, state_path));
+            match notify::install(app.handle()) {
+                Ok(()) => tracing::info!("notification clicks are wired to the window"),
+                Err(error) => tracing::warn!(%error, "notifications are unavailable"),
+            }
+            match tray::install(app.handle()) {
+                Ok(()) => shell.set_tray_ready(true),
+                Err(reason) => {
+                    tracing::warn!(%reason, "no system tray; the window closes normally")
+                }
+            }
+            app.manage(shell.clone());
+            watcher::spawn(&handle, app.handle().clone(), sessions, shell);
+            #[cfg(feature = "restart-probe")]
+            if probe.is_some() {
+                let main = app.get_webview_window("main");
+                handle.spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    tracing::info!("probe: driving the Restart the app button");
+                    match main {
+                        Some(window) => {
+                            if let Err(error) = window.eval(RESTART_PROBE) {
+                                tracing::error!(%error, "probe: the driver did not run");
+                            }
+                        }
+                        None => tracing::error!("probe: no window to drive"),
+                    }
+                });
+            }
+            if flag("--notify-probe") {
+                let app = app.handle().clone();
+                notify::post_message(&app, "PROVIEW CCTV", "Notification probe");
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    app.exit(0);
+                });
+            }
+            if flag("--event-probe") {
+                let app = app.handle().clone();
+                std::thread::spawn(move || probe_page(&app));
+            }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![restart_app])
-        .run(tauri::generate_context!())
-        .expect("tauri application");
+        .on_window_event(|window, event| {
+            let Some(state) = window.try_state::<Arc<DesktopShell>>() else {
+                return;
+            };
+            let shell = state.inner().clone();
+            let settings = shell.current();
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if settings.close_to_tray && shell.tray_ready() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        tray::hint_once(window.app_handle(), &shell);
+                    }
+                }
+                WindowEvent::Resized(_)
+                    if settings.minimize_to_tray
+                        && shell.tray_ready()
+                        && window.is_minimized().unwrap_or(false) =>
+                {
+                    let _ = window.hide();
+                }
+                _ => {}
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                tray::focus_main(app);
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = (app, event);
+            }
+        });
 
     runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+}
+
+fn probe_page(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    let armed = window.eval(
+        "window.__proviewProbe = 'none'; window.addEventListener('desktop-alarm', (event) => { window.__proviewProbe = event.detail && event.detail.id ? 'seen:' + event.detail.id : 'seen:no-id'; });",
+    );
+    if let Err(error) = armed {
+        tracing::warn!(%error, "the page did not accept the probe listener");
+        return;
+    }
+    let alarm = proview_server::desktop_alarms::DesktopAlarm {
+        id: "probe".to_string(),
+        serial: "PROBE0001".to_string(),
+        channel: "0".to_string(),
+        device: "Probe camera".to_string(),
+        event: "Probe".to_string(),
+        time: "2026-10-28 00:00:00".to_string(),
+        utc_time: 0,
+    };
+    crate::notify::dispatch(app, crate::notify::ALARM_EVENT, &alarm);
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let _ = window.eval(
+        "location.hash = '#proview-probe-' + window.__proviewProbe + '-tauri-' + (typeof window.__TAURI__);",
+    );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    match window.url() {
+        Ok(url) => tracing::info!(%url, "event probe finished"),
+        Err(error) => tracing::warn!(%error, "the page address could not be read"),
+    }
+    app.exit(0);
 }
