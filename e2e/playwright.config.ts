@@ -20,7 +20,17 @@ export default defineConfig({
     reducedMotion: 'reduce',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
-    { name: 'webkit', use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } } },
+    { name: 'chromium', testIgnore: /touch\.spec/, use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    { name: 'webkit', testIgnore: /touch\.spec/, use: { ...devices['Desktop Safari'], viewport: { width: 1440, height: 900 } } },
+    {
+      name: 'mobile',
+      testMatch: /touch\.spec/,
+      use: { ...devices['Pixel 7'], viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 },
+    },
+    {
+      name: 'tablet',
+      testMatch: /touch\.spec/,
+      use: { ...devices['Desktop Chrome'], viewport: { width: 768, height: 1024 }, isMobile: true, hasTouch: true },
+    },
   ],
 })

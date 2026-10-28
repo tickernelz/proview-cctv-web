@@ -380,11 +380,24 @@ them, the same bytes are unreadable: `ffprobe -f hevc` answers `hevc,0,0,N/A`
 with "missing picture in access unit with size 70906", so the conversion is what
 makes the artifact verify, not decoration.
 
-## e2e suite (measured 2026-10-28, ZHA-4181)
+## Web bundle and e2e suite (measured 2026-10-28, ZHA-4181)
 
-Same 84 tests (36 functional + 48 screenshots, Chromium + WebKit), 2 workers,
-retry 1, `mcr.microsoft.com/playwright:v1.64.1-noble`, fixture servers
-restarted before each cold run, three rounds:
+Bundle: `npm run build` in `apps/web`, then `gzip -9c <file> | wc -c` per file.
+Baseline is origin/main 6405caf; v2 is the redesign commit 89976a1 (lucide
+sprite, tokens v2, no injected stylesheets).
+
+| File | main 6405caf | v2 89976a1 | Delta | Budget |
+|---|---:|---:|---:|---:|
+| JS (one hashed chunk) | 40,396 B | 39,133 B | -1,263 B | +80 KB |
+| CSS (one hashed file) | 5,450 B | 6,792 B | +1,342 B | +20 KB |
+| index.html (inline sprite) | 6,336 B | 7,104 B | +768 B | - |
+
+JS shrank because three scripts no longer carry their CSS as strings; the CSS
+grew by the same rules moved into `style.css` plus the accent states.
+
+e2e harness, same 84 tests (36 functional + 48 screenshots, Chromium + WebKit),
+2 workers, retry 1, `mcr.microsoft.com/playwright:v1.64.1-noble`, fixture
+servers restarted before each cold run, three rounds:
 
 | Harness | Cold | Warm | Median |
 |---|---|---|---|
@@ -394,4 +407,5 @@ restarted before each cold run, three rounds:
 CI, run 40726996679 at 1edca06: job `e2e` 219 s (container init 38 s, cached
 `cargo build` 64 s, tests 66 s). It runs beside `check` (224 s), so the
 pipeline wall is 227 s; main 7510ccd took 385 s, held by a 357 s macOS desktop
-job. The slowest single test is 4.9 s (WebKit, alarms).
+job. The slowest single test is 4.9 s (WebKit, alarms). With the responsive and touch
+specs the suite is 218 tests, 1.6 min locally.

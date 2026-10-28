@@ -162,7 +162,7 @@
       node('h2', { id: 'device-admin-title', text: 'Devices on this account' }),
       node('button', {
         type: 'button', class: 'iconbtn', 'aria-label': 'Close', onclick: () => close(),
-      }, [node('span', { text: '×' })]),
+      }),
     ]),
     list,
     groupsLine,
@@ -298,6 +298,8 @@
     type: 'button', class: 'ctl', id: 'device-admin-open', title: 'Device names, groups, sharing, passwords',
     onclick: open,
   }, [node('span', { text: 'Devices' })]);
+  launcher.insertAdjacentHTML('afterbegin', '<svg class="i" aria-hidden="true"><use href="#i-cctv"></use></svg>');
+  sheet.querySelector('.sheet-h .iconbtn').innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-x"></use></svg>';
   const controls = document.getElementById('controls');
   if (controls) controls.insertBefore(launcher, controls.querySelector('.spacer'));
 

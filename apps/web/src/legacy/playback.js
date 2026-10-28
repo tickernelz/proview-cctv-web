@@ -543,32 +543,6 @@
     overlay.append(body);
     document.body.append(overlay);
 
-    const style = document.createElement('style');
-    style.textContent = [
-      '.pb-screen{position:fixed;inset:0;z-index:60;background:var(--bg,#0b0d10);display:flex;flex-direction:column;overflow:auto}',
-      '.pb-screen[hidden]{display:none}',
-      '.pb-body{display:grid;gap:16px;padding:16px;grid-template-columns:minmax(220px,320px) 1fr;align-items:start}',
-      '@media (max-width:820px){.pb-body{grid-template-columns:1fr}}',
-      '.pb-controls{display:flex;gap:8px;grid-column:1/-1;flex-wrap:wrap}',
-      '.pb-controls input,.pb-controls select{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid currentColor;background:transparent;color:inherit}',
-      '.pb-summary{grid-column:1/-1;margin:0;opacity:.75}',
-      '.pb-list{display:flex;flex-direction:column;gap:6px;max-height:60vh;overflow:auto}',
-      '.pb-row{display:flex;justify-content:space-between;gap:12px;font:inherit;text-align:left;padding:8px 10px;border-radius:8px;border:1px solid rgba(128,128,128,.35);background:transparent;color:inherit;cursor:pointer}',
-      '.pb-row:hover{border-color:currentColor}',
-      '.pb-size{opacity:.7}',
-      '.pb-stage{display:flex;flex-direction:column;gap:8px}',
-      '.pb-stage video{width:100%;max-height:65vh;background:#000;border-radius:12px}',
-      '.pb-playing{margin:0;font-variant-numeric:tabular-nums;opacity:.8}',
-      '.pb-scrub-row{display:flex;gap:8px;align-items:center}',
-      '.pb-scrub-row input{flex:1}',
-      '.pb-status{margin:0;min-height:1.4em;font-variant-numeric:tabular-nums}',
-      '.pb-timeline{position:relative;grid-column:1/-1;height:34px;border-radius:8px;background:rgba(128,128,128,.12);overflow:hidden;cursor:pointer}',
-      '.pb-tick{position:absolute;top:0;bottom:0;width:1px;background:rgba(128,128,128,.3);font-size:10px;line-height:34px;padding-left:3px;opacity:.55;pointer-events:none;white-space:nowrap}',
-      '.pb-seg{position:absolute;top:7px;bottom:7px;padding:0;border:0;border-radius:2px;background:currentColor;opacity:.8;pointer-events:none}',
-      '.pb-seg[data-mode="motion"]{opacity:.42}',
-      '.pb-row[data-mode="motion"]{opacity:.75}',
-    ].join('\n');
-    document.head.append(style);
   }
 
   function open() {
@@ -591,7 +565,7 @@
     const button = make('button', 'ctl');
     button.id = 'pb-open';
     button.type = 'button';
-    button.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-clock"></use></svg><span>Playback</span>';
+    button.innerHTML = '<svg class="i" aria-hidden="true"><use href="#i-history"></use></svg><span>Playback</span>';
     button.addEventListener('click', open);
     const anchor = el('move');
     if (anchor) controls.insertBefore(button, anchor);
