@@ -21,6 +21,7 @@ pub fn classify(body: &[u8]) -> LiveClass {
         0xfc => LiveClass::KeyframeHead,
         0xfd => LiveClass::Delta,
         0xfa => LiveClass::Padding,
+        nal if nal <= 0x7f => LiveClass::Continuation,
         _ => LiveClass::Unknown,
     }
 }
@@ -50,6 +51,7 @@ struct Pending {
 
 const KEYFRAME_HEADER: usize = 16;
 const DELTA_HEADER: usize = 8;
+const RECORD_MAX: usize = 8 * 1024 * 1024;
 
 impl LiveDemux {
     pub fn new() -> Self {
@@ -77,6 +79,10 @@ impl LiveDemux {
                 }
                 let declared =
                     u32::from_le_bytes([body[12], body[13], body[14], body[15]]) as usize;
+                if declared > RECORD_MAX {
+                    self.stats.dropped += 1;
+                    return out;
+                }
                 self.pending = Some(Pending {
                     declared,
                     payload: body[KEYFRAME_HEADER..].to_vec(),
@@ -84,14 +90,28 @@ impl LiveDemux {
                 self.drain_pending(&mut out);
             }
             LiveClass::Delta => {
-                self.flush_pending(&mut out, true);
                 self.stats.deltas += 1;
-                if body.len() > DELTA_HEADER {
-                    let payload = &body[DELTA_HEADER..];
+                if body.len() <= DELTA_HEADER {
+                    self.stats.dropped += 1;
+                    return out;
+                }
+                let declared = u32::from_le_bytes([body[4], body[5], body[6], body[7]]) as usize;
+                if declared > RECORD_MAX {
+                    self.flush_pending(&mut out, true);
+                    self.stats.dropped += 1;
+                    return out;
+                }
+                if body.len() - DELTA_HEADER >= declared {
+                    self.flush_pending(&mut out, true);
+                    let payload = &body[DELTA_HEADER..DELTA_HEADER + declared];
                     self.stats.elementary_bytes += payload.len() as u64;
                     out.extend_from_slice(payload);
                 } else {
-                    self.stats.dropped += 1;
+                    self.flush_pending(&mut out, true);
+                    self.pending = Some(Pending {
+                        declared,
+                        payload: body[DELTA_HEADER..].to_vec(),
+                    });
                 }
             }
             LiveClass::Continuation => match self.pending.as_mut() {
@@ -267,5 +287,39 @@ mod tests {
             "a VEKEY1 turns the media cipher back on"
         );
         assert_eq!(body["SessionID"], "0x000002d3");
+    }
+    #[test]
+    fn a_delta_larger_than_one_body_is_joined_by_its_declared_length() {
+        let payload = vec![0x11u8; 20_000];
+        let mut first = Vec::new();
+        first.extend_from_slice(&[0, 0, 1, 0xfd]);
+        first.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        first.extend_from_slice(&payload[..8_184]);
+        let second = payload[8_184..16_368].to_vec();
+        let tail = &payload[16_368..];
+        let mut demux = LiveDemux::new();
+        let mut out = demux.push(&first);
+        out.extend(demux.push(&second));
+        out.extend(demux.push(tail));
+        assert_eq!(out.len(), payload.len());
+        assert_eq!(demux.stats().dropped, 0);
+    }
+
+    #[test]
+    fn a_continuation_that_starts_like_a_start_code_is_not_dropped() {
+        let head = {
+            let mut body = Vec::new();
+            body.extend_from_slice(&[0, 0, 1, 0xfc]);
+            body.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+            body.extend_from_slice(&(16u32).to_le_bytes());
+            body.extend_from_slice(&[0xaa; 8]);
+            body
+        };
+        let continuation = [0u8, 0, 1, 0x26, 0xbb, 0xcc, 0xdd, 0xee];
+        let mut demux = LiveDemux::new();
+        let mut out = demux.push(&head);
+        out.extend(demux.push(&continuation));
+        assert_eq!(out.len(), 16);
+        assert_eq!(demux.stats().dropped, 0);
     }
 }

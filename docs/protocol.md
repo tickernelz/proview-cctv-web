@@ -937,8 +937,10 @@ header on channel 0 with the end bit clear. So the media sequence is:
 2. Token login (0x03e8) with `EncryptType TOKEN` and the RSA-sealed
    `CommunicateKey` (4C.14-4C.17).
 3. `OPMonitor` **Start** (0x0582) with the parameters above, encrypted.
-4. Media frames follow; their payload is guarded by the `VEKEY1` value the client
-   chose in that Start message, which is 64 base64 characters.
+4. Media frames follow. Their payload is guarded **only if** the Start message
+   carried `VEKEY1`: with the field omitted the device sends plain DHAV, measured
+   as 478 bodies (1,370,708 B) decoding to `hevc 2304x2592 12/1` with a
+   1,298,908 B elementary stream. That is the path `media/live.rs` takes.
 
 Steps 1-3 are reproducible today with code already in the crate
 (`claim_monitor`, `login_token`, `communicate_key`); step 3 needs the encrypted
