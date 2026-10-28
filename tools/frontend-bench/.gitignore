@@ -9,4 +9,4 @@ build/
 build-*.log
 embed/gz/
 embed/target/
-results*.tsv.tmp
+*.tmp

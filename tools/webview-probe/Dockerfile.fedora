@@ -1,0 +1,3 @@
+ARG FEDORA=44
+FROM fedora:${FEDORA}
+RUN dnf -q -y install --setopt=install_weak_deps=False python3-gobject gobject-introspection webkit2gtk4.1 xorg-x11-server-Xvfb xorg-x11-xauth which && dnf clean all

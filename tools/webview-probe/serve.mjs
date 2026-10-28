@@ -18,5 +18,5 @@ const server = createServer((req, res) => {
   res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(page);
 });
-server.listen(port, '0.0.0.0');
+server.listen(port, '127.0.0.1');
 setTimeout(() => process.exit(2), Number(process.env.PROBE_WAIT_MS ?? 60000));

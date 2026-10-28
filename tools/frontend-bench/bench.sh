@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 runs=${RUNS:-3}
 options=${OPTIONS:-vanilla-ts vue-ts react-ts solid-ts svelte-ts sveltekit solidstart astro}
-out=${OUT:-results.tsv}
+out=${OUT:-results.tsv.tmp}
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 outdir() {

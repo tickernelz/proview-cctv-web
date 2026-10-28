@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 options=${OPTIONS:-leptos yew dioxus}
-out=${OUT:-results-wasm.tsv}
+out=${OUT:-results-wasm.tsv.tmp}
 target_root=${TARGET_ROOT:-$(mktemp -d)}
 now() { date +%s.%N; }
 since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }

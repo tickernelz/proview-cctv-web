@@ -5,7 +5,6 @@
     "types": ["vite/client"],
     "allowArbitraryExtensions": true,
 
-    /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
