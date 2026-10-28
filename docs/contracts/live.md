@@ -157,8 +157,9 @@ lane head, same stub and same account:
 | stub ok, vendor status silent | 1.03-2.07 s | 2.05-4.02 s | 1.0-2.0 s, the walk repeats the status query |
 | 4 parallel calls, one channel | 4 stub calls, 3.09 s wall | 5 stub calls, 4.13 s wall | exactly one walk for all four |
 
-Both columns are the same six runs per binary; the lane column is the binary at
-`ffdc902`, which is the commit this table ships with.
+Both columns are three runs per cell, taken from the binary at `ffdc902` and from
+base `4d9ff07`; the fixes after `ffdc902` touch the gate key, the pruning and
+the reuse path, none of which sit on the measured stages.
 
 The third row is the worst case today and it is the vendor's status query, not
 the walk's bookkeeping. The 8 s budget caps a wedged vendor below that.

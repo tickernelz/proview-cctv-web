@@ -582,6 +582,7 @@ async fn diagnose(
     let gate = ledger().gate(device);
     let _held = gate.lock().await;
     if let Some(previous) = ledger().fresh(session, device, channel, WALK_COOLDOWN) {
+        ledger().record(session, previous.clone());
         return previous;
     }
     let attempt = Walk::new(cfg, vendor, device, channel, high).run().await;
@@ -776,7 +777,6 @@ mod tests {
         for index in 0..50 {
             let device = format!("cam-{index}");
             let gate = ledger.gate(&device);
-            drop(gate);
             ledger.record(
                 "session-a",
                 Attempt {
@@ -790,6 +790,7 @@ mod tests {
                 },
             );
             ledger.forget(&device, 1);
+            drop(gate);
         }
         ledger.record(
             "session-a",
