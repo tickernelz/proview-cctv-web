@@ -106,6 +106,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let mut connection = tunnel.into_connection();
     let started = Instant::now();
+    if std::env::var("PROVIEW_LOGIN_DUMP").is_ok() {
+        let reply = connection.login_reply(&device_user, &device_pass).await?;
+        let mut shape = Vec::new();
+        if let Some(object) = reply.as_object() {
+            for (key, value) in object {
+                let text = match value.as_str() {
+                    Some(text) => format!("str{}", text.chars().count()),
+                    None => value.to_string(),
+                };
+                shape.push(format!("{key}={text}"));
+            }
+        }
+        eprintln!("loginraw {}", shape.join(" "));
+        return Ok(());
+    }
     let login = connection.login(&device_user, &device_pass).await?;
     eprintln!(
         "dvrip    {:.2}s session={} type={:?} channels={:?}",
