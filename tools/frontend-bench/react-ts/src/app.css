@@ -1,0 +1,8 @@
+:root{color-scheme:dark;font-family:system-ui,sans-serif}
+body{margin:0;background:#111;color:#eee}
+.rail{display:flex;flex-direction:column;gap:4px;padding:8px;width:220px}
+.rail button{text-align:left;padding:6px 8px;border:0;border-radius:6px;background:#222;color:inherit}
+.rail button[aria-pressed="true"]{background:color-mix(in oklab,#3b82f6 40%,#222)}
+.rail button:focus-visible{outline:2px solid #3b82f6}
+main{display:flex}
+video{flex:1;background:#000;aspect-ratio:16/9}

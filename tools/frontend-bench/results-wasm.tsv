@@ -1,0 +1,4 @@
+option	cold_build_s	warm_build_s	wasm_raw	wasm_gz	js_gz	css_gz	html_gz	total_gz	crates
+leptos	73.3	4.2	140339	60625	6440	344	624	68033	180
+yew	28.9	2.6	161873	69939	6339	344	621	77243	94
+dioxus	38.0	4.4	418730	176571	18138	344	1130	196183	343

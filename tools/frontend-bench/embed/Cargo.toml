@@ -1,0 +1,21 @@
+[package]
+name = "bench-embed"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+per-route = []
+embedded-dir = ["dep:rust-embed"]
+embedded-gz = ["dep:rust-embed"]
+
+[dependencies]
+rocket = "0.5.1"
+rust-embed = { version = "8", optional = true }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

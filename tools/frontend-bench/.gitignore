@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+.output/
+.svelte-kit/
+.astro/
+.vinxi/
+.nitro/
+build-*.log
+embed/gz/
+embed/target/
+results*.tsv.tmp

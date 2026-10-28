@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>probe-pending</title></head>
+<body>
+<button id="b">probe</button>
+<script type="module">
+const out = { userAgent: navigator.userAgent };
+const tryIt = async (name, fn) => {
+  try { out[name] = await fn(); } catch (e) { out[name] = 'error: ' + e.message; }
+};
+await tryIt('webcodecs_VideoDecoder', () => typeof VideoDecoder === 'function');
+await tryIt('webcodecs_avc1', async () => typeof VideoDecoder === 'function' && (await VideoDecoder.isConfigSupported({ codec: 'avc1.42E01E' })).supported);
+await tryIt('webcodecs_hvc1', async () => typeof VideoDecoder === 'function' && (await VideoDecoder.isConfigSupported({ codec: 'hvc1.1.6.L93.B0' })).supported);
+await tryIt('mse_MediaSource', () => typeof MediaSource === 'function');
+await tryIt('mse_ManagedMediaSource', () => typeof ManagedMediaSource === 'function');
+await tryIt('mse_avc1', () => typeof MediaSource === 'function' && MediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E"'));
+await tryIt('mse_hvc1', () => typeof MediaSource === 'function' && MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L93.B0"'));
+await tryIt('css_color_mix', () => CSS.supports('color', 'color-mix(in oklab, red 50%, blue)'));
+await tryIt('popover_api', () => typeof HTMLElement.prototype.showPopover === 'function');
+await tryIt('css_focus_visible', () => CSS.supports('selector(:focus-visible)'));
+await tryIt('focus_visible_matches_after_keyboardless_focus', () => { const b = document.getElementById('b'); b.focus(); return b.matches(':focus-visible'); });
+await tryIt('es2022_at', () => typeof [].at === 'function');
+await tryIt('es2022_static_block', () => { new Function('class A { static { } }'); return true; });
+await tryIt('structuredClone', () => typeof structuredClone === 'function');
+await tryIt('css_nesting', () => CSS.supports('selector(&)'));
+await tryIt('dynamic_import', async () => { await import('data:text/javascript,export default 1'); return true; });
+await tryIt('wasm', () => typeof WebAssembly === 'object');
+document.title = 'probe-done';
+const json = JSON.stringify(out);
+window.__probe = json;
+try { await fetch('/result', { method: 'POST', body: json }); } catch {}
+</script>
+</body>
+</html>
