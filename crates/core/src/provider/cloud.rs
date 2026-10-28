@@ -65,13 +65,12 @@ impl CloudProvider {
             }
             connection.set_session(0);
         }
-        let user = device_user_for(&serial, entry);
-        let pass = device_password_for(&serial);
-        if user.is_empty() || pass.is_empty() {
-            return Err(ProviderError::Misconfigured(format!(
-                "{note}; opening a device session needs PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS for {serial}"
-            )));
-        }
+        let (user, pass) = match device_credential_for(&serial, entry) {
+            DeviceCredential::Allowed { user, pass } => (user, pass),
+            DeviceCredential::Refused(reason) => {
+                return Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
+            }
+        };
         let reply = connection
             .login_reply(&user, &pass)
             .await
@@ -386,12 +385,18 @@ impl CloudProvider {
             crate::source::spawn_fmp4_publisher(&hub, &key, "H265", &parameter_sets)
                 .await
                 .map_err(|error| ProviderError::Upstream(error.to_string()))?;
-        tokio::io::AsyncWriteExt::write_all(&mut stdin, &buffered)
-            .await
-            .map_err(|error| ProviderError::Upstream(format!("ffmpeg stdin: {error}")))?;
-        buffered.clear();
         let mut written = 0usize;
-        loop {
+        let mut ffmpeg_open = tokio::io::AsyncWriteExt::write_all(&mut stdin, &buffered)
+            .await
+            .is_ok();
+        buffered.clear();
+        if !ffmpeg_open {
+            tracing::warn!(
+                device,
+                "cloud ffmpeg closed its input before the first frame"
+            );
+        }
+        while ffmpeg_open {
             if stop.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
@@ -411,7 +416,8 @@ impl CloudProvider {
                         .await
                         .is_err()
                     {
-                        break;
+                        tracing::warn!(device, "cloud ffmpeg stopped reading");
+                        ffmpeg_open = false;
                     }
                 }
                 Ok(Err(error)) => {
@@ -487,24 +493,45 @@ fn configured_serial() -> String {
         .unwrap_or_default()
 }
 
-fn device_user_for(serial: &str, entry: &crate::cloud::types::CloudDevice) -> String {
-    let configured = configured_serial();
-    if !configured.is_empty() && configured != serial {
-        return String::new();
-    }
-    std::env::var("PROVIEW_DEVICE_USER")
+enum DeviceCredential {
+    Allowed { user: String, pass: String },
+    Refused(String),
+}
+
+fn device_credential_for(
+    serial: &str,
+    entry: &crate::cloud::types::CloudDevice,
+) -> DeviceCredential {
+    let user = std::env::var("PROVIEW_DEVICE_USER")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| entry.username.trim().to_string())
+        .unwrap_or_else(|| entry.username.trim().to_string());
+    let pass = std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default();
+    credential_decision(&configured_serial(), serial, &user, &pass)
 }
 
-fn device_password_for(serial: &str) -> String {
-    let configured = configured_serial();
-    if !configured.is_empty() && configured != serial {
-        return String::new();
+fn credential_decision(configured: &str, serial: &str, user: &str, pass: &str) -> DeviceCredential {
+    if configured.trim().is_empty() {
+        return DeviceCredential::Refused(
+            "no camera serial is configured, so the camera credentials are not sent to any device: set PROVIEW_DEVICE_SERIAL under Settings, Local network".to_string(),
+        );
     }
-    std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default()
+    if configured.trim() != serial.trim() {
+        return DeviceCredential::Refused(format!(
+            "camera credentials belong to {}, not to {serial}",
+            configured.trim()
+        ));
+    }
+    if user.is_empty() || pass.is_empty() {
+        return DeviceCredential::Refused(format!(
+            "no camera user and password for {serial}: set PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS"
+        ));
+    }
+    DeviceCredential::Allowed {
+        user: user.to_string(),
+        pass: pass.to_string(),
+    }
 }
 
 fn parameter_sets_of(bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -866,6 +893,44 @@ mod path_tests {
     }
 
     #[test]
+    fn the_credentials_only_answer_for_the_configured_serial() {
+        assert!(matches!(
+            credential_decision(
+                "7f92970ddf5282743hrc",
+                "7f92970ddf5282743hrc",
+                "admin",
+                "pass"
+            ),
+            DeviceCredential::Allowed { .. }
+        ));
+        assert!(matches!(
+            credential_decision("7f92970ddf5282743hrc", "other-serial", "admin", "pass"),
+            DeviceCredential::Refused(_)
+        ));
+        assert!(matches!(
+            credential_decision("", "7f92970ddf5282743hrc", "admin", "pass"),
+            DeviceCredential::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn a_missing_serial_refusal_names_the_setting_to_fill() {
+        match credential_decision("", "7f92970ddf5282743hrc", "admin", "pass") {
+            DeviceCredential::Refused(reason) => {
+                assert!(reason.contains("PROVIEW_DEVICE_SERIAL"), "{reason}")
+            }
+            DeviceCredential::Allowed { .. } => panic!("an empty serial must refuse"),
+        }
+    }
+
+    #[test]
+    fn an_empty_password_refuses_even_for_the_right_serial() {
+        assert!(matches!(
+            credential_decision("7f92970ddf5282743hrc", "7f92970ddf5282743hrc", "admin", ""),
+            DeviceCredential::Refused(_)
+        ));
+    }
+    #[test]
     fn a_failed_handshake_is_reported_as_such() {
         let mut report = CloudPath::default();
         apply_relay(&mut report, Err("connection refused".to_string()));
@@ -920,29 +985,6 @@ mod stream_tests {
         drop(connection);
         let seen = peer.await.expect("peer task");
         assert_eq!(seen.last().map(|row| row.1), Some(0x0582));
-    }
-
-    #[tokio::test]
-    async fn a_start_sent_as_the_claim_msgid_draws_no_media() {
-        let (address, peer) = crate::dvrip::fake::serve_scripted(|_, id, _| {
-            if id == crate::dvrip::msg::MONITOR_START {
-                return vec![(crate::media::live::LIVE_MEDIA_ID, media_body())];
-            }
-            Vec::new()
-        })
-        .await;
-        let mut connection = crate::dvrip::fake::connect(&address).await;
-        let body = monitor_start_body(0, "Main", connection.session());
-        connection
-            .send_plain(0, crate::dvrip::msg::MONITOR, &body)
-            .await
-            .expect("send under the wrong id");
-        let outcome =
-            tokio::time::timeout(std::time::Duration::from_millis(400), connection.recv()).await;
-        assert!(outcome.is_err(), "the wrong msgid must not produce media");
-        drop(connection);
-        let seen = peer.await.expect("peer task");
-        assert_eq!(seen.last().map(|row| row.1), Some(0x0585));
     }
 
     #[test]

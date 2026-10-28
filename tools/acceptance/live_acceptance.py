@@ -319,6 +319,8 @@ def server_env(args, port: int, data_dir: Path) -> dict:
         if "PROVIEW_DEVICE_USER" in device and "PROVIEW_DEVICE_PASS" in device:
             env["PROVIEW_DEVICE_USER"] = device["PROVIEW_DEVICE_USER"]
             env["PROVIEW_DEVICE_PASS"] = device["PROVIEW_DEVICE_PASS"]
+    if args.mode == "cloud" and args.sn:
+        env["PROVIEW_DEVICE_SERIAL"] = args.sn
     return env
 
 

@@ -34,7 +34,11 @@ struct Entry {
 pub struct DeviceTokenStore {
     dir: Option<PathBuf>,
     key: Option<[u8; 32]>,
-    write: Mutex<()>,
+}
+
+fn store_lock() -> &'static Mutex<()> {
+    static LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 impl DeviceTokenStore {
@@ -49,11 +53,7 @@ impl DeviceTokenStore {
                     .map(PathBuf::from)
             });
         let key = dir.as_deref().and_then(read_or_create_key);
-        Self {
-            dir,
-            key,
-            write: Mutex::new(()),
-        }
+        Self { dir, key }
     }
 
     pub fn enabled(&self) -> bool {
@@ -82,7 +82,7 @@ impl DeviceTokenStore {
         let key = self.key.ok_or_else(|| {
             "no device token key: set PROVIEW_DATA_DIR to a writable directory".to_string()
         })?;
-        let _guard = self.write.lock().expect("device token lock");
+        let _guard = store_lock().lock().expect("device token lock");
         let mut file = self.file()?;
         let mut nonce = [0u8; NONCE];
         OsRng.fill_bytes(&mut nonce);
@@ -109,7 +109,7 @@ impl DeviceTokenStore {
     }
 
     pub fn forget(&self, serial: &str) -> Result<bool, String> {
-        let _guard = self.write.lock().expect("device token lock");
+        let _guard = store_lock().lock().expect("device token lock");
         let mut file = self.file()?;
         let removed = file.entries.remove(serial).is_some();
         if removed {
@@ -300,6 +300,17 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn two_stores_over_one_directory_keep_both_entries() {
+        let dir = scratch();
+        let first = DeviceTokenStore::load(Some(&dir));
+        let second = DeviceTokenStore::load(Some(&dir));
+        first.put("serial-one", "first").expect("put first");
+        second.put("serial-two", "second").expect("put second");
+        assert_eq!(first.get("serial-two").as_deref(), Some("second"));
+        assert_eq!(second.get("serial-one").as_deref(), Some("first"));
+        fs::remove_dir_all(&dir).ok();
+    }
     #[cfg(unix)]
     #[test]
     fn the_key_file_is_private_from_the_first_write() {

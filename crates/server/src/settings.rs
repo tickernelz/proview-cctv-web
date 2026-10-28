@@ -134,6 +134,15 @@ pub const FIELDS: &[Field] = &[
         true,
     ),
     field(
+        "PROVIEW_DEVICE_SERIAL",
+        "Camera serial for the device sign-in",
+        "Local network",
+        Kind::Text,
+        &[],
+        "Serial the camera user and password belong to. The cloud path only sends them to this serial.",
+        true,
+    ),
+    field(
         "PROVIEW_DEVICE_USER",
         "Camera user",
         "Local network",
