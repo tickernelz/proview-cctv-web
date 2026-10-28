@@ -131,6 +131,32 @@ stability before 1.0.
   `sourceopen`, both overlap orders and the replaced player; it fails on
   6c70754 and passes after this change.
 
+## 0.3.5 — 2026-10-28
+
+### Added
+
+- Cloud live in the player. `GET /api/stream` answers a websocket ticket and the
+  route starts one cloud source per stream key: the provider opens the relay
+  tunnel, logs in to the device, waits for the three HEVC parameter sets and
+  feeds the same ffmpeg and fMP4 publisher the RTSP path uses, so the view needs
+  no change. `docs/protocol.md` 4C.24 and 4C.25 carry the sequence and the
+  measurements (first frame p50 1835 ms, p95 3846 ms over ten cold starts; a
+  300 s stream at 0.87 s of server CPU), and 4C.26 the cost per stream.
+- A device token store per serial: AES-256-GCM with a 0600 key file, the serial
+  bound as associated data, `forget` to revoke, and writes serialised across the
+  process.
+- `PROVIEW_DEVICE_SERIAL` in Settings under Local network. The camera user and
+  password are only sent to that serial, and a cloud ticket now answers 501 with
+  `code: "misconfigured"` naming the setting when the device could never log in,
+  instead of failing later with a generic message.
+
+### Fixed
+
+- The live start body went out under msgid 1413 (the claim) instead of 1410
+  (`0x0582`), which is why every earlier cloud run counted zero frames.
+- The cloud live socket is scoped to the account that owns the serial: a session
+  asking for another account's camera answers 404 before it subscribes.
+
 ## 0.3.4 — 2026-10-28
 
 ### Added
