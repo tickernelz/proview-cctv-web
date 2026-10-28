@@ -55,8 +55,7 @@ impl Run {
     }
 
     fn outage_is_long(&self, interval: u64, now: i64) -> bool {
-        self.last_ok
-            .is_none_or(|ok| now - ok > 3 * interval as i64)
+        self.last_ok.is_none_or(|ok| now - ok > 3 * interval as i64)
     }
 
     pub fn failed(&mut self, now: i64, session_lost: bool) -> bool {
@@ -284,7 +283,10 @@ mod tests {
         assert!(run.failed(1_015, true), "the pause notice is posted once");
         assert!(!run.failed(1_060, true), "the same outage stays quiet");
         let now = 1_120;
-        assert!(now - 1_000 > 3 * 15, "the outage is longer than the threshold");
+        assert!(
+            now - 1_000 > 3 * 15,
+            "the outage is longer than the threshold"
+        );
         let policy = run.policy(&state, 15, now);
         assert_eq!(
             policy,
@@ -338,9 +340,14 @@ mod tests {
         let mut run = Run::new(0);
         run.finished(true, 0);
         assert!(!run.failed(10, false), "a cloud hiccup is not a pause");
-        assert!(run.failed(20, true), "the session loss still announces once");
+        assert!(
+            run.failed(20, true),
+            "the session loss still announces once"
+        );
         assert!(!session_lost("the alarm centre said 500"));
         assert!(session_lost("not signed in"));
-        assert!(session_lost("alarms read the vendor cloud; sign in with the cloud account"));
+        assert!(session_lost(
+            "alarms read the vendor cloud; sign in with the cloud account"
+        ));
     }
 }

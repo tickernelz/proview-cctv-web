@@ -370,7 +370,10 @@ mod tests {
             state.seen.is_empty(),
             "the old account's alarms cannot silence the new one"
         );
-        assert_eq!(state.last_seen, 0, "the window restarts from the new sign-in");
+        assert_eq!(
+            state.last_seen, 0,
+            "the window restarts from the new sign-in"
+        );
         assert_eq!(state.account, "other@example.test");
     }
 }
