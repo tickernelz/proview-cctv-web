@@ -283,6 +283,7 @@ impl Provider for CloudProvider {
                     "TransMode": "TCP",
                 },
             },
+            "DHParameter": { "RandomStrA": rps_client::random_lower(4) },
             "SessionID": session_id,
         });
         connection
