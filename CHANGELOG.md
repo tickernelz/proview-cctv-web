@@ -45,6 +45,12 @@ stability before 1.0.
 
 ### Changed
 
+- The page build compiles Vue single-file components (`@vitejs/plugin-vue`,
+  type-checked by `vue-tsc`) and Tailwind CSS v4 (`@tailwindcss/vite`, theme and
+  utilities only, no Preflight reset), ready for the Vue screens. The page floor
+  rises to Tailwind's: Chrome/Edge 111, Firefox 128, Safari/WKWebView 16.4, and
+  the macOS desktop app now requires macOS 13.3 (`docs/webview-matrix.md`).
+  Nothing visible changes yet.
 - The page scripts are ES modules bundled by Vite into one hashed
   `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40,396 B in one).
   `/app.js`, `/grid.js` and the other per-script URLs answer 404. The talk
