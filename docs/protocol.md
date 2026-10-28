@@ -1129,6 +1129,16 @@ the same `librpshook.so` it was about to load, and a silent link failure left th
 previous binary in place, so two earlier runs logged no callers at all. Building
 to a fresh name is what made this map appear.
 
+Neither of those two callers carries video. The transform on a live payload is a
+128-byte XOR window applied by `CSTDStream::ParseHead` through
+`OnVideoDecrypt` (`0xab9d0c`), keyed by eight MD5 calls over the client-chosen
+`VEKEY1` of `OPMonitor Start` (`GetDecryptKey`, `0xab9a74`), and it is
+implemented in `crates/core/src/media/livecipher.rs`. It runs on I-frames only:
+the SDK gates the call on the frame flag `f[+48] == 1 && f[+52] == 0`, so a
+P-frame, an audio frame or a JPEG still already arrives in the clear and must not
+be masked. ZHA-4072 carries the measurement — `ffprobe` reads `hevc 2304x2592`
+on a recorded capture once the window is undone.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

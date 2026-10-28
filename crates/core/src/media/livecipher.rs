@@ -1,13 +1,13 @@
 use md5::{Digest, Md5};
 
-pub const DHAV_HEADER: usize = 16;
 pub const KEY_BYTES: usize = 128;
-pub const MASK_WINDOW: usize = 128;
-pub const MATERIAL_BYTES: usize = 40;
-pub const MATERIAL_MIN: usize = 16;
-pub const MD5_INPUT: usize = 8;
-pub const MD5_STRIDE: usize = 4;
 
+const DHAV_HEADER: u32 = 16;
+const MASK_WINDOW: usize = 128;
+const MATERIAL_BYTES: usize = 40;
+const MATERIAL_MIN: usize = 16;
+const MD5_INPUT: usize = 8;
+const MD5_STRIDE: usize = 4;
 const SALT_MOD: u32 = 253;
 
 pub struct LiveCipher {
@@ -40,22 +40,16 @@ impl LiveCipher {
         &self.key
     }
 
-    pub fn frame_len(declared: u32) -> u32 {
-        declared.wrapping_add(DHAV_HEADER as u32)
-    }
-
-    pub fn mask(&self, payload: &mut [u8], frame_len: u32) -> usize {
+    pub fn mask(&self, payload: &mut [u8], declared: u32) -> usize {
+        let frame_len = declared.wrapping_add(DHAV_HEADER);
         let limit = (frame_len as usize).min(MASK_WINDOW).min(payload.len());
         let salt = (frame_len % SALT_MOD) as u8;
+        let shift = frame_len % MASK_WINDOW as u32;
         for (i, byte) in payload.iter_mut().enumerate().take(limit) {
-            let source = (self.key[i] as u32 + frame_len) % MASK_WINDOW as u32;
+            let source = ((self.key[i] as u32 % MASK_WINDOW as u32) + shift) % MASK_WINDOW as u32;
             *byte ^= self.key[source as usize] ^ salt;
         }
         limit
-    }
-
-    pub fn unmask(&self, payload: &mut [u8], frame_len: u32) -> usize {
-        self.mask(payload, frame_len)
     }
 }
 
@@ -73,6 +67,13 @@ ee8b8e3857b638c1355a9741bfcf48e3\
 a37455a7b05633f5f60bee17d80aa755\
 eec34d804c9ce6c89cff596be555e6a4\
 218ba077697ac3f1636de9802d10e942";
+
+    const SHORT_KEY_HEAD_HEX: &str = "2e9ec317e197819358fbc43afca7d837\
+b69ed510e28e758804c5ef69609e7907\
+3d6c946ea0da9f49ee4e017a66732f51\
+5719788e17b708195c9db73b9467e5a7";
+
+    const ZERO_PADDED_TAIL_HEX: &str = "7dea362b3fac8e00956a4952a3d4f474";
 
     const MASKED_HEX: &str = "2bd00f7e9a98545d4cc7f884b9ba8ef4\
 a7c89c3e1f0b0132e4d4595fbe9b74e1\
@@ -106,12 +107,23 @@ dbe2e9f0f7fe050c131a21282f363d44\
     }
 
     #[test]
+    fn a_short_material_leaves_the_tail_of_the_key_on_zero_bytes() {
+        let cipher = LiveCipher::derive("0123456789abcdef").expect("material");
+        assert_eq!(cipher.key()[..64].to_vec(), hex(SHORT_KEY_HEAD_HEX));
+        for round in 4..KEY_BYTES / 16 {
+            let start = round * 16;
+            assert_eq!(
+                cipher.key()[start..start + 16].to_vec(),
+                hex(ZERO_PADDED_TAIL_HEX)
+            );
+        }
+    }
+
+    #[test]
     fn mask_matches_the_pinned_vector() {
         let cipher = LiveCipher::derive(MATERIAL).expect("material");
         let mut payload = synthetic_payload();
-        let frame_len = LiveCipher::frame_len(4096);
-        assert_eq!(frame_len, 4112);
-        assert_eq!(cipher.mask(&mut payload, frame_len), MASK_WINDOW);
+        assert_eq!(cipher.mask(&mut payload, 4096), MASK_WINDOW);
         assert_eq!(payload, hex(MASKED_HEX));
     }
 
@@ -120,8 +132,8 @@ dbe2e9f0f7fe050c131a21282f363d44\
         let cipher = LiveCipher::derive(MATERIAL).expect("material");
         let plain = synthetic_payload();
         let mut payload = plain.clone();
-        cipher.mask(&mut payload, 4112);
-        cipher.unmask(&mut payload, 4112);
+        cipher.mask(&mut payload, 4096);
+        cipher.mask(&mut payload, 4096);
         assert_eq!(payload, plain);
     }
 
@@ -130,23 +142,42 @@ dbe2e9f0f7fe050c131a21282f363d44\
         let cipher = LiveCipher::derive(MATERIAL).expect("material");
         let plain = synthetic_payload();
         let mut payload = plain.clone();
-        cipher.mask(&mut payload, 4112);
+        cipher.mask(&mut payload, 4096);
         assert_eq!(&payload[MASK_WINDOW..], &plain[MASK_WINDOW..]);
         assert_ne!(&payload[..MASK_WINDOW], &plain[..MASK_WINDOW]);
     }
 
     #[test]
-    fn a_frame_shorter_than_the_window_is_masked_in_full() {
+    fn the_window_is_the_frame_length_clamped_to_the_payload() {
         let cipher = LiveCipher::derive(MATERIAL).expect("material");
-        let mut payload = vec![0u8; 8];
-        assert_eq!(cipher.mask(&mut payload, 32), 8);
+        let mut payload = vec![0u8; 200];
+        assert_eq!(cipher.mask(&mut payload, 0), 16);
+        assert_eq!(payload[16], 0);
+
+        let mut small = vec![0u8; 8];
+        assert_eq!(cipher.mask(&mut small, 4096), 8);
+
+        let mut wide = vec![0u8; 400];
+        assert_eq!(cipher.mask(&mut wide, 4096), 128);
     }
 
     #[test]
-    fn a_short_frame_length_narrows_the_window() {
+    fn a_frame_length_near_the_u32_ceiling_does_not_overflow() {
         let cipher = LiveCipher::derive(MATERIAL).expect("material");
-        let mut payload = synthetic_payload();
-        assert_eq!(cipher.mask(&mut payload, 6), 6);
+        let plain = synthetic_payload();
+        let mut payload = plain.clone();
+        assert_eq!(
+            cipher.mask(&mut payload, u32::MAX - DHAV_HEADER),
+            MASK_WINDOW
+        );
+        cipher.mask(&mut payload, u32::MAX - DHAV_HEADER);
+        assert_eq!(payload, plain);
+
+        let mut wrapped = synthetic_payload();
+        assert_eq!(
+            cipher.mask(&mut wrapped, u32::MAX),
+            DHAV_HEADER as usize - 1
+        );
     }
 
     #[test]
@@ -162,11 +193,5 @@ dbe2e9f0f7fe050c131a21282f363d44\
         let first = LiveCipher::derive(&format!("{head}xxxx")).expect("first");
         let second = LiveCipher::derive(&format!("{head}yyyy")).expect("second");
         assert_eq!(first.key(), second.key());
-    }
-
-    #[test]
-    fn frame_len_adds_the_dhav_header() {
-        assert_eq!(LiveCipher::frame_len(36870), 36886);
-        assert_eq!(LiveCipher::frame_len(0), DHAV_HEADER as u32);
     }
 }
