@@ -54,22 +54,22 @@ impl CloudProvider {
                         connection.session()
                     ))
                 }
-                Ok(ret) => note = format!("stored device token ret {ret}"),
-                Err(error) => note = format!("stored device token failed: {error}"),
+                Ok(ret) => {
+                    let _ = self.tokens.forget(&serial);
+                    note = format!("stored device token ret {ret}, token dropped");
+                }
+                Err(error) => {
+                    let _ = self.tokens.forget(&serial);
+                    note = format!("stored device token failed: {error}, token dropped");
+                }
             }
+            connection.set_session(0);
         }
-        let user = match std::env::var("PROVIEW_DEVICE_USER")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-        {
-            Some(name) => name,
-            None => entry.username.trim().to_string(),
-        };
-        let pass = std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default();
+        let user = device_user_for(&serial, entry);
+        let pass = device_password_for(&serial);
         if user.is_empty() || pass.is_empty() {
             return Err(ProviderError::Misconfigured(format!(
-                "{note}; registering a device token needs PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS"
+                "{note}; opening a device session needs PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS for {serial}"
             )));
         }
         let reply = connection
@@ -88,7 +88,7 @@ impl CloudProvider {
             None => false,
         };
         Ok(format!(
-            "{note}, password registration ret 100, device token stored {stored}, session 0x{:08x}",
+            "{note}, password login ret 100, device token stored {stored}, session 0x{:08x}",
             connection.session()
         ))
     }
@@ -199,6 +199,12 @@ impl CloudProvider {
 }
 
 impl CloudProvider {
+    pub async fn owns(&self, session: &VendorSession, device: &str) -> Result<bool, ProviderError> {
+        let token = self.token(session)?;
+        let devices = self.client.device_list(token).await.map_err(map_cloud)?;
+        Ok(devices.iter().any(|entry| entry.uuid == device.trim()))
+    }
+
     pub async fn open_media(
         &self,
         session: &VendorSession,
@@ -290,21 +296,8 @@ impl CloudProvider {
             .await
             .map_err(|error| ProviderError::Upstream(format!("monitor claim failed: {error:?}")))?;
         let _ = await_frame(&mut connection, MONITOR_CLAIM_REPLY, 5).await;
-        let start = serde_json::json!({
-            "Name": "OPMonitor",
-            "OPMonitor": {
-                "Action": "Start",
-                "Parameter": {
-                    "Channel": device_channel,
-                    "CombinMode": "NONE",
-                    "StreamType": stream,
-                    "TransMode": "TCP",
-                },
-            },
-            "SessionID": format!("0x{:08x}", connection.session()),
-        });
-        connection
-            .send_plain(0, crate::dvrip::msg::MONITOR_START, &start)
+        let start = monitor_start_body(device_channel, stream, connection.session());
+        start_monitor(&mut connection, &start)
             .await
             .map_err(|error| ProviderError::Upstream(format!("monitor start failed: {error:?}")))?;
         Ok(connection)
@@ -335,10 +328,14 @@ impl CloudProvider {
             )
             .await;
         match &outcome {
-            Ok(()) => tracing::info!(device = %device, "cloud live source finished"),
+            Ok(spawned) => {
+                if *spawned {
+                    hub.publisher_done(&key);
+                }
+                tracing::info!(device = %device, "cloud live source finished");
+            }
             Err(error) => tracing::warn!(%error, device = %device, "cloud live source stopped"),
         }
-        hub.publisher_done(&key);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -351,7 +348,7 @@ impl CloudProvider {
         channel: u32,
         high: bool,
         stop: &std::sync::atomic::AtomicBool,
-    ) -> Result<(), ProviderError> {
+    ) -> Result<bool, ProviderError> {
         let mut connection = self.open_media(session, device, channel, high).await?;
         hub.set_meta(
             &key,
@@ -381,10 +378,9 @@ impl CloudProvider {
             parameter_sets = parameter_sets_of(&buffered);
         }
         if parameter_sets.len() < 3 {
-            return Err(ProviderError::Upstream(format!(
-                "the cloud stream carried {} of 3 HEVC parameter sets in 10 s",
-                parameter_sets.len()
-            )));
+            return Err(ProviderError::Upstream(
+                "the cloud stream did not carry VPS, SPS and PPS within 10 s".to_string(),
+            ));
         }
         let (mut stdin, reader, child) =
             crate::source::spawn_fmp4_publisher(&hub, &key, "H265", &parameter_sets)
@@ -418,8 +414,14 @@ impl CloudProvider {
                         break;
                     }
                 }
-                Ok(Err(_)) => break,
-                Err(_) => continue,
+                Ok(Err(error)) => {
+                    tracing::warn!(device, error = ?error, "cloud live source read failed");
+                    break;
+                }
+                Err(_) => {
+                    tracing::warn!(device, "cloud live source saw no frame for 10 s");
+                    break;
+                }
             }
         }
         drop(stdin);
@@ -437,38 +439,95 @@ impl CloudProvider {
             dropped = stats.dropped,
             "cloud live source closed"
         );
-        Ok(())
+        Ok(true)
     }
 }
 
+pub fn monitor_start_body(channel: u8, stream: &str, session: u32) -> serde_json::Value {
+    serde_json::json!({
+        "Name": "OPMonitor",
+        "OPMonitor": {
+            "Action": "Start",
+            "Parameter": {
+                "Channel": channel,
+                "CombinMode": "NONE",
+                "StreamType": stream,
+                "TransMode": "TCP",
+            },
+        },
+        "SessionID": format!("0x{session:08x}"),
+    })
+}
+
+pub async fn start_monitor(
+    connection: &mut crate::dvrip::client::Connection,
+    body: &serde_json::Value,
+) -> Result<(), crate::dvrip::client::DvrError> {
+    connection
+        .send_plain(0, crate::dvrip::msg::MONITOR_START, body)
+        .await
+}
+
+fn configured_serial() -> String {
+    std::env::var("PROVIEW_DEVICE_SERIAL")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn device_user_for(serial: &str, entry: &crate::cloud::types::CloudDevice) -> String {
+    let configured = configured_serial();
+    if !configured.is_empty() && configured != serial {
+        return String::new();
+    }
+    std::env::var("PROVIEW_DEVICE_USER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| entry.username.trim().to_string())
+}
+
+fn device_password_for(serial: &str) -> String {
+    let configured = configured_serial();
+    if !configured.is_empty() && configured != serial {
+        return String::new();
+    }
+    std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default()
+}
+
 fn parameter_sets_of(bytes: &[u8]) -> Vec<Vec<u8>> {
-    let mut sets: Vec<Vec<u8>> = Vec::new();
+    let mut vps: Option<Vec<u8>> = None;
+    let mut sps: Option<Vec<u8>> = None;
+    let mut pps: Option<Vec<u8>> = None;
     let mut index = 0usize;
-    while index + 3 < bytes.len() {
+    while let Some(found) = next_start_code(bytes, index) {
+        let start = found + 3;
+        let Some(next) = next_start_code(bytes, start) else {
+            break;
+        };
+        let nal = &bytes[start..next];
+        match crate::media::hevc::nal_type(nal) {
+            Some(32) if vps.is_none() => vps = Some(nal.to_vec()),
+            Some(33) if sps.is_none() => sps = Some(nal.to_vec()),
+            Some(34) if pps.is_none() => pps = Some(nal.to_vec()),
+            _ => {}
+        }
+        index = start;
+    }
+    match (vps, sps, pps) {
+        (Some(vps), Some(sps), Some(pps)) => vec![vps, sps, pps],
+        _ => Vec::new(),
+    }
+}
+
+fn next_start_code(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut index = from;
+    while index + 3 <= bytes.len() {
         if bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
-            let start = index + 3;
-            let mut end = bytes.len();
-            let mut probe = start;
-            while probe + 3 < bytes.len() {
-                if bytes[probe] == 0 && bytes[probe + 1] == 0 && bytes[probe + 2] == 1 {
-                    end = probe;
-                    break;
-                }
-                probe += 1;
-            }
-            let nal = &bytes[start..end];
-            let kind = crate::media::hevc::nal_type(nal);
-            if matches!(kind, Some(32) | Some(33) | Some(34))
-                && !sets.iter().any(|existing| existing == nal)
-            {
-                sets.push(nal.to_vec());
-            }
-            index = end;
-            continue;
+            return Some(index);
         }
         index += 1;
     }
-    sets
+    None
 }
 
 async fn await_frame(
@@ -789,5 +848,123 @@ mod path_tests {
         assert!(!report.relay_accepted);
         assert_eq!(report.relay_error.as_deref(), Some("connection refused"));
         assert!(report.detail.contains("relay handshake failed"));
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    fn media_body() -> Vec<u8> {
+        let mut body = vec![0u8; 16];
+        for nal in [
+            vec![0x40, 0x01, 0x0c, 0x01],
+            vec![0x42, 0x01, 0x01, 0x60],
+            vec![0x44, 0x01, 0xc0],
+            vec![0x26, 0x01, 0xaf],
+        ] {
+            body.extend_from_slice(&[0, 0, 0, 1]);
+            body.extend_from_slice(&nal);
+        }
+        body
+    }
+
+    #[tokio::test]
+    async fn the_device_streams_once_the_start_arrives_as_msgid_1410() {
+        let (address, peer) = crate::dvrip::fake::serve_scripted(|_, id, _| {
+            if id == crate::dvrip::msg::MONITOR_CHANNEL as u16 {
+                return Vec::new();
+            }
+            if id == 0x0585 {
+                return vec![(0x0586, b"{\"Ret\":100}".to_vec())];
+            }
+            if id == crate::dvrip::msg::MONITOR_START {
+                return vec![(crate::media::live::LIVE_MEDIA_ID, media_body())];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = crate::dvrip::fake::connect(&address).await;
+        let body = monitor_start_body(0, "Main", connection.session());
+        start_monitor(&mut connection, &body).await.expect("start");
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv())
+            .await
+            .expect("a frame inside the deadline")
+            .expect("a readable frame");
+        assert_eq!(frame.0.id, crate::media::live::LIVE_MEDIA_ID);
+        assert_eq!(frame.1, media_body());
+        drop(connection);
+        let seen = peer.await.expect("peer task");
+        assert_eq!(seen.last().map(|row| row.1), Some(0x0582));
+    }
+
+    #[tokio::test]
+    async fn a_start_sent_as_the_claim_msgid_draws_no_media() {
+        let (address, peer) = crate::dvrip::fake::serve_scripted(|_, id, _| {
+            if id == crate::dvrip::msg::MONITOR_START {
+                return vec![(crate::media::live::LIVE_MEDIA_ID, media_body())];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = crate::dvrip::fake::connect(&address).await;
+        let body = monitor_start_body(0, "Main", connection.session());
+        connection
+            .send_plain(0, crate::dvrip::msg::MONITOR, &body)
+            .await
+            .expect("send under the wrong id");
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_millis(400), connection.recv()).await;
+        assert!(outcome.is_err(), "the wrong msgid must not produce media");
+        drop(connection);
+        let seen = peer.await.expect("peer task");
+        assert_eq!(seen.last().map(|row| row.1), Some(0x0585));
+    }
+
+    #[test]
+    fn parameter_sets_need_one_of_each_type() {
+        let mut body = Vec::new();
+        for (nal, kind) in [
+            (vec![0x40u8, 0x01, 0x0c], 32u8),
+            (vec![0x42, 0x01, 0x01], 33),
+        ] {
+            body.extend_from_slice(&[0, 0, 0, 1]);
+            body.extend_from_slice(&nal);
+            assert_eq!(crate::media::hevc::nal_type(&nal), Some(kind));
+        }
+        assert!(
+            parameter_sets_of(&body).is_empty(),
+            "two of three is not a set"
+        );
+        body.extend_from_slice(&[0, 0, 0, 1]);
+        body.extend_from_slice(&[0x44, 0x01, 0xc0]);
+        body.extend_from_slice(&[0, 0, 0, 1]);
+        body.extend_from_slice(&[0x26, 0x01, 0xaf]);
+        let sets = parameter_sets_of(&body);
+        assert_eq!(sets.len(), 3);
+        assert_eq!(crate::media::hevc::nal_type(&sets[0]), Some(32));
+        assert_eq!(crate::media::hevc::nal_type(&sets[1]), Some(33));
+        assert_eq!(crate::media::hevc::nal_type(&sets[2]), Some(34));
+    }
+
+    #[test]
+    fn a_trailing_nal_without_a_following_start_code_is_not_a_set() {
+        let mut body = Vec::new();
+        for nal in [
+            vec![0x40u8, 0x01, 0x0c],
+            vec![0x42, 0x01, 0x01],
+            vec![0x44, 0x01, 0xc0],
+        ] {
+            body.extend_from_slice(&[0, 0, 0, 1]);
+            body.extend_from_slice(&nal);
+        }
+        assert!(
+            parameter_sets_of(&body).is_empty(),
+            "a set that never closes is not a set"
+        );
+        body.extend_from_slice(&[0, 0, 0, 1]);
+        body.extend_from_slice(&[0x26, 0x01, 0xaf]);
+        let complete = parameter_sets_of(&body);
+        assert_eq!(complete.len(), 3);
     }
 }

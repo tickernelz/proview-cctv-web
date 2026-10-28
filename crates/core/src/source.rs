@@ -526,6 +526,67 @@ async fn pump_passthrough(
     result
 }
 
+pub type Fmp4Publisher = (
+    tokio::process::ChildStdin,
+    tokio::task::JoinHandle<()>,
+    Child,
+);
+
+pub async fn spawn_fmp4_publisher(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+    codec: &str,
+    parameter_sets: &[Vec<u8>],
+) -> Result<Fmp4Publisher, SourceError> {
+    let mut child = ffmpeg_command(codec)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SourceError::FfmpegMissing
+            } else {
+                SourceError::Io(error)
+            }
+        })?;
+    let mut stdin = child.stdin.take().ok_or(SourceError::FfmpegMissing)?;
+    let mut stdout = child.stdout.take().ok_or(SourceError::FfmpegMissing)?;
+    let mut head = Vec::new();
+    for parameter in parameter_sets {
+        hevc::append_annexb(parameter, &mut head);
+    }
+    if !head.is_empty() {
+        stdin.write_all(&head).await.map_err(SourceError::Io)?;
+    }
+    let _sender = hub.publisher(key.clone());
+    let publish_hub = hub.clone();
+    let publish_key = key.clone();
+    let reader = tokio::spawn(async move {
+        let mut splitter = Fmp4Splitter::new();
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let read = match stdout.read(&mut chunk).await {
+                Ok(0) => break,
+                Ok(read) => read,
+                Err(_) => break,
+            };
+            for piece in splitter.push(&chunk[..read]) {
+                match piece {
+                    Piece::Init(bytes) => {
+                        publish_hub.publish_packet(&publish_key, LivePacket::init(bytes));
+                    }
+                    Piece::Fragment(bytes) => {
+                        publish_hub.publish(&publish_key, bytes);
+                    }
+                }
+            }
+        }
+    });
+    Ok((stdin, reader, child))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -630,65 +691,4 @@ mod tests {
         assert!(gate.accept(true));
         assert!(gate.accept(false));
     }
-}
-
-pub type Fmp4Publisher = (
-    tokio::process::ChildStdin,
-    tokio::task::JoinHandle<()>,
-    Child,
-);
-
-pub async fn spawn_fmp4_publisher(
-    hub: &Arc<LiveHub>,
-    key: &StreamKey,
-    codec: &str,
-    parameter_sets: &[Vec<u8>],
-) -> Result<Fmp4Publisher, SourceError> {
-    let mut child = ffmpeg_command(codec)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                SourceError::FfmpegMissing
-            } else {
-                SourceError::Io(error)
-            }
-        })?;
-    let mut stdin = child.stdin.take().ok_or(SourceError::FfmpegMissing)?;
-    let mut stdout = child.stdout.take().ok_or(SourceError::FfmpegMissing)?;
-    let mut head = Vec::new();
-    for parameter in parameter_sets {
-        hevc::append_annexb(parameter, &mut head);
-    }
-    if !head.is_empty() {
-        stdin.write_all(&head).await.map_err(SourceError::Io)?;
-    }
-    let _sender = hub.publisher(key.clone());
-    let publish_hub = hub.clone();
-    let publish_key = key.clone();
-    let reader = tokio::spawn(async move {
-        let mut splitter = Fmp4Splitter::new();
-        let mut chunk = vec![0u8; 64 * 1024];
-        loop {
-            let read = match stdout.read(&mut chunk).await {
-                Ok(0) => break,
-                Ok(read) => read,
-                Err(_) => break,
-            };
-            for piece in splitter.push(&chunk[..read]) {
-                match piece {
-                    Piece::Init(bytes) => {
-                        publish_hub.publish_packet(&publish_key, LivePacket::init(bytes));
-                    }
-                    Piece::Fragment(bytes) => {
-                        publish_hub.publish(&publish_key, bytes);
-                    }
-                }
-            }
-        }
-    });
-    Ok((stdin, reader, child))
 }

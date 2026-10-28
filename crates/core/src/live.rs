@@ -116,6 +116,7 @@ pub struct StreamSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StreamKey {
+    pub scope: String,
     pub device: String,
     pub channel: u32,
     pub sub_stream: bool,
@@ -125,6 +126,23 @@ pub struct StreamKey {
 impl StreamKey {
     pub fn new(device: impl Into<String>, channel: u32, sub_stream: bool, mode: LiveMode) -> Self {
         Self {
+            scope: String::new(),
+            device: device.into(),
+            channel,
+            sub_stream,
+            mode,
+        }
+    }
+
+    pub fn cloud(
+        scope: impl Into<String>,
+        device: impl Into<String>,
+        channel: u32,
+        sub_stream: bool,
+        mode: LiveMode,
+    ) -> Self {
+        Self {
+            scope: scope.into(),
             device: device.into(),
             channel,
             sub_stream,
@@ -558,5 +576,26 @@ mod tests {
         assert_eq!(snapshot.keyframes, 1);
         assert_eq!(snapshot.mode, LiveMode::Passthrough);
         hub.release(&stream);
+    }
+
+    #[test]
+    fn a_cloud_key_is_scoped_away_from_a_local_key_for_the_same_device() {
+        let local = StreamKey::new("7f92970ddf5282743hrc", 1, false, LiveMode::Transcode);
+        let cloud = StreamKey::cloud(
+            "6f8c33b29c95774c14bae9436e721c8",
+            "7f92970ddf5282743hrc",
+            1,
+            false,
+            LiveMode::Transcode,
+        );
+        assert_ne!(local, cloud);
+        let other = StreamKey::cloud(
+            "11111111111111111111111111111111",
+            "7f92970ddf5282743hrc",
+            1,
+            false,
+            LiveMode::Transcode,
+        );
+        assert_ne!(cloud, other);
     }
 }

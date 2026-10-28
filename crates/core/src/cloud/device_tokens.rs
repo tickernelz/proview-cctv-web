@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
@@ -33,6 +34,7 @@ struct Entry {
 pub struct DeviceTokenStore {
     dir: Option<PathBuf>,
     key: Option<[u8; 32]>,
+    write: Mutex<()>,
 }
 
 impl DeviceTokenStore {
@@ -47,7 +49,11 @@ impl DeviceTokenStore {
                     .map(PathBuf::from)
             });
         let key = dir.as_deref().and_then(read_or_create_key);
-        Self { dir, key }
+        Self {
+            dir,
+            key,
+            write: Mutex::new(()),
+        }
     }
 
     pub fn enabled(&self) -> bool {
@@ -56,9 +62,7 @@ impl DeviceTokenStore {
 
     pub fn get(&self, serial: &str) -> Option<String> {
         let key = self.key?;
-        let entry = self
-            .file()
-            .and_then(|file| file.entries.get(serial).cloned())?;
+        let entry = self.file().ok()?.entries.get(serial).cloned()?;
         let nonce = STANDARD.decode(entry.nonce.trim()).ok()?;
         let tag = STANDARD.decode(entry.tag.trim()).ok()?;
         let payload = STANDARD.decode(entry.payload.trim()).ok()?;
@@ -78,6 +82,8 @@ impl DeviceTokenStore {
         let key = self.key.ok_or_else(|| {
             "no device token key: set PROVIEW_DATA_DIR to a writable directory".to_string()
         })?;
+        let _guard = self.write.lock().expect("device token lock");
+        let mut file = self.file()?;
         let mut nonce = [0u8; NONCE];
         OsRng.fill_bytes(&mut nonce);
         let mut tag = [0u8; 16];
@@ -90,7 +96,6 @@ impl DeviceTokenStore {
             &mut tag,
         )
         .map_err(|error| format!("device token sealing failed: {error}"))?;
-        let mut file = self.file().unwrap_or_default();
         file.version = VERSION;
         file.entries.insert(
             serial.to_string(),
@@ -104,7 +109,8 @@ impl DeviceTokenStore {
     }
 
     pub fn forget(&self, serial: &str) -> Result<bool, String> {
-        let mut file = self.file().unwrap_or_default();
+        let _guard = self.write.lock().expect("device token lock");
+        let mut file = self.file()?;
         let removed = file.entries.remove(serial).is_some();
         if removed {
             self.persist(&file)?;
@@ -112,19 +118,24 @@ impl DeviceTokenStore {
         Ok(removed)
     }
 
-    pub fn serials(&self) -> Vec<String> {
-        self.file()
-            .map(|file| file.entries.keys().cloned().collect())
-            .unwrap_or_default()
-    }
-
     fn path(&self) -> Option<PathBuf> {
         self.dir.as_ref().map(|dir| dir.join(STORE_FILE))
     }
 
-    fn file(&self) -> Option<StoreFile> {
-        let raw = fs::read_to_string(self.path()?).ok()?;
-        serde_json::from_str(&raw).ok()
+    fn file(&self) -> Result<StoreFile, String> {
+        let Some(path) = self.path() else {
+            return Ok(StoreFile::default());
+        };
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(StoreFile::default())
+            }
+            Err(error) => return Err(format!("device token store unreadable: {error}")),
+        };
+        serde_json::from_str(&raw).map_err(|error| {
+            format!("device token store is corrupt, refusing to overwrite: {error}")
+        })
     }
 
     fn persist(&self, file: &StoreFile) -> Result<(), String> {
@@ -138,8 +149,7 @@ impl DeviceTokenStore {
         let raw = serde_json::to_string_pretty(file)
             .map_err(|error| format!("device token encode: {error}"))?;
         let temporary = path.with_extension("json.new");
-        fs::write(&temporary, raw).map_err(|error| format!("device token write: {error}"))?;
-        set_private(&temporary)?;
+        write_private(&temporary, raw.as_bytes())?;
         fs::rename(&temporary, &path).map_err(|error| format!("device token rename: {error}"))
     }
 }
@@ -147,28 +157,55 @@ impl DeviceTokenStore {
 fn read_or_create_key(dir: &Path) -> Option<[u8; 32]> {
     let path = dir.join(KEY_FILE);
     if let Ok(raw) = fs::read_to_string(&path) {
+        tighten(&path).ok()?;
         let decoded = STANDARD.decode(raw.trim()).ok()?;
-        if decoded.len() == 32 {
-            let mut key = [0u8; 32];
-            key.copy_from_slice(&decoded);
-            return Some(key);
+        if decoded.len() != 32 {
+            return None;
         }
-        return None;
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&decoded);
+        return Some(key);
     }
     fs::create_dir_all(dir).ok()?;
     let mut key = [0u8; 32];
     OsRng.fill_bytes(&mut key);
-    fs::write(&path, STANDARD.encode(key)).ok()?;
-    set_private(&path).ok()?;
+    write_private(&path, STANDARD.encode(key).as_bytes()).ok()?;
     Some(key)
 }
 
-fn set_private(path: &Path) -> Result<(), String> {
+fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|error| format!("device token write: {error}"))?
+    };
+    #[cfg(not(unix))]
+    let mut file =
+        fs::File::create(path).map_err(|error| format!("device token write: {error}"))?;
+    file.write_all(bytes)
+        .map_err(|error| format!("device token write: {error}"))?;
+    tighten(path)
+}
+
+fn tighten(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("device token permission: {error}"))?;
+        let mode = fs::metadata(path)
+            .map_err(|error| format!("device token stat: {error}"))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("device token permission: {error}"))?;
+        }
     }
     #[cfg(not(unix))]
     {
@@ -246,5 +283,36 @@ mod tests {
         let store = DeviceTokenStore::load(Some(Path::new("")));
         assert!(!store.enabled());
         assert!(store.put("serial-one", "token-value").is_err());
+    }
+
+    #[test]
+    fn a_corrupt_store_is_not_overwritten() {
+        let dir = scratch();
+        let store = DeviceTokenStore::load(Some(&dir));
+        store.put("serial-one", "first").expect("put first");
+        let path = dir.join(STORE_FILE);
+        let mut broken = fs::read_to_string(&path).expect("store file");
+        broken.truncate(12);
+        fs::write(&path, &broken).expect("corrupt the store");
+        assert!(store.put("serial-two", "second").is_err());
+        assert!(store.forget("serial-one").is_err());
+        assert_eq!(fs::read_to_string(&path).expect("store file"), broken);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_is_private_from_the_first_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).expect("open the directory");
+        let store = DeviceTokenStore::load(Some(&dir));
+        store.put("serial-one", "token-value").expect("put");
+        let mode = fs::metadata(dir.join(KEY_FILE))
+            .expect("key file")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "key file mode {mode:o}");
+        fs::remove_dir_all(&dir).ok();
     }
 }

@@ -491,7 +491,7 @@ async fn cloud_path(
 
 #[get("/ws/live?<device>&<channel>&<quality>&<codec>")]
 #[allow(clippy::too_many_arguments)]
-fn ws_live(
+async fn ws_live(
     ws: ws::WebSocket,
     device: String,
     channel: Option<u32>,
@@ -511,7 +511,19 @@ fn ws_live(
     let channel = channel.unwrap_or(1);
     let sub_stream = quality.as_deref() == Some("sub");
     if modes.mode_for(Some(&id)) == proview_core::provider::Mode::Cloud {
-        let key = StreamKey::new(device.clone(), channel, sub_stream, LiveMode::Transcode);
+        let provider = proview_core::provider::cloud::CloudProvider::new(cfg.inner());
+        match provider.owns(&vendor, &device).await {
+            Ok(true) => {}
+            Ok(false) => return Err(fail(Status::NotFound, "device not in this account")),
+            Err(error) => return Err(fail(status_for(&error), error.to_string())),
+        }
+        let key = StreamKey::cloud(
+            vendor.account.clone(),
+            device.clone(),
+            channel,
+            sub_stream,
+            LiveMode::Transcode,
+        );
         let subscription = live.hub.subscribe(key.clone());
         live.ensure_cloud_source(
             key.clone(),

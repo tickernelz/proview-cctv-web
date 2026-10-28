@@ -319,16 +319,6 @@ impl Connection {
         Err(DvrError::NoReply)
     }
 
-    pub async fn login_body(&mut self, body: Value) -> Result<Value, DvrError> {
-        let mut payload =
-            serde_json::to_vec(&body).map_err(|error| DvrError::Malformed(error.to_string()))?;
-        payload.push(0);
-        self.send_frame_on(0, true, super::msg::LOGIN, &payload)
-            .await?;
-        let (_, reply) = self.recv().await?;
-        parse_json(&reply)
-    }
-
     pub async fn login_token(
         &mut self,
         token: &str,

@@ -119,24 +119,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         eprintln!("loginraw {}", shape.join(" "));
-        if let Ok(target) = std::env::var("PROVIEW_LOGIN_TOKEN_DUMP") {
-            if let Some(token) = reply
-                .get("AdminToken")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                std::fs::write(&target, token)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
-                }
-                eprintln!("loginraw token written");
-            } else {
-                eprintln!("loginraw the reply carries no AdminToken");
-            }
-        }
         return Ok(());
     }
     let login = connection.login(&device_user, &device_pass).await?;

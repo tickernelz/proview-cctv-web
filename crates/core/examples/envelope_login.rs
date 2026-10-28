@@ -49,14 +49,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let started = Instant::now();
     let device_token = client.device_token(&tokens.access, &device_id).await?;
-    if let Ok(path) = std::env::var("PROVIEW_TOKEN_DUMP") {
-        std::fs::write(&path, &device_token)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
     println!(
         "token   {:>6.2}s device token {}",
         started.elapsed().as_secs_f64(),

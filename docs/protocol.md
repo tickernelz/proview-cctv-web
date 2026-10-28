@@ -1391,6 +1391,34 @@ and `PROVIEW_DEVICE_PASS` to the server it starts, because a cloud session still
 needs the device login of 4C.24 and the harness builds the server environment from
 scratch. The values never enter the repository, the report, or the command line.
 
+### 4C.26 Cost of one cloud live stream, measured
+
+All numbers from this box on 2026-10-28, camera unreachable on the LAN, one stream
+at a time, main quality (2304×2592 H.265 transcoded to baseline H.264 by ffmpeg).
+
+**Cold start**, ten runs, each a fresh server process and a fresh `/ws/live`:
+
+Distribution over the ten runs: min **1355 ms**, p50 **1835 ms**, p95 **3846 ms**,
+max **3846 ms**; **10 of 10** produced a frame inside the 6 s readiness window
+(`stream.rs` `ready(slot, 240)` = 240 × 25 ms). The window covers the whole chain:
+`owns` device-list check, relay assignment, handshake, device login, claim 1413,
+start 1410, three parameter sets, ffmpeg probe.
+
+**Steady state**, one 300 s session with the socket held open:
+
+| counter | value |
+|---|---|
+| client | 149 fragments, 339,272,304 bytes, 9,047 kbit/s, first frame 3.5 s |
+| server CPU | **0.87 s** over 300 s (0.3 % of one core) |
+| server RSS | 36–39 MB, peak **42.5 MB** |
+| ffmpeg CPU | **189 s** over 270 s, i.e. ≈0.7 core |
+| ffmpeg RSS | 250–293 MB |
+
+So the per-stream cost sits in the transcoder, not in the relay or the demuxer: the
+server side of a cloud stream is under one CPU second per five minutes, while
+libx264 at veryfast on 2304×2592 holds most of a core for the duration. A viewer
+that asks for `codec=hevc` skips that entirely (section 11).
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
