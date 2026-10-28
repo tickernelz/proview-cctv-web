@@ -148,6 +148,7 @@ mod tests {
         Config {
             provider: ProviderKind::Fixture,
             cloud_base: String::new(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: String::new(),
             fixture_dir: dir.to_string_lossy().to_string(),

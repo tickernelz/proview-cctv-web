@@ -807,6 +807,7 @@ mod tests {
         let config = Config {
             provider: ProviderKind::Fixture,
             cloud_base: "https://pub-token.example.invalid".to_string(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
             device_user: "admin".to_string(),
             device_pass: "device-password".to_string(),
             fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),

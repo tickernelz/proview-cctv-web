@@ -2160,6 +2160,71 @@ with the path echoed, while `mdadd` on the same shape answers a real code.
 the client does instead: `POST /api/account/signout` clears the server session
 and the remembered token and records the vendor's raw reply in its answer.
 
+## 10E. Device share on the account envelope (`usersearch`, `devicesTrans*`, `mdshareaccept`), measured 2026-10-28
+
+The APK shares a camera in two layers, and both were exercised end to end from this
+box with the second account the program holds (`PROVIEW_ALT_EMAIL`).
+
+**1. Resolve the receiver.** `POST /v3/<tsid>/<sig>.rs` `usersearch`, header `uuid`,
+`appKey`, `Authorization: <access token>`, sealed body `search=<email>`. No password
+field is needed: `search` alone is enough, and an unknown name answers
+`this username is not registered on the cloud account service`, while searching the
+signed-in account answers `USER_NO_SEARCH_SELF (19019)`. A hit is
+`{"id": "...", "account": "..."}`; the `id` is 113 base64 characters and decodes to
+`<receiver account claim>&:&xm:<opaque>` — the opaque tail changes per request, so the
+id is not a stable key and must be fetched per invitation. Measured: 0.30 s.
+
+**2. Send the invitation.** `devicesTransOut`, sealed body
+`uuids=<sn>&transInUserId=<that id>` answers
+`{"code":2000,"data":{"expireMillis":...,"transKey":"<24 hex>"}}`. The receiver's
+`hasDevicesTrans uuids=<sn>` then answers `{"trans":1,"uuid":"<sn>"}`; the owner's
+answers `trans:0` until the receiver accepts. `devicesTransInfo transKey=<key>` with
+the **owner** token returns the invitee's masked mail and the uuid list, and with the
+**receiver** token answers `DEVICE_TRANS_EXPIRE (19043)`.
+
+**3. The receiver accepts.** `devicesTransIn transKey=<key>` answers 2000 and, in one
+run, returned the device row (`deviceName`, `transInStatus 1`), but acceptance through
+that call alone never put the camera in the receiver's `msdlistCode`; five polls over
+16 s, and a repeat with a 60 s wait, all came back empty. What materialises the device
+is the app's own call: `POST https://as-ams.jftechws.com/mdshareaccept/v3/<tsid>/<sig>.rs`
+with the receiver's token and the sealed body `uname=<receiver mail>&upass=<password>&devId=<sn>`.
+After that the receiver's `msdlistCode` lists the camera (`Pintu keluar masuk`, the same
+uuid, `mAccount true`, one channel) and the record carries `password` and `deviceToken`,
+so the vendor hands the device credential to the receiver on purpose.
+`upass` must be the account's own password: `devId` alone, `uname` alone, an empty
+`upass`, a bogus `upass` and the portal digest (`AES-128-ECB` of the password under the
+portal key, `cloud::digest_of`) all answer 2000 and add nothing, so 2000 on this endpoint
+says only that the call was parsed. The password travels inside the sealed body.
+
+**4. Taking it back is receiver-side.** `devicesTransCancel` with either token,
+`mdsharedel` and `mdsharerefuse` (both hosts, every parameter shape tried) answer 2000
+without removing the device — `mdsharedel` with `shareUuid` is refused as
+`param 'devId' can not null`, and the owner's `mdsharelist` stays empty while its
+`numberOfSharedAccounts` reads 1. Only the receiver's own `mdrm uuid=<sn>` drops it:
+receiver 1 → 0, owner still 1.
+
+Routes in this project: `POST /api/cloud/device/share` takes `acceptId` or `account`
+(an email goes through `usersearch`, and the hit must match the account by its masked
+prefix and suffix — no match is 404, more than one is 409, and the masked account is
+echoed back as `resolved`), and `POST /api/cloud/device/share/accept` takes `key` (the
+SDK transfer) or `devId` plus the receiver's raw password, sent inside the sealed body.
+The accept route never reports success on the vendor's 2000 alone: it reads the
+receiver's `msdlistCode` afterwards and answers 409 when `devId` is not in it, because
+2000 on `mdshareaccept` is also what a wrong password gets. `PROVIEW_SHARE_BASE` sets
+the share host (`Config::share_base`).
+
+**5. The transfer does not repeat.** Once the receiver has removed the device with
+`mdrm`, `devicesTransOut` still answers 2000 with a fresh `transKey`, but the
+receiver's `hasDevicesTrans` stays `{"trans":0}` — three attempts on 2026-10-28
+17:12-17:15 UTC, through the project's own client and a hand-built sealed POST
+alike. The vendor keeps a state on this (camera, receiver) pair after the removal;
+a fresh receiver account, or a cooldown, is what reopens the path.
+
+**6. The receiver's list is cached 30 s.** `GET /api/devices` answers from
+`CloudProvider`'s per-token list for `SESSION_ENTRY_TTL`, so a share accepted through
+the route shows up there only after that window; the direct `msdlistCode` call is
+immediate.
+
 ## 11. Live passthrough transport (stream 2)
 
 A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards
