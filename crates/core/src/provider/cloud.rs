@@ -6,6 +6,8 @@ use super::{
 use crate::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
 use crate::cloud::status::{self, StatusClient, STATUS_HOST};
 use crate::cloud::CloudError;
+
+const MONITOR_CLAIM_REPLY: u16 = 0x0586;
 use crate::config::Config;
 
 pub struct CloudProvider {
@@ -238,70 +240,12 @@ impl Provider for CloudProvider {
         let dest = tunnel.reply.dest_ip.clone();
         let mut connection = tunnel.into_connection();
 
-        let device_token = entry
-            .extra
-            .get("deviceToken")
-            .and_then(|value| value.get("AdminToken"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        let login = if device_token.is_empty() {
-            match connection.login(&self.device_user, &self.device_pass).await {
-                Ok(ok) => format!("password login, session {}", ok.session),
-                Err(error) => {
-                    return Err(ProviderError::Upstream(format!(
-                        "relay accepted for {dest}, device login failed: {error:?}"
-                    )))
-                }
-            }
-        } else {
-            match connection.login_token(device_token, "").await {
-                Ok(reply) => format!(
-                    "token login, ret {}",
-                    reply
-                        .get("Ret")
-                        .map(|value| value.to_string())
-                        .unwrap_or_default()
-                ),
-                Err(error) => {
-                    return Err(ProviderError::Upstream(format!(
-                        "relay accepted for {dest}, token login failed: {error:?}"
-                    )))
-                }
-            }
-        };
-        let device_channel = channel.saturating_sub(1) as u8;
-        let stream = if high { "Main" } else { "Sub" };
-        let session = connection.session();
-        let session_id = format!("0x{session:08x}");
-        let device_token = entry
-            .extra
-            .get("deviceToken")
-            .and_then(|value| value.get("AdminToken"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        let login = if device_token.is_empty() {
-            match connection.login(&self.device_user, &self.device_pass).await {
-                Ok(ok) => format!("password login, session {}", ok.session),
-                Err(error) => {
-                    return Err(ProviderError::Upstream(format!(
-                        "relay accepted for {dest}, device login failed: {error:?}"
-                    )))
-                }
-            }
-        } else {
-            match connection.login_token(device_token, "").await {
-                Ok(reply) => format!(
-                    "token login, ret {}",
-                    reply
-                        .get("Ret")
-                        .map(|value| value.to_string())
-                        .unwrap_or_default()
-                ),
-                Err(error) => {
-                    return Err(ProviderError::Upstream(format!(
-                        "relay accepted for {dest}, token login failed: {error:?}"
-                    )))
-                }
+        let login = match connection.login(&self.device_user, &self.device_pass).await {
+            Ok(ok) => format!("password login, session 0x{:08x}", ok.session),
+            Err(error) => {
+                return Err(ProviderError::Upstream(format!(
+                    "relay accepted for {dest}, device login failed: {error:?}"
+                )))
             }
         };
         let device_channel = channel.saturating_sub(1) as u8;
@@ -319,7 +263,6 @@ impl Provider for CloudProvider {
                     "TransMode": "TCP",
                 },
             },
-            "DHParameter": { "RandomStrA": rps_client::random_lower(4) },
             "SessionID": session_id,
         });
         connection
@@ -330,6 +273,32 @@ impl Provider for CloudProvider {
             )
             .await
             .map_err(|error| ProviderError::Upstream(format!("monitor claim failed: {error:?}")))?;
+        let claim_ret = loop {
+            let received =
+                tokio::time::timeout(std::time::Duration::from_secs(5), connection.recv()).await;
+            match received {
+                Ok(Ok((header, payload))) => {
+                    if header.id != MONITOR_CLAIM_REPLY {
+                        continue;
+                    }
+                    let ret = serde_json::from_slice::<serde_json::Value>(&payload)
+                        .ok()
+                        .and_then(|reply| reply.get("Ret").and_then(serde_json::Value::as_i64));
+                    break ret;
+                }
+                Ok(Err(error)) => {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, monitor claim reply failed: {error:?}"
+                    )))
+                }
+                Err(_) => break None,
+            }
+        };
+        if claim_ret != Some(100) {
+            return Err(ProviderError::Upstream(format!(
+                "relay accepted for {dest}, monitor claim refused: ret {claim_ret:?}"
+            )));
+        }
         let start = crate::media::live::start_body(session, device_channel, stream);
         connection
             .send_plain(0, crate::dvrip::msg::MONITOR_START, &start)
