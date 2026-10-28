@@ -30,10 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Web UI in headless Chrome (menus, shortcuts, talk, grid, snapshot, settings edits during boot)
+      - name: Web UI in headless Chrome (menus, shortcuts, talk, grid, snapshot, settings edits during boot, boot stream ownership)
         run: |
           cargo build -p proview-server
-          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/restart.test.mjs tests/web/settings-boot.test.mjs tests/web/desktop-settings.test.mjs
+          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/restart.test.mjs tests/web/settings-boot.test.mjs tests/web/desktop-settings.test.mjs tests/web/stream-orphan.test.mjs
       - run: cargo build --release -p proview-server
 
   desktop-smoke:
