@@ -7,7 +7,30 @@ stability before 1.0.
 
 ## Unreleased
 
+### Changed
+
+- The page has a refined look (ZHA-4181): one icon family (Lucide, built into
+  the inline sprite, so no icon runtime ships), a blue accent for what is
+  pressed, selected, checked or primary, no text under 12 px, tabular numbers on
+  clocks and timestamps, a 4 px spacing grid and 160/200 ms motion that
+  `prefers-reduced-motion` still switches off. The alarm sheet, playback and
+  cloud recordings follow the light theme now: they used to inject their own
+  dark colours. The alarm bell is an icon instead of an emoji. Every token pair
+  passes AA (`tools/contrast.py`, 76 pairs). Design notes in `DESIGN.md`, the
+  options considered in `docs/design/redesign-v2/`, the library decision in
+  ADR 0002.
+- Every screen fits from 320 to 1920 px wide: sign-in becomes one column below
+  900 px, settings stacks below 768/640 px, the top bar tightens below 480 px,
+  and "every camera" uses 1, 2 or 4 columns by width instead of 3 everywhere.
+  Buttons in the top bar and the control row are 44 px on touch screens.
+
 ### Added
+
+- An end-to-end suite (`e2e/`, Playwright 1.64.1) against the served build with
+  the fixture provider: sign-in, devices, live, lenses, PTZ and presets, record,
+  white light and flip, settings, alarms and the grid, in Chromium and WebKit,
+  plus a viewport gate from 320 to 1920 px, touch-screen projects and screenshot
+  baselines in both themes. CI runs it as the `e2e` job.
 
 - Desktop alarm notifications and the tray. The desktop process polls the alarm
   centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
