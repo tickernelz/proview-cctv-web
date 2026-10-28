@@ -60,8 +60,10 @@
   const renameInput = node('input', { type: 'text', id: 'device-admin-name', placeholder: 'Pintu keluar masuk' });
   const groupInput = node('input', { type: 'text', id: 'device-admin-group', placeholder: 'pintu, garasi, teras' });
   const favouriteBox = node('input', { type: 'checkbox', id: 'device-admin-favourite' });
-  const shareInput = node('input', { type: 'text', id: 'device-admin-accept', placeholder: 'the other account id' });
+  const shareInput = node('input', { type: 'text', id: 'device-admin-accept', placeholder: 'the other account email or its account id' });
   const shareKey = node('input', { type: 'text', id: 'device-admin-key', placeholder: 'transKey from the invitation' });
+  const shareDevice = node('input', { type: 'text', id: 'device-admin-share-device', placeholder: 'camera serial shared with you' });
+  const shareAccountPass = node('input', { type: 'password', id: 'device-admin-share-pass', placeholder: 'your own account password', autocomplete: 'current-password' });
   const cloudOld = node('input', { type: 'password', id: 'device-admin-old', placeholder: 'current device password', autocomplete: 'off' });
   const cloudNew = node('input', { type: 'password', id: 'device-admin-new', placeholder: 'new device password', autocomplete: 'new-password' });
 
@@ -195,15 +197,16 @@
       ]),
     ]),
     node('div', { class: 'rows' }, [
-      field('Share to account', shareInput, 'the receiving account id (or its email)'),
+      field('Share to account', shareInput, 'the receiving account email resolves to its account id first'),
       node('button', {
         type: 'button', class: 'btn btn-fill', text: 'Send the invitation',
         onclick: () => guard('sharing', async () => {
           const uuid = currentUuid();
           if (!uuid) throw new Error('pick a camera first');
-          const acceptId = shareInput.value.trim();
-          if (!acceptId) throw new Error('the receiving account is empty');
-          const reply = await call(API.share, { method: 'POST', body: JSON.stringify({ uuids: [uuid], acceptId }) });
+          const target = shareInput.value.trim();
+          if (!target) throw new Error('the receiving account is empty');
+          const body = target.includes('@') ? { uuids: [uuid], account: target } : { uuids: [uuid], acceptId: target };
+          const reply = await call(API.share, { method: 'POST', body: JSON.stringify(body) });
           const data = reply && reply.data;
           const key = data && (data.transKey || data.key || (data.transInfos && data.transInfos[0] && data.transInfos[0].transKey));
           if (key) shareKey.value = key;
@@ -211,11 +214,21 @@
         }),
       }),
       field('Invitation key', shareKey),
+      field('Camera shared with you', shareDevice, 'the receiver accepts a shared camera by its serial and its own account password'),
+      field('Your account password', shareAccountPass, 'sent once inside the sealed body; the share service checks it'),
       node('div', { class: 'rows' }, [
         node('button', {
           type: 'button', class: 'btn btn-text', text: 'Accept',
           onclick: () => guard('accepting', async () => {
+            const device = shareDevice.value.trim();
             const key = shareKey.value.trim();
+            if (device) {
+              const password = shareAccountPass.value;
+              if (!password) throw new Error('the receiver needs its own account password');
+              await call(API.accept, { method: 'POST', body: JSON.stringify({ devId: device, password }) });
+              shareAccountPass.value = '';
+              return 'accepted ' + device;
+            }
             if (!key) throw new Error('paste an invitation key first');
             await call(API.accept, { method: 'POST', body: JSON.stringify({ key }) });
             return 'accepted ' + key;

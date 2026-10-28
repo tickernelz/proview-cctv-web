@@ -78,6 +78,7 @@ fn signed(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<Signed, Failu
 
 struct CloudClients {
     admin: AttributeClient,
+    share: AttributeClient,
     cloud: EnvelopeClient,
 }
 
@@ -85,12 +86,17 @@ fn clients(cfg: &Config) -> Arc<CloudClients> {
     static POOL: OnceLock<Mutex<HashMap<String, Arc<CloudClients>>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = pool.lock().unwrap_or_else(|error| error.into_inner());
+    let share_base = std::env::var("PROVIEW_SHARE_BASE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| proview_core::cloud::attributes::SHARE_BASE.to_string());
     guard
-        .entry(cfg.cloud_base.clone())
+        .entry(format!("{}|{}", cfg.cloud_base, share_base))
         .or_insert_with(|| {
             let identity = Identity::resolve();
             Arc::new(CloudClients {
                 admin: AttributeClient::with_base(identity.clone(), cfg.cloud_base.clone()),
+                share: AttributeClient::with_base(identity.clone(), share_base.clone()),
                 cloud: EnvelopeClient::with_base(identity, cfg.cloud_base.clone()),
             })
         })
@@ -295,8 +301,29 @@ fn set_favourite(
 #[derive(Deserialize)]
 pub struct ShareBody {
     uuids: Vec<String>,
-    #[serde(rename = "acceptId", alias = "accept_id")]
-    accept_id: String,
+    #[serde(default, rename = "acceptId", alias = "accept_id")]
+    accept_id: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
+}
+
+fn clean(raw: &Option<String>) -> Option<String> {
+    raw.as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn account_matches(returned: &str, wanted: &str) -> bool {
+    if returned.eq_ignore_ascii_case(wanted) {
+        return true;
+    }
+    returned.len() == wanted.len()
+        && returned.contains('*')
+        && returned
+            .chars()
+            .zip(wanted.chars())
+            .all(|(masked, real)| masked == '*' || masked.eq_ignore_ascii_case(&real))
 }
 
 #[post("/cloud/device/share", data = "<body>")]
@@ -311,9 +338,35 @@ async fn share(
         return Err(fail(Status::BadRequest, "at least one uuid is required"));
     }
     let admin = clients(cfg);
+    let target = match (clean(&body.accept_id), clean(&body.account)) {
+        (Some(id), _) => id,
+        (None, Some(account)) => {
+            let hits = admin
+                .admin
+                .search_user(&signed.token, &account)
+                .await
+                .map_err(cloud_failure)?;
+            hits.iter()
+                .find(|hit| account_matches(&hit.account, &account))
+                .or_else(|| hits.first())
+                .map(|hit| hit.id.clone())
+                .ok_or_else(|| {
+                    fail(
+                        Status::NotFound,
+                        format!("no account on the cloud matches {account}"),
+                    )
+                })?
+        }
+        (None, None) => {
+            return Err(fail(
+                Status::BadRequest,
+                "the receiving account or its account id is required",
+            ))
+        }
+    };
     let reply = admin
         .admin
-        .share_out(&signed.token, &body.uuids, body.accept_id.trim())
+        .share_out(&signed.token, &body.uuids, &target)
         .await
         .map_err(cloud_failure)?;
     Ok(Json(reply))
@@ -369,18 +422,50 @@ pub struct KeyBody {
     uuids: Vec<String>,
 }
 
+#[derive(Deserialize)]
+pub struct AcceptBody {
+    #[serde(default)]
+    key: String,
+    #[serde(default, rename = "devId", alias = "dev_id")]
+    dev_id: String,
+    #[serde(default)]
+    password: String,
+}
+
 #[post("/cloud/device/share/accept", data = "<body>")]
 async fn share_accept(
-    body: Json<KeyBody>,
+    body: Json<AcceptBody>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<serde_json::Value>, Failure> {
     let signed = signed(store, cookies)?;
     let admin = clients(cfg);
+    let device = body.dev_id.trim();
+    if !device.is_empty() {
+        if body.password.is_empty() {
+            return Err(fail(
+                Status::BadRequest,
+                "the receiver must send its account password with the device id",
+            ));
+        }
+        return admin
+            .share
+            .share_accept_device(&signed.token, &signed.account, &body.password, device)
+            .await
+            .map(Json)
+            .map_err(cloud_failure);
+    }
+    let key = body.key.trim();
+    if key.is_empty() {
+        return Err(fail(
+            Status::BadRequest,
+            "an invitation key or a device id is required",
+        ));
+    }
     admin
         .admin
-        .share_accept(&signed.token, body.key.trim())
+        .share_accept(&signed.token, key)
         .await
         .map(Json)
         .map_err(cloud_failure)
@@ -448,4 +533,41 @@ async fn change_password(
         ok: true,
         message: format!("the cloud changed the device password of {uuid}; {source}"),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_masked_search_hit_still_matches_the_account_that_asked_for_it() {
+        assert!(account_matches(
+            "zhafron@example.com",
+            "Zhafron@Example.com"
+        ));
+        assert!(account_matches(
+            "zh*****@example.com",
+            "zhafron@example.com"
+        ));
+        assert!(!account_matches(
+            "zh*****@example.com",
+            "someone@example.com"
+        ));
+        assert!(!account_matches(
+            "zhafron@example.com",
+            "zhafron@example.org"
+        ));
+        assert!(!account_matches("zh*", "zhafron@example.com"));
+    }
+
+    #[test]
+    fn the_share_target_prefers_the_explicit_id_over_the_account() {
+        let body = ShareBody {
+            uuids: vec!["DEV00000000000000001".to_string()],
+            accept_id: Some("  ".to_string()),
+            account: Some("other@example.com".to_string()),
+        };
+        assert_eq!(clean(&body.accept_id), None);
+        assert_eq!(clean(&body.account).as_deref(), Some("other@example.com"));
+    }
 }
