@@ -1355,9 +1355,11 @@ comes from the password login the app itself performs at bind.
 
 ### 4C.25 The media reaches the browser, and what the acceptance run measures
 
-`CloudProvider::stream` no longer touches the device: it answers a
-`StreamTicket` (`kind: ws`, `source: cloud`, `/ws/live?device=…&channel=…&quality=…`).
-The tunnel is opened by the live source instead, the way the RTSP path works:
+`CloudProvider::stream` no longer opens a media session: it asks the account
+whether the device belongs to it and answers a `StreamTicket` (`kind: ws`,
+`source: cloud`, `/ws/live?device=…&channel=…&quality=…`). The device-list call
+stays so the route can still name the stage a failure stopped at (4C.14). The
+tunnel is opened by the live source instead, the way the RTSP path works:
 
 1. `LiveState::ensure_cloud_source` starts one source per stream key, and stops it
    after 60 s without subscribers (`track_source`, shared with `ensure_rtsp_source`).
