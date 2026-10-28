@@ -14,7 +14,10 @@ const desktopToken = (): Plugin => ({
 
 export default defineConfig({
   plugins: [desktopToken()],
-  build: { cssTarget: ['chrome105', 'edge105', 'firefox121', 'safari15.4'] },
+  build: {
+    target: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],
+    cssTarget: ['chrome105', 'edge105', 'firefox121', 'safari15.4'],
+  },
   server: {
     cors: false,
     port: 5173,

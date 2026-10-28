@@ -46,7 +46,7 @@ stability before 1.0.
 ### Changed
 
 - The page scripts are ES modules bundled by Vite into one hashed
-  `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40.9 kB in one).
+  `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40,396 B in one).
   `/app.js`, `/grid.js` and the other per-script URLs answer 404. The talk
   script's `startTalk`/`stopTalk` used to replace the older copies in `app.js`
   through the shared global scope; those dead copies are removed and `app.js`
