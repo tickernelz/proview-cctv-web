@@ -130,6 +130,15 @@ stability before 1.0.
   `tests/web/stream-orphan.test.mjs` covers the Settings case, the late
   `sourceopen`, both overlap orders and the replaced player; it fails on
   6c70754 and passes after this change.
+- A cloud live setup that outlasts a reply deadline no longer loses the bytes it
+  had already read. `Connection::recv` read the 20-byte header and then the body
+  with two separate exact reads, so a timeout that fired between them threw away
+  the header bytes it had consumed and the next frame began in the middle of the
+  one before it; the pre-claim reply wait, the token-to-password login fallback
+  and the monitor claim reply wait all continued on that connection. The reader
+  now keeps what arrived in a buffer that survives a cancelled read and hands a
+  frame out only once its header and declared body have both arrived, which also
+  covers the settings and control reads that share the type.
 
 ## 0.3.5 — 2026-10-28
 
