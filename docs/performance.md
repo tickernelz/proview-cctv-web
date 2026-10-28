@@ -310,3 +310,22 @@ python3 tools/acceptance/live_acceptance.py --sn 7f92970ddf5282743hrc
 No pass can be recorded until the `stream` stage stops failing. Each run keeps
 `report.md`, `report.json`, the server log and the payload dump under
 `~/re/proview-cctv/acceptance/`.
+
+### Round 2: controls after review (measured 2026-10-28)
+
+The first review asked for negative controls, so these ran against the harness
+itself: same host, same LAN guard, no camera involved.
+
+| Control | Setup | Result |
+|---|---|---|
+| camera reachable on the LAN with `--allow-lan` | a local listener on `127.0.0.1:<port>` passed as `--lan-target` | verdict `lan-reachable`, exit 3, stage `stream` also recorded; report `a15a5d88ebb8-20261028T021302Z` |
+| stale binary under `--no-build` | the release binary copied aside with mtime set to 2026-01-01 | exit 1 at `build`: "would label /tmp/zha4085-old-server (built 2026-01-01T00:00:00Z) as commit 2026-10-28T01:55:01Z" |
+| fixture self-check after the fixes | `--mode fixture --duration 20 --sample 5` | verdict `pass-fixture`, exit 0, 22 messages / 195 842 B / 20.204 s, longest gap 1.001 s |
+| cloud path after the fixes | `--sn 7f92970ddf5282743hrc --duration 300` | exit 1 at `stream`, 502 `ret 117` in 0.398 s |
+
+Framed dump, synthetic feed (a probe, not a camera run): 150 access units
+(15 keyframes, 135 deltas) plus one config record. The dump is 202 410 bytes,
+byte-identical to the concatenated access units once the nine-byte prefix is
+stripped, with 39 bytes of SPS/PPS prepended from the config record; `ffprobe -f
+h264` reads 150 frames at 320×180 with no warning. Before the fix the same feed
+would have written 2 000 extra bytes (nine per delta) and no parameter sets.

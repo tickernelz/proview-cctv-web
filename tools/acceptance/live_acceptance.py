@@ -172,29 +172,54 @@ class Live:
             raise StageError("live", "the websocket handshake echoed the wrong Sec-WebSocket-Accept")
         self.sock.settimeout(timeout)
 
-    def _read(self, count: int) -> bytes:
-        while len(self.pending) < count:
-            chunk = self.sock.recv(max(4096, count - len(self.pending)))
-            if not chunk:
-                raise ConnectionError("the peer closed the socket")
-            self.pending.extend(chunk)
-        out = bytes(self.pending[:count])
-        del self.pending[:count]
-        return out
+    def _frame_size(self):
+        if len(self.pending) < 2:
+            return None
+        length = self.pending[1] & 0x7F
+        header = 2
+        if length == 126:
+            header += 2
+        elif length == 127:
+            header += 8
+        if len(self.pending) < header:
+            return None
+        if length == 126:
+            length = struct.unpack("!H", bytes(self.pending[2:4]))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", bytes(self.pending[2:10]))[0]
+        if self.pending[1] & 0x80:
+            header += 4
+        return header + length
+
+    def _fill(self) -> None:
+        chunk = self.sock.recv(65536)
+        if not chunk:
+            raise ConnectionError("the peer closed the socket")
+        self.pending.extend(chunk)
 
     def recv(self):
-        two = self._read(2)
-        opcode = two[0] & 0x0F
-        masked = two[1] & 0x80
-        length = two[1] & 0x7F
+        while True:
+            size = self._frame_size()
+            if size is not None and len(self.pending) >= size:
+                break
+            self._fill()
+        frame = bytes(self.pending[:size])
+        del self.pending[:size]
+        opcode = frame[0] & 0x0F
+        offset = 2
+        length = frame[1] & 0x7F
         if length == 126:
-            length = struct.unpack("!H", self._read(2))[0]
+            length = struct.unpack("!H", frame[2:4])[0]
+            offset = 4
         elif length == 127:
-            length = struct.unpack("!Q", self._read(8))[0]
-        mask = self._read(4) if masked else None
-        payload = self._read(length) if length else b""
-        if mask:
-            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+            length = struct.unpack("!Q", frame[2:10])[0]
+            offset = 10
+        if frame[1] & 0x80:
+            mask = frame[offset:offset + 4]
+            body = frame[offset + 4:]
+            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(body))
+        else:
+            payload = frame[offset:]
         return opcode, payload
 
     def send(self, opcode: int, payload: bytes = b"") -> None:
@@ -228,7 +253,21 @@ def build_binary(root: Path, args, identity: dict):
     if args.no_build:
         if not binary.is_file():
             raise StageError("build", f"{binary} is missing and --no-build was passed", EXIT_PREFLIGHT)
-        return binary, {"reused": True, "binary": str(binary), "seconds": 0.0}
+        info = binary_provenance(binary, reused=True)
+        stamp_commit = git_text(root, "log", "-1", "--format=%ct", "HEAD")
+        commit_time = int(stamp_commit) if stamp_commit.isdigit() else 0
+        info["commit_at"] = (
+            dt.datetime.fromtimestamp(commit_time, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if commit_time
+            else None
+        )
+        if args.mode == "cloud" and commit_time and info["mtime_epoch"] + 1 < commit_time:
+            raise StageError(
+                "build",
+                f"--no-build would label {binary} (built {info['mtime']}) as commit {info['commit_at']};"
+                " rebuild the branch or point --bin at a binary built after it",
+            )
+        return binary, info
     slot = Path(args.build_slot).expanduser()
     if not slot.is_file():
         raise StageError("build", f"{slot} is missing, so the harness will not build unscheduled", EXIT_PREFLIGHT)
@@ -245,7 +284,20 @@ def build_binary(root: Path, args, identity: dict):
         raise StageError("build", f"cargo build --release -p proview-server failed in {spent}s:\n{tail}")
     if not binary.is_file():
         raise StageError("build", f"the build succeeded but {binary} does not exist")
-    return binary, {"reused": False, "binary": str(binary), "seconds": spent}
+    info = binary_provenance(binary, reused=False)
+    info["seconds"] = spent
+    return binary, info
+
+
+def binary_provenance(binary: Path, reused: bool) -> dict:
+    modified = binary.stat().st_mtime
+    return {
+        "reused": reused,
+        "binary": str(binary),
+        "bytes": binary.stat().st_size,
+        "mtime": dt.datetime.fromtimestamp(modified, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "mtime_epoch": modified,
+    }
 
 
 def server_env(args, port: int, data_dir: Path) -> dict:
@@ -283,6 +335,29 @@ def wait_ready(process, http: Http, deadline: float) -> float:
             pass
         time.sleep(0.2)
     raise StageError("serve", f"/api/health did not answer within {deadline:.0f}s")
+
+
+def annexb_config(record: bytes) -> bytes:
+    if len(record) < 7 or record[0] != 1:
+        return b""
+    cursor = 5
+    out = bytearray()
+    for _ in range(2):
+        if cursor >= len(record):
+            break
+        count = record[cursor] & 0x1F
+        cursor += 1
+        for _ in range(count):
+            if cursor + 2 > len(record):
+                break
+            size = int.from_bytes(record[cursor:cursor + 2], "big")
+            cursor += 2
+            if cursor + size > len(record):
+                break
+            out.extend(b"\x00\x00\x00\x01")
+            out.extend(record[cursor:cursor + size])
+            cursor += size
+    return bytes(out)
 
 
 def classify(payload: bytes, framing: str) -> str:
@@ -383,7 +458,7 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             if kind == "keyframe" or framing == "raw":
                 waiting_keyframe = False
             if not waiting_keyframe:
-                if kind == "keyframe" and framing == "framed" and len(payload) >= 9:
+                if framing == "framed" and len(payload) > 9:
                     body = payload[9:]
                     pts = int.from_bytes(payload[1:9], "big")
                 else:
@@ -407,11 +482,23 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
                     "server_keyframes": (server_last or {}).get("keyframes"),
                     "server_packets": (server_last or {}).get("packets"),
                     "server_bytes": (server_last or {}).get("bytes"),
+                    "server_mode": (server_last or {}).get("mode"),
+                    "server_publishers": (server_last or {}).get("publishers"),
+                    "server_subscribers": (server_last or {}).get("subscribers"),
                 }
             )
             next_sample += args.sample
 
-    dump_name = "frames.h264" if framing != "raw" else "frames.mp4"
+    codec = (hello or {}).get("codec") if isinstance(hello, dict) else None
+    if framing == "raw":
+        dump_name, demuxer = "frames.mp4", "mp4"
+    else:
+        elementary = "hevc" if codec and any(tag in str(codec).lower() for tag in ("hev", "hvc")) else "h264"
+        dump_name, demuxer = f"frames.{elementary}", elementary
+    if dumped and framing == "framed":
+        config_path = dump_dir / "config.bin"
+        if config_path.is_file():
+            dumped = bytearray(annexb_config(config_path.read_bytes())) + dumped
     if dumped:
         (dump_dir / dump_name).write_bytes(bytes(dumped))
     if dump_rows:
@@ -445,8 +532,11 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             "file": str(dump_dir / dump_name),
             "bytes": len(dumped),
             "config_bytes": (dump_dir / "config.bin").stat().st_size if (dump_dir / "config.bin").is_file() else 0,
+            "leading_config_annexb": len(annexb_config((dump_dir / "config.bin").read_bytes())) if framing == "framed" and (dump_dir / "config.bin").is_file() else 0,
+            "demuxer": demuxer,
+            "codec": codec,
             "ffprobe": (
-                f"ffprobe -v error -f {'h264' if dump_name.endswith('h264') else 'mp4'} -count_frames"
+                f"ffprobe -v error -f {demuxer} -count_frames"
                 f" -show_entries stream=codec_name,width,height,nb_read_frames {dump_dir / dump_name}"
             ),
         },
@@ -488,10 +578,14 @@ def render(report: dict) -> str:
         lines.append(f"- dirty files: {len(report['git']['dirty'])}")
     lines.append(f"- mode: {report['mode']} · duration {report['duration']}s · samples every {report['sample']}s")
     lines.append(f"- host: {report['host']['name']} · load {report['host']['load']} · camera LAN {report['lan']['detail']}")
-    verdict_line = f"- verdict: **{report['verdict']}**"
-    if report["verdict"] != "pass":
-        verdict_line += f" at stage {report['failed_stage']}"
+    verdict_line = f"- verdict: **{report['verdict']}**, exit {report['exit_code']}"
+    if report.get("failed_stage"):
+        verdict_line += f", stopped at stage {report['failed_stage']}"
     lines.append(verdict_line)
+    build = report["server"].get("build") or {}
+    if build:
+        state = "reused" if build.get("reused") else "built"
+        lines.append(f"- binary: {build.get('binary')} · {state} · {build.get('mtime')}")
     if report.get("failure"):
         lines.append(f"- failure: {report['failure']}")
     lines.append("")
@@ -511,6 +605,9 @@ def render(report: dict) -> str:
         lines.append("|---|---|")
         lines.append(f"| video messages | {live['frames']} ({live['unit']}) |")
         lines.append(f"| socket framing | {live['framing']} |")
+        lines.append(f"| socket codec | {live.get('codec') or 'unknown'} |")
+        server_mode = (live.get('server') or {}).get('mode')
+        lines.append(f"| server stream mode | {server_mode or 'unknown'} |")
         lines.append(f"| keyframes seen on the socket | {live['keyframes_ws']} |")
         lines.append(f"| keyframes reported by the server | {live['server_keyframes']} |")
         lines.append(f"| deltas | {live['deltas']} |")
@@ -553,7 +650,8 @@ def render(report: dict) -> str:
     lines.append("## Limits")
     lines.append("")
     lines.append("- A pass here proves the cloud relay carried video for the whole run. It does not prove parity with the vendor app.")
-    lines.append("- A pass counts only in cloud mode, with the LAN guard reporting the camera unreachable.")
+    lines.append("- A pass counts only in cloud mode, with the LAN guard reporting the camera unreachable; a reachable camera turns the verdict into lan-reachable and exits 3.")
+    lines.append("- pass-fixture comes from a recorded clip: it proves the counter, never the cloud.")
     lines.append("- The harness never retries a busy relay, never runs two sessions at once, and never edits a crate.")
     lines.append("")
     return "\n".join(lines)
@@ -653,10 +751,6 @@ def main(argv) -> int:
             stage("lan_guard", True, "skipped in fixture mode", 0.0)
 
         clock = tick()
-        lock = acquire_lock(args.lock, args.lock_wait)
-        stage("relay_lock", True, f"exclusive lock on {Path(args.lock).expanduser()}", round(time.monotonic() - clock, 3))
-
-        clock = tick()
         identity = read_env_file(args.identity_file)
         wanted = ("PROVIEW_APP_UUID", "PROVIEW_APP_KEY", "PROVIEW_APP_SECRET")
         present = [key for key in wanted if identity.get(key)]
@@ -673,7 +767,12 @@ def main(argv) -> int:
         clock = tick()
         binary, build_info = build_binary(root, args, identity)
         report["server"]["build"] = build_info
-        stage("build", True, build_info["binary"], round(time.monotonic() - clock, 3))
+        stage(
+            "build",
+            True,
+            f"{build_info['binary']} · {'reused' if build_info['reused'] else 'built'} {build_info['mtime']}",
+            round(time.monotonic() - clock, 3),
+        )
 
         clock = tick()
         credentials = read_env_file(args.env_file)
@@ -691,6 +790,13 @@ def main(argv) -> int:
             password = account.get("password", "")
         source = args.env_file if args.mode == "cloud" else args.fixture_dir
         stage("credentials", True, f"sign-in material present from {source}", round(time.monotonic() - clock, 3))
+
+        clock = tick()
+        if args.mode == "cloud":
+            lock = acquire_lock(args.lock, args.lock_wait)
+            stage("relay_lock", True, f"exclusive lock on {Path(args.lock).expanduser()}", round(time.monotonic() - clock, 3))
+        else:
+            stage("relay_lock", True, "skipped in fixture mode, no relay session", 0.0)
 
         port = free_port()
         env = server_env(args, port, out_dir / "state")
@@ -759,7 +865,19 @@ def main(argv) -> int:
         }
         if status != 200:
             raise StageError("stream", f"GET /api/stream returned {status}: {detail}")
-        stage("stream", True, f"200 · {json.dumps(detail)[:200]}", round(time.monotonic() - clock, 3))
+        ticket_source = ticket.get("source") if isinstance(ticket, dict) else None
+        report["http"]["stream"]["ticket_source"] = ticket_source
+        if args.mode == "cloud" and ticket_source != "cloud":
+            raise StageError(
+                "stream",
+                f"the ticket came from the {ticket_source} provider, not the cloud, so a stream here would prove nothing",
+            )
+        stage(
+            "stream",
+            True,
+            f"200 · source {ticket_source} · {json.dumps(detail)[:180]}",
+            round(time.monotonic() - clock, 3),
+        )
 
         clock = tick()
         path = live_path(args, device)
@@ -778,12 +896,21 @@ def main(argv) -> int:
         authoritative = numbers["keyframes_ws"] or numbers["server_keyframes"] or 0
         source = "socket" if numbers["keyframes_ws"] else "server /api/live/stats"
         stage("keyframes", True, f"{authoritative} keyframes from the {source} over {numbers['seconds']}s", 0.0)
-        report["verdict"] = "pass"
+        if args.mode == "cloud" and report["lan"]["reachable"]:
+            report["verdict"] = "lan-reachable"
+            exit_code = EXIT_LAN
+        elif args.mode == "cloud":
+            report["verdict"] = "pass"
+        else:
+            report["verdict"] = "pass-fixture"
     except StageError as error:
         report["verdict"] = "fail"
         report["failed_stage"] = error.stage
         report["failure"] = error.detail
         exit_code = error.code
+        if args.mode == "cloud" and report["lan"]["reachable"] and error.stage != "lan_guard":
+            report["verdict"] = "lan-reachable"
+            exit_code = EXIT_LAN
         stage(error.stage, False, error.detail, round(time.monotonic() - marks["at"], 3))
     except (OSError, ValueError, KeyError) as error:
         report["verdict"] = "fail"
@@ -813,7 +940,8 @@ def main(argv) -> int:
     (out_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     (out_dir / "report.md").write_text(render(report))
 
-    print(f"verdict: {report['verdict']}")
+    lan_state = "unreachable" if report["lan"]["reachable"] is False else ("reachable" if report["lan"]["reachable"] else "not checked")
+    print(f"verdict: {report['verdict']} · mode: {args.mode} · camera LAN: {lan_state}")
     if report["failure"]:
         print(f"stage: {report['failed_stage']}")
         print(f"detail: {report['failure']}")
