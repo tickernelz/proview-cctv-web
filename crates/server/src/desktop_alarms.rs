@@ -23,6 +23,23 @@ pub struct DesktopAlarm {
     pub utc_time: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlarmReadError {
+    SignedOut,
+    Cloud(String),
+}
+
+impl std::fmt::Display for AlarmReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SignedOut => formatter.write_str("not signed in"),
+            Self::Cloud(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
+impl std::error::Error for AlarmReadError {}
+
 impl DesktopAlarm {
     pub fn key(&self) -> String {
         format!("{}|{}|{}", self.serial, self.channel, self.id)
@@ -56,17 +73,17 @@ impl DesktopAlarms {
         }
     }
 
-    pub async fn since(&self, sessions: &Store, from: i64) -> Result<Vec<DesktopAlarm>, String> {
-        let (_, session) = sessions
-            .latest()
-            .ok_or_else(|| "not signed in".to_string())?;
+    pub async fn since(
+        &self,
+        sessions: &Store,
+        from: i64,
+    ) -> Result<Vec<DesktopAlarm>, AlarmReadError> {
+        let (_, session) = sessions.latest().ok_or(AlarmReadError::SignedOut)?;
         let token = session
             .token
             .map(|token| token.trim().to_string())
             .filter(|token| !token.is_empty())
-            .ok_or_else(|| {
-                "alarms read the vendor cloud; sign in with the cloud account".to_string()
-            })?;
+            .ok_or(AlarmReadError::SignedOut)?;
         let devices = match self.cached_devices(&session.account) {
             Some(devices) => devices,
             None => {
@@ -74,7 +91,7 @@ impl DesktopAlarms {
                     .envelope
                     .device_list(&token)
                     .await
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| AlarmReadError::Cloud(error.to_string()))?;
                 self.keep_devices(&session.account, &devices);
                 devices
             }
@@ -95,7 +112,7 @@ impl DesktopAlarms {
             }
         }
         if entries.is_empty() && !failures.is_empty() {
-            return Err(failures.remove(0));
+            return Err(AlarmReadError::Cloud(failures.remove(0)));
         }
         entries.sort_by(|a, b| {
             a.utc_time
@@ -221,6 +238,7 @@ mod tests {
             .since(&sessions, now_seconds() - 60)
             .await
             .expect_err("no session");
-        assert_eq!(error, "not signed in");
+        assert_eq!(error, AlarmReadError::SignedOut);
+        assert_eq!(error.to_string(), "not signed in");
     }
 }

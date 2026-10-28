@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proview_core::session::Store;
-use proview_server::desktop_alarms::DesktopAlarms;
+use proview_server::desktop_alarms::{AlarmReadError, DesktopAlarms};
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
 
@@ -24,7 +24,7 @@ pub struct Run {
     session_start: i64,
     first_check: bool,
     last_ok: Option<i64>,
-    failing_since: Option<i64>,
+    failed_checks: usize,
     pause_posted: bool,
 }
 
@@ -34,7 +34,7 @@ impl Run {
             session_start,
             first_check: true,
             last_ok: None,
-            failing_since: None,
+            failed_checks: 0,
             pause_posted: false,
         }
     }
@@ -48,38 +48,29 @@ impl Run {
                 cutoff: self.session_start - interval as i64 - OVERLAP_SECS,
             };
         }
-        if self.failing_since.is_some() && self.outage_is_long(interval, now) {
+        if self.failed_checks >= 2 {
             return Policy::Notify { cutoff: now };
         }
         Policy::Notify { cutoff: i64::MIN }
     }
 
-    fn outage_is_long(&self, interval: u64, now: i64) -> bool {
-        self.last_ok.is_none_or(|ok| now - ok > 3 * interval as i64)
-    }
-
-    pub fn failed(&mut self, now: i64, session_lost: bool) -> bool {
-        self.failing_since.get_or_insert(now);
-        if session_lost && !self.pause_posted {
+    pub fn failed(&mut self, session_lost: bool) -> bool {
+        self.failed_checks += 1;
+        let announced = session_lost && self.last_ok.is_some() && !self.pause_posted;
+        if announced {
             self.pause_posted = true;
-            return true;
         }
-        false
+        announced
     }
 
     pub fn finished(&mut self, ok: bool, now: i64) {
         if ok {
             self.first_check = false;
-            self.failing_since = None;
+            self.failed_checks = 0;
             self.pause_posted = false;
             self.last_ok = Some(now);
         }
     }
-}
-
-fn session_lost(error: &str) -> bool {
-    let text = error.to_ascii_lowercase();
-    text.contains("not signed in") || text.contains("sign in")
 }
 
 pub fn spawn(
@@ -130,9 +121,18 @@ pub fn spawn(
             let account = sessions.latest().map(|(_, session)| session.account);
             let (since, policy) = match shell.state.lock() {
                 Ok(mut state) => {
-                    if account.as_deref().is_some_and(|name| state.switch_account(name)) {
-                        tracing::info!("another account signed in; the alarm run starts over");
-                        run = Run::new(now);
+                    if let Some(name) = account.as_deref() {
+                        let previous = state.account.clone();
+                        if state.switch_account(name) {
+                            if !previous.is_empty() {
+                                tracing::info!(
+                                    from = %previous,
+                                    to = %name,
+                                    "another account signed in; the alarm run starts over"
+                                );
+                            }
+                            run = Run::new(now);
+                        }
                     }
                     (
                         if state.last_seen > 0 {
@@ -164,8 +164,8 @@ pub fn spawn(
                     }
                 }
                 Err(error) => {
-                    let lost = session_lost(&error);
-                    if run.failed(now, lost) {
+                    let lost = matches!(error, AlarmReadError::SignedOut);
+                    if run.failed(lost) {
                         notify::post_message(
                             &app,
                             "Alarm notifications paused",
@@ -276,22 +276,23 @@ mod tests {
     }
 
     #[test]
-    fn a_long_outage_summarizes_the_gap_instead_of_toasting_each_alarm() {
+    fn two_failed_checks_summarize_the_gap_instead_of_toasting_it() {
         let mut state = awake_state();
         let mut run = Run::new(1_000);
         run.finished(true, 1_000);
-        assert!(run.failed(1_015, true), "the pause notice is posted once");
-        assert!(!run.failed(1_060, true), "the same outage stays quiet");
-        let now = 1_120;
-        assert!(
-            now - 1_000 > 3 * 15,
-            "the outage is longer than the threshold"
+        assert!(run.failed(true), "the pause notice is posted once");
+        let now = 1_060;
+        assert_eq!(
+            run.policy(&state, 15, now),
+            Policy::Notify { cutoff: i64::MIN },
+            "one missed check is not an outage"
         );
+        run.failed(true);
         let policy = run.policy(&state, 15, now);
         assert_eq!(
             policy,
             Policy::Notify { cutoff: now },
-            "the recovering check summarizes what it finds"
+            "two missed checks summarize what the recovering check finds"
         );
         let gap: Vec<DesktopAlarm> = (0..15)
             .map(|index| alarm(&format!("g{index}"), 1_010 + index))
@@ -312,7 +313,7 @@ mod tests {
         let mut state = awake_state();
         let mut run = Run::new(1_000);
         run.finished(true, 1_000);
-        assert!(run.failed(1_015, true));
+        assert!(run.failed(true));
         let policy = run.policy(&state, 15, 1_030);
         assert_eq!(
             policy,
@@ -325,29 +326,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pause_before_any_success_stays_quiet() {
+        let mut run = Run::new(500);
+        assert!(
+            !run.failed(true),
+            "the store is empty on every launch; until a check succeeds nothing was interrupted"
+        );
+        assert!(!run.failed(true), "still nothing to announce");
+        run.finished(true, 515);
+        assert!(
+            run.failed(true),
+            "once a check has succeeded the pause is real"
+        );
+    }
+
+    #[test]
     fn the_pause_notice_is_posted_once_per_failed_span() {
         let mut run = Run::new(0);
         run.finished(true, 0);
-        assert!(run.failed(10, true), "the first session failure announces");
-        assert!(!run.failed(20, true), "the rest of the span stays quiet");
-        assert!(!run.failed(30, false), "another failure keeps the span");
+        assert!(run.failed(true), "the first session failure announces");
+        assert!(!run.failed(true), "the rest of the span stays quiet");
+        assert!(!run.failed(false), "another failure keeps the span");
         run.finished(true, 40);
-        assert!(run.failed(50, true), "a new span announces again");
+        assert!(run.failed(true), "a new span announces again");
     }
 
     #[test]
     fn a_failure_that_is_not_the_session_posts_no_pause() {
         let mut run = Run::new(0);
         run.finished(true, 0);
-        assert!(!run.failed(10, false), "a cloud hiccup is not a pause");
-        assert!(
-            run.failed(20, true),
-            "the session loss still announces once"
-        );
-        assert!(!session_lost("the alarm centre said 500"));
-        assert!(session_lost("not signed in"));
-        assert!(session_lost(
-            "alarms read the vendor cloud; sign in with the cloud account"
-        ));
+        assert!(!run.failed(false), "a cloud hiccup is not a pause");
+        assert!(run.failed(true), "the session loss still announces once");
+        assert_eq!(AlarmReadError::SignedOut.to_string(), "not signed in");
+        assert_eq!(AlarmReadError::Cloud("500".to_string()).to_string(), "500");
     }
 }

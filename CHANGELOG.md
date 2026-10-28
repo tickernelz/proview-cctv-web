@@ -61,12 +61,15 @@ stability before 1.0.
 - A desktop alarm check that loses the session no longer goes quiet. The shared
   session expires `PROVIEW_SESSION_TTL` seconds after sign-in (an hour by
   default) and reading it does not renew it, so an app kept in the tray stopped
-  checking with one debug line and nothing else. The first failed check of a span
-  whose error says the session is gone now posts one *Alarm notifications paused
-  — open PROVIEW and sign in* notification and logs at warn, once per span; the
-  next successful check re-arms it. A recovery after more than three check
-  intervals summarizes the gap in one notification instead of replaying the
-  backlog alarm by alarm, a single missed interval still toasts. The remembered
+  checking with one debug line and nothing else. Once a check has succeeded, the
+  first later check whose error says the session is gone posts one *Alarm
+  notifications paused — open PROVIEW and sign in* notification and logs at warn,
+  once per span; the next successful check re-arms it, and a launch that has not
+  checked successfully yet announces nothing, because the session store is empty
+  at every start. A recovery after two failed checks in a row summarizes the gap
+  in one notification instead of replaying the backlog alarm by alarm, while a
+  single missed check still toasts; the rule counts checks rather than seconds,
+  so timer jitter cannot flip it. The remembered
   window and the device cache now belong to the signed-in account, so an account
   switch drops both and starts the run over, and an empty first pass reports a
   state change so the baseline mark is saved by the watcher rather than only by
