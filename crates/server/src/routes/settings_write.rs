@@ -10,7 +10,6 @@ use proview_core::dvrip::settings::{
 use proview_core::session::Store;
 use rocket::form::FromForm;
 use rocket::http::{CookieJar, Status};
-use rocket::response::content::RawJavaScript;
 use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
@@ -422,9 +421,4 @@ async fn storage_write(
             storage,
         }),
     ))
-}
-
-#[get("/device-settings.js")]
-pub fn device_settings_js() -> RawJavaScript<&'static str> {
-    RawJavaScript(include_str!("../../../../web/device-settings.js"))
 }

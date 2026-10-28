@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TOKENS = ROOT / 'web' / 'tokens.css'
+TOKENS = ROOT / 'apps' / 'web' / 'src' / 'tokens.css'
 
 TEXT = 'text'
 GRAPHIC = 'graphic'

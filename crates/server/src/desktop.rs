@@ -6,7 +6,7 @@ use rocket::State;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 pub const TOKEN_HEADER: &str = "x-proview-desktop-token";
-pub const INDEX: &str = include_str!("../../../web/index.html");
+pub const INDEX: &str = include_str!("../../../apps/web/dist/index.html");
 
 pub struct DesktopControl {
     token: String,
