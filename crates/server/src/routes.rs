@@ -50,7 +50,7 @@ pub mod settings_write;
 pub mod recordings;
 
 pub fn files() -> Vec<rocket::route::Route> {
-    routes![index, media_clip, page_asset, bundled_asset, font]
+    routes![index, media_clip, bundled_asset, font]
 }
 
 pub fn api() -> Vec<rocket::route::Route> {
@@ -114,11 +114,6 @@ fn embedded(name: &str) -> Option<Asset> {
         .and_then(ContentType::from_extension)
         .unwrap_or(ContentType::Binary);
     Some((kind, file.data))
-}
-
-#[get("/<file>", rank = 20)]
-fn page_asset(file: &str) -> Option<Asset> {
-    embedded(file)
 }
 
 #[get("/assets/<file>")]

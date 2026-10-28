@@ -45,12 +45,18 @@ stability before 1.0.
 
 ### Changed
 
+- The page scripts are ES modules bundled by Vite into one hashed
+  `/assets/index-<hash>.js` (gzip -9 57,391 B in ten files -> 40,396 B in one).
+  `/app.js`, `/grid.js` and the other per-script URLs answer 404. The talk
+  script's `startTalk`/`stopTalk` used to replace the older copies in `app.js`
+  through the shared global scope; those dead copies are removed and `app.js`
+  imports the talk module's.
 - The page moved from `web/` to a Vite app in `apps/web`. `npm run build`
   emits `apps/web/dist/` with a hashed stylesheet, and the server embeds that
   directory with `rust-embed` instead of one route per file, so build the page
   before `cargo` (see README). The scripts are served unchanged; `/tokens.css`
   and `/style.css` became one `/assets/index-<hash>.css`. CI and release jobs
-  run `npm ci && npm run build` with an npm cache, and `cargo tauri build` does
+  run `npm ci --include=dev && npm run build` with an npm cache, and `cargo tauri build` does
   the same through `beforeBuildCommand`. `PROVIEW_WEB_DEV=1 cargo tauri dev`
   opens the desktop window on the Vite dev server for hot reload.
 - One `CloudProvider` per process, and a 30 s window over the account device

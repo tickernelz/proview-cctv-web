@@ -29,13 +29,13 @@ reported `showPopover` and `color-mix()` support.
 WebView2 and WKWebView have **not** been exercised yet; that is tracked in
 `docs/parity.md` and must be re-checked on each release runner.
 
-## CSS floor
+## Page floor (CSS and JS)
 
 `apps/web/src/style.css` already needs `:has()` and `:focus-visible`, so the
 page's floor is Chrome/Edge 105, Firefox 121 and Safari/WKWebView 15.4 (macOS
-12.3, iOS 15.4). `apps/web/vite.config.ts` pins `build.cssTarget` to that floor
-so the Lightning CSS minifier never rewrites a rule into syntax newer than the
-source: with Vite's default target (`baseline-widely-available`, Safari 16.4) it
+12.3, iOS 15.4). `apps/web/vite.config.ts` pins both `build.target` (the bundled
+scripts) and `build.cssTarget` to that floor so neither the JS transform nor the
+Lightning CSS minifier rewrites code into syntax newer than the source: with Vite's default target (`baseline-widely-available`, Safari 16.4) it
 turned `@media (max-width: 640px)` into `@media (width <= 640px)`, which Safari
 before 16.4 ignores. Raising the floor means changing both places.
 
