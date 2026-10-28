@@ -441,3 +441,40 @@ baseline origin/main 05fe8a3:
 
 e2e at this change: 159 passed, 1 skipped (5 recordings specs and 8 screenshot
 baselines added), 1.4 min locally; node web tests 46/46.
+
+### Alarm messages in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/AlarmCenter.vue` replaces `legacy/alarms.js`. Same method, baseline
+origin/main e3db222:
+
+| File | main e3db222 | Alarms in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 107,402 B | 107,906 B | +504 B |
+| CSS | 7,129 B | 7,173 B | +44 B |
+
+The sheet reads the camera list the app already loaded, so opening it no longer
+sends its own `/api/devices` (one vendor status query per camera in cloud
+mode).
+
+Vendor calls per visit, counted by routing `/api/cloud/alarms`,
+`/api/cloud/alarms/picture` and `/api/devices` in Chromium against the
+fixture server (`pollSeconds` 20, one camera, three alarms with pictures):
+
+| Window | main e3db222 (alarms / pictures / devices) | first Vue port 40794ae | this change |
+|---|---|---|---|
+| first 5 s after sign-in | 0 / 0 / 2 | 1 / 1 / 1 | 1 / 1 / 1 |
+| then 3 × Settings and back to Live | 0 / 0 / 3 | 3 / 3 / 0 | 0 / 0 / 0 |
+| total 25 s after sign-in | 0 / 0 / 5 | 4 / 4 / 1 | 2 / 1 / 1 |
+
+The first alarm check now runs at sign-in instead of 20 s later, so the bell
+shows its count at once; that costs one alarm-centre query and one picture
+probe (a signed object request and one thumbnail GET, about 66 KB) on a visit
+shorter than `pollSeconds`. The steady rate stays one check per `pollSeconds`.
+Settings no longer counts as signing out: the last answer, the seen ids and
+the picture probe result are kept, and coming back checks only when the last
+check is older than `pollSeconds` (otherwise the remaining time is scheduled).
+Main stopped its timer on Settings and restarted the full 20 s on return, so a
+user moving between Live and Settings saw no check at all there.
+
+e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
+46/46.

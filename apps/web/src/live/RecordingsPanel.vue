@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { nextTick, reactive, ref } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
 import { sessionLost, state as page } from '../legacy/app.js'
-import { addLauncher } from './store'
+import { addLauncher, live } from './store'
 
 type Camera = { id: string; name?: string }
 type Recording = { start: string; duration_secs?: number; size_bytes?: number }
 type Listing = { recordings?: Recording[]; notice?: string }
 
-const open = ref(false)
+const open = computed(() => live.sheet === 'recordings')
 const panel = ref<HTMLElement>()
 const dayInput = ref<HTMLInputElement>()
 const cameras = ref<Camera[]>([])
@@ -30,14 +30,15 @@ const launcher = addLauncher({
   onClick: () => (open.value ? close() : show()),
 })
 
+watch(open, (shown) => (launcher.pressed = shown))
+
 function localDay() {
   const now = new Date()
   return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
 }
 
 async function show() {
-  open.value = true
-  launcher.pressed = true
+  live.sheet = 'recordings'
   await nextTick()
   dayInput.value?.focus()
   cameras.value = page.devices as Camera[]
@@ -46,8 +47,7 @@ async function show() {
 }
 
 function close(returnFocus = true) {
-  open.value = false
-  launcher.pressed = false
+  if (live.sheet === 'recordings') live.sheet = ''
   if (returnFocus) document.getElementById('recordings-launcher')?.focus()
 }
 

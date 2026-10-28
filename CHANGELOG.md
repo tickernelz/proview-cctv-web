@@ -39,6 +39,17 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
+  sign-in instead of after the first 20 s poll or the first open, opening it
+  puts focus on Camera and Escape or Close hands it back to the bell (Escape
+  did nothing before), and it replaces Cloud recordings in the shared corner
+  instead of drawing on top of it. Changing camera while a check is out no
+  longer shows the previous camera's alarms under the new one. Empty and
+  loading states name the camera and the window, a failed check is red with
+  the warning icon instead of grey footer text, the footer reads "3 alarms ·
+  updated 22:16" (timings moved to its tooltip), rows show the channel only on
+  multi-channel cameras and count it from 1 like the caption, and a row
+  without a picture shows an icon instead of an empty box.
 
 ### Added
 

@@ -33,6 +33,7 @@ export const ICONS: Record<string, string> = {
   disconnect: 'wifi-off',
   more: 'ellipsis',
   bell: 'bell',
+  'no-picture': 'image-off',
   cloud: 'cloud',
   cctv: 'cctv',
 }
