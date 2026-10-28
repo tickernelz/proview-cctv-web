@@ -10,6 +10,13 @@ const MATERIAL: &str = "zha4084-live-cloud-fixture-material-0001";
 const KEYED: &str = "cloud-keyed-1280x720.bodies";
 const PLAIN: &str = "cloud-plain-1280x720.bodies";
 
+fn report(line: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
 fn fixture(name: &str) -> Vec<Vec<u8>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -327,9 +334,10 @@ fn the_keyed_cloud_bodies_demux_to_the_plain_capture() {
         "the keyed capture demuxes back to the encoded stream byte for byte"
     );
 
-    eprintln!(
-        "live_cloud keyed: bodies={} es={} keyframes={} deltas={} dropped={} padding={} markers={} continuations={}",
+    report(&format!(
+        "live_cloud keyed: bodies={} bytes_in={} es={} keyframes={} deltas={} dropped={} padding={} markers={} continuations={}",
         fixture(KEYED).len(),
+        fixture(KEYED).iter().map(Vec::len).sum::<usize>(),
         keyed_es.len(),
         2,
         6,
@@ -337,7 +345,7 @@ fn the_keyed_cloud_bodies_demux_to_the_plain_capture() {
         6,
         3,
         4
-    );
+    ));
 }
 
 #[test]
@@ -352,29 +360,29 @@ fn the_demuxed_cloud_stream_becomes_an_fmp4_that_ffprobe_reads() {
     ));
     std::fs::write(&path, &mp4).expect("write fmp4");
 
-    let report = match ffprobe(&path, &["-count_frames"]) {
+    let probe = match ffprobe(&path, &["-count_frames"]) {
         Some(text) => text,
         None => {
-            eprintln!(
-                "ffprobe is not installed: skipped the codec check, wrote {} B of fMP4 for the {} B elementary stream",
+            report(&format!(
+                "live_cloud ffprobe skipped: ffprobe is not installed, wrote {} B of fMP4 for the {} B elementary stream",
                 mp4.len(),
                 es.len()
-            );
+            ));
             let _ = std::fs::remove_file(&path);
             return;
         }
     };
     let _ = std::fs::remove_file(&path);
 
-    assert!(report.contains("codec_name=hevc"), "ffprobe read {report}");
-    assert!(report.contains("width=1280"), "ffprobe read {report}");
-    assert!(report.contains("height=720"), "ffprobe read {report}");
-    assert!(report.contains("nb_read_frames=8"), "ffprobe read {report}");
+    assert!(probe.contains("codec_name=hevc"), "ffprobe read {probe}");
+    assert!(probe.contains("width=1280"), "ffprobe read {probe}");
+    assert!(probe.contains("height=720"), "ffprobe read {probe}");
+    assert!(probe.contains("nb_read_frames=8"), "ffprobe read {probe}");
 
-    eprintln!(
+    report(&format!(
         "live_cloud fmp4: es={} mp4={} probe={}",
         es.len(),
         mp4.len(),
-        report.trim().replace('\n', " ")
-    );
+        probe.trim().replace('\n', " ")
+    ));
 }
