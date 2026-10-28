@@ -258,6 +258,27 @@ A release build already carries the identity and needs neither of the three; the
 example is a source build, so it takes them from the environment or from
 `cloud-identity.env` at the workspace root.
 
+## Cloud live viewer cost (counted 2026-10-28)
+
+What one viewer open asks the vendor cloud for, counted against a stub cloud
+that answers `msdlistCode` and nothing else:
+
+| Path | Before | After |
+|---|---|---|
+| `GET /api/stream`, first open | 1 `msdlistCode` + a new client and token-store load | 1 `msdlistCode`, shared client |
+| `GET /ws/live`, same viewer | 1 `msdlistCode` + a new client and token-store load | 0 |
+| cold start (`open_media`) | 1 `msdlistCode` + a new client and token-store load | 0 |
+| total per viewer open | 3 | 1 |
+
+`crates/server/tests/live_scope.rs` measures the row: one ticket, then two
+socket opens on the camera the account owns, and one `msdlistCode` request
+arrives. The window is 30 s per vendor session, and the next call after it
+closes asks the cloud again; `crates/core/src/provider/cloud.rs` carries the
+three tests behind that sentence (one session pays one list for every serial, a
+second session pays its own, an entry older than the window is fetched again).
+No wall-clock claim here: the list is 0.06-0.07 s on this box (table above), so
+the fix removes two of those round trips and three client builds per open.
+
 ## Live cloud acceptance (measured 2026-10-28)
 
 `tools/acceptance/live_acceptance.py` is the only evidence this repository

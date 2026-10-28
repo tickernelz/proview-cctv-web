@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use proview_core::provider::{Mode, VendorSession};
@@ -43,8 +44,11 @@ fn client() -> Client {
     let figment = rocket::Config::figment()
         .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
         .merge(("port", 0));
+    let config = config();
+    let cloud = Arc::new(proview_core::provider::cloud::CloudProvider::new(&config));
     let rig = rocket::custom(figment)
-        .manage(config())
+        .manage(config)
+        .manage(cloud)
         .manage(Store::new())
         .manage(ModeStore::new(Mode::Cloud, None))
         .manage(proview_server::live_state::LiveState::new())

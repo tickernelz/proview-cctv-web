@@ -117,7 +117,7 @@ impl LiveState {
     pub fn ensure_cloud_source(
         &self,
         key: StreamKey,
-        cfg: proview_core::config::Config,
+        provider: std::sync::Arc<proview_core::provider::cloud::CloudProvider>,
         session: proview_core::provider::VendorSession,
         device: String,
         channel: u32,
@@ -127,7 +127,7 @@ impl LiveState {
         let spawn_key = key.clone();
         self.track_source(key, move |stop| async move {
             proview_core::provider::cloud::CloudProvider::pump_live(
-                hub, spawn_key, cfg, session, device, channel, high, stop,
+                hub, spawn_key, provider, session, device, channel, high, stop,
             )
             .await;
         })

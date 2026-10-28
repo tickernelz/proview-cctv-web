@@ -2,6 +2,7 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
+use super::cloud::CloudProvider;
 use super::local::LocalProvider;
 use super::{
     build, Alarm, CloudPath, Device, DeviceSettings, Mode, Provider, ProviderError, ProviderSource,
@@ -31,7 +32,14 @@ pub struct Router {
 
 impl Router {
     pub fn new(cfg: &Config, mode: Mode) -> Self {
-        let cloud = build(cfg);
+        Self::for_mode(cfg, mode, build(cfg))
+    }
+
+    pub fn shared(cfg: &Config, mode: Mode, cloud: std::sync::Arc<CloudProvider>) -> Self {
+        Self::for_mode(cfg, mode, super::build_shared(cfg, cloud))
+    }
+
+    fn for_mode(cfg: &Config, mode: Mode, cloud: Box<dyn Provider>) -> Self {
         match mode {
             Mode::Cloud => Self {
                 resolution: RwLock::new(super::plan(cfg, mode)),

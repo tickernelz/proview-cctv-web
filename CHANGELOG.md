@@ -45,6 +45,13 @@ stability before 1.0.
 
 ### Changed
 
+- One `CloudProvider` per process, and a 30 s window over the account device
+  list, so one viewer open costs one `msdlistCode` instead of three. The provider
+  was built per request — a fresh `reqwest::Client` and a reload of the
+  device-token store each time — and `/api/stream`, `/ws/live` and the cold
+  start each asked the vendor for the device list again. `/ws/live` and the
+  cold start now read the entry the ticket walked, keyed by the vendor session
+  and answered per serial.
 - The desktop shell hands events to the page through `WebviewWindow::eval` and a
   DOM `CustomEvent`, not Tauri's event channel: the window is loaded from a
   remote origin and a capability only covers the local one, so `event.listen`
