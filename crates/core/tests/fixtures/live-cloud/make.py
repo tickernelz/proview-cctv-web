@@ -12,7 +12,7 @@ MATERIAL_BYTES = 40
 MD5_STRIDE = 4
 MD5_INPUT = 8
 HEAD_BODY = 8192
-PAD_BODY = 328
+AUDIO_BODY = 328
 
 
 def derive(material):
@@ -83,8 +83,8 @@ def marker():
     return b"\x00\x00\x01\xf9" + bytes(12)
 
 
-def padding():
-    return b"\x00\x00\x01\xfa" + bytes(PAD_BODY - 4)
+def audio_body():
+    return b"\x00\x00\x01\xfa" + bytes(AUDIO_BODY - 4)
 
 
 def chunked(prefix, payload, first_capacity, rest_capacity):
@@ -106,7 +106,7 @@ def frame_bodies(unit, keyframe, stamp, key):
         )
         return bodies
     bodies = chunked(head(0xFD, declared, 0), unit, HEAD_BODY - 8, HEAD_BODY)
-    bodies.append(padding())
+    bodies.append(audio_body())
     return bodies
 
 
