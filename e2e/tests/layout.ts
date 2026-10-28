@@ -20,30 +20,105 @@ const ALARMS = {
 export async function overflowFindings(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const width = document.documentElement.clientWidth
+    const height = document.documentElement.clientHeight
     const found: string[] = []
     const name = (node: Element) => {
       const element = node as HTMLElement
-      return element.dataset.testid || element.id || String(element.className || element.tagName).split(' ')[0]
+      return element.dataset?.testid || element.id || (element.getAttribute('class') || element.tagName).split(' ')[0]
     }
     const root = document.scrollingElement as HTMLElement
     if (root.scrollWidth > root.clientWidth) found.push('page scrolls ' + root.scrollWidth + '>' + root.clientWidth)
-    const clipped = (node: Element) => {
+    const scrolls = (value: string) => value === 'auto' || value === 'scroll'
+    const cuts = (value: string) => value === 'hidden' || value === 'clip'
+    const ignored = (node: HTMLElement) =>
+      node.closest('.sr, .sprite, .lens-crop, .prog') !== null || node.matches('video') || getComputedStyle(node).clipPath !== 'none'
+
+    const cutBy = (node: HTMLElement, axis: 'x' | 'y') => {
+      if (getComputedStyle(node).position === 'fixed') return null
       for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
-        if (getComputedStyle(parent).overflowX !== 'visible') return true
+        const style = getComputedStyle(parent)
+        const value = axis === 'x' ? style.overflowX : style.overflowY
+        if (scrolls(value)) return null
+        if (cuts(value)) return parent
+        if (style.position === 'fixed') return null
+      }
+      return null
+    }
+    const insideScrollerOrCut = (node: HTMLElement) => {
+      if (getComputedStyle(node).position === 'fixed') return false
+      for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent)
+        if (style.overflowX !== 'visible') return true
+        if (style.position === 'fixed') return false
       }
       return false
     }
+    const cutOff = (node: HTMLElement, box: DOMRect) => {
+      const out: string[] = []
+      for (const axis of ['x', 'y'] as const) {
+        const parent = cutBy(node, axis)
+        if (!parent || getComputedStyle(parent).textOverflow === 'ellipsis') continue
+        const outer = parent.getBoundingClientRect()
+        const start = axis === 'x' ? outer.left + parent.clientLeft : outer.top + parent.clientTop
+        const end = start + (axis === 'x' ? parent.clientWidth : parent.clientHeight)
+        const [low, high] = axis === 'x' ? [box.left, box.right] : [box.top, box.bottom]
+        if (low < start - 2 || high > end + 2) {
+          out.push(name(node) + ' cut ' + axis + ' ' + Math.round(low) + '..' + Math.round(high) + ' by ' + name(parent) + ' ' + Math.round(start) + '..' + Math.round(end))
+        }
+      }
+      return out
+    }
+
     for (const node of document.querySelectorAll<HTMLElement>('body *')) {
       const box = node.getBoundingClientRect()
       if (box.width === 0 && box.height === 0) continue
       if (!node.checkVisibility({ visibilityProperty: true })) continue
+      if (ignored(node)) continue
       const style = getComputedStyle(node)
-      const scroller = style.overflowX === 'auto' || style.overflowX === 'scroll'
-      if (scroller && !node.matches('.tbl') && node.scrollWidth > node.clientWidth + 1) {
+      if (scrolls(style.overflowX) && !node.matches('.tbl') && node.scrollWidth > node.clientWidth + 1) {
         found.push(name(node) + ' scrolls sideways ' + node.scrollWidth + '>' + node.clientWidth)
       }
-      if (!clipped(node) && (box.right > width + 1 || box.left < -1)) {
+      if ((box.right > width + 1 || box.left < -1) && !insideScrollerOrCut(node)) {
         found.push(name(node) + ' outside ' + Math.round(box.left) + '..' + Math.round(box.right) + ' of ' + width)
+      }
+      found.push(...cutOff(node, box))
+    }
+
+    const surfaces = ['#pb', '#device-admin', '#recordings-panel', '.alarm-sheet', '.menu:not(.sheet)', '#pad']
+      .flatMap((selector) => [...document.querySelectorAll<HTMLElement>(selector)])
+      .filter((node) => !node.hidden && node.checkVisibility({ visibilityProperty: true }))
+    const surface = surfaces.length ? surfaces[surfaces.length - 1] : document.body
+    const query = 'button, a[href], input, select, textarea, [role="tab"], [role="menuitem"], [role="menuitemradio"]'
+    for (const node of surface.querySelectorAll<HTMLElement>(query)) {
+      if (node.matches('.skip, .sr') || node.closest('[hidden]')) continue
+      if (!node.checkVisibility({ visibilityProperty: true })) continue
+      const target = node.matches('input[type="checkbox"], input[type="radio"]') ? node.closest('label') ?? node : node
+      const box = target.getBoundingClientRect()
+      if (box.width <= 1 || box.height <= 1) continue
+      const x = box.left + box.width / 2
+      const y = box.top + box.height / 2
+      if (x < 0 || y < 0 || x > width || y > height) continue
+      const points = [
+        [x, y],
+        [box.left + box.width / 4, box.top + box.height / 4],
+        [box.left + (box.width * 3) / 4, box.top + box.height / 4],
+        [box.left + box.width / 4, box.top + (box.height * 3) / 4],
+        [box.left + (box.width * 3) / 4, box.top + (box.height * 3) / 4],
+      ]
+      let inView = true
+      for (let parent = target.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent)
+        if (scrolls(style.overflowY) || scrolls(style.overflowX)) {
+          const view = parent.getBoundingClientRect()
+          inView = y >= view.top && y <= view.bottom && x >= view.left && x <= view.right
+          break
+        }
+      }
+      if (!inView) continue
+      const reaches = (hit: Element | null) => hit !== null && (target.contains(hit) || hit.contains(target))
+      if (!points.some(([px, py]) => reaches(document.elementFromPoint(px, py)))) {
+        const hit = document.elementFromPoint(x, y)
+        found.push(name(node) + ' covered at ' + Math.round(x) + ',' + Math.round(y) + ' by ' + (hit ? name(hit) : 'nothing'))
       }
     }
     return [...new Set(found)]

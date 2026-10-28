@@ -275,10 +275,6 @@ select.text-input { background: var(--bg-2); }
   .row { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
   .row .lab, .row .val { padding-top: 0; }
   .text-input { max-width: none; }
-  .tiles { grid-template-rows: none !important; grid-auto-rows: auto; overflow-x: hidden; overflow-y: auto; align-content: start; }
-  .pad { position: fixed; left: var(--s3); right: var(--s3); bottom: calc(var(--bar) + var(--s2)); z-index: 31; grid-template-columns: repeat(3, var(--hit)); grid-template-rows: repeat(3, var(--hit)) auto; justify-content: center; box-shadow: var(--shadow-menu); }
-  .pad-note { max-width: none; align-items: center; text-align: center; }
-  .tile .well { flex: none; aspect-ratio: 16 / 9; }
   .savebar { padding: 0 var(--s4); }
 }
 
@@ -347,6 +343,22 @@ select.text-input { background: var(--bg-2); }
 #recordings-panel ul { list-style: none; margin: 0; padding: 0 var(--s4) var(--s3); display: grid; gap: var(--s1); overflow: auto; }
 #recordings-panel li { display: flex; justify-content: space-between; gap: var(--s2); padding: var(--s2) var(--s2); border-radius: var(--r-md); background: var(--bg-3); font-size: var(--t-13); font-variant-numeric: tabular-nums; }
 #recordings-panel li span:last-child { color: var(--ink-3); }
+#recordings-panel { overflow-y: auto; }
+
+@media (max-width: 640px), (max-height: 600px) {
+  .tiles { grid-template-rows: none !important; grid-auto-rows: auto; overflow-x: hidden; overflow-y: auto; align-content: start; }
+  .tile .well { flex: none; aspect-ratio: 16 / 9; }
+}
+
+@media (max-width: 640px), (max-height: 480px) {
+  .pad { position: fixed; left: var(--s3); right: var(--s3); bottom: calc(var(--bar) + var(--s2)); z-index: 31; grid-template-columns: repeat(3, var(--hit)); grid-template-rows: repeat(3, var(--hit)) auto; justify-content: center; box-shadow: var(--shadow-menu); }
+  .pad-note { max-width: none; align-items: center; text-align: center; }
+}
+
+@media (max-height: 480px) {
+  .pad { grid-template-columns: repeat(3, var(--hit)) minmax(0, 240px); grid-template-rows: repeat(3, var(--hit)); }
+  .pad-note { grid-column: 4; grid-row: 1 / -1; align-items: flex-start; justify-content: center; text-align: left; padding: 0 0 0 var(--s3); }
+}
 
 .pb-screen { position: fixed; inset: 0; z-index: 60; background: var(--bg); color: var(--ink); display: flex; flex-direction: column; overflow: auto; }
 .pb-screen[hidden] { display: none; }
