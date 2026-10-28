@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -132,6 +133,7 @@ pub struct Connection {
     stream: TcpStream,
     session: u32,
     sequence: u32,
+    read_buf: BytesMut,
 }
 
 fn trim_reply(payload: &[u8]) -> &[u8] {
@@ -195,6 +197,7 @@ impl Connection {
             stream,
             session: 0,
             sequence: 0,
+            read_buf: BytesMut::new(),
         })
     }
 
@@ -204,6 +207,7 @@ impl Connection {
             stream,
             session: 0,
             sequence: 0,
+            read_buf: BytesMut::new(),
         }
     }
 
@@ -255,23 +259,27 @@ impl Connection {
     }
 
     pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), FrameError> {
-        let mut header_bytes = [0u8; super::HEADER_LEN];
-        self.stream
-            .read_exact(&mut header_bytes)
-            .await
-            .map_err(|_| FrameError::NotEnoughData)?;
-        let header = Header::decode(&header_bytes)?;
-        let mut body = vec![0u8; header.length as usize];
-        if header.length > 0 {
-            self.stream
-                .read_exact(&mut body)
+        loop {
+            if self.read_buf.len() >= super::HEADER_LEN {
+                let header = Header::decode(&self.read_buf[..super::HEADER_LEN])?;
+                let wanted = super::HEADER_LEN + header.length as usize;
+                if self.read_buf.len() >= wanted {
+                    let frame = self.read_buf.split_to(wanted);
+                    if header.session != 0 {
+                        self.session = header.session;
+                    }
+                    return Ok((header, frame[super::HEADER_LEN..].to_vec()));
+                }
+            }
+            let read = self
+                .stream
+                .read_buf(&mut self.read_buf)
                 .await
                 .map_err(|_| FrameError::NotEnoughData)?;
+            if read == 0 {
+                return Err(FrameError::NotEnoughData);
+            }
         }
-        if header.session != 0 {
-            self.session = header.session;
-        }
-        Ok((header, body))
     }
 
     pub async fn claim_monitor(&mut self, channel: u8, stream: &str) -> Result<(), DvrError> {
@@ -642,5 +650,74 @@ mod tests {
         assert_eq!(describe_ret(605), "feature not supported");
         assert_eq!(describe_ret(607), "configuration does not exist");
         assert!(describe_ret(100).contains("ok"));
+    }
+
+    fn split_header() -> [u8; super::super::HEADER_LEN] {
+        Header {
+            session: 0x0000_2a2a,
+            sequence: 7,
+            channel: 3,
+            end: true,
+            id: 1000,
+            length: 5,
+        }
+        .encode()
+    }
+
+    #[tokio::test]
+    async fn recv_resumes_after_a_half_header_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let header = split_header();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(&header[..10]).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            socket.write_all(&header[10..]).await.unwrap();
+            socket.write_all(b"hello").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        let mut connection = connect(&format!("{address}")).await;
+        let first =
+            tokio::time::timeout(std::time::Duration::from_millis(80), connection.recv()).await;
+        assert!(first.is_err(), "a half header must time out, not decode");
+        let (header, body) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv())
+                .await
+                .expect("the resumed read must not hang")
+                .expect("frame after the timeout");
+        assert_eq!(header.session, 0x0000_2a2a);
+        assert_eq!(header.id, 1000);
+        assert_eq!(body, b"hello");
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recv_resumes_after_a_half_body_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let header = split_header();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket.write_all(&header).await.unwrap();
+            socket.write_all(b"hel").await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            socket.write_all(b"lo").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        let mut connection = connect(&format!("{address}")).await;
+        let first =
+            tokio::time::timeout(std::time::Duration::from_millis(80), connection.recv()).await;
+        assert!(first.is_err(), "a half body must time out, not decode");
+        let (header, body) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv())
+                .await
+                .expect("the resumed read must not hang")
+                .expect("frame after the timeout");
+        assert_eq!(header.length, 5);
+        assert_eq!(body, b"hello");
+        peer.await.unwrap();
     }
 }

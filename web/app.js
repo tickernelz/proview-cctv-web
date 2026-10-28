@@ -994,6 +994,9 @@ async function copyStageDetail() {
 }
 
 function explainStreamError(error, attempt) {
+  if (error.code === 'misconfigured') {
+    return error.message;
+  }
   if (attempt && attempt.stage) {
     return stageLine(attempt);
   }
@@ -1962,9 +1965,10 @@ async function requestStream() {
     const attempt =
       error.body && Array.isArray(error.body.stages) && error.body.stages.length ? error.body : null;
     const base = explainStreamError(error, attempt);
-    setStage('error', { text: base, code: error.message, stage: attempt });
+    const misconfigured = error.code === 'misconfigured';
+    setStage('error', { text: base, code: misconfigured ? '' : error.message, stage: attempt });
     console.error('stream request failed', error);
-    if (error.status === 501 && camera.device) {
+    if (error.status === 501 && !misconfigured && camera.device) {
       const deviceId = camera.device.id;
       cloudPathDetail(deviceId).then((detail) => {
         if (!detail || currentCamera() !== camera || state.stage.name !== 'error') {
@@ -2002,6 +2006,9 @@ function renderCameraInfo() {
 }
 
 function shortStreamError(error) {
+  if (error.code === 'misconfigured') {
+    return error.message;
+  }
   if (error.status === 404) {
     return 'This channel does not exist on the device.';
   }

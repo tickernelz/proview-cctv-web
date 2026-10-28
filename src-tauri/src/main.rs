@@ -209,7 +209,7 @@ fn main() {
                 }
             });
             let state_path = data_dir.map(|dir| dir.join("desktop-state.json"));
-            let shell = Arc::new(DesktopShell::new(settings, state_path));
+            let shell = Arc::new(DesktopShell::new(settings, state_path, sessions));
             match notify::install(app.handle()) {
                 Ok(()) => tracing::info!("notification clicks are wired to the window"),
                 Err(error) => tracing::warn!(%error, "notifications are unavailable"),
@@ -221,7 +221,7 @@ fn main() {
                 }
             }
             app.manage(shell.clone());
-            watcher::spawn(&handle, app.handle().clone(), sessions, shell);
+            watcher::spawn(&handle, app.handle().clone(), shell);
             #[cfg(feature = "restart-probe")]
             if probe.is_some() {
                 let main = app.get_webview_window("main");
@@ -263,7 +263,9 @@ fn main() {
                     if settings.close_to_tray && shell.tray_ready() {
                         api.prevent_close();
                         let _ = window.hide();
-                        tray::hint_once(window.app_handle(), &shell);
+                        if !tray_pause(window.app_handle(), &shell, settings.alarm_notify) {
+                            tray::hint_once(window.app_handle(), &shell);
+                        }
                     }
                 }
                 WindowEvent::Resized(_)
@@ -272,6 +274,7 @@ fn main() {
                         && window.is_minimized().unwrap_or(false) =>
                 {
                     let _ = window.hide();
+                    tray_pause(window.app_handle(), &shell, settings.alarm_notify);
                 }
                 _ => {}
             }
@@ -290,6 +293,14 @@ fn main() {
         });
 
     runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+}
+
+fn tray_pause(app: &tauri::AppHandle, shell: &DesktopShell, notify_on: bool) -> bool {
+    if !notify_on || !shell.take_tray_pause_notice() {
+        return false;
+    }
+    notify::post_paused(app);
+    true
 }
 
 fn probe_page(app: &tauri::AppHandle) {

@@ -92,15 +92,25 @@ stability before 1.0.
   first later check whose error says the session is gone posts one *Alarm
   notifications paused — open PROVIEW and sign in* notification and logs at warn,
   once per span; the next successful check re-arms it, and a launch that has not
-  checked successfully yet announces nothing, because the session store is empty
-  at every start. A recovery after two failed checks in a row summarizes the gap
-  in one notification instead of replaying the backlog alarm by alarm, while a
-  single missed check still toasts; the rule counts checks rather than seconds,
-  so timer jitter cannot flip it. The remembered
-  window and the device cache now belong to the signed-in account, so an account
-  switch drops both and starts the run over, and an empty first pass reports a
-  state change so the baseline mark is saved by the watcher rather than only by
-  a direct `save()`.
+  checked successfully yet announces nothing from the check, because the session
+  store is empty at every start. A recovery after two failed checks in a row
+  summarizes the gap in one notification instead of replaying the backlog alarm
+  by alarm, while a single missed check still toasts; the rule counts checks
+  rather than seconds, so timer jitter cannot flip it. The remembered window and
+  the device cache now belong to the signed-in account, so an account switch
+  drops both and starts the run over, and an empty first pass reports a state
+  change so the baseline mark is saved by the watcher rather than only by a
+  direct `save()`.
+- A window with no session and no successful check now says so when it goes to
+  the tray. With alarm notifications on, the first close or minimize to the tray
+  posts the same *Alarm notifications paused — open PROVIEW and sign in*
+  notification the failing check posts, and the rest of that run stays quiet;
+  the still-running hint waits for a later hide instead of stacking a second
+  notification. It reads the live session store, so a page that has signed in
+  stays silent even before its first check, and a run that has checked
+  successfully leaves the pause to the check path. The run now lives in the
+  desktop shell, so the window event reads the same `last_ok` the check keeps
+  instead of a copy.
 - The desktop **Restart the app** button restarts the app again. The window is
   served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
   the `restart_app` IPC command was refused and the button did nothing. The page
@@ -131,6 +141,41 @@ stability before 1.0.
   `tests/web/stream-orphan.test.mjs` covers the Settings case, the late
   `sourceopen`, both overlap orders and the replaced player; it fails on
   6c70754 and passes after this change.
+- A cloud live setup that outlasts a reply deadline no longer loses the bytes it
+  had already read. `Connection::recv` read the 20-byte header and then the body
+  with two separate exact reads, so a timeout that fired between them threw away
+  the header bytes it had consumed and the next frame began in the middle of the
+  one before it; the pre-claim reply wait, the token-to-password login fallback
+  and the monitor claim reply wait all continued on that connection. The reader
+  now keeps what arrived in a buffer that survives a cancelled read and hands a
+  frame out only once its header and declared body have both arrived, which also
+  covers the settings and control reads that share the type.
+
+## 0.3.5 — 2026-10-28
+
+### Added
+
+- Cloud live in the player. `GET /api/stream` answers a websocket ticket and the
+  route starts one cloud source per stream key: the provider opens the relay
+  tunnel, logs in to the device, waits for the three HEVC parameter sets and
+  feeds the same ffmpeg and fMP4 publisher the RTSP path uses, so the view needs
+  no change. `docs/protocol.md` 4C.24 and 4C.25 carry the sequence and the
+  measurements (first frame p50 1835 ms, p95 3846 ms over ten cold starts; a
+  300 s stream at 0.87 s of server CPU), and 4C.26 the cost per stream.
+- A device token store per serial: AES-256-GCM with a 0600 key file, the serial
+  bound as associated data, `forget` to revoke, and writes serialised across the
+  process.
+- `PROVIEW_DEVICE_SERIAL` in Settings under Local network. The camera user and
+  password are only sent to that serial, and a cloud ticket now answers 501 with
+  `code: "misconfigured"` naming the setting when the device could never log in,
+  instead of failing later with a generic message.
+
+### Fixed
+
+- The live start body went out under msgid 1413 (the claim) instead of 1410
+  (`0x0582`), which is why every earlier cloud run counted zero frames.
+- The cloud live socket is scoped to the account that owns the serial: a session
+  asking for another account's camera answers 404 before it subscribes.
 
 ## 0.3.4 — 2026-10-28
 

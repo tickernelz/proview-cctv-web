@@ -96,6 +96,14 @@ pub fn post_message(app: &AppHandle, title: &str, body: &str) {
     tracing::info!(title, "notification posted");
 }
 
+pub fn post_paused(app: &AppHandle) {
+    post_message(
+        app,
+        "Alarm notifications paused",
+        "Open PROVIEW and sign in to keep them coming.",
+    );
+}
+
 pub fn summary(app: &AppHandle, count: usize) {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     if let Some(pending) = app.try_state::<Pending>() {
