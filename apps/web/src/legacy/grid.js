@@ -316,11 +316,26 @@ function gridSetLayout(value) {
   gridSave();
 }
 
+const GRID_WIDE = window.matchMedia('(min-width: 1024px)');
+const GRID_MEDIUM = window.matchMedia('(min-width: 640px)');
+
+function gridAutoColumns(count) {
+  return Math.min(count, GRID_WIDE.matches ? 4 : GRID_MEDIUM.matches ? 2 : 1);
+}
+
+for (const query of [GRID_WIDE, GRID_MEDIUM]) {
+  query.addEventListener('change', () => {
+    if (gridView.spec && gridLayout(gridView.spec.layout).value === 'auto') {
+      gridApplyLayout();
+    }
+  });
+}
+
 function gridApplyLayout() {
   const tiles = el('tiles');
   const layout = gridLayout(gridView.spec ? gridView.spec.layout : 'auto');
   const count = Math.max(1, gridView.spec ? gridView.spec.tiles.length : 1);
-  const columns = layout.columns || Math.ceil(Math.sqrt(count));
+  const columns = layout.columns || gridAutoColumns(count);
   tiles.dataset.layout = layout.value;
   tiles.style.gridTemplateColumns = 'repeat(' + columns + ', minmax(0, 1fr))';
   tiles.style.gridTemplateRows = 'repeat(' + Math.ceil(count / columns) + ', minmax(0, 1fr))';
