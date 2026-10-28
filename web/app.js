@@ -1930,8 +1930,12 @@ async function requestStream() {
   if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
     return;
   }
+  const previous = state.players.get('stage');
+  if (previous) {
+    previous.destroy();
+    state.players.delete('stage');
+  }
   const player = stagePlayer();
-  player.destroy();
   state.ticket = null;
   setStage('loading');
   try {
