@@ -34,7 +34,7 @@ impl Mode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "plaintext" | "plain" => Some(Self::Plaintext),
             "sealed" | "key" => Some(Self::Sealed),
-            "replica" | "stream" => Some(Self::Replica),
+            "replica" => Some(Self::Replica),
             _ => None,
         }
     }
@@ -132,13 +132,6 @@ fn load_secrets() {
     }
 }
 
-fn random_lower(count: usize) -> String {
-    let mut rng = rand::thread_rng();
-    (0..count)
-        .map(|_| (b'a' + rng.gen_range(0..26)) as char)
-        .collect()
-}
-
 fn random_hex(key: &str, bytes: usize) -> String {
     let explicit = env(key);
     if !explicit.is_empty() {
@@ -214,7 +207,12 @@ fn redact(body: &[u8]) -> (String, bool) {
 }
 
 fn printable(body: &[u8]) -> String {
-    body.iter()
+    let mut end = body.len();
+    while end > 0 && matches!(body[end - 1], 0 | b'\n' | b'\r') {
+        end -= 1;
+    }
+    body[..end]
+        .iter()
         .map(|byte| {
             let text = *byte as char;
             if text.is_ascii_graphic() || text == ' ' {
@@ -714,7 +712,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     let random = if deltas.random {
-        Some(random_lower(4))
+        Some(rps::random_lower(4))
     } else {
         None
     };
@@ -731,7 +729,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     let mut claim_ret: Option<i64> = None;
     if !deltas.claim_wait {
-        notes.push("claim reply not awaited, matching the cloud provider path".to_string());
+        notes.push("claim reply not awaited, as stream() did at 5677181".to_string());
     } else {
         let reply = wire
             .recv(&mut trace, Duration::from_secs(6))
