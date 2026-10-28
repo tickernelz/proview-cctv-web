@@ -25,6 +25,12 @@ struct SessionEntries {
     devices: Arc<Vec<CloudDevice>>,
 }
 
+struct RelayTarget {
+    rps: String,
+    host: String,
+    port: u16,
+}
+
 type Gate = Arc<AsyncMutex<Option<(Instant, CloudError)>>>;
 
 pub struct CloudProvider {
@@ -213,22 +219,28 @@ impl CloudProvider {
             )
         })
     }
-    async fn device_login(
+    async fn device_login<F, Fut>(
         &self,
-        connection: &mut crate::dvrip::client::Connection,
+        mut connection: crate::dvrip::client::Connection,
         entry: &crate::cloud::types::CloudDevice,
         credential: DeviceCredential,
-    ) -> Result<String, ProviderError> {
+        reopen: F,
+    ) -> Result<(crate::dvrip::client::Connection, String), ProviderError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<crate::dvrip::client::Connection, ProviderError>>,
+    {
         let serial = entry.uuid.trim().to_string();
         let control = crate::media::dhav::MediaCipher::channel();
         let mut note = String::from("no stored device token");
         if let Some(token) = self.tokens.get(&serial) {
-            match self.token_login(connection, &token, &control).await {
+            match self.token_login(&mut connection, &token, &control).await {
                 Ok(100) => {
-                    return Ok(format!(
+                    let note = format!(
                         "stored device token ret 100, session 0x{:08x}",
                         connection.session()
-                    ))
+                    );
+                    return Ok((connection, note));
                 }
                 Ok(ret) => {
                     let _ = self.tokens.forget(&serial);
@@ -239,45 +251,45 @@ impl CloudProvider {
                     note = format!("stored device token failed: {error}, token dropped");
                 }
             }
-            connection.set_session(0);
-            Self::drain_late_frames(connection).await;
-        }
-        let (user, pass) = match credential {
-            DeviceCredential::Allowed { user, pass } => (user, pass),
-            DeviceCredential::Refused(reason) => {
-                return Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
-            }
-        };
-        let reply = connection
-            .login_reply(&user, &pass)
-            .await
-            .map_err(|error| {
-                ProviderError::Upstream(format!("{note}, password registration failed: {error:?}"))
+            let (user, pass) = credential_pair(&credential, &note)?;
+            drop(connection);
+            connection = reopen().await.map_err(|error| {
+                ProviderError::Upstream(format!("{note}, the second tunnel failed: {error}"))
             })?;
+            return self
+                .password_login(connection, &serial, &user, &pass, note)
+                .await;
+        }
+        let (user, pass) = credential_pair(&credential, &note)?;
+        self.password_login(connection, &serial, &user, &pass, note)
+            .await
+    }
+
+    async fn password_login(
+        &self,
+        mut connection: crate::dvrip::client::Connection,
+        serial: &str,
+        user: &str,
+        pass: &str,
+        note: String,
+    ) -> Result<(crate::dvrip::client::Connection, String), ProviderError> {
+        let reply = connection.login_reply(user, pass).await.map_err(|error| {
+            ProviderError::Upstream(format!("{note}, password registration failed: {error:?}"))
+        })?;
         let issued = reply
             .get("AdminToken")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
         let stored = match issued {
-            Some(token) => self.tokens.put(&serial, token).is_ok(),
+            Some(token) => self.tokens.put(serial, token).is_ok(),
             None => false,
         };
-        Ok(format!(
+        let summary = format!(
             "{note}, password login ret 100, device token stored {stored}, session 0x{:08x}",
             connection.session()
-        ))
-    }
-
-    async fn drain_late_frames(connection: &mut crate::dvrip::client::Connection) {
-        for _ in 0..6 {
-            match tokio::time::timeout(std::time::Duration::from_millis(80), connection.recv())
-                .await
-            {
-                Ok(Ok(_)) => continue,
-                _ => break,
-            }
-        }
+        );
+        Ok((connection, summary))
     }
 
     async fn token_login(
@@ -408,16 +420,7 @@ impl CloudProvider {
         Ok(self.entry_of(session, device).await?.is_some())
     }
 
-    pub async fn open_media(
-        &self,
-        session: &VendorSession,
-        device: &str,
-        channel: u32,
-        high: bool,
-    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
-        let Some(entry) = self.entry_of(session, device).await? else {
-            return Err(ProviderError::UnknownDevice(device.to_string()));
-        };
+    async fn relay_target(&self, entry: &CloudDevice) -> Result<RelayTarget, ProviderError> {
         let rps = entry
             .extra
             .get("rps")
@@ -432,7 +435,7 @@ impl CloudProvider {
         }
         let state = match self
             .status
-            .query(&entry.uuid, &status::auth_code_of(&entry))
+            .query(&entry.uuid, &status::auth_code_of(entry))
             .await
         {
             Ok(state) => state,
@@ -444,10 +447,18 @@ impl CloudProvider {
                 state.summary()
             )));
         };
+        Ok(RelayTarget { rps, host, port })
+    }
+
+    async fn dial(
+        &self,
+        entry: &CloudDevice,
+        target: &RelayTarget,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
         let client_token = rps_client::client_token();
         let session_id = rps_client::session_id();
         let request = p2p::agent_request(
-            &rps,
+            &target.rps,
             &client_token,
             &entry.uuid,
             p2p::AGENT_SERVICE_MEDIA,
@@ -455,12 +466,12 @@ impl CloudProvider {
             p2p::AGENT_STEP_MEDIA,
         );
         let agent = rps_client::AccessClient::new()
-            .assign(&host, port, &request)
+            .assign(&target.host, target.port, &request)
             .await
             .map_err(|error| {
                 ProviderError::Upstream(format!("agent assignment failed: {error}"))
             })?;
-        let frame = p2p::handshake_frame(&rps, &client_token, &entry.uuid, &session_id);
+        let frame = p2p::handshake_frame(&target.rps, &client_token, &entry.uuid, &session_id);
         let tunnel = rps_client::open(&agent, &frame)
             .await
             .map_err(|error| ProviderError::Upstream(format!("relay handshake failed: {error}")))?;
@@ -470,10 +481,29 @@ impl CloudProvider {
                 tunnel.reply.error_num
             )));
         }
-        let mut connection = tunnel.into_connection();
+        tracing::debug!(device = %entry.uuid, dest = %tunnel.reply.dest_ip, "cloud tunnel open");
+        Ok(tunnel.into_connection())
+    }
+
+    pub async fn open_media(
+        &self,
+        session: &VendorSession,
+        device: &str,
+        channel: u32,
+        high: bool,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        let Some(entry) = self.entry_of(session, device).await? else {
+            return Err(ProviderError::UnknownDevice(device.to_string()));
+        };
+        let target = self.relay_target(&entry).await?;
+        let connection = self.dial(&entry, &target).await?;
         let credential = device_credential_for(entry.uuid.trim(), &entry);
-        self.device_login(&mut connection, &entry, credential)
+        let (mut connection, login_note) = self
+            .device_login(connection, &entry, credential, || {
+                self.dial(&entry, &target)
+            })
             .await?;
+        tracing::debug!(device = %entry.uuid, %login_note, "cloud device login");
         let device_channel = channel.saturating_sub(1) as u8;
         let stream = if high { "Main" } else { "Sub" };
         let claim = serde_json::json!({
@@ -721,6 +751,18 @@ fn unready_reason(stored_token: bool, credential: &DeviceCredential) -> Option<S
     match credential {
         DeviceCredential::Allowed { .. } => None,
         DeviceCredential::Refused(reason) => Some(reason.clone()),
+    }
+}
+
+fn credential_pair(
+    credential: &DeviceCredential,
+    note: &str,
+) -> Result<(String, String), ProviderError> {
+    match credential {
+        DeviceCredential::Allowed { user, pass } => Ok((user.clone(), pass.clone())),
+        DeviceCredential::Refused(reason) => {
+            Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
+        }
     }
 }
 
@@ -1686,7 +1728,9 @@ mod entry_cache_tests {
 mod login_tests {
     use super::*;
     use crate::dvrip::fake::{connect, json_reply, serve_scripted};
+    use crate::dvrip::frame::Header;
     use crate::dvrip::msg;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn provider() -> CloudProvider {
         let cfg = Config::from_env();
@@ -1754,7 +1798,25 @@ mod login_tests {
         peer.await.expect("peer task");
     }
 
+    const SERIAL: &str = "serial-tunnel-reopen";
+
+    fn device_credential() -> DeviceCredential {
+        DeviceCredential::Allowed {
+            user: "admin".to_string(),
+            pass: "secret".to_string(),
+        }
+    }
+
     struct TokenDir(std::path::PathBuf);
+
+    impl TokenDir {
+        fn new(tag: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("proview-tokens-{tag}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).expect("token dir");
+            Self(dir)
+        }
+    }
 
     impl Drop for TokenDir {
         fn drop(&mut self) {
@@ -1762,20 +1824,8 @@ mod login_tests {
         }
     }
 
-    #[tokio::test]
-    async fn device_login_falls_back_with_the_password_reply_not_the_token_one() {
-        let serial = "serial-one";
-        let dir = TokenDir(
-            std::env::temp_dir().join(format!("proview-login-tests-{}", std::process::id())),
-        );
-        std::fs::create_dir_all(&dir.0).expect("token dir");
-        let mut provider = provider();
-        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir.0));
-        provider
-            .tokens
-            .put(serial, "expired-token")
-            .expect("stored token");
-        let entry = crate::cloud::types::CloudDevice {
+    fn entry(serial: &str) -> crate::cloud::types::CloudDevice {
+        crate::cloud::types::CloudDevice {
             uuid: serial.to_string(),
             nickname: String::new(),
             username: "admin".to_string(),
@@ -1784,57 +1834,396 @@ mod login_tests {
             channel: None,
             channel_num: None,
             extra: serde_json::Map::new(),
-        };
+        }
+    }
 
-        let (address, peer) = serve_scripted(|_, id, body| {
-            if id == msg::MONITOR {
-                return vec![(
-                    MONITOR_CLAIM_REPLY,
-                    json_reply(serde_json::json!({ "Ret": 100 })),
-                )];
-            }
-            if id == msg::LOGIN {
-                if body.first() == Some(&b'{') {
-                    return vec![(
-                        msg::LOGIN_REPLY,
-                        json_reply(serde_json::json!({
-                            "Ret": 100,
-                            "AdminToken": "REAL",
-                            "SessionID": "0x22222222"
-                        })),
-                    )];
+    fn provider_with_store(dir: &TokenDir) -> CloudProvider {
+        let mut provider = provider();
+        provider.tokens = crate::cloud::DeviceTokenStore::load(Some(&dir.0));
+        provider
+    }
+
+    struct LoginPeer {
+        address: String,
+        events: Arc<Mutex<Vec<String>>>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for LoginPeer {
+        fn drop(&mut self) {
+            self.handle.abort();
+        }
+    }
+
+    impl LoginPeer {
+        async fn start(token_ret: i64, late: Duration) -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("peer listener");
+            let address = listener.local_addr().expect("peer address").to_string();
+            let events = Arc::new(Mutex::new(Vec::<String>::new()));
+            let shared = events.clone();
+            let handle = tokio::spawn(async move {
+                let mut index = 0usize;
+                loop {
+                    let Ok((socket, _)) = listener.accept().await else {
+                        return;
+                    };
+                    index += 1;
+                    let events = shared.clone();
+                    tokio::spawn(async move {
+                        serve_peer(socket, index, token_ret, late, events).await;
+                    });
                 }
-                return vec![
-                    (
-                        msg::LOGIN_REPLY,
-                        json_reply(serde_json::json!({ "Ret": 106 })),
-                    ),
-                    (
-                        msg::LOGIN_REPLY,
-                        json_reply(serde_json::json!({
-                            "Ret": 100,
-                            "AdminToken": "STALE",
-                            "SessionID": "0x11111111"
-                        })),
-                    ),
-                ];
+            });
+            Self {
+                address,
+                events,
+                handle,
             }
-            Vec::new()
-        })
-        .await;
-        let mut connection = connect(&address).await;
-        let credential = DeviceCredential::Allowed {
-            user: "admin".to_string(),
-            pass: "secret".to_string(),
+        }
+
+        fn events(&self) -> Vec<String> {
+            self.events.lock().expect("peer events").clone()
+        }
+    }
+
+    fn note(events: &Arc<Mutex<Vec<String>>>, text: String) {
+        events.lock().expect("peer events").push(text);
+    }
+
+    async fn send_reply(
+        socket: &mut tokio::net::TcpStream,
+        request: &Header,
+        session: u32,
+        id: u16,
+        payload: Vec<u8>,
+    ) -> std::io::Result<()> {
+        let header = Header {
+            session,
+            sequence: request.sequence,
+            channel: request.channel,
+            end: false,
+            id,
+            length: payload.len() as u32,
         };
-        let note = provider
-            .device_login(&mut connection, &entry, credential)
+        socket.write_all(&header.encode()).await?;
+        socket.write_all(&payload).await
+    }
+
+    async fn serve_peer(
+        mut socket: tokio::net::TcpStream,
+        index: usize,
+        token_ret: i64,
+        late: Duration,
+        events: Arc<Mutex<Vec<String>>>,
+    ) {
+        let claim_reply = json_reply(serde_json::json!({ "Ret": 100 }));
+        loop {
+            let mut header_bytes = [0u8; crate::dvrip::HEADER_LEN];
+            if socket.read_exact(&mut header_bytes).await.is_err() {
+                return;
+            }
+            let Ok(request) = Header::decode(&header_bytes) else {
+                return;
+            };
+            let mut body = vec![0u8; request.length as usize];
+            if socket.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            let token_channel = request.channel == msg::MONITOR_CHANNEL;
+            let label = match (token_channel, request.id) {
+                (true, msg::MONITOR) => "pre_claim",
+                (true, msg::LOGIN) => "token_login",
+                (false, msg::LOGIN) => "password_login",
+                _ => "other",
+            };
+            note(&events, format!("conn{index}:{label}"));
+            if token_channel && request.id == msg::MONITOR {
+                if send_reply(
+                    &mut socket,
+                    &request,
+                    request.session,
+                    MONITOR_CLAIM_REPLY,
+                    claim_reply.clone(),
+                )
+                .await
+                .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+            if token_channel && request.id == msg::LOGIN {
+                if token_ret == 100 {
+                    let payload = json_reply(serde_json::json!({
+                        "Ret": 100,
+                        "SessionID": "0x33333333"
+                    }));
+                    if send_reply(
+                        &mut socket,
+                        &request,
+                        0x3333_3333,
+                        msg::LOGIN_REPLY,
+                        payload,
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return;
+                    }
+                    continue;
+                }
+                let payload = json_reply(serde_json::json!({ "Ret": token_ret }));
+                if send_reply(
+                    &mut socket,
+                    &request,
+                    request.session,
+                    msg::LOGIN_REPLY,
+                    payload,
+                )
+                .await
+                .is_err()
+                {
+                    return;
+                }
+                tokio::time::sleep(late).await;
+                let payload = json_reply(serde_json::json!({
+                    "Ret": 100,
+                    "AdminToken": "STALE",
+                    "SessionID": "0x11111111"
+                }));
+                let reply = Header {
+                    session: 0x1111_1111,
+                    sequence: 1,
+                    channel: 0,
+                    end: false,
+                    id: msg::LOGIN_REPLY,
+                    length: payload.len() as u32,
+                };
+                if socket.write_all(&reply.encode()).await.is_ok()
+                    && socket.write_all(&payload).await.is_ok()
+                {
+                    note(&events, "late_token_reply_written".to_string());
+                } else {
+                    note(&events, "late_token_reply_rejected".to_string());
+                }
+                continue;
+            }
+            if !token_channel && request.id == msg::LOGIN {
+                let payload = json_reply(serde_json::json!({
+                    "Ret": 100,
+                    "AdminToken": "REAL",
+                    "SessionID": "0x22222222"
+                }));
+                if send_reply(
+                    &mut socket,
+                    &request,
+                    0x2222_2222,
+                    msg::LOGIN_REPLY,
+                    payload,
+                )
+                .await
+                .is_err()
+                {
+                    return;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn device_login_reopens_the_tunnel_before_the_password_login() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("reopen");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "expired-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let address = peer.address.clone();
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let address = address.clone();
+                async move { Ok::<_, ProviderError>(connect(&address).await) }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
             .await
             .expect("the password login finishes the session");
+        assert_eq!(
+            connection.session(),
+            0x2222_2222,
+            "the session must belong to the password reply, not to a late token reply"
+        );
         assert!(note.contains("password login ret 100"), "{note}");
         assert!(note.contains("token dropped"), "{note}");
-        assert_eq!(connection.session(), 0x2222_2222);
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a stale token must cost exactly one new tunnel"
+        );
+        let events = peer.events();
+        assert!(
+            events.contains(&"conn1:token_login".to_string()),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(&"conn2:password_login".to_string()),
+            "the password login must run on the reopened tunnel: {events:?}"
+        );
         drop(connection);
-        peer.await.expect("peer task");
+    }
+
+    #[tokio::test]
+    async fn device_login_keeps_the_tunnel_when_the_stored_token_is_accepted() {
+        let peer = LoginPeer::start(100, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("accepted");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "live-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "the token tunnel must be kept".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
+            .await
+            .expect("the token login finishes the session");
+        assert_eq!(connection.session(), 0x3333_3333);
+        assert!(note.contains("stored device token ret 100"), "{note}");
+        assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!peer
+            .events()
+            .iter()
+            .any(|event| event.contains("password_login")));
+        drop(connection);
+    }
+
+    #[tokio::test]
+    async fn device_login_without_a_stored_token_keeps_the_first_tunnel() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("bare");
+        let provider = provider_with_store(&dir);
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "no token means no reopen".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(first, &entry(SERIAL), device_credential(), reopen)
+            .await
+            .expect("the password login finishes the session");
+        assert_eq!(connection.session(), 0x2222_2222);
+        assert!(note.contains("no stored device token"), "{note}");
+        assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(connection);
+    }
+
+    #[tokio::test]
+    async fn device_login_reports_the_token_note_when_the_second_tunnel_fails() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("reopen-failure");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "expired-token")
+            .expect("stored token");
+        let first = connect(&peer.address).await;
+        let error = match provider
+            .device_login(first, &entry(SERIAL), device_credential(), || async {
+                Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                    "the relay refused the second tunnel".to_string(),
+                ))
+            })
+            .await
+        {
+            Ok(_) => panic!("a second tunnel that never opened must fail the login"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("token dropped"), "{message}");
+        assert!(message.contains("the second tunnel failed"), "{message}");
+        assert!(
+            provider.tokens.get(SERIAL).is_none(),
+            "the stale token stays dropped when the second tunnel fails"
+        );
+        assert!(
+            !peer
+                .events()
+                .iter()
+                .any(|event| event.contains("password_login")),
+            "the password login never runs on the discarded tunnel: {:?}",
+            peer.events()
+        );
+    }
+
+    #[tokio::test]
+    async fn device_login_refuses_a_password_less_device_before_reopening() {
+        let peer = LoginPeer::start(106, Duration::from_millis(700)).await;
+        let dir = TokenDir::new("reopen-refused");
+        let provider = provider_with_store(&dir);
+        provider
+            .tokens
+            .put(SERIAL, "expired-token")
+            .expect("stored token");
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "the token tunnel must not be reopened".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let error = match provider
+            .device_login(
+                first,
+                &entry(SERIAL),
+                DeviceCredential::Refused("no camera user and password".to_string()),
+                reopen,
+            )
+            .await
+        {
+            Ok(_) => panic!("a device with no password must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("no camera user and password"),
+            "{error}"
+        );
+        assert_eq!(
+            reopened.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the refusal is decided before the second tunnel is opened"
+        );
     }
 }
