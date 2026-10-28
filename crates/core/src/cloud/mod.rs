@@ -4,6 +4,7 @@ pub mod attributes;
 pub mod bind;
 pub mod client;
 pub mod css;
+pub mod device_tokens;
 pub mod digest;
 pub mod dss;
 pub mod envelope;
@@ -20,6 +21,7 @@ pub use bind::{
 };
 pub use client::{classify, CloudClient, CloudError, CloudResult};
 pub use css::{CssClient, SignRequest, SignedFile};
+pub use device_tokens::DeviceTokenStore;
 pub use digest::{digest_of, undigest_of, DigestError, PORTAL_KEY_HEX};
 pub use dss::{
     cloud_recordings, query_body, read_recordings, token_body, CloudRecording, DssClaims,

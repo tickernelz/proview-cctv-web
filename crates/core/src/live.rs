@@ -116,6 +116,7 @@ pub struct StreamSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct StreamKey {
+    pub scope: String,
     pub device: String,
     pub channel: u32,
     pub sub_stream: bool,
@@ -125,6 +126,23 @@ pub struct StreamKey {
 impl StreamKey {
     pub fn new(device: impl Into<String>, channel: u32, sub_stream: bool, mode: LiveMode) -> Self {
         Self {
+            scope: String::new(),
+            device: device.into(),
+            channel,
+            sub_stream,
+            mode,
+        }
+    }
+
+    pub fn cloud(
+        scope: impl Into<String>,
+        device: impl Into<String>,
+        channel: u32,
+        sub_stream: bool,
+        mode: LiveMode,
+    ) -> Self {
+        Self {
+            scope: scope.into(),
             device: device.into(),
             channel,
             sub_stream,
@@ -558,5 +576,35 @@ mod tests {
         assert_eq!(snapshot.keyframes, 1);
         assert_eq!(snapshot.mode, LiveMode::Passthrough);
         hub.release(&stream);
+    }
+
+    #[test]
+    fn a_cloud_publisher_does_not_answer_for_a_local_key_of_the_same_device() {
+        let hub = LiveHub::default();
+        let local = StreamKey::new("7f92970ddf5282743hrc", 1, false, LiveMode::Transcode);
+        let cloud = StreamKey::cloud(
+            "account-one",
+            "7f92970ddf5282743hrc",
+            1,
+            false,
+            LiveMode::Transcode,
+        );
+        let other_account = StreamKey::cloud(
+            "account-two",
+            "7f92970ddf5282743hrc",
+            1,
+            false,
+            LiveMode::Transcode,
+        );
+        let _publisher = hub.publisher(cloud.clone());
+        assert!(hub.has_publisher(&cloud));
+        assert!(
+            !hub.has_publisher(&local),
+            "a cloud publisher must not answer a local key for the same serial"
+        );
+        assert!(
+            !hub.has_publisher(&other_account),
+            "a cloud publisher must not answer another account's key"
+        );
     }
 }

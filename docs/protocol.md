@@ -1141,6 +1141,286 @@ P-frame, an audio frame or a JPEG still already arrives in the clear and must no
 be masked. ZHA-4072 carries the measurement — `ffprobe` reads `hevc 2304x2592`
 on a recorded capture once the window is undone.
 
+### 4C.21 The app's own live sequence, byte for byte (`PCAPdroid_27_Okt_21_18_10.pcap`)
+
+Read from the phone capture, media sessions are plain TCP to `<agent>:6611` after
+the 4C.7 handshake. One session, in order:
+
+1. `0x0585` on channel 99, plaintext JSON, NUL terminated, header session
+   `0x0001869f`: `{"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Parameter":
+   {"Channel":0,"CombinMode":"CONNECT_ALL","StreamType":"Main","TransMode":"TCP"}},
+   "DHParameter":{"RandomStrA":"..."},"SessionID":"0x0001869f"}` (206 bytes).
+2. Device answers `0x0586`, 961 bytes, **AES-128-CBC with the vendor constant key,
+   zero IV, base64, NUL terminated**. Opened, it is the capability block:
+
+   ```
+   { "Bits":1024, "DataEncryptionType":{"AES":true,"AESV2":true,"VEKEY1":true},
+     "EncryptAlgo":"RSA_V1.5",
+     "LoginEncryptionType":{"MD5":true,"NONE":true,"RSA":true,"TOKEN":true},
+     "NotEncryptMsgID":[1000,1001,1008,...,1412,1413,1414,1422,1424,1425,1426,1432,1433,1434,1435,1449,1522,1572,1576,1580,1582,1645,2062,2063,2123,2140,3016,3502],
+     "PublicKey":"<512 hex modulus>,010001", "Ret":100 }
+   ```
+
+   The device's RSA key arrives **in this reply**, so the sealing key is a session
+   value, not a constant that has to be scraped once.
+3. Client sends `0x03e8` on channel 99, encrypted with the same constant key,
+   base64, NUL, zero padded: 432 ciphertext bytes for a 420-byte body.
+   Opened body:
+
+   ```
+   {"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"<16 chars>",
+    "PassWord":"","CommunicateKey":"<256 hex>","User-Agent":"Funv1.2.2c-And-<16 chars>"}
+   ```
+
+4. Device answers `0x03e9` **plaintext**, 128 bytes:
+   `{"AliveInterval":30,"ChannelNum":1,"DeviceType":"IPC","ExtraChannel":0,"Ret":100,"SessionID":"0x00000157"}`.
+5. Media runs on a **second** 6611 connection opened with the same handshake: a
+   single `0x0585` on channel 0, plaintext, 181 bytes,
+   `{"Name":"OPMonitor","OPMonitor":{"Action":"Claim","Action1":"Start","Parameter":
+   {"Channel":0,"CombinMode":"NONE","StreamType":"Main","TransMode":"TCP"}},
+   "SessionID":"0x00000157"}` — header session equals that id. Device answers
+   `0x0586` 67 bytes `{"Name":"OPMonitor","Ret":100,...}` and immediately streams
+   `0x0584` bodies of 8192 bytes whose first bytes are `00 00 01 fc ...`, i.e. the
+   DHAV record header `media::live` already classifies. **No `VEKEY1`, no AES**:
+   the app's own media is plaintext.
+6. Two-way audio is a claim on `0x059a` (`OPTalk`, channel 0) followed by `0x0598`
+   audio bodies; playback is a claim on `0x0590` (`OPPlayBack`). Both reuse the
+   same session id and relay connection shape.
+
+Header layout confirmed from these frames: `ff 01 00 00`, session `u32` LE at 4,
+sequence `u32` LE at 8 (the app advances it by 8), channel at 12, flags at 13
+(zero on every frame above), msg id `u16` LE at 14, body length `u32` LE at 16.
+
+### 4C.22 What the same sequence does from this box, and where it stops
+
+`provider/cloud.rs` now follows 4C.21 exactly: pre-claim, open the caps reply,
+seal `CommunicateKey` with the key that reply carries, encrypted token login,
+then the `Action1:"Start"` claim. Measured outcomes on the test camera, one
+attempt per configuration:
+
+| login body | credentials | reply |
+|---|---|---|
+| plaintext, channel 99 | account `deviceToken` (44 chars) | `Ret 117` |
+| encrypted, constant key, no pre-claim | account `deviceToken` | `Ret 117` |
+| encrypted, constant key, after pre-claim, `CommunicateKey` sealed from caps | 16-char token from the app capture | `Ret 137` |
+| encrypted, constant key, after pre-claim, sealed | random 16-char token + `User-Agent` | `Ret 137` |
+| plaintext Sofia, channel 0 | device password (`secrets/device.env`) | `Ret 100`, media flows |
+
+So the framing, the cipher, the padding and the key source are now reproduced;
+what the device still rejects is the **token value**. Two facts narrow it:
+
+- `/deviceToken/get` answers a 128-character value that percent-decodes to a
+  base64 of `bd7f4c9210|686a56d64b54e0bac464932...` (35 printable bytes, two
+  pipe-separated fields of 10 and 24 characters). That is not the app's
+  16-character user token, and it is different on every call.
+- ~~The app obtains its token locally~~ — corrected in 4C.23:
+  `FunSDK.DevGetLocalEncToken` is a cache read, and the 16-character value it
+  returns is a stored credential whose issuing call is not yet identified.
+
+Next step is that function. It is reachable by name in the shipped library, so no
+caller tracing is needed: `nm -D native/arm64-v8a/libFunSDK.so` lists
+
+```
+0000000000de59b8 T Java_com_lib_FunSDK_DevGetLocalEncToken
+0000000000de54bc T Java_com_lib_FunSDK_DevSetLocalEncToken
+_Z23FUN_DevGetLocalEncTokenPKcPc  (C++ overload the JNI method calls into)
+```
+
+So the plan is `rea.analyze_function` on `FUN_DevGetLocalEncToken`, then reproduce
+the derivation in `dvrip::crypto` and replay it against the same relay. The measured primitive stays the reference: the same relay,
+claim, start and demux path already carries media when the device accepts the
+login.
+
+### 4C.23 The account does issue a device token, and it is not the one the app logs in with
+
+The correction to 4C.22 first: its claim that the app "obtains its token locally"
+through `DevGetLocalEncToken` is wrong in the direction that matters.
+`FUN_DevGetLocalEncToken` (0xc06a3c) is a **cache read**:
+
+```
+c06ad8  bl  CDataCenter::GetDevLoginEncToken(this, szDevId, "…", 1)
+c06b10  bl  __strcpy_chk                       ; copy the cached value to the caller
+```
+
+The matching writer, `Fun_DevSetLocalEncToken` (0xc06538), is called from Java
+with a value the app already holds: `DataCenter.smali:2555` stores
+`OtherShareDevUserBean.getDeviceToken("AdminToken")`, and six add-device
+activities store `DevShareQrCodeInfo.getDt()`. So the login user name is a
+**stored credential**, and the question is which server handed it over.
+
+#### The account call exists, and it returns the mdlist token
+
+`IXMAccount::GetDevEncToken` (0xf4352c) builds
+`TalkToServer_T2("v3", "queryDeviceToken", out, …, "uuids=%s")`, with the serial
+URL-encoded into the format string. Measured against the live service:
+
+| request | reply |
+|---|---|
+| `POST /queryDeviceToken/v3/<tsid>/<sig>.rs`, sealed body `uuids=<serial>` | `{"code":2000,"msg":"SUCCESS","data":[{"uuid":"<serial>","deviceToken":{"AdminToken":"<44>","OldAdminToken":"<44>"}}]}` |
+| `GET /queryDeviceToken/v3/<tsid>/<sig>.rs?uuids=<serial>` | `{"code":2000,"msg":"SUCCESS","data":[]}` |
+
+Only the sealed POST carries the row, so the query string in the format string is
+the body, not the URL. `EnvelopeClient::device_login_token` implements the POST
+and `login_token_of` reads the row (`crates/core/src/cloud/envelope.rs`).
+
+The value is the **same shape as the mdlist `deviceToken.AdminToken`**: 44
+base64 characters whose last 20 characters are constant across tokens
+(`…1CuP0ZDeEgz0qB6BVm5urk=`), with the leading 24 rotated per issue.
+
+#### What the device actually receives, and why 137
+
+The login frame `1000` in both phone captures decrypts with the channel
+constant `dashoiahfarqdasr` (AES-128-CBC, zero IV, base64) to six fields:
+
+```
+{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"<16>",
+ "PassWord":"","CommunicateKey":"<256 hex>","User-Agent":"<30>"}
+```
+
+`UserName` is 16 characters in the base64 alphabet (digits, upper, lower, `+`),
+and it is **identical in both captures**, taken hours apart and through
+different relay agents. So it is a stable per-device credential, not a per-session
+nonce.
+
+Three candidates are now closed with measurements:
+
+| candidate | evidence |
+|---|---|
+| the client session key (predicted `UserName` == plaintext of `CommunicateKey`) | the session key is `random_lower(16)`, lowercase only; the captured value contains `+` and upper case. Sent anyway as `UserName` with the key sealed from caps: `Ret 137` |
+| the mdlist `AdminToken` (44 chars) | sent in the 4C.21 framing: `Ret 137` |
+| the account `queryDeviceToken` row (`AdminToken`, 44 chars) | sent in the same framing: `Ret 137` |
+| a plain derivation of those (`base64(md5(…)[:12])`, `base64(raw[:12])`, `md5`/`sha1`/`sha256` of the serial) | computed offline against the captured value: no match |
+
+`Ret 137` is what the device answers to a login whose token it does not know; the
+reply keeps the info shape (`AliveInterval`, `ChannelNum`, `DeviceType `, `ExtraChannel`)
+with every field zeroed and no `SessionID`, while a `Ret 100` reply carries
+`"AliveInterval":30,"ChannelNum":1,"DeviceType ":"IPC"`.
+
+#### Where the 16-character value must come from
+
+The remaining server-side path is the message service, not the REST platform:
+`Fun_SysGetDevEncToken` (0xbe8db8) allocates an `XMSG` and pushes **msgid 5094**
+(`0x13e6`) through the data centre's server object, which is the same transport
+the online-status query uses. That is the only call in the library that returns a
+`DevEncToken` without a client-supplied one, so the next measurement is a harness
+run that calls it after a cloud login with a host-side capture, and reads the
+cached value back through `FUN_DevGetLocalEncToken`.
+
+Until that answer exists, the cloud `stream()` path stops at `Ret 137` and the
+LAN-free live row stays `partial` in `docs/parity.md`.
+
+### 4C.24 Media flows through the cloud provider, and the frame id was the gate
+
+`CloudProvider::stream` carried live media for the first time on 2026-10-28:
+
+```
+GET /api/stream?device=7f92970ddf5282743hrc&channel=1&quality=main
+502 in 9.21 s
+  "stored device token ret 137, password registration ret 100, device token stored true,
+   session 0x000000ba, claim reply seen session 0x000000ba,
+   3 keyframes, 64 deltas, 0 dropped, 1025971 elementary bytes"
+```
+
+The bytes are real video, and the reason every earlier attempt saw zero is one
+constant: `OPMonitor Start` goes out as **msgid 1410 (`0x0582`)**, while the claim
+is 1413 (`0x0585`). `stream()` was sending the start body under `msg::MONITOR`
+(1413), so the device parsed it as a second claim and never opened the stream. With
+`msg::MONITOR_START` the media follows immediately. The same mistake explained the
+`Action1:"Start"` restatement: the body was right, the frame id was wrong.
+
+Sequence that works, in order, on one relay tunnel:
+
+1. `login` (Sofia, MD5, channel 0, msgid 1000) with the device user and password.
+   `Ret 100`, and the reply carries the device's own `AdminToken` (44 characters).
+2. `OPMonitor Claim` on channel 99 (msgid 1413) with `DHParameter.RandomStrA`.
+3. Reply 1414 on channel 99.
+4. `OPMonitor Start` on channel 0 (msgid **1410**) with `CombinMode NONE`,
+   `StreamType` from the quality, `TransMode TCP`.
+5. Media arrives as msgid 1412 on channel 0 and feeds `media::live::LiveDemux`.
+
+#### The device token the device issues does not work as a TOKEN login
+
+The registration reply of step 1 is the only place a fresh client can obtain a
+device token, and it is the same 44-character shape as the cloud row of 4C.23. Using
+it for the app's `EncryptType:"TOKEN"` login answers `Ret 137`, measured twice, on
+the same device that answers `Ret 100` to the password login. The 16-character token
+the phone app uses is therefore device-side state that no API in the SDK or the
+account cloud issues; the app received it once, at bind time.
+
+Consequence, stated plainly: for this camera, the account-issued token path cannot
+replace the password login. The provider keeps the registered token in an encrypted
+per-device store (`cloud/device_tokens.rs`: AES-256-GCM, key file 0600, serial bound
+as associated data, `forget` to revoke) and uses it first, but the working session
+comes from the password login the app itself performs at bind.
+
+### 4C.25 The media reaches the browser, and what the acceptance run measures
+
+`CloudProvider::stream` no longer opens a media session: it asks the account
+whether the device belongs to it and answers a `StreamTicket` (`kind: ws`,
+`source: cloud`, `/ws/live?device=…&channel=…&quality=…`). The device-list call
+stays so the route can still name the stage a failure stopped at (4C.14). The
+tunnel is opened by the live source instead, the way the RTSP path works:
+
+1. `LiveState::ensure_cloud_source` starts one source per stream key, and stops it
+   after 60 s without subscribers (`track_source`, shared with `ensure_rtsp_source`).
+2. `CloudProvider::pump_live` opens the relay tunnel and the device session
+   (`open_media`: device list, status cluster, `RpsAV`, handshake, device login,
+   claim 1413, start 1410), feeds every msgid 1412 body through `LiveDemux`, and
+   waits for the three HEVC parameter sets before it starts ffmpeg, because
+   ffmpeg refuses an elementary stream that begins mid-slice.
+3. `source::spawn_fmp4_publisher` is the same ffmpeg + `Fmp4Splitter` code the RTSP
+   trancode path uses, so the browser still receives an init segment and
+   fragments and the UI needed no change.
+
+Measured on 2026-10-28, camera on a network this host cannot reach
+(`192.168.0.100:554` times out, exit 0 comes only with that guard):
+
+```
+tools/acceptance/live_acceptance.py --mode cloud --duration 60 --sn 7f92970ddf5282743hrc
+verdict: pass · frames: 31 · bytes: 82552824 · longest gap: 2.439s · seconds: 60.569
+
+tools/acceptance/live_acceptance.py --mode cloud --duration 300
+verdict: pass · frames: 150 · bytes: 422299033 · longest gap: 2.732s · seconds: 300.071
+```
+
+A third-party WebSocket client against the same server measured the browser-side
+shape of it: 15 fragments, 38,354,737 bytes in 30 s (10.2 Mbit/s), first frame at
+**1,622 ms**, longest gap 2.44 s.
+
+The acceptance harness grew one option for this: `--device-env-file`
+(default `~/re/proview-cctv/secrets/device.env`) forwards `PROVIEW_DEVICE_USER`
+and `PROVIEW_DEVICE_PASS` to the server it starts, because a cloud session still
+needs the device login of 4C.24 and the harness builds the server environment from
+scratch. The values never enter the repository, the report, or the command line.
+
+### 4C.26 Cost of one cloud live stream, measured
+
+All numbers from this box on 2026-10-28, camera unreachable on the LAN, one stream
+at a time, main quality (2304×2592 H.265 transcoded to baseline H.264 by ffmpeg).
+
+**Cold start**, ten runs, each a fresh server process and a fresh `/ws/live`:
+
+Distribution over the ten runs: min **1355 ms**, p50 **1835 ms**, p95 **3846 ms**,
+max **3846 ms**; **10 of 10** produced a frame inside the 6 s readiness window
+(`stream.rs` `ready(slot, 240)` = 240 × 25 ms). The window covers the whole chain:
+`owns` device-list check, relay assignment, handshake, device login, claim 1413,
+start 1410, three parameter sets, ffmpeg probe.
+
+**Steady state**, one 300 s session with the socket held open:
+
+| counter | value |
+|---|---|
+| client | 149 fragments, 339,272,304 bytes, 9,047 kbit/s, first frame 3.5 s |
+| server CPU | **0.87 s** over 300 s (0.3 % of one core) |
+| server RSS | 36–39 MB, peak **42.5 MB** |
+| ffmpeg CPU | **189 s** over 270 s, i.e. ≈0.7 core |
+| ffmpeg RSS | 250–293 MB |
+
+So the per-stream cost sits in the transcoder, not in the relay or the demuxer: the
+server side of a cloud stream is under one CPU second per five minutes, while
+libx264 at veryfast on 2304×2592 holds most of a core for the duration. A viewer
+that asks for `codec=hevc` skips that entirely (section 11).
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that

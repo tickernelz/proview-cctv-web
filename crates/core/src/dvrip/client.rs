@@ -211,6 +211,10 @@ impl Connection {
         self.session
     }
 
+    pub fn set_session(&mut self, session: u32) {
+        self.session = session;
+    }
+
     fn next_sequence(&mut self) -> u32 {
         self.sequence = self.sequence.wrapping_add(1);
         self.sequence
@@ -399,7 +403,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, DvrError> {
+    pub async fn login_reply(&mut self, user: &str, password: &str) -> Result<Value, DvrError> {
         let body = json!({
             "EncryptType": "MD5",
             "LoginType": "DVRIP-Web",
@@ -421,6 +425,11 @@ impl Connection {
         {
             self.session = session;
         }
+        Ok(reply)
+    }
+
+    pub async fn login(&mut self, user: &str, password: &str) -> Result<LoginOk, DvrError> {
+        let reply = self.login_reply(user, password).await?;
         Ok(LoginOk {
             session: self.session,
             device_type: field(&reply, &["DeviceType ", "DeviceType"])

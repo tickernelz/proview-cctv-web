@@ -657,7 +657,10 @@ pub async fn stream(
     let mut body = FailureBody {
         ok: false,
         message: error.to_string(),
-        code: None,
+        code: match &error {
+            ProviderError::Misconfigured(_) => Some("misconfigured"),
+            _ => None,
+        },
         stage: None,
         detail: None,
         elapsed_ms: None,

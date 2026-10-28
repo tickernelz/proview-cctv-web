@@ -92,6 +92,7 @@ value says which screen owns it.
 | Local network | `PROVIEW_DEVICE_HOST` | DVRIP `host:port` |
 | Local network | `PROVIEW_DEVICE_RTSP` | RTSP `host:port` |
 | Local network | `PROVIEW_DEVICE_ONVIF` | ONVIF base address |
+| Local network | `PROVIEW_DEVICE_SERIAL` | serial the camera user and password belong to |
 | Local network | `PROVIEW_DEVICE_USER` | camera user |
 | Local network | `PROVIEW_DEVICE_PASS` | camera password, secret |
 | Server | `PROVIEW_SESSION_TTL` | browser session lifetime in seconds |

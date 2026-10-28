@@ -507,6 +507,52 @@ impl EnvelopeClient {
         device_token_of(&reply)
     }
 
+    pub async fn device_login_token(&self, access: &str, serial: &str) -> CloudResult<String> {
+        let signed = self.next();
+        let url = format!(
+            "{}/queryDeviceToken/{}/{}/{}.rs",
+            self.base, SIGNED_VERSION, signed.tsid, signed.sig
+        );
+        let body = seal(&signed.key, &format!("uuids={}", url_encode(serial.trim())))?;
+        let response = self
+            .http
+            .post(url)
+            .header("Accept", ACCEPT)
+            .header("Accept-Charset", "utf-8")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("uuid", &self.identity.uuid)
+            .header("appKey", &self.identity.app_key)
+            .header("Authorization", access)
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+        if !status.is_success() {
+            return Err(CloudError::Unreachable(format!(
+                "queryDeviceToken HTTP {status}"
+            )));
+        }
+        let plain = if is_hex_block(&text) {
+            open(&signed.key, &text)?
+        } else {
+            text
+        };
+        let value: serde_json::Value = serde_json::from_str(plain.trim())
+            .map_err(|error| CloudError::Malformed(format!("queryDeviceToken: {error}")))?;
+        if let Some(code) = value.get("code").and_then(serde_json::Value::as_i64) {
+            if code != 2000 && code != 200 {
+                let msg = value.get("msg").and_then(serde_json::Value::as_str);
+                return Err(CloudError::Rejected(user_message(code as i32, msg)));
+            }
+        }
+        login_token_of(value.get("data").unwrap_or(&value))
+    }
+
     async fn sealed(
         &self,
         path: &str,
@@ -629,6 +675,51 @@ impl EnvelopeClient {
     }
 }
 
+pub fn login_token_of(data: &serde_json::Value) -> CloudResult<String> {
+    const FIELDS: [&str; 6] = [
+        "token",
+        "loginToken",
+        "loginEncToken",
+        "encToken",
+        "devToken",
+        "AdminToken",
+    ];
+    let row = match data {
+        serde_json::Value::Array(rows) => match rows.first() {
+            Some(row) => row,
+            None => {
+                return Err(CloudError::Rejected(
+                    "the account issued no device login token for this serial".to_string(),
+                ))
+            }
+        },
+        other => other,
+    };
+    for field in FIELDS {
+        if let Some(text) = row.get(field).and_then(serde_json::Value::as_str) {
+            if !text.trim().is_empty() {
+                return Ok(text.trim().to_string());
+            }
+        }
+    }
+    if let Some(text) = row
+        .get("deviceToken")
+        .and_then(|nested| nested.get("AdminToken"))
+        .and_then(serde_json::Value::as_str)
+    {
+        if !text.trim().is_empty() {
+            return Ok(text.trim().to_string());
+        }
+    }
+    let keys: Vec<String> = row
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default();
+    Err(CloudError::Malformed(format!(
+        "device login token reply has no token; keys {keys:?}"
+    )))
+}
+
 pub fn device_token_of(reply: &str) -> CloudResult<String> {
     let value: serde_json::Value = serde_json::from_str(reply)
         .map_err(|error| CloudError::Malformed(format!("device token: {error}")))?;
@@ -656,6 +747,35 @@ pub fn device_token_of(reply: &str) -> CloudResult<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_login_token_comes_out_of_the_first_row() {
+        let data = serde_json::json!([
+            { "uuid": "7f92970ddf5282743hrc", "deviceToken": { "AdminToken": "abc" } }
+        ]);
+        assert_eq!(login_token_of(&data).expect("row token"), "abc");
+    }
+
+    #[test]
+    fn a_flat_login_token_field_is_read_directly() {
+        let data = serde_json::json!({ "loginToken": "xyz" });
+        assert_eq!(login_token_of(&data).expect("flat token"), "xyz");
+    }
+
+    #[test]
+    fn an_empty_row_list_is_an_account_refusal() {
+        let data = serde_json::json!([]);
+        let error = login_token_of(&data).expect_err("an empty list carries no token");
+        assert!(matches!(error, CloudError::Rejected(_)));
+    }
+
+    #[test]
+    fn a_row_without_a_token_names_the_fields_it_did_carry() {
+        let data = serde_json::json!([{ "uuid": "7f92970ddf5282743hrc" }]);
+        let error = login_token_of(&data).expect_err("a row without a token is malformed");
+        let text = format!("{error}");
+        assert!(text.contains("uuid"), "{text}");
+    }
 
     #[test]
     fn scramble_mirrors_the_vendor_way() {
