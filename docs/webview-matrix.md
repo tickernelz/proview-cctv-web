@@ -8,7 +8,7 @@ never assumed. Recorded clips still travel over HTTP.
 | Webview | Platform | H.264 fMP4 | H.265 | Notes |
 |---|---|---|---|---|
 | WebView2 (Chromium) | Windows 10/11 | yes | yes, if the OS has the HEVC codec extension | hardware decode via Media Foundation |
-| WKWebView | macOS 12+ | yes | yes on Apple silicon for most profiles | hardware decode via VideoToolbox |
+| WKWebView | macOS 13.3+ | yes | yes on Apple silicon for most profiles | hardware decode via VideoToolbox |
 | WebKitGTK | Linux | yes, when a GStreamer H.264 decoder is installed (`gstreamer1.0-libav`, or `gstreamer1-plugin-openh264` on Fedora) | not guaranteed | distro dependent; the app surfaces a clear message instead of a black frame |
 | Chromium / Edge | any | yes | depends on build | WebCodecs available |
 | Firefox | any | yes via MSE | depends on build | no WebCodecs for H.265 |
