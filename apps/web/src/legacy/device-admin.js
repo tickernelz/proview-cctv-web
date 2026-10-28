@@ -233,7 +233,7 @@
             }
             if (!key) throw new Error('paste an invitation key first');
             await call(API.accept, { method: 'POST', body: JSON.stringify({ key }) });
-            return 'accepted ' + key;
+            return 'transfer ' + key + ' acknowledged; the camera lands after Accept with its serial and your password';
           }),
         }),
         node('button', {
