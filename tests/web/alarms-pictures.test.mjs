@@ -74,7 +74,7 @@ const picturesIn = (page) => page.evaluate("document.querySelectorAll('.alarm-ro
 
 const rowOf = (page, id) =>
   page.evaluate(`(() => {
-    const row = [...document.querySelectorAll('.alarm-row')].find((node) => node.textContent.includes(${JSON.stringify(id)}));
+    const row = document.querySelector('.alarm-row[data-id=' + JSON.stringify(${JSON.stringify(id)}) + ']');
     return row ? { found: true, images: row.querySelectorAll('img').length } : { found: false, images: -1 };
   })()`);
 

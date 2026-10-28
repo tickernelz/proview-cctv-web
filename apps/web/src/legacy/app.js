@@ -641,6 +641,7 @@ async function loadDevices(options = {}) {
   }
   buildCameras();
   renderCameraMenu();
+  window.dispatchEvent(new Event('proview:devices'));
   const keep = state.cameras.find((camera) => camera.key === state.selectedId + ':' + state.channel);
   const resume = state.resume && state.cameras.find((camera) => camera.key === state.resume.id + ':' + state.resume.channel);
   state.resume = null;

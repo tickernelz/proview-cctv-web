@@ -183,6 +183,21 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Alarm messages.** The bell in the top bar (Vue, `src/live/AlarmCenter.vue`)
+counts alarms from the first check after sign-in, without opening anything. The
+sheet sits in the same corner as Cloud recordings and replaces it: one corner
+sheet at a time (`live.sheet` in the store). It opens with focus on Camera;
+Escape or Close returns focus to the bell, which carries `aria-expanded`.
+Camera and window ("Last 24 hours", "Last 7 days") change the list at once; a
+check still out for the previous choice is dropped, so a list never shows under
+a camera it does not belong to. Loading and empty states name the camera and
+the window; a failed check is a `--bad` line with the warning icon and
+`role="alert"`. The footer is "3 alarms · updated 22:16", with the vendor and
+round-trip timing in its tooltip. Rows show the event, the time in tabular
+figures, and the channel only for multi-channel cameras, counted from 1 like the
+caption; a row without a picture shows the `no-picture` icon instead of an
+empty box.
+
 **Settings.** A screen, not a panel: sections Playback, This camera, Connection,
 Configuration and Server on the left, one section on the right, "← Live" back to
 the last camera. Playback (browser preferences, applied at once), This camera

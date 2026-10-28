@@ -441,3 +441,18 @@ baseline origin/main 05fe8a3:
 
 e2e at this change: 159 passed, 1 skipped (5 recordings specs and 8 screenshot
 baselines added), 1.4 min locally; node web tests 46/46.
+
+### Alarm messages in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/AlarmCenter.vue` replaces `legacy/alarms.js`. Same method, baseline
+origin/main e3db222:
+
+| File | main e3db222 | Alarms in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 107,402 B | 107,906 B | +504 B |
+| CSS | 7,129 B | 7,173 B | +44 B |
+
+The sheet reads the camera list the app already loaded, so opening it no longer
+sends its own `/api/devices` (one vendor status query per camera in cloud
+mode). e2e at this change: 177 passed, 1 skipped, 1.5 min locally; node web
+tests 46/46.
