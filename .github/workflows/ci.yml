@@ -30,7 +30,7 @@ jobs:
       - name: Build the web app
         working-directory: apps/web
         run: |
-          npm ci
+          npm ci --include=dev
           npm run build
       - name: Contrast of every token pair
         run: python3 tools/contrast.py
@@ -62,7 +62,7 @@ jobs:
       - name: Build the web app
         working-directory: apps/web
         run: |
-          npm ci
+          npm ci --include=dev
           npm run build
       - name: Linux desktop dependencies
         if: runner.os == 'Linux'

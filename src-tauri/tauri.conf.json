@@ -12,7 +12,7 @@
       "wait": false
     },
     "beforeBuildCommand": {
-      "script": "npm ci && npm run build",
+      "script": "npm ci --include=dev && npm run build",
       "cwd": "../apps/web"
     }
   },
