@@ -577,10 +577,11 @@ impl EnvelopeClient {
         let envelope: Envelope = serde_json::from_str(&plain)
             .map_err(|error| CloudError::Malformed(format!("msdlistCode: {error}")))?;
         if !envelope.is_ok() {
-            return Err(CloudError::Rejected(user_message(
-                envelope.code,
-                envelope.msg.as_deref(),
-            )));
+            return Err(if envelope.code == CODE_TOKEN_EXPIRED {
+                CloudError::Expired
+            } else {
+                CloudError::Rejected(user_message(envelope.code, envelope.msg.as_deref()))
+            });
         }
         let list = envelope
             .data

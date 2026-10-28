@@ -174,4 +174,14 @@ still out of reach.
    wins per value for a build made from source, and a build without an identity
    answers `MISSING_CLOUD_IDENTITY`. The out-of-tree emulator of `protocol.md`
    section 3A is how the envelope was learned; it is not needed to log in.
+5. A token the vendor revokes is a session that ended, not a cloud failure:
+   `msdlistCode` answering `-4004` becomes `CloudError::Expired` in
+   `device_list`, the variant `refresh` already returned. So `GET /api/devices`
+   answers `401` for a revoked token where it answered `502` (the code arrived as a
+   plain rejection, which the provider reports as an upstream failure), and the
+   routes that call `device_list` themselves — `GET /api/cloud/device-attributes`
+   and `GET /api/cloud/alarms`, `/api/cloud/alarms/picture` — answer `401` where
+   they answered `400`. The desktop watcher reads the same variant as
+   `AlarmReadError::SignedOut` and posts its pause notification; see
+   `desktop-notifications.md`.
 
