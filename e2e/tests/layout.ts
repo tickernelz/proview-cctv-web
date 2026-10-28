@@ -53,6 +53,16 @@ export async function overflowFindings(page: Page): Promise<string[]> {
       }
       return false
     }
+    const insideVerticalScroller = (node: HTMLElement) => {
+      for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+        const style = getComputedStyle(parent)
+        if (scrolls(style.overflowY) && parent.scrollHeight > parent.clientHeight + 1) {
+          const view = parent.getBoundingClientRect()
+          return view.top >= -1 && view.top < height
+        }
+      }
+      return false
+    }
     const cutOff = (node: HTMLElement, box: DOMRect) => {
       const out: string[] = []
       for (const axis of ['x', 'y'] as const) {
@@ -81,6 +91,9 @@ export async function overflowFindings(page: Page): Promise<string[]> {
       if ((box.right > width + 1 || box.left < -1) && !insideScrollerOrCut(node)) {
         found.push(name(node) + ' outside ' + Math.round(box.left) + '..' + Math.round(box.right) + ' of ' + width)
       }
+      if ((box.top < -1 || box.bottom > height + 1) && !node.closest('.skip') && !insideVerticalScroller(node)) {
+        found.push(name(node) + ' outside y ' + Math.round(box.top) + '..' + Math.round(box.bottom) + ' of ' + height)
+      }
       found.push(...cutOff(node, box))
     }
 
@@ -97,7 +110,10 @@ export async function overflowFindings(page: Page): Promise<string[]> {
       if (box.width <= 1 || box.height <= 1) continue
       const x = box.left + box.width / 2
       const y = box.top + box.height / 2
-      if (x < 0 || y < 0 || x > width || y > height) continue
+      if (x < 0 || y < 0 || x > width || y > height) {
+        if (!insideVerticalScroller(target)) found.push(name(node) + ' unreachable at ' + Math.round(x) + ',' + Math.round(y))
+        continue
+      }
       const points = [
         [x, y],
         [box.left + box.width / 4, box.top + box.height / 4],
