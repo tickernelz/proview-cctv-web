@@ -1217,9 +1217,17 @@ what the device still rejects is the **token value**. Two facts narrow it:
   `FunSDK.DevGetLocalEncToken(serial)` before the device login, so the token is a
   client-side derivation over data the app already has, not a network value.
 
-Next step is that function: recover `DevGetLocalEncToken` with `rea` (ghidra on
-`libFunSDK.so`, dex on `FunSDK.smali`) and reproduce the derivation in
-`dvrip::crypto`. The measured primitive stays the reference: the same relay,
+Next step is that function. It is reachable by name in the shipped library, so no
+caller tracing is needed: `nm -D native/arm64-v8a/libFunSDK.so` lists
+
+```
+0000000000de59b8 T Java_com_lib_FunSDK_DevGetLocalEncToken
+0000000000de54bc T Java_com_lib_FunSDK_DevSetLocalEncToken
+_Z23FUN_DevGetLocalEncTokenPKcPc  (C++ overload the JNI method calls into)
+```
+
+So the plan is `rea.analyze_function` on `FUN_DevGetLocalEncToken`, then reproduce
+the derivation in `dvrip::crypto` and replay it against the same relay. The measured primitive stays the reference: the same relay,
 claim, start and demux path already carries media when the device accepts the
 login.
 
