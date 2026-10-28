@@ -209,7 +209,7 @@ fn main() {
                 }
             });
             let state_path = data_dir.map(|dir| dir.join("desktop-state.json"));
-            let shell = Arc::new(DesktopShell::new(settings, state_path));
+            let shell = Arc::new(DesktopShell::new(settings, state_path, sessions));
             match notify::install(app.handle()) {
                 Ok(()) => tracing::info!("notification clicks are wired to the window"),
                 Err(error) => tracing::warn!(%error, "notifications are unavailable"),
@@ -221,7 +221,7 @@ fn main() {
                 }
             }
             app.manage(shell.clone());
-            watcher::spawn(&handle, app.handle().clone(), sessions, shell);
+            watcher::spawn(&handle, app.handle().clone(), shell);
             #[cfg(feature = "restart-probe")]
             if probe.is_some() {
                 let main = app.get_webview_window("main");

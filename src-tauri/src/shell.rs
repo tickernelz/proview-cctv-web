@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use proview_core::session::Store;
 use proview_server::settings::SettingsStore;
 
 use crate::desktop_settings::DesktopSettings;
@@ -10,13 +11,14 @@ use crate::desktop_state::{now_seconds, DesktopState, Run};
 pub struct DesktopShell {
     pub settings: SettingsStore,
     pub state: Arc<Mutex<DesktopState>>,
+    pub sessions: Store,
     pub alarm: Mutex<Run>,
     pub state_path: Option<PathBuf>,
     tray_ready: AtomicBool,
 }
 
 impl DesktopShell {
-    pub fn new(settings: SettingsStore, state_path: Option<PathBuf>) -> Self {
+    pub fn new(settings: SettingsStore, state_path: Option<PathBuf>, sessions: Store) -> Self {
         let state = state_path
             .as_deref()
             .map(DesktopState::load)
@@ -24,6 +26,7 @@ impl DesktopShell {
         Self {
             settings,
             state: Arc::new(Mutex::new(state)),
+            sessions,
             alarm: Mutex::new(Run::new(now_seconds())),
             state_path,
             tray_ready: AtomicBool::new(false),
@@ -49,8 +52,9 @@ impl DesktopShell {
     }
 
     pub fn take_tray_pause_notice(&self) -> bool {
+        let signed_in = self.sessions.latest().is_some();
         match self.alarm.lock() {
-            Ok(mut alarm) => alarm.tray_pause_notice(),
+            Ok(mut alarm) => alarm.tray_pause_notice(signed_in),
             Err(_) => false,
         }
     }
@@ -72,21 +76,22 @@ impl DesktopShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proview_core::provider::VendorSession;
 
     fn shell(tag: &str) -> (DesktopShell, PathBuf) {
         let dir = std::env::temp_dir().join(format!("proview-shell-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let shell = DesktopShell::new(SettingsStore::load(Some(&dir)), None);
+        let shell = DesktopShell::new(SettingsStore::load(Some(&dir)), None, Store::new());
         (shell, dir)
     }
 
     #[test]
-    fn the_hide_to_tray_pause_is_announced_once_per_run() {
-        let (shell, dir) = shell("pause-once");
+    fn the_hide_to_tray_pause_starts_a_fresh_run_when_the_switch_flips() {
+        let (shell, dir) = shell("pause-reset");
         assert!(
             shell.take_tray_pause_notice(),
-            "a run that never signed in says so when the window leaves"
+            "no session and no successful check, so the pause is the truth"
         );
         assert!(
             !shell.take_tray_pause_notice(),
@@ -98,14 +103,19 @@ mod tests {
     }
 
     #[test]
-    fn a_run_that_checked_successfully_leaves_the_tray_quiet() {
+    fn a_live_session_leaves_the_tray_quiet() {
         let (shell, dir) = shell("pause-signed-in");
-        if let Ok(mut alarm) = shell.alarm.lock() {
-            alarm.finished(true, 60);
-        }
+        shell.sessions.put(
+            "test".to_string(),
+            VendorSession {
+                account: "gate".to_string(),
+                token: None,
+            },
+            std::time::Duration::from_secs(600),
+        );
         assert!(
             !shell.take_tray_pause_notice(),
-            "a run whose notifications work has nothing to pause"
+            "the store holds a live session, so nothing is paused yet"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

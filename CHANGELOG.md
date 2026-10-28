@@ -90,13 +90,16 @@ stability before 1.0.
   switch drops both and starts the run over, and an empty first pass reports a
   state change so the baseline mark is saved by the watcher rather than only by
   a direct `save()`.
-- A run that has never checked successfully now says so when the window goes to
-  the tray. With alarm notifications on and no successful check yet, the first
-  close or minimize to the tray posts the same *Alarm notifications paused — open
-  PROVIEW and sign in* notification the failing check posts, and the rest of that
-  run stays quiet; the still-running hint waits for a later hide instead of
-  stacking a second notification. The run now lives in the desktop shell, so the
-  window event reads the same `last_ok` the check keeps instead of a copy.
+- A window with no session and no successful check now says so when it goes to
+  the tray. With alarm notifications on, the first close or minimize to the tray
+  posts the same *Alarm notifications paused — open PROVIEW and sign in*
+  notification the failing check posts, and the rest of that run stays quiet; the
+  still-running hint waits for a later hide instead of stacking a second
+  notification. It reads the live session store, so a page that has signed in
+  stays silent even before its first check, and a run that has checked
+  successfully leaves the pause to the check path. The run now lives in the
+  desktop shell, so the window event reads the same `last_ok` the check keeps
+  instead of a copy.
 - The desktop **Restart the app** button restarts the app again. The window is
   served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
   the `restart_app` IPC command was refused and the button did nothing. The page
