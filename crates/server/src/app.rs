@@ -85,9 +85,20 @@ pub fn build_with_state_and_accounts(
     settings: crate::settings::SettingsStore,
     accounts: crate::routes::cloud_bind::AccountStore,
 ) -> rocket::Rocket<rocket::Build> {
+    build_with_sessions(figment, config, modes, settings, accounts, Store::new())
+}
+
+pub fn build_with_sessions(
+    figment: Figment,
+    config: Config,
+    modes: ModeStore,
+    settings: crate::settings::SettingsStore,
+    accounts: crate::routes::cloud_bind::AccountStore,
+    sessions: Store,
+) -> rocket::Rocket<rocket::Build> {
     rocket::custom(figment)
         .manage(config)
-        .manage(Store::new())
+        .manage(sessions)
         .manage(modes)
         .manage(crate::live_state::LiveState::new())
         .manage(crate::routes::cloud::CloudState::new())
@@ -121,11 +132,27 @@ pub async fn serve_with_state(
     config: Config,
     settings: crate::settings::SettingsStore,
 ) -> Result<ServerHandle, Box<rocket::Error>> {
+    let (handle, _) = serve_shared(opts, config, settings).await?;
+    Ok(handle)
+}
+
+pub async fn serve_shared(
+    opts: ServeOptions,
+    config: Config,
+    settings: crate::settings::SettingsStore,
+) -> Result<(ServerHandle, Store), Box<rocket::Error>> {
     let port = reserve_port(&opts.address, opts.port);
     let modes = ModeStore::from_env(opts.data_dir.as_deref());
     let accounts = crate::routes::cloud_bind::AccountStore::load(opts.data_dir.as_deref());
-    let rig =
-        build_with_state_and_accounts(figment(&opts, port), config, modes, settings, accounts);
+    let sessions = Store::new();
+    let rig = build_with_sessions(
+        figment(&opts, port),
+        config,
+        modes,
+        settings,
+        accounts,
+        sessions.clone(),
+    );
     let server = rig.ignite().await.map_err(Box::new)?;
     let shutdown = server.shutdown();
     let address = SocketAddr::new(
@@ -139,7 +166,7 @@ pub async fn serve_with_state(
             tracing::error!(%error, "server stopped unexpectedly");
         }
     });
-    Ok(ServerHandle { address, shutdown })
+    Ok((ServerHandle { address, shutdown }, sessions))
 }
 
 fn reserve_port(address: &str, requested: u16) -> u16 {

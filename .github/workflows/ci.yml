@@ -33,7 +33,7 @@ jobs:
       - name: Web UI in headless Chrome (menus with and without the Popover API, shortcuts, talk, grid, snapshot)
         run: |
           cargo build -p proview-server
-          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs
+          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/desktop-settings.test.mjs
       - run: cargo build --release -p proview-server
 
   desktop-smoke:
@@ -57,6 +57,9 @@ jobs:
       - name: Lint the desktop crate
         if: runner.os == 'Linux'
         run: cargo clippy -p proview-desktop --all-targets -- -D warnings
+      - name: Test the desktop crate
+        if: runner.os == 'Linux'
+        run: cargo test -p proview-desktop
       - name: Strawberry Perl and NASM for the vendored OpenSSL build
         if: runner.os == 'Windows'
         shell: pwsh

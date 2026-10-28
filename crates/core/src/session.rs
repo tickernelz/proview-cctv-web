@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::provider::VendorSession;
@@ -7,11 +8,13 @@ use crate::provider::VendorSession;
 struct Entry {
     session: VendorSession,
     expires: Instant,
+    order: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Store {
-    inner: Mutex<HashMap<String, Entry>>,
+    inner: Arc<Mutex<HashMap<String, Entry>>>,
+    order: Arc<AtomicU64>,
 }
 
 impl Store {
@@ -20,6 +23,7 @@ impl Store {
     }
 
     pub fn put(&self, id: String, session: VendorSession, ttl: Duration) {
+        let order = self.order.fetch_add(1, Ordering::Relaxed);
         let mut guard = self.inner.lock().expect("session store poisoned");
         guard.retain(|_, e| e.expires > Instant::now());
         guard.insert(
@@ -27,8 +31,18 @@ impl Store {
             Entry {
                 session,
                 expires: Instant::now() + ttl,
+                order,
             },
         );
+    }
+
+    pub fn latest(&self) -> Option<(String, VendorSession)> {
+        let mut guard = self.inner.lock().expect("session store poisoned");
+        guard.retain(|_, e| e.expires > Instant::now());
+        guard
+            .iter()
+            .max_by_key(|(_, entry)| entry.order)
+            .map(|(id, entry)| (id.clone(), entry.session.clone()))
     }
 
     pub fn get(&self, id: &str) -> Option<VendorSession> {
@@ -90,5 +104,26 @@ mod removal_tests {
         assert!(store.get("one").is_none());
         assert!(store.get("two").is_none());
         assert!(store.get("three").is_some());
+    }
+
+    #[test]
+    fn latest_is_the_most_recently_stored_live_session() {
+        let store = Store::new();
+        assert!(store.latest().is_none(), "an empty store has no session");
+        store.put("one".to_string(), session("t1"), Duration::from_secs(60));
+        store.put("two".to_string(), session("t2"), Duration::from_secs(60));
+        let (id, latest) = store.latest().expect("a live session");
+        assert_eq!(id, "two");
+        assert_eq!(latest.token.as_deref(), Some("t2"));
+        store.remove("two");
+        let (id, _) = store.latest().expect("the older session is still live");
+        assert_eq!(id, "one");
+    }
+
+    #[test]
+    fn latest_skips_an_expired_session() {
+        let store = Store::new();
+        store.put("old".to_string(), session("t1"), Duration::ZERO);
+        assert!(store.latest().is_none(), "an expired session is not live");
     }
 }

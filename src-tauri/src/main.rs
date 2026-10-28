@@ -1,14 +1,24 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod desktop_settings;
+mod desktop_state;
 mod keychain;
+mod notify;
+mod shell;
+mod tray;
+mod watcher;
+
+use std::sync::Arc;
 
 use proview_core::config::Config;
+use proview_server::settings::SettingsStore;
 use proview_server::ServeOptions;
 use rand::RngCore;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tracing_subscriber::prelude::*;
 
 use crate::keychain::{Credentials, OsKeychain, SecretStore};
+use crate::shell::DesktopShell;
 
 fn init_log(dir: Option<&std::path::Path>) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -138,21 +148,25 @@ fn main() {
     let handle = runtime.handle().clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
             let data_dir = app.path().app_data_dir().ok();
             init_log(data_dir.as_deref());
             tracing::info!(data = ?data_dir, version = env!("CARGO_PKG_VERSION"), "starting");
-            let settings = proview_server::settings::SettingsStore::load(data_dir.as_deref());
+            let settings = SettingsStore::load(data_dir.as_deref());
             settings.apply_env();
             let config = config_from_keychain();
             let options = ServeOptions {
                 address: "127.0.0.1".to_string(),
                 port: 0,
                 secret_key: Some(local_secret()),
-                data_dir,
+                data_dir: data_dir.clone(),
             };
-            let server =
-                handle.block_on(proview_server::serve_with_state(options, config, settings))?;
+            let (server, sessions) = handle.block_on(proview_server::serve_shared(
+                options,
+                config,
+                settings.clone(),
+            ))?;
             let url: tauri::Url = format!("http://{}/", server.address).parse()?;
             tracing::info!(%url, "serving the local session");
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
@@ -160,7 +174,47 @@ fn main() {
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(880.0, 600.0)
                 .build()?;
+            let state_path = data_dir.map(|dir| dir.join("desktop-state.json"));
+            let shell = Arc::new(DesktopShell::new(settings, state_path));
+            match notify::install(app.handle()) {
+                Ok(()) => tracing::info!("notification clicks are wired to the window"),
+                Err(error) => tracing::warn!(%error, "notifications are unavailable"),
+            }
+            match tray::install(app.handle()) {
+                Ok(()) => {
+                    shell.set_tray_ready(true);
+                    tracing::info!("tray icon installed");
+                }
+                Err(error) => tracing::warn!(%error, "no system tray; the window closes normally"),
+            }
+            app.manage(shell.clone());
+            watcher::spawn(&handle, app.handle().clone(), sessions, shell);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            let Some(state) = window.try_state::<Arc<DesktopShell>>() else {
+                return;
+            };
+            let shell = state.inner().clone();
+            let settings = shell.current();
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if settings.close_to_tray && shell.tray_ready() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        tray::hint_once(window.app_handle(), &shell);
+                    }
+                }
+                WindowEvent::Resized(_) => {
+                    if settings.minimize_to_tray
+                        && shell.tray_ready()
+                        && window.is_minimized().unwrap_or(false)
+                    {
+                        let _ = window.hide();
+                    }
+                }
+                _ => {}
+            }
         })
         .invoke_handler(tauri::generate_handler![restart_app])
         .run(tauri::generate_context!())

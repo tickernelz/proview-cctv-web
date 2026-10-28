@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Alarm deep links from the tray and from a notification click reach the window.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default", "notification:default"]
+}

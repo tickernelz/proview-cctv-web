@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use proview_core::cloud::{
-    claims, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError, SignRequest,
+    claims, AlarmClient, AlarmEntry, AlarmPage, AlarmQuery, CloudDevice, CloudError, SignRequest,
 };
 use proview_core::session::Store;
 use rocket::http::{ContentType, CookieJar, Status};
@@ -227,26 +227,44 @@ async fn query(
     window: (String, String),
     limit: Option<u32>,
 ) -> Result<AlarmPage, Failure> {
-    let codes = auth_codes(device);
-    if codes.is_empty() {
-        return Err(fail(
-            Status::ServiceUnavailable,
-            "this device has no cloud auth code, so the alarm centre cannot answer for it",
-        ));
-    }
     let (start, end) = window;
     let number = limit
         .unwrap_or(proview_core::cloud::alarm::PAGE_LIMIT)
         .clamp(1, proview_core::cloud::alarm::PAGE_LIMIT);
-    let client = state.alarms();
+    match page_for(state.alarms(), device, &start, &end, number).await {
+        Ok(page) => Ok(page),
+        Err(AlarmQueryError::NoAuthCode) => Err(fail(
+            Status::ServiceUnavailable,
+            "this device has no cloud auth code, so the alarm centre cannot answer for it",
+        )),
+        Err(AlarmQueryError::Cloud(error)) => Err(vendor_failure(&error)),
+    }
+}
+
+pub(crate) enum AlarmQueryError {
+    NoAuthCode,
+    Cloud(CloudError),
+}
+
+pub(crate) async fn page_for(
+    client: &AlarmClient,
+    device: &CloudDevice,
+    start: &str,
+    end: &str,
+    number: u32,
+) -> Result<AlarmPage, AlarmQueryError> {
+    let codes = auth_codes(device);
+    if codes.is_empty() {
+        return Err(AlarmQueryError::NoAuthCode);
+    }
     let mut last = CloudError::Rejected("the alarm centre refused every auth code".to_string());
     for code in codes {
         let request = AlarmQuery {
             serial: device.uuid.clone(),
             auth_code: code,
             channel: 0,
-            start: start.clone(),
-            end: end.clone(),
+            start: start.to_string(),
+            end: end.to_string(),
             offset: 0,
             number,
         };
@@ -255,10 +273,10 @@ async fn query(
             Err(CloudError::Rejected(reason)) if is_authcode_refusal(&reason) => {
                 last = CloudError::Rejected(reason);
             }
-            Err(error) => return Err(vendor_failure(&error)),
+            Err(error) => return Err(AlarmQueryError::Cloud(error)),
         }
     }
-    Err(vendor_failure(&last))
+    Err(AlarmQueryError::Cloud(last))
 }
 
 fn is_authcode_refusal(reason: &str) -> bool {
@@ -302,11 +320,17 @@ fn window(start: Option<String>, end: Option<String>) -> (String, String) {
 }
 
 fn stamp(seconds_back: i64) -> String {
-    let now = std::time::SystemTime::now()
+    stamp_at(now_seconds() - seconds_back)
+}
+
+pub(crate) fn now_seconds() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() as i64)
-        .unwrap_or(0);
-    let stamp = now - seconds_back;
+        .unwrap_or(0)
+}
+
+pub(crate) fn stamp_at(stamp: i64) -> String {
     let days = stamp.div_euclid(86_400);
     let rest = stamp.rem_euclid(86_400);
     let (year, month, day) = civil(days);

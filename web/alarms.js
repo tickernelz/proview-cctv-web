@@ -12,7 +12,12 @@
     photos: 'unknown',
     missing: new Set(),
     last: null,
+    focus: '',
+    focusShown: '',
   };
+
+  const desktop = () =>
+    Boolean(window.__TAURI__ && window.__TAURI__.event && window.__TAURI__.event.listen);
 
   const css = document.createElement('style');
   css.textContent = [
@@ -33,6 +38,7 @@
     '.alarm-row .what{font-size:13px}',
     '.alarm-row .when{font-variant-numeric:tabular-nums;font-size:12px;color:var(--dim,#96a0b5)}',
     '.alarm-row .chan{font-size:11px;color:var(--dim,#96a0b5)}',
+    '.alarm-row.focus{background:var(--bg-3,#1a1e28)}',
     '.alarm-foot{margin-top:auto;border-top:1px solid var(--line,#2c3140);padding:8px 14px;font-size:11px;color:var(--dim,#96a0b5);display:flex;gap:8px;align-items:center}',
     '.alarm-foot .grow{flex:1}',
   ].join('\n');
@@ -130,8 +136,14 @@
     }
     for (const entry of rows) {
       const row = document.createElement('div');
-      row.className = 'alarm-row';
+      const focused = Boolean(STATE.focus) && STATE.focus === entry.id;
+      row.className = 'alarm-row' + (focused ? ' focus' : '');
+      row.dataset.id = entry.id || '';
       row.setAttribute('role', 'listitem');
+      if (focused && STATE.focusShown !== entry.id) {
+        STATE.focusShown = entry.id;
+        requestAnimationFrame(() => row.scrollIntoView({ block: 'nearest' }));
+      }
       const thumb = document.createElement('div');
       thumb.className = 'thumb';
       const src = picUrl(entry);
@@ -168,6 +180,7 @@
   };
 
   const notify = (entries) => {
+    if (desktop()) return;
     if (!STATE.alerts || typeof Notification === 'undefined') return;
     if (Notification.permission !== 'granted') return;
     if (document.visibilityState === 'visible') return;
@@ -266,6 +279,22 @@
     if (!STATE.last) poll();
   };
 
+  const focusAlarm = (detail) => {
+    const alarm = detail || {};
+    if (alarm.serial && alarm.serial !== STATE.serial) {
+      STATE.serial = alarm.serial;
+      STATE.entries = new Map();
+      STATE.seen = new Set();
+      STATE.missing = new Set();
+      STATE.photos = 'unknown';
+      STATE.last = null;
+      STATE.devices = [];
+    }
+    STATE.focus = alarm.id || '';
+    STATE.focusShown = '';
+    open();
+  };
+
   const close = () => {
     sheet.hidden = true;
   };
@@ -285,6 +314,10 @@
     STATE.last = null;
     poll();
   });
+  if (desktop()) {
+    alertBtn.hidden = true;
+    alertBtn.title = 'Alarm notifications are set in Settings, Desktop';
+  }
   alertBtn.addEventListener('click', async () => {
     if (typeof Notification === 'undefined') {
       status.textContent = 'this browser has no notification support';
@@ -323,6 +356,9 @@
     if (document.visibilityState === 'visible' && signedIn()) poll();
     else schedule();
   });
+  if (desktop()) {
+    window.__TAURI__.event.listen('desktop://alarm', (event) => focusAlarm(event.payload)).catch(() => {});
+  }
   window.addEventListener('load', sync);
   if (document.readyState !== 'loading') sync();
 })();
