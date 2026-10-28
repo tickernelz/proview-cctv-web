@@ -234,7 +234,7 @@ test('the devices panel lists the account devices and saves a group through the 
 
     await page.evaluate("document.getElementById('device-admin-group').value = 'teras'");
     await page.evaluate("[...document.querySelectorAll('#device-admin button')].find((button) => button.textContent.includes('Save group')).click()");
-    await page.wait("document.getElementById('device-admin-status').textContent === 'stub saved the group'", 'the save to come back', 10000);
+    await page.wait("document.getElementById('device-admin-status').textContent === 'Stub saved the group'", 'the save to come back', 10000);
     assert.equal(await page.evaluate("document.getElementById('device-admin').hidden"), false);
   } finally {
     await page.close();

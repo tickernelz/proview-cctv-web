@@ -28,7 +28,7 @@ export const live = reactive({
     move: { ok: false, why: 'Device controls have not been checked yet.' } as Gate,
   } as Record<string, Gate>,
   padOpen: false,
-  sheet: '' as '' | 'alarms' | 'recordings',
+  sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
   talk: { on: false, level: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',

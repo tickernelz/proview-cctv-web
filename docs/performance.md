@@ -478,3 +478,19 @@ user moving between Live and Settings saw no check at all there.
 
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
+
+### Devices sheet in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/DevicesSheet.vue` replaces `legacy/device-admin.js`, with Reka UI
+Tabs vendored as `src/components/ui/tabs/`. Same method, baseline origin/main
+8960187:
+
+| File | main 8960187 | Devices in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 107,987 B | 110,710 B | +2,723 B |
+| CSS | 7,173 B | 7,482 B | +309 B |
+
+Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
+total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
+budgets. e2e at this change: 195 passed, 1 skipped, 1.7 min locally; node web
+tests 46/46.
