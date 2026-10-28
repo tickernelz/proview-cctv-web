@@ -189,6 +189,14 @@ fn main() {
             }
             app.manage(shell.clone());
             watcher::spawn(&handle, app.handle().clone(), sessions, shell);
+            if flag("--notify-probe") {
+                let app = app.handle().clone();
+                notify::post_message(&app, "PROVIEW CCTV", "Notification probe");
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    app.exit(0);
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -205,13 +213,12 @@ fn main() {
                         tray::hint_once(window.app_handle(), &shell);
                     }
                 }
-                WindowEvent::Resized(_) => {
+                WindowEvent::Resized(_)
                     if settings.minimize_to_tray
                         && shell.tray_ready()
-                        && window.is_minimized().unwrap_or(false)
-                    {
-                        let _ = window.hide();
-                    }
+                        && window.is_minimized().unwrap_or(false) =>
+                {
+                    let _ = window.hide();
                 }
                 _ => {}
             }

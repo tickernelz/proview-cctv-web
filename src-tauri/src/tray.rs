@@ -6,7 +6,7 @@ use crate::shell::DesktopShell;
 
 pub const LIVE_EVENT: &str = "desktop://live";
 
-fn icon(app: &AppHandle) -> Option<tauri::image::Image<'static>> {
+fn icon(app: &AppHandle) -> Option<tauri::image::Image<'_>> {
     app.default_window_icon()
         .cloned()
         .or_else(|| tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).ok())

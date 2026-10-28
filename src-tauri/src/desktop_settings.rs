@@ -91,11 +91,21 @@ mod tests {
 
     #[test]
     fn an_out_of_range_interval_falls_back_into_the_bounds() {
-        let (store, dir) = store("bounds");
-        let mut values = BTreeMap::new();
-        values.insert(INTERVAL.to_string(), "3".to_string());
-        store.update(values).expect("save");
-        assert_eq!(DesktopSettings::read(&store).interval_secs, 15);
+        let dir =
+            std::env::temp_dir().join(format!("proview-desktop-{}-bounds", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::write(
+            dir.join("settings.json"),
+            "{\"values\":{\"PROVIEW_DESKTOP_ALARM_INTERVAL\":\"3\"}}",
+        )
+        .expect("settings file");
+        let store = SettingsStore::load(Some(&dir));
+        assert_eq!(
+            DesktopSettings::read(&store).interval_secs,
+            15,
+            "a hand-edited file cannot run the check faster than the bounds allow"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

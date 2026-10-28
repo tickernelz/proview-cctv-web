@@ -15,7 +15,7 @@ pub struct Pending {
     alarms: Mutex<HashMap<i32, DesktopAlarm>>,
 }
 
-pub fn install(app: &AppHandle) -> tauri::Result<()> {
+pub fn install(app: &AppHandle) -> Result<(), tauri_plugin_notification::Error> {
     app.manage(Pending::default());
     let handle = app.clone();
     app.notification().on_action(move |action| {
@@ -30,9 +30,13 @@ fn on_tap(app: &AppHandle, action: &ActionPerformed) {
         return;
     };
     let id = notification.id();
-    let alarm = app
-        .try_state::<Pending>()
-        .and_then(|pending| pending.alarms.lock().ok().and_then(|mut map| map.remove(&id)));
+    let alarm = app.try_state::<Pending>().and_then(|pending| {
+        pending
+            .alarms
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&id))
+    });
     crate::tray::focus_main(app);
     let Some(alarm) = alarm else {
         return;

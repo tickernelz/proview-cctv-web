@@ -52,12 +52,12 @@ pub fn spawn(
                 continue;
             }
             due = tokio::time::Instant::now() + Duration::from_secs(settings.interval_secs);
-            let (since, baseline) = match shell.state.lock() {
+            let since = match shell.state.lock() {
                 Ok(state) => {
                     if state.last_seen > 0 {
-                        ((state.last_seen - OVERLAP_SECS).max(0), false)
+                        (state.last_seen - OVERLAP_SECS).max(0)
                     } else {
-                        (now_seconds() - BASELINE_HOURS * 3600, true)
+                        now_seconds() - BASELINE_HOURS * 3600
                     }
                 }
                 Err(_) => continue,
@@ -65,7 +65,7 @@ pub fn spawn(
             match alarms.since(&sessions, since).await {
                 Ok(entries) => {
                     let fresh = match shell.state.lock() {
-                        Ok(mut state) => state.absorb(&entries, !baseline),
+                        Ok(mut state) => state.absorb(&entries),
                         Err(_) => continue,
                     };
                     shell.save();

@@ -17,7 +17,7 @@ the same question the Alarm messages sheet asks, on a timer, while the app runs.
 | Notification click | focuses the window and opens the Alarm messages sheet with that alarm marked | `src-tauri/src/notify.rs`, `web/alarms.js` |
 | Session | the check reuses the session the window signed in with; the shell and the server share one session store, so the desktop never asks for a password of its own and never stores one | `crates/server/src/app.rs` (`serve_shared`) |
 | Tray | tray icon with **Open**, **Live** and **Quit**; a left click on the icon focuses the window | `src-tauri/src/tray.rs` |
-| Window close | with *Keep running when the window closes* on (the default) the window hides and the app stays in the tray; the first time it happens, one notification says the app is still running, and the hint is recorded so it never repeats | `src-tauri/src/main.rs`, `src-tauri/src/tray.rs` |
+| Window close | with *Keep running when the window closes* on (the default) the window hides and the app stays in the tray; the first time it happens, one notification says the app is still running, and the hint is recorded so it never repeats. If the system drops notifications, the tray icon is the only signal that the app is still there | `src-tauri/src/main.rs`, `src-tauri/src/tray.rs` |
 | Window minimize | with *Hide to tray when minimized* on (off by default) minimizing hides the window instead of leaving it in the taskbar | same |
 | No tray available | if the tray cannot be installed, both window behaviours stay off, so a window can never be hidden with no way back; the log says `no system tray; the window closes normally` | `src-tauri/src/main.rs` |
 
@@ -86,7 +86,10 @@ Measured on this workstation (no graphical desktop, so everything runs headless)
   "newest live session", the desktop settings keys with their defaults and bounds, the
   alarm-to-notification mapping, and the padded request window.
 - Under Xvfb: the app starts, installs the tray, and posts a notification without
-  panicking (`notification posted` in `desktop.log`).
+  panicking (`notification posted` in `desktop.log`). `proview-desktop
+  --notify-probe` posts one fixed notification from a started shell and exits three
+  seconds later, which checks the notification plumbing on a headless box without
+  waiting for a real alarm.
 
 Not measured, and not claimed:
 

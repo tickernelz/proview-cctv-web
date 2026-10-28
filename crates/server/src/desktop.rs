@@ -72,10 +72,7 @@ impl DesktopAlarms {
 const SLACK_SECS: i64 = 12 * 3600;
 
 pub fn window(from: i64, now: i64) -> (String, String) {
-    (
-        stamp_at(from - SLACK_SECS),
-        stamp_at(now + SLACK_SECS),
-    )
+    (stamp_at(from - SLACK_SECS), stamp_at(now + SLACK_SECS))
 }
 
 pub fn collect(device: &CloudDevice, entries: &[AlarmEntry]) -> Vec<DesktopAlarm> {
@@ -144,7 +141,10 @@ mod tests {
     #[test]
     fn the_window_is_padded_so_a_timezone_convention_cannot_drop_an_alarm() {
         let (start, end) = window(1_600_000_000, 1_600_003_600);
-        assert_eq!(start, "2020-09-13 00:26:40", "twelve hours before the last alarm");
+        assert_eq!(
+            start, "2020-09-13 00:26:40",
+            "twelve hours before the last alarm"
+        );
         assert_eq!(end, "2020-09-14 01:26:40", "twelve hours after the check");
     }
 

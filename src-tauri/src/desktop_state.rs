@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 
 const KEEP: usize = 500;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopState {
     #[serde(default)]
     pub seen: Vec<String>,
     #[serde(default)]
     pub last_seen: i64,
+    #[serde(default)]
+    pub baseline_done: bool,
     #[serde(default)]
     pub tray_hint: bool,
 }
@@ -35,7 +37,8 @@ impl DesktopState {
         std::fs::rename(&staged, path)
     }
 
-    pub fn absorb(&mut self, entries: &[DesktopAlarm], notify: bool) -> Vec<DesktopAlarm> {
+    pub fn absorb(&mut self, entries: &[DesktopAlarm]) -> Vec<DesktopAlarm> {
+        let notify = self.baseline_done;
         let mut fresh = Vec::new();
         for entry in entries {
             if self.seen.iter().any(|seen| seen == &entry.id) {
@@ -51,6 +54,7 @@ impl DesktopState {
                 fresh.push(entry.clone());
             }
         }
+        self.baseline_done = true;
         fresh
     }
 }
@@ -78,25 +82,43 @@ mod tests {
     }
 
     #[test]
-    fn the_first_sight_of_an_alarm_notifies_once() {
+    fn the_first_pass_records_and_the_next_new_alarm_posts_once() {
         let mut state = DesktopState::default();
-        let batch = vec![alarm("a1", 10), alarm("a2", 11)];
-        assert_eq!(state.absorb(&batch, true).len(), 2);
+        let baseline = vec![alarm("a1", 10), alarm("a2", 11)];
         assert!(
-            state.absorb(&batch, true).is_empty(),
-            "same ids, no second notification"
+            state.absorb(&baseline).is_empty(),
+            "the first pass only marks what is already there"
         );
         assert_eq!(state.last_seen, 11);
+        let fresh = state.absorb(&[alarm("a2", 11), alarm("a3", 12)]);
+        assert_eq!(fresh.len(), 1, "only what arrived after the baseline");
+        assert_eq!(fresh[0].id, "a3");
+        assert!(
+            state.absorb(&[alarm("a3", 12)]).is_empty(),
+            "the same id does not post twice"
+        );
+    }
+
+    #[test]
+    fn an_empty_first_pass_still_ends_the_baseline() {
+        let mut state = DesktopState::default();
+        assert!(state.absorb(&[]).is_empty());
+        let fresh = state.absorb(&[alarm("a1", 10)]);
+        assert_eq!(
+            fresh.len(),
+            1,
+            "an install with no alarms still announces the first one"
+        );
     }
 
     #[test]
     fn a_restart_with_a_saved_state_does_not_replay_old_alarms() {
         let path = temp("restart");
         let mut state = DesktopState::default();
-        state.absorb(&[alarm("a1", 10)], true);
+        state.absorb(&[alarm("a1", 10)]);
         state.save(&path).expect("save");
         let mut reloaded = DesktopState::load(&path);
-        let replay = reloaded.absorb(&[alarm("a1", 10), alarm("a2", 12)], true);
+        let replay = reloaded.absorb(&[alarm("a1", 10), alarm("a2", 12)]);
         assert_eq!(
             replay.len(),
             1,
@@ -107,26 +129,12 @@ mod tests {
     }
 
     #[test]
-    fn the_baseline_records_without_notifying() {
-        let mut state = DesktopState::default();
-        let quiet = state.absorb(&[alarm("a1", 10), alarm("a2", 12)], false);
-        assert!(
-            quiet.is_empty(),
-            "the first pass only marks what is already there"
-        );
-        assert_eq!(state.last_seen, 12);
-        let later = state.absorb(&[alarm("a3", 13)], true);
-        assert_eq!(later.len(), 1);
-        assert_eq!(later[0].id, "a3");
-    }
-
-    #[test]
     fn the_seen_list_stays_bounded() {
         let mut state = DesktopState::default();
         let many: Vec<DesktopAlarm> = (0..KEEP + 40)
             .map(|index| alarm(&format!("a{index}"), index as i64))
             .collect();
-        state.absorb(&many, false);
+        state.absorb(&many);
         assert_eq!(state.seen.len(), KEEP);
         assert!(
             !state.seen.contains(&"a0".to_string()),

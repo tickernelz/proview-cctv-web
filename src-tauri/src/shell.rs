@@ -45,7 +45,7 @@ impl DesktopShell {
             return;
         };
         let snapshot = match self.state.lock() {
-            Ok(state) => state.clone(),
+            Ok(state) => (*state).clone(),
             Err(_) => return,
         };
         if let Err(error) = snapshot.save(path) {
