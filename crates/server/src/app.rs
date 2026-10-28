@@ -105,8 +105,10 @@ fn build_with_control(
     control: Option<crate::desktop::DesktopControl>,
     sessions: Store,
 ) -> rocket::Rocket<rocket::Build> {
+    let cloud = std::sync::Arc::new(proview_core::provider::cloud::CloudProvider::new(&config));
     rocket::custom(figment)
         .manage(config)
+        .manage(cloud)
         .manage(sessions)
         .manage(modes)
         .manage(crate::live_state::LiveState::new())

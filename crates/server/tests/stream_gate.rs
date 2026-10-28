@@ -119,8 +119,11 @@ fn spawn_server(cloud_base: String) -> (SocketAddr, tokio::runtime::Runtime) {
         .merge(("address", "127.0.0.1"))
         .merge(("port", port));
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let config = config(cloud_base);
+    let cloud = Arc::new(proview_core::provider::cloud::CloudProvider::new(&config));
     let rig = rocket::custom(figment)
-        .manage(config(cloud_base))
+        .manage(config)
+        .manage(cloud)
         .manage(Store::new())
         .manage(ModeStore::new(Mode::Cloud, None))
         .manage(proview_server::live_state::LiveState::new())

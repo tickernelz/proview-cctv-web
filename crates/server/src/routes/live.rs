@@ -8,6 +8,7 @@ use proview_core::cloud::status::{self, DeviceOnline, StatusClient, STATUS_HOST}
 use proview_core::cloud::CloudDevice;
 use proview_core::config::{Config, ProviderKind};
 use proview_core::dvrip::client::Connection;
+use proview_core::provider::cloud::CloudProvider;
 use proview_core::provider::p2p::AgentServer;
 use proview_core::provider::rps::Tunnel;
 use proview_core::provider::{
@@ -624,6 +625,7 @@ fn widen((status, Json(body)): crate::routes::Failure) -> Failure {
 }
 
 #[get("/stream?<device>&<channel>&<quality>")]
+#[allow(clippy::too_many_arguments)]
 pub async fn stream(
     device: String,
     channel: Option<u32>,
@@ -631,11 +633,12 @@ pub async fn stream(
     cfg: &State<Config>,
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<Arc<CloudProvider>>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StreamTicket>, Failure> {
     let id = crate::routes::session_id(cookies).map_err(widen)?;
     let vendor = crate::routes::restore(store, &id).map_err(widen)?;
-    let router = Router::new(cfg, modes.mode_for(Some(&id)));
+    let router = Router::shared(cfg, modes.mode_for(Some(&id)), cloud.inner().clone());
     let channel = channel.unwrap_or(1);
     let high = quality.as_deref() != Some("sub");
     let error = match router.stream(&vendor, &device, channel, high).await {
