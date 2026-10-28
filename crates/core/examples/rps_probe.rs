@@ -197,6 +197,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             eprintln!("media    {written} bytes on 0x0584 in 8 s");
         }
+        if let Ok(file) = std::env::var("PROVIEW_LOGIN_JSON") {
+            let raw = std::fs::read_to_string(&file)?;
+            let body: serde_json::Value = serde_json::from_str(raw.trim())?;
+            let control = proview_core::media::dhav::MediaCipher::channel();
+            match connection.send_encrypted(&control, 99, 0x03e8, &body).await {
+                Ok(()) => eprintln!(
+                    "verbatim login sent ({} fields)",
+                    body.as_object().map(|o| o.len()).unwrap_or(0)
+                ),
+                Err(error) => eprintln!("verbatim login failed: {error:?}"),
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(6), connection.recv()).await {
+                Ok(Ok((header, payload))) => eprintln!(
+                    "verbatim reply id=0x{:04x} {}",
+                    header.id,
+                    String::from_utf8_lossy(&payload[..payload.len().min(120)])
+                ),
+                other => eprintln!("verbatim reply: {other:?}"),
+            }
+        }
         let encrypted_login = std::env::var("PROVIEW_ENCRYPTED_LOGIN").is_ok();
         if encrypted_login {
             let cipher = proview_core::media::dhav::MediaCipher::from_text(&session_key)

@@ -283,12 +283,20 @@ impl Provider for CloudProvider {
                         "relay accepted for {dest}, the device list carries no AdminToken"
                     ))
                 })?,
+            Ok("platform") => {
+                self.client
+                    .device_token(&access, device_id)
+                    .await
+                    .map_err(|error| {
+                        ProviderError::Upstream(format!("account device token failed: {error}"))
+                    })?
+            }
             _ => self
                 .client
-                .device_token(&access, device_id)
+                .device_login_token(&access, &entry.uuid)
                 .await
                 .map_err(|error| {
-                    ProviderError::Upstream(format!("account device token failed: {error}"))
+                    ProviderError::Upstream(format!("account login token failed: {error}"))
                 })?,
         };
         let device_user = entry.username.trim();

@@ -1213,9 +1213,9 @@ what the device still rejects is the **token value**. Two facts narrow it:
   base64 of `bd7f4c9210|686a56d64b54e0bac464932...` (35 printable bytes, two
   pipe-separated fields of 10 and 24 characters). That is not the app's
   16-character user token, and it is different on every call.
-- The app obtains its token locally: `ca/c.smali` calls
-  `FunSDK.DevGetLocalEncToken(serial)` before the device login, so the token is a
-  client-side derivation over data the app already has, not a network value.
+- ~~The app obtains its token locally~~ — corrected in 4C.23:
+  `FunSDK.DevGetLocalEncToken` is a cache read, and the 16-character value it
+  returns is a stored credential whose issuing call is not yet identified.
 
 Next step is that function. It is reachable by name in the shipped library, so no
 caller tracing is needed: `nm -D native/arm64-v8a/libFunSDK.so` lists
@@ -1230,6 +1230,84 @@ So the plan is `rea.analyze_function` on `FUN_DevGetLocalEncToken`, then reprodu
 the derivation in `dvrip::crypto` and replay it against the same relay. The measured primitive stays the reference: the same relay,
 claim, start and demux path already carries media when the device accepts the
 login.
+
+### 4C.23 The account does issue a device token, and it is not the one the app logs in with
+
+The correction to 4C.22 first: its claim that the app "obtains its token locally"
+through `DevGetLocalEncToken` is wrong in the direction that matters.
+`FUN_DevGetLocalEncToken` (0xc06a3c) is a **cache read**:
+
+```
+c06ad8  bl  CDataCenter::GetDevLoginEncToken(this, szDevId, "…", 1)
+c06b10  bl  __strcpy_chk                       ; copy the cached value to the caller
+```
+
+The matching writer, `Fun_DevSetLocalEncToken` (0xc06538), is called from Java
+with a value the app already holds: `DataCenter.smali:2555` stores
+`OtherShareDevUserBean.getDeviceToken("AdminToken")`, and six add-device
+activities store `DevShareQrCodeInfo.getDt()`. So the login user name is a
+**stored credential**, and the question is which server handed it over.
+
+#### The account call exists, and it returns the mdlist token
+
+`IXMAccount::GetDevEncToken` (0xf4352c) builds
+`TalkToServer_T2("v3", "queryDeviceToken", out, …, "uuids=%s")`, with the serial
+URL-encoded into the format string. Measured against the live service:
+
+| request | reply |
+|---|---|
+| `POST /queryDeviceToken/v3/<tsid>/<sig>.rs`, sealed body `uuids=<serial>` | `{"code":2000,"msg":"SUCCESS","data":[{"uuid":"<serial>","deviceToken":{"AdminToken":"<44>","OldAdminToken":"<44>"}}]}` |
+| `GET /queryDeviceToken/v3/<tsid>/<sig>.rs?uuids=<serial>` | `{"code":2000,"msg":"SUCCESS","data":[]}` |
+
+Only the sealed POST carries the row, so the query string in the format string is
+the body, not the URL. `EnvelopeClient::device_login_token` implements the POST
+and `login_token_of` reads the row (`crates/core/src/cloud/envelope.rs`).
+
+The value is the **same shape as the mdlist `deviceToken.AdminToken`**: 44
+base64 characters whose last 20 characters are constant across tokens
+(`…1CuP0ZDeEgz0qB6BVm5urk=`), with the leading 24 rotated per issue.
+
+#### What the device actually receives, and why 137
+
+The login frame `1000` in both phone captures decrypts with the channel
+constant `dashoiahfarqdasr` (AES-128-CBC, zero IV, base64) to six fields:
+
+```
+{"EncryptType":"TOKEN","LoginType":"DVRIP-FutureHome","UserName":"<16>",
+ "PassWord":"","CommunicateKey":"<256 hex>","User-Agent":"<30>"}
+```
+
+`UserName` is 16 characters in the base64 alphabet (digits, upper, lower, `+`),
+and it is **identical in both captures**, taken hours apart and through
+different relay agents. So it is a stable per-device credential, not a per-session
+nonce.
+
+Three candidates are now closed with measurements:
+
+| candidate | evidence |
+|---|---|
+| the client session key (predicted `UserName` == plaintext of `CommunicateKey`) | the session key is `random_lower(16)`, lowercase only; the captured value contains `+` and upper case. Sent anyway as `UserName` with the key sealed from caps: `Ret 137` |
+| the mdlist `AdminToken` (44 chars) | sent in the 4C.21 framing: `Ret 137` |
+| the account `queryDeviceToken` row (`AdminToken`, 44 chars) | sent in the same framing: `Ret 137` |
+| a plain derivation of those (`base64(md5(…)[:12])`, `base64(raw[:12])`, `md5`/`sha1`/`sha256` of the serial) | computed offline against the captured value: no match |
+
+`Ret 137` is what the device answers to a login whose token it does not know; the
+reply keeps the info shape (`AliveInterval`, `ChannelNum`, `DeviceType `, `ExtraChannel`)
+with every field zeroed and no `SessionID`, while a `Ret 100` reply carries
+`"AliveInterval":30,"ChannelNum":1,"DeviceType ":"IPC"`.
+
+#### Where the 16-character value must come from
+
+The remaining server-side path is the message service, not the REST platform:
+`Fun_SysGetDevEncToken` (0xbe8db8) allocates an `XMSG` and pushes **msgid 5094**
+(`0x13e6`) through the data centre's server object, which is the same transport
+the online-status query uses. That is the only call in the library that returns a
+`DevEncToken` without a client-supplied one, so the next measurement is a harness
+run that calls it after a cloud login with a host-side capture, and reads the
+cached value back through `FUN_DevGetLocalEncToken`.
+
+Until that answer exists, the cloud `stream()` path stops at `Ret 137` and the
+LAN-free live row stays `partial` in `docs/parity.md`.
 
 ### 4C.4 What that means for the implementation
 
