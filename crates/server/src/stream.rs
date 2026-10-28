@@ -5,12 +5,8 @@ use futures_util::SinkExt;
 use proview_core::live::{
     ClipPlan, LiveMode, LivePacket, PacketKind, StreamKey, StreamMeta, Subscription,
 };
-use proview_core::session::Store;
 use proview_core::source::RtspTarget;
-use rocket::http::CookieJar;
-use rocket::serde::json::Json;
 use rocket::serde::Serialize;
-use rocket::State;
 use rocket_ws as ws;
 
 use crate::live_state::LiveState;
@@ -267,17 +263,6 @@ pub fn snapshot(live: &LiveState) -> Stats {
         active_streams: streams.len(),
         streams,
     }
-}
-
-#[get("/live/stats")]
-pub fn stats(
-    cookies: &CookieJar<'_>,
-    store: &State<Store>,
-    live: &State<LiveState>,
-) -> Result<Json<Stats>, crate::routes::Failure> {
-    let id = crate::routes::session_id(cookies)?;
-    crate::routes::restore(store, &id)?;
-    Ok(Json(snapshot(live)))
 }
 
 #[cfg(test)]

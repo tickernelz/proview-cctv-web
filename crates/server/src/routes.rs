@@ -11,6 +11,9 @@ pub mod device_admin;
 #[path = "routes/fisheye.rs"]
 pub mod fisheye;
 
+#[path = "routes/live.rs"]
+pub mod live;
+
 #[path = "routes/grid.rs"]
 pub mod grid;
 
@@ -25,9 +28,7 @@ use std::time::Duration;
 use proview_core::config::Config;
 use proview_core::device::ControlError;
 use proview_core::live::{LiveMode, StreamKey};
-use proview_core::provider::{
-    self, CloudPath, Device, Provider, ProviderError, Router, StreamTicket,
-};
+use proview_core::provider::{self, CloudPath, Device, Provider, ProviderError, Router};
 use proview_core::session::{self, Store};
 use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
 use rocket::response::content::{RawCss, RawHtml, RawJavaScript};
@@ -73,12 +74,12 @@ pub fn api() -> Vec<rocket::route::Route> {
         logout,
         me,
         devices,
-        stream,
+        crate::routes::live::stream,
         cloud_path,
         probe_device,
         rtsp_probe,
         health,
-        crate::stream::stats,
+        crate::routes::live::stats,
         crate::routes::playback::files,
         crate::routes::playback::download
     ]
@@ -221,7 +222,7 @@ pub(crate) fn fail_code(status: Status, code: &'static str, message: impl Into<S
     )
 }
 
-fn status_for(err: &ProviderError) -> Status {
+pub(crate) fn status_for(err: &ProviderError) -> Status {
     match err {
         ProviderError::BadCredentials | ProviderError::Expired => Status::Unauthorized,
         ProviderError::UnknownDevice(_) => Status::NotFound,
@@ -468,27 +469,6 @@ async fn probe_device(cfg: &State<Config>) -> Result<Json<DeviceProbe>, Failure>
         audio_codec,
         framerate,
     }))
-}
-
-#[get("/stream?<device>&<channel>&<quality>")]
-async fn stream(
-    device: String,
-    channel: Option<u32>,
-    quality: Option<String>,
-    cfg: &State<Config>,
-    store: &State<Store>,
-    modes: &State<ModeStore>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<StreamTicket>, Failure> {
-    let id = session_id(cookies)?;
-    let vendor = restore(store, &id)?;
-    let router = Router::new(cfg, modes.mode_for(Some(&id)));
-    let high = quality.as_deref() != Some("sub");
-    router
-        .stream(&vendor, &device, channel.unwrap_or(1), high)
-        .await
-        .map(Json)
-        .map_err(|e| fail(status_for(&e), e.to_string()))
 }
 
 #[get("/cloud-path?<device>")]
