@@ -55,7 +55,7 @@ test('the grid plays one tile per device and keeps the layout and the tile strea
   try {
     const names = await page.evaluate("[...document.querySelectorAll('.tile .tile-meta strong')].map((node) => node.textContent)");
     assert.deepEqual(names, ['Gate camera', 'Porch', 'Yard']);
-    assert.equal(await page.evaluate(columns), 2);
+    assert.equal(await page.evaluate(columns), 3, 'auto puts up to 4 tiles in one row at 1440 px');
 
     await page.evaluate("document.querySelector('#grid-bar button[data-layout=\"2\"]').click()");
     await page.wait(
