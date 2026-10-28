@@ -16,8 +16,9 @@ const OTHER_SERIAL: &str = "00000000000000000001";
 
 type Rows = Arc<Mutex<Vec<String>>>;
 type Stop = Arc<std::sync::atomic::AtomicBool>;
+type Hits = Arc<std::sync::atomic::AtomicUsize>;
 
-fn fake_cloud(rows: Rows, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
+fn fake_cloud(rows: Rows, hits: Hits, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
     let listener = StdListener::bind("127.0.0.1:0").expect("fake cloud listener");
     let address = listener.local_addr().expect("fake cloud address");
     listener.set_nonblocking(true).expect("non blocking");
@@ -39,6 +40,9 @@ fn fake_cloud(rows: Rows, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
             let mut request_line = String::new();
             if reader.read_line(&mut request_line).is_err() {
                 continue;
+            }
+            if request_line.contains("msdlistCode") {
+                hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             let mut length = 0usize;
             loop {
@@ -118,14 +122,21 @@ fn spawn_server(cloud_base: String) -> (SocketAddr, tokio::runtime::Runtime) {
         .merge(("address", "127.0.0.1"))
         .merge(("port", port));
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let config = config(cloud_base);
+    let cloud = Arc::new(proview_core::provider::cloud::CloudProvider::new(&config));
     let rig = rocket::custom(figment)
-        .manage(config(cloud_base))
+        .manage(config)
+        .manage(cloud)
         .manage(Store::new())
         .manage(ModeStore::new(Mode::Cloud, None))
         .manage(proview_server::live_state::LiveState::new())
         .mount(
             "/api",
-            routes![proview_server::routes::ws_live, seed_session],
+            routes![
+                proview_server::routes::ws_live,
+                proview_server::routes::live::stream,
+                seed_session
+            ],
         );
     let server = runtime.block_on(async { rig.ignite().await.expect("ignite") });
     runtime.spawn(async move {
@@ -215,8 +226,9 @@ fn ws_probe(address: SocketAddr, serial: &str, cookie: &str) -> (u16, String) {
 #[test]
 fn a_session_cannot_open_the_socket_of_a_serial_it_does_not_own() {
     let rows: Rows = Arc::new(Mutex::new(vec![OTHER_SERIAL.to_string()]));
+    let hits: Hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let stop: Stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (base, cloud) = fake_cloud(rows, stop.clone());
+    let (base, cloud) = fake_cloud(rows, hits, stop.clone());
     let (address, runtime) = spawn_server(base);
     let cookie = open_session(address, "b");
 
@@ -237,6 +249,68 @@ fn a_session_cannot_open_the_socket_of_a_serial_it_does_not_own() {
     );
 
     drop(cookie);
+    drop(runtime);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    cloud.join().ok();
+}
+
+fn get_probe(address: SocketAddr, path: &str, cookie: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .expect("timeout");
+    let request = format!(
+        "GET /api{path} HTTP/1.1\r\nHost: {address}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).expect("write");
+    let (code, _, body) = read_http(&mut stream, true);
+    (code, body)
+}
+
+fn ws_status(address: SocketAddr, serial: &str, cookie: &str) -> u16 {
+    let mut stream = TcpStream::connect(address).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let request = format!(
+        "GET /api/ws/live?device={serial}&channel=1&quality=main HTTP/1.1\r\nHost: {address}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nCookie: {cookie}\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).expect("write");
+    let (code, _, _) = read_http(&mut stream, false);
+    code
+}
+
+#[test]
+fn one_viewer_open_asks_the_device_list_once() {
+    let rows: Rows = Arc::new(Mutex::new(vec![OWN_SERIAL.to_string()]));
+    let hits: Hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let stop: Stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (base, cloud) = fake_cloud(rows, hits.clone(), stop.clone());
+    let (address, runtime) = spawn_server(base);
+    let cookie = open_session(address, "a");
+
+    let (ticket, body) = get_probe(
+        address,
+        &format!("/stream?device={OWN_SERIAL}&channel=1&quality=main"),
+        &cookie,
+    );
+    assert!(
+        ticket == 200 || ticket == 501,
+        "the ticket answered {ticket}: {body}"
+    );
+    for attempt in 1..=2 {
+        let code = ws_status(address, OWN_SERIAL, &cookie);
+        assert!(
+            code == 101 || code == 200,
+            "attempt {attempt} opened the own camera: {code}"
+        );
+    }
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "one viewer open must pay one device list, not one per call"
+    );
+
     drop(runtime);
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     cloud.join().ok();

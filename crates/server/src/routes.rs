@@ -23,11 +23,13 @@ pub mod cloud_bind;
 #[path = "routes/playback.rs"]
 pub mod playback;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use proview_core::config::Config;
 use proview_core::device::ControlError;
 use proview_core::live::{LiveMode, StreamKey};
+use proview_core::provider::cloud::CloudProvider;
 use proview_core::provider::{self, CloudPath, Device, Provider, ProviderError, Router};
 use proview_core::session::{self, Store};
 use rocket::http::{ContentType, Cookie, CookieJar, SameSite, Status};
@@ -198,12 +200,17 @@ async fn login(
     cfg: &State<Config>,
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<Arc<CloudProvider>>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<StatusBody>, Failure> {
     let current = cookies
         .get_private("pvw_session")
         .map(|c| c.value().to_string());
-    let router = Router::new(cfg, modes.mode_for(current.as_deref()));
+    let router = Router::shared(
+        cfg,
+        modes.mode_for(current.as_deref()),
+        cloud.inner().clone(),
+    );
     let vendor = router
         .login(&body.email, &body.password)
         .await
@@ -326,11 +333,12 @@ async fn devices(
     cfg: &State<Config>,
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<Arc<CloudProvider>>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<Vec<Device>>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
-    let router = Router::new(cfg, modes.mode_for(Some(&id)));
+    let router = Router::shared(cfg, modes.mode_for(Some(&id)), cloud.inner().clone());
     router
         .devices(&vendor)
         .await
@@ -410,11 +418,12 @@ async fn cloud_path(
     cfg: &State<Config>,
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<Arc<CloudProvider>>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<CloudPath>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
-    let router = Router::new(cfg, modes.mode_for(Some(&id)));
+    let router = Router::shared(cfg, modes.mode_for(Some(&id)), cloud.inner().clone());
     router
         .cloud_path(&vendor, &device)
         .await
@@ -433,6 +442,7 @@ pub async fn ws_live(
     cfg: &State<Config>,
     store: &State<Store>,
     modes: &State<ModeStore>,
+    cloud: &State<Arc<CloudProvider>>,
     live: &State<crate::live_state::LiveState>,
     cookies: &CookieJar<'_>,
 ) -> Result<ws::Channel<'static>, Failure> {
@@ -446,8 +456,7 @@ pub async fn ws_live(
     if cfg.provider == proview_core::config::ProviderKind::Proview
         && modes.mode_for(Some(&id)) == proview_core::provider::Mode::Cloud
     {
-        let provider = proview_core::provider::cloud::CloudProvider::new(cfg.inner());
-        match provider.owns(&vendor, &device).await {
+        match cloud.inner().owns(&vendor, &device).await {
             Ok(true) => {}
             Ok(false) => return Err(fail(Status::NotFound, "device not in this account")),
             Err(error) => return Err(fail(status_for(&error), error.to_string())),
@@ -462,7 +471,7 @@ pub async fn ws_live(
         let subscription = live.hub.subscribe(key.clone());
         live.ensure_cloud_source(
             key.clone(),
-            (*cfg.inner()).clone(),
+            Arc::clone(cloud.inner()),
             vendor,
             device,
             channel,

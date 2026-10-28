@@ -233,6 +233,72 @@ pub trait Provider: Send + Sync {
     ) -> Result<(), ProviderError>;
 }
 
+#[async_trait::async_trait]
+impl<T: Provider + ?Sized> Provider for std::sync::Arc<T> {
+    fn source(&self) -> ProviderSource {
+        (**self).source()
+    }
+
+    async fn login(&self, user: &str, pass: &str) -> Result<VendorSession, ProviderError> {
+        (**self).login(user, pass).await
+    }
+
+    async fn devices(&self, session: &VendorSession) -> Result<Vec<Device>, ProviderError> {
+        (**self).devices(session).await
+    }
+
+    async fn stream(
+        &self,
+        session: &VendorSession,
+        device: &str,
+        channel: u32,
+        high: bool,
+    ) -> Result<StreamTicket, ProviderError> {
+        (**self).stream(session, device, channel, high).await
+    }
+
+    async fn cloud_path(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<CloudPath, ProviderError> {
+        (**self).cloud_path(session, device).await
+    }
+
+    async fn playback(
+        &self,
+        session: &VendorSession,
+        device: &str,
+        channel: u32,
+    ) -> Result<Vec<Recording>, ProviderError> {
+        (**self).playback(session, device, channel).await
+    }
+
+    async fn alarms(
+        &self,
+        session: &VendorSession,
+        limit: u32,
+    ) -> Result<Vec<Alarm>, ProviderError> {
+        (**self).alarms(session, limit).await
+    }
+
+    async fn settings(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<DeviceSettings, ProviderError> {
+        (**self).settings(session, device).await
+    }
+
+    async fn save_settings(
+        &self,
+        session: &VendorSession,
+        settings: &DeviceSettings,
+    ) -> Result<(), ProviderError> {
+        (**self).save_settings(session, settings).await
+    }
+}
+
 pub fn configured_source(cfg: &Config) -> ProviderSource {
     match cfg.provider {
         ProviderKind::Fixture => ProviderSource::Fixture,
@@ -244,6 +310,16 @@ pub fn build(cfg: &Config) -> Box<dyn Provider> {
     match cfg.provider {
         ProviderKind::Fixture => Box::new(fixture::Fixture::new(cfg)),
         ProviderKind::Proview => Box::new(cloud::CloudProvider::new(cfg)),
+    }
+}
+
+pub fn build_shared(
+    cfg: &Config,
+    cloud: std::sync::Arc<cloud::CloudProvider>,
+) -> Box<dyn Provider> {
+    match cfg.provider {
+        ProviderKind::Fixture => Box::new(fixture::Fixture::new(cfg)),
+        ProviderKind::Proview => Box::new(cloud),
     }
 }
 
