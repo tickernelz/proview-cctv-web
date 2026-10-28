@@ -71,11 +71,15 @@ async function chromeRuns() {
   return results;
 }
 
+let engineVersion = null;
+
 function dockerRuns() {
   const results = [];
   for (let i = 0; i < runs; i++) {
     const run = spawnSync('docker', ['run', '--rm', '--network', 'none', '--memory', '2g', '--memory-swap', '2g', '-e', 'INJECT=' + probe, '-v', probeDir + ':/p:ro', '-v', resolve(dir) + ':/d:ro', image + ':' + engine, 'sh', '/p/inside.sh', '/d', ''], { encoding: 'utf8', timeout: 90000 });
-    const line = (run.stdout ?? '').split('\n').find((l) => l.startsWith('{'));
+    const out = (run.stdout ?? '').split('\n');
+    engineVersion ??= out.find((l) => l.startsWith('webkit2gtk '))?.slice(11) ?? null;
+    const line = out.find((l) => l.startsWith('{'));
     results.push(line ? JSON.parse(line) : { timeout: true });
   }
   return results;
@@ -84,4 +88,4 @@ function dockerRuns() {
 const results = engine === 'chrome' ? await chromeRuns() : dockerRuns();
 const median = (xs) => { const v = xs.filter((x) => typeof x === 'number').sort((a, b) => a - b); return v.length ? Math.round(v[(v.length - 1) >> 1]) : null; };
 const all = (key) => results.map((r) => (typeof r[key] === 'number' ? Math.round(r[key]) : null));
-console.log(JSON.stringify({ engine, dir, runs, fp_ms_median: median(results.map((r) => r.fp)), fcp_ms_median: median(results.map((r) => r.fcp)), ready_ms_median: median(results.map((r) => r.ready)), fp_ms_all: all('fp'), fcp_ms_all: all('fcp'), ready_ms_all: all('ready') }));
+console.log(JSON.stringify({ engine, engine_version: engineVersion, dir, runs, fp_ms_median: median(results.map((r) => r.fp)), fcp_ms_median: median(results.map((r) => r.fcp)), ready_ms_median: median(results.map((r) => r.ready)), fp_ms_all: all('fp'), fcp_ms_all: all('fcp'), ready_ms_all: all('ready') }));
