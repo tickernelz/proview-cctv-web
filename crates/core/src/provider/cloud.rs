@@ -150,6 +150,7 @@ impl CloudProvider {
                 }
             }
             connection.set_session(0);
+            Self::drain_late_frames(connection).await;
         }
         let (user, pass) = match device_credential_for(&serial, entry) {
             DeviceCredential::Allowed { user, pass } => (user, pass),
@@ -176,6 +177,17 @@ impl CloudProvider {
             "{note}, password login ret 100, device token stored {stored}, session 0x{:08x}",
             connection.session()
         ))
+    }
+
+    async fn drain_late_frames(connection: &mut crate::dvrip::client::Connection) {
+        for _ in 0..6 {
+            match tokio::time::timeout(std::time::Duration::from_millis(80), connection.recv())
+                .await
+            {
+                Ok(Ok(_)) => continue,
+                _ => break,
+            }
+        }
     }
 
     async fn token_login(
@@ -259,9 +271,12 @@ impl CloudProvider {
         while std::time::Instant::now() < deadline {
             let frame =
                 tokio::time::timeout(std::time::Duration::from_secs(2), connection.recv()).await;
-            let Ok(Ok((_, payload))) = frame else {
+            let Ok(Ok((header, payload))) = frame else {
                 break;
             };
+            if header.id != crate::dvrip::msg::LOGIN {
+                continue;
+            }
             let body = crate::media::dhav::trim_nul(&payload);
             let plain = serde_json::from_slice::<serde_json::Value>(body)
                 .ok()
@@ -1153,6 +1168,7 @@ mod stream_tests {
 }
 
 #[cfg(test)]
+
 mod entry_cache_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
@@ -1382,5 +1398,84 @@ mod entry_cache_tests {
                 .expect("unbound"),
             "a camera the account no longer lists must stop opening"
         );
+    }
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+    use crate::dvrip::fake::{connect, json_reply, serve_scripted};
+    use crate::dvrip::msg;
+
+    fn provider() -> CloudProvider {
+        let cfg = Config::from_env();
+        CloudProvider::with_identity(&cfg, Identity::new("test-uuid", "test-key", "test-secret"))
+    }
+
+    #[tokio::test]
+    async fn token_login_ignores_a_reply_carrying_another_message_id() {
+        let (address, peer) = serve_scripted(|_, id, _| {
+            if id == msg::LOGIN {
+                return vec![
+                    (
+                        MONITOR_CLAIM_REPLY,
+                        json_reply(serde_json::json!({ "Ret": 100 })),
+                    ),
+                    (msg::LOGIN, json_reply(serde_json::json!({ "Ret": 999 }))),
+                ];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        let control = crate::media::dhav::MediaCipher::channel();
+        let ret = provider()
+            .token_login(&mut connection, "stale-token", &control)
+            .await;
+        assert_eq!(ret, Ok(999));
+        drop(connection);
+        peer.await.expect("peer task");
+    }
+
+    #[tokio::test]
+    async fn a_late_login_reply_is_drained_before_the_password_login() {
+        let (address, peer) = serve_scripted(|_, id, _| {
+            if id == msg::MONITOR {
+                return vec![(
+                    msg::LOGIN,
+                    json_reply(serde_json::json!({
+                        "Ret": 100,
+                        "AdminToken": "STALE",
+                        "SessionID": "0x11111111"
+                    })),
+                )];
+            }
+            if id == msg::LOGIN {
+                return vec![(
+                    msg::LOGIN,
+                    json_reply(serde_json::json!({
+                        "Ret": 100,
+                        "AdminToken": "REAL",
+                        "SessionID": "0x22222222"
+                    })),
+                )];
+            }
+            Vec::new()
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        connection
+            .send_plain(msg::MONITOR_CHANNEL, msg::MONITOR, &serde_json::json!({}))
+            .await
+            .expect("seed the late reply");
+        CloudProvider::drain_late_frames(&mut connection).await;
+        let reply = connection
+            .login_reply("admin", "pass")
+            .await
+            .expect("the password login reads its own reply");
+        assert_eq!(reply["AdminToken"].as_str(), Some("REAL"));
+        assert_eq!(connection.session(), 0x2222_2222);
+        drop(connection);
+        peer.await.expect("peer task");
     }
 }
