@@ -62,6 +62,26 @@ const SCREENS: Record<string, Open> = {
     await expect(page.getByTestId('alarm-row')).toHaveCount(2)
     return [page.getByTestId('live-frame'), page.getByTestId('live-state')]
   },
+  recordings: async (page) => {
+    await page.route(/\/api\/recordings\?/, (route) =>
+      route.fulfill({
+        json: {
+          recordings: [
+            { start: '2026-10-27 08:00:00', duration_secs: 95, size_bytes: 3250000 },
+            { start: '2026-10-27 09:30:12', duration_secs: 40, size_bytes: 900000 },
+          ],
+        },
+      }),
+    )
+    await signIn(page, 'one')
+    await playing(page)
+    await page.getByTestId('recordings-launcher').click()
+    await expect(page.getByTestId('recordings-camera')).toBeEnabled()
+    await page.getByTestId('recordings-day').fill('2026-10-27')
+    await page.getByTestId('recordings-load').click()
+    await expect(page.getByTestId('recordings-item')).toHaveCount(2)
+    return [page.getByTestId('live-frame'), page.getByTestId('live-state')]
+  },
 }
 
 for (const [name, open] of Object.entries(SCREENS)) {
