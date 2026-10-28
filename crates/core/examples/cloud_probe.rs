@@ -95,6 +95,36 @@ fn load_env_file(path: &Path) {
     }
 }
 
+fn set_private_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+fn restrict_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    fs::write(path, text)?;
+    restrict_file(path);
+    Ok(())
+}
+
 fn load_secrets() {
     let dir = secrets_dir();
     for name in ["proview.env", "device.env", "identity.env"] {
@@ -155,6 +185,34 @@ fn hex_head(body: &[u8], width: usize) -> String {
         .collect()
 }
 
+const SECRET_KEYS: [&str; 4] = ["PassWord", "UserName", "AdminToken", "CommunicateKey"];
+
+fn redact(body: &[u8]) -> (String, bool) {
+    let mut end = body.len();
+    while end > 0 && matches!(body[end - 1], 0 | b'\n' | b'\r') {
+        end -= 1;
+    }
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body[..end]) else {
+        return (printable(body), false);
+    };
+    let mut hit = false;
+    if let Some(map) = value.as_object_mut() {
+        for key in SECRET_KEYS {
+            let Some(entry) = map.get_mut(key) else {
+                continue;
+            };
+            let width = entry.as_str().map(str::len).unwrap_or(0);
+            *entry = Value::String(format!("<redacted:{width}>"));
+            hit = true;
+        }
+    }
+    if !hit {
+        return (printable(body), false);
+    }
+    let text = serde_json::to_string(&value).unwrap_or_default();
+    (text.chars().take(600).collect(), true)
+}
+
 fn printable(body: &[u8]) -> String {
     body.iter()
         .map(|byte| {
@@ -195,6 +253,17 @@ impl Trace {
         let tally = self.tally.entry(header.id).or_insert((0, 0));
         tally.0 += 1;
         tally.1 += body.len() as u64;
+        let mut head = hex_head(body, 32);
+        let mut printed = String::new();
+        let mut redacted = false;
+        if header.id != LIVE_MEDIA_ID {
+            let (text, secret) = redact(body);
+            redacted = secret;
+            if secret {
+                head = hex_head(text.as_bytes(), 32);
+            }
+            printed = text;
+        }
         self.lines.push(format!(
             "{at:>10.3} {dir} id=0x{:04x}({:<5}) ch={:<3} sess=0x{:08x} seq={:<5} end={} len={:<6} head={}",
             header.id,
@@ -204,7 +273,7 @@ impl Trace {
             header.sequence,
             u8::from(header.end),
             body.len(),
-            hex_head(body, 32),
+            head,
         ));
         if header.id != LIVE_MEDIA_ID {
             self.control.push(json!({
@@ -217,8 +286,9 @@ impl Trace {
                 "sequence": header.sequence,
                 "end": header.end,
                 "length": body.len(),
-                "head32": hex_head(body, 32),
-                "body": printable(body),
+                "head32": head,
+                "body": printed,
+                "redacted": redacted,
             }));
         }
         at
@@ -328,7 +398,7 @@ fn session_of(reply: &Value) -> Option<u32> {
     u32::from_str_radix(hex, 16).ok()
 }
 
-fn ffprobe_frames(path: &Path) -> Option<u64> {
+fn ffprobe_frames(path: &Path) -> (Option<u64>, Option<String>) {
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -342,21 +412,38 @@ fn ffprobe_frames(path: &Path) -> Option<u64> {
             "default=nokey=1:noprint_wrappers=1",
         ])
         .arg(path)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
+        .output();
+    let out = match out {
+        Ok(out) => out,
+        Err(error) => return (None, Some(error.to_string())),
+    };
+    if out.status.success() {
+        let frames = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| line.trim().parse::<u64>().ok());
+        return (frames, None);
     }
-    String::from_utf8_lossy(&out.stdout)
+    let line = String::from_utf8_lossy(&out.stderr)
         .lines()
-        .find_map(|line| line.trim().parse::<u64>().ok())
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let reason = if line.is_empty() {
+        format!("ffprobe exit {}", out.status.code().unwrap_or(-1))
+    } else {
+        line
+    };
+    (None, Some(reason))
 }
 
 #[derive(Clone, Copy)]
 struct Deltas {
     token_login: bool,
+    twice_login: bool,
     claim_wait: bool,
     random: bool,
+    system_info: bool,
 }
 
 impl Deltas {
@@ -364,13 +451,17 @@ impl Deltas {
         match mode {
             Mode::Plaintext | Mode::Sealed => Self {
                 token_login: false,
+                twice_login: false,
                 claim_wait: true,
                 random: true,
+                system_info: true,
             },
             Mode::Replica => Self {
                 token_login: true,
+                twice_login: true,
                 claim_wait: false,
-                random: false,
+                random: true,
+                system_info: false,
             },
         }
     }
@@ -380,10 +471,14 @@ impl Deltas {
             match token.trim().to_ascii_lowercase().as_str() {
                 "token" => self.token_login = true,
                 "password" => self.token_login = false,
+                "twice" => self.twice_login = true,
+                "once" => self.twice_login = false,
                 "wait" => self.claim_wait = true,
                 "nowait" => self.claim_wait = false,
                 "random" => self.random = true,
                 "norandom" => self.random = false,
+                "sysinfo" => self.system_info = true,
+                "nosysinfo" => self.system_info = false,
                 _ => {}
             }
         }
@@ -395,9 +490,15 @@ impl Deltas {
         } else {
             "password"
         };
+        let twice = if self.twice_login { "twice" } else { "once" };
         let wait = if self.claim_wait { "wait" } else { "nowait" };
         let random = if self.random { "random" } else { "norandom" };
-        format!("{login},{wait},{random}")
+        let sysinfo = if self.system_info {
+            "sysinfo"
+        } else {
+            "nosysinfo"
+        };
+        format!("{login},{twice},{wait},{random},{sysinfo}")
     }
 }
 
@@ -469,6 +570,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let run_id = format!("{}-{}", stamp(SystemTime::now()), mode.as_str());
     let out_dir = oracle_dir();
     fs::create_dir_all(&out_dir)?;
+    set_private_dir(&out_dir);
     let log_path = out_dir.join(format!("{run_id}.log"));
     let json_path = out_dir.join(format!("{run_id}.json"));
     let es_path = out_dir.join(format!("{run_id}.es"));
@@ -580,28 +682,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         (0, true)
     };
-    wire.send_json(
-        &mut trace,
-        login_channel,
-        login_end,
-        LOGIN_ID,
-        &login_value,
-        !token_login,
-    )
-    .await?;
-    let login_reply = wire
-        .recv(&mut trace, Duration::from_secs(6))
-        .await
-        .ok_or("no login reply")?
-        .1;
-    let login_json = trim_json(&login_reply);
-    timings.insert("dvrip_login_ms", started.elapsed().as_secs_f64() * 1000.0);
-    let login_ret = ret_of(&login_json);
-    if let Some(session) = session_of(&login_json) {
-        wire.session = session;
+    let logins = if deltas.twice_login { 2 } else { 1 };
+    let mut login_ret: Option<i64> = None;
+    let mut login_rets: Vec<Option<i64>> = Vec::new();
+    for _ in 0..logins {
+        wire.send_json(
+            &mut trace,
+            login_channel,
+            login_end,
+            LOGIN_ID,
+            &login_value,
+            !token_login,
+        )
+        .await?;
+        let reply = wire
+            .recv(&mut trace, Duration::from_secs(6))
+            .await
+            .ok_or("no login reply")?
+            .1;
+        let reply_json = trim_json(&reply);
+        login_ret = ret_of(&reply_json);
+        login_rets.push(login_ret);
+        if let Some(session) = session_of(&reply_json) {
+            wire.session = session;
+        }
     }
+    timings.insert("dvrip_login_ms", started.elapsed().as_secs_f64() * 1000.0);
     notes.push(format!(
-        "dvrip login mode={login_seconds} ret={login_ret:?} session=0x{:08x}",
+        "dvrip login mode={login_seconds} frames={logins} rets={login_rets:?} session=0x{:08x}",
         wire.session
     ));
 
@@ -650,12 +758,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     timings.insert("start_sent_ms", started.elapsed().as_secs_f64() * 1000.0);
 
-    let system_info = json!({
-        "Name": "SystemInfo",
-        "SessionID": format!("0x{:08x}", wire.session),
-    });
-    wire.send_json(&mut trace, 0, true, SYSTEM_INFO_ID, &system_info, true)
-        .await?;
+    if deltas.system_info {
+        let system_info = json!({
+            "Name": "SystemInfo",
+            "SessionID": format!("0x{:08x}", wire.session),
+        });
+        wire.send_json(&mut trace, 0, true, SYSTEM_INFO_ID, &system_info, true)
+            .await?;
+    }
 
     let mut demux = LiveDemux::new();
     let mut elementary = Vec::new();
@@ -693,10 +803,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         timings.insert("first_media_ms", at);
     }
     let stats = demux.stats();
-    let ffprobe = if elementary.is_empty() {
-        None
+    let (ffprobe, ffprobe_error) = if elementary.is_empty() {
+        (None, None)
     } else {
         fs::write(&es_path, &elementary)?;
+        restrict_file(&es_path);
         ffprobe_frames(&es_path)
     };
 
@@ -708,7 +819,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "serial": serial,
         "access_server": format!("{host}:{port}"),
         "relay_dest": dest,
-        "login": { "mode": login_seconds, "ret": login_ret, "session": format!("0x{:08x}", wire.session) },
+        "login": {
+            "mode": login_seconds,
+            "frames": logins,
+            "rets": login_rets,
+            "ret": login_ret,
+            "session": format!("0x{:08x}", wire.session),
+        },
         "claim_ret": claim_ret,
         "system_info_ret": system_info_ret,
         "vekey1_present": mode == Mode::Sealed,
@@ -727,6 +844,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "elementary_bytes": stats.elementary_bytes,
             "records": stats.keyframes + stats.deltas,
             "decodable_frames": ffprobe,
+            "ffprobe_error": ffprobe_error,
         },
         "other_ids": other_ids.iter().map(|(id, count)| json!({
             "id": id, "id_hex": format!("0x{id:04x}"), "count": count
@@ -745,10 +863,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         stats.keyframes + stats.deltas,
         stats.elementary_bytes
     ));
-    fs::write(&log_path, format!("{}\n", trace.lines.join("\n")))?;
-    fs::write(
+    write_private(&log_path, &format!("{}\n", trace.lines.join("\n")))?;
+    write_private(
         &json_path,
-        format!("{}\n", serde_json::to_string_pretty(&summary)?),
+        &format!("{}\n", serde_json::to_string_pretty(&summary)?),
     )?;
 
     println!("run      {run_id}");
@@ -764,12 +882,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "dvrip    login={login_seconds} ret={login_ret:?} claim_ret={claim_ret:?} system_info_ret={system_info_ret:?}"
     );
     println!(
-        "media    bodies={media_bodies} bytes={media_bytes} keyframes={} deltas={} records={} elementary={} decodable={:?}",
+        "media    bodies={media_bodies} bytes={media_bytes} keyframes={} deltas={} records={} elementary={} decodable={:?} ffprobe_error={:?}",
         stats.keyframes,
         stats.deltas,
         stats.keyframes + stats.deltas,
         stats.elementary_bytes,
-        ffprobe
+        ffprobe,
+        ffprobe_error
     );
     println!("deltas   {}", deltas.words());
     println!(
