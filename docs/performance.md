@@ -323,9 +323,14 @@ itself: same host, same LAN guard, no camera involved.
 | fixture self-check after the fixes | `--mode fixture --duration 20 --sample 5` | verdict `pass-fixture`, exit 0, 22 messages / 195 842 B / 20.204 s, longest gap 1.001 s |
 | cloud path after the fixes | `--sn 7f92970ddf5282743hrc --duration 300` | exit 1 at `stream`, 502 `ret 117` in 0.398 s |
 
-Framed dump, synthetic feed (a probe, not a camera run): 150 access units
-(15 keyframes, 135 deltas) plus one config record. The dump is 202 410 bytes,
-byte-identical to the concatenated access units once the nine-byte prefix is
-stripped, with 39 bytes of SPS/PPS prepended from the config record; `ffprobe -f
-h264` reads 150 frames at 320×180 with no warning. Before the fix the same feed
-would have written 2 000 extra bytes (nine per delta) and no parameter sets.
+Framed dump, server-format feed (a probe, not a camera run): 100 HEVC access
+units from libx265 at 640×360 (10 of them carrying VPS/SPS/PPS, as
+`ensure_parameter_sets` does), each AU sent the way `hevc::avcc` sends it, NALs
+with a four-byte big-endian length prefix, `hello` codec `hvc1.1.6.L90.90`.
+
+The dump is 70 906 bytes and byte-identical to an Annex-B rebuild of the same
+NALs, because every length prefix becomes a `00 00 00 01` start code. `ffprobe
+-f hevc` reads 100 frames at 640×360 with empty stderr. Left as the server sends
+them, the same bytes are unreadable: `ffprobe -f hevc` answers `hevc,0,0,N/A`
+with "missing picture in access unit with size 70906", so the conversion is what
+makes the artifact verify, not decoration.

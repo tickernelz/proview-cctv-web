@@ -337,27 +337,19 @@ def wait_ready(process, http: Http, deadline: float) -> float:
     raise StageError("serve", f"/api/health did not answer within {deadline:.0f}s")
 
 
-def annexb_config(record: bytes) -> bytes:
-    if len(record) < 7 or record[0] != 1:
-        return b""
-    cursor = 5
+def to_annexb(data: bytes) -> bytes:
     out = bytearray()
-    for _ in range(2):
-        if cursor >= len(record):
-            break
-        count = record[cursor] & 0x1F
-        cursor += 1
-        for _ in range(count):
-            if cursor + 2 > len(record):
-                break
-            size = int.from_bytes(record[cursor:cursor + 2], "big")
-            cursor += 2
-            if cursor + size > len(record):
-                break
-            out.extend(b"\x00\x00\x00\x01")
-            out.extend(record[cursor:cursor + size])
-            cursor += size
-    return bytes(out)
+    cursor = 0
+    while cursor < len(data):
+        if cursor + 4 > len(data):
+            return data
+        size = int.from_bytes(data[cursor:cursor + 4], "big")
+        if size == 0 or cursor + 4 + size > len(data):
+            return data
+        out.extend(b"\x00\x00\x00\x01")
+        out.extend(data[cursor + 4:cursor + 4 + size])
+        cursor += 4 + size
+    return bytes(out) if out else data
 
 
 def classify(payload: bytes, framing: str) -> str:
@@ -459,7 +451,7 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
                 waiting_keyframe = False
             if not waiting_keyframe:
                 if framing == "framed" and len(payload) > 9:
-                    body = payload[9:]
+                    body = to_annexb(payload[9:])
                     pts = int.from_bytes(payload[1:9], "big")
                 else:
                     body = payload
@@ -495,10 +487,6 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
     else:
         elementary = "hevc" if codec and any(tag in str(codec).lower() for tag in ("hev", "hvc")) else "h264"
         dump_name, demuxer = f"frames.{elementary}", elementary
-    if dumped and framing == "framed":
-        config_path = dump_dir / "config.bin"
-        if config_path.is_file():
-            dumped = bytearray(annexb_config(config_path.read_bytes())) + dumped
     if dumped:
         (dump_dir / dump_name).write_bytes(bytes(dumped))
     if dump_rows:
@@ -532,7 +520,6 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             "file": str(dump_dir / dump_name),
             "bytes": len(dumped),
             "config_bytes": (dump_dir / "config.bin").stat().st_size if (dump_dir / "config.bin").is_file() else 0,
-            "leading_config_annexb": len(annexb_config((dump_dir / "config.bin").read_bytes())) if framing == "framed" and (dump_dir / "config.bin").is_file() else 0,
             "demuxer": demuxer,
             "codec": codec,
             "ffprobe": (

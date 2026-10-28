@@ -115,10 +115,10 @@ python3 tools/acceptance/live_acceptance.py --mode fixture \
 ```
 
 A self-check that reports zero frames is a harness bug, never a camera bug. It also has a known
-limit: on `main` the websocket only sends raw fragments when a local RTSP target exists, otherwise the
-fixture publisher sends fragments too, so `--mode fixture` exercises the `raw` path. The `framed` path
-has no live proof yet, and the dump logic for it is checked by a separate probe rather than by this
-self-check.
+limit: `framed` only happens when the server has a local RTSP target **and** the request carries
+`codec=hevc` (`crates/server/src/routes.rs`, `ws_live`); every other case, including this self-check and
+every cloud run today, is `raw`. The `framed` path therefore has no live proof yet, and its dump is
+checked by a separate probe that feeds the wire format the server really sends.
 
 ## Reading the report
 
@@ -129,17 +129,17 @@ Every run writes `~/re/proview-cctv/acceptance/<sha>-<timestamp>/`:
 | `report.md` | the human summary: stage table, numbers, samples, dump path |
 | `report.json` | the same data for a script; schema `proview-live-acceptance/1` |
 | `server.log` | the server's own log for the run |
-| `dump/frames.h264`, `dump/frames.hevc` | elementary stream from the first keyframe, when the socket framed its messages (one type byte, eight bytes of pts). The name follows the codec the server announced in its `hello`, and the file starts with the SPS/PPS parameter sets taken from the config record, so `ffprobe` reads it with no extra flags |
-| `dump/frames.mp4` | the whole fMP4 box stream, when the socket sent raw fragments (passthrough). Keyframe counts then come from `/api/live/stats` alone |
-| `dump/config.bin` | the AVCC/HEVC config record the socket sent |
+| `dump/frames.hevc` (`frames.h264` if a future framed path announced H.264) | elementary stream from the first keyframe, when the socket framed its messages (one type byte, eight bytes of pts). Framed is HEVC passthrough: each access unit arrives as NALs with a four-byte big-endian length prefix, and the dump rewrites every prefix as a `00 00 00 01` start code. The server reinserts VPS/SPS/PPS on every keyframe, so the file decodes with `ffprobe -f hevc` and needs nothing from the config record |
+| `dump/frames.mp4` | the whole fMP4 box stream, when the socket sent raw fragments, which is what transcode does. Keyframe counts then come from `/api/live/stats` alone |
+| `dump/config.bin` | the hvcC record the socket sent, kept untouched for inspection; the dump does not read it |
 | `dump/frames.tsv` | one row per dumped frame: kind, pts, bytes, seconds into the run |
 
 The report names the framing it saw (`live.framing`): `framed` means each binary message starts with a
-one-byte type (`1` config, `2` keyframe, `3` delta; both `2` and `3` carry eight bytes of pts) and the
-dump strips those nine bytes so the file is an elementary stream, and it prepends the parameter sets
-extracted from the config record; `raw` means the socket carried whole fMP4 boxes, the dump keeps them
-untouched, and the keyframe count comes from `/api/live/stats` alone. The untouched config record stays
-in `dump/config.bin` either way.
+one-byte type (`1` config, `2` keyframe, `3` delta; `2` and `3` carry eight bytes of pts) and the dump
+strips those nine bytes, then rewrites the four-byte length prefix of every NAL as an Annex-B start
+code so the file is a decodable elementary stream; `raw` means the socket carried whole fMP4 boxes, the
+dump keeps them untouched, and the keyframe count comes from `/api/live/stats` alone. The config record
+stays in `dump/config.bin` untouched either way.
 `report.md` always prints the exact `ffprobe` line for the file that run wrote, so there is no second
 place to keep in sync.
 
