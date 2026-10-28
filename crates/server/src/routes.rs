@@ -510,7 +510,9 @@ async fn ws_live(
     }
     let channel = channel.unwrap_or(1);
     let sub_stream = quality.as_deref() == Some("sub");
-    if modes.mode_for(Some(&id)) == proview_core::provider::Mode::Cloud {
+    if cfg.provider == proview_core::config::ProviderKind::Proview
+        && modes.mode_for(Some(&id)) == proview_core::provider::Mode::Cloud
+    {
         let provider = proview_core::provider::cloud::CloudProvider::new(cfg.inner());
         match provider.owns(&vendor, &device).await {
             Ok(true) => {}
