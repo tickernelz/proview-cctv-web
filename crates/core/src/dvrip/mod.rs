@@ -14,6 +14,7 @@ pub const MAX_BODY: u32 = 8 * 1024 * 1024;
 
 pub mod msg {
     pub const LOGIN: u16 = 1000;
+    pub const LOGIN_REPLY: u16 = 1001;
     pub const LOGOUT: u16 = 1001;
     pub const KEEP_ALIVE: u16 = 1006;
     pub const SYSTEM_INFO: u16 = 1020;

@@ -11,7 +11,9 @@ Playwright (`@playwright/test` 1.64.1, pinned exactly) drives the page that
 - `tests/*.spec.ts` find elements by `data-testid` only.
 - `tests/visual.spec.ts` compares six screens at 1440x900 and 1280x800 in the
   dark and the light theme against `tests/visual.spec.ts-snapshots/`
-  (`maxDiffPixelRatio` 0.002; live video and clocks masked).
+  (`maxDiffPixels` 100, enough to fail on a 4 px shift of the top bar; live
+  video masked; `tests/screenshot.css` hides the clocks, the stream lag and the
+  alarm poll status, whose text changes on every run).
 - Retry 1; a failed test keeps its trace and video in `test-results/`.
 
 ## Run it locally

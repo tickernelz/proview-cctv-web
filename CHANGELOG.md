@@ -121,6 +121,40 @@ stability before 1.0.
 
 ### Fixed
 
+- A camera that refuses the device token is no longer offered one. The `AdminToken`
+  a password login returns was stored for every serial, so a camera that answers
+  `Ret` 117 (or 137, as the live unit here does) to the token login paid the token
+  attempt plus a second tunnel on every open, forever: nothing could make that token
+  work, and the token the fallback stored in its place was refused the same way.
+  `CloudProvider` now records the refusal against the serial — 117 and 137 are the
+  two answers that mean this device will not take tokens — stops offering a token to
+  that serial for the life of the process, and no longer stores the `AdminToken` a
+  password login hands back for it, so the next open goes straight to the password
+  login on its first tunnel. A device that accepts the token keeps the fast path, any
+  other non-100 answer still drops the token and tries again on the next open, and an
+  accepted token clears the mark.
+- The password fallback after a stale device token opens its own tunnel instead of
+  reusing the socket the token login left behind. A token reply and a password
+  reply carry the same message id (`1001`), so a token reply that arrived after the
+  token loop gave up — or after the six 80 ms drains that used to run before the
+  fallback — was read as the password reply: the session belonged to the old login,
+  `AdminToken` was never issued, and the stream ran on a session the password never
+  owned. The tunnel setup in `CloudProvider::open_media` (status query,
+  `access_server`, `agent_request`, `assign`, `handshake_frame`, `tunnel::open`,
+  `accepted`) is split in two: a relay lookup (status query, access server) and
+  a dial (assign, handshake, accepted). The fallback only dials again, so a stale
+  token no longer repeats the pub-status fan-out whose answer it already has, and
+  `drain_late_frames` is gone. Measured on the live relay: a second tunnel in one
+  viewer open is accepted with the same `session_id` (`ErrorNum 200`), the first
+  tunnel stays up and keeps its claim; a stale token leaves one pub-status fan-out
+  per open and costs one dial, `assign` 73–98 ms plus handshake 22–45 ms. The
+  `open_media` wall on the device, three samples each, was 564–701 ms with no
+  stored token and 653–986 ms with a stale one, against the drain's 80 ms floor
+  and 480 ms worst case; this device refuses stored `AdminToken`s (`Ret` 137), so
+  the accepted-token arm has no live sample. Against a peer that answers the token login
+  700 ms late — later than the whole drain — the pre-fix code returns a session
+  owned by the late reply and stores its `AdminToken`; the fixed code answers the
+  password login on the second connection.
 - A vendor token the cloud revokes is reported as a session that ended instead of
   a cloud failure. The device list answered code `-4004` as a plain rejection
   (`session expired; sign in again`), so the desktop watcher logged it at warn and
