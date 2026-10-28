@@ -32,7 +32,7 @@ impl DesktopAlarm {
 pub struct DesktopAlarms {
     envelope: EnvelopeClient,
     alarms: AlarmClient,
-    devices: Mutex<Option<(Instant, Vec<CloudDevice>)>>,
+    devices: Mutex<Option<(Instant, String, Vec<CloudDevice>)>>,
 }
 
 impl DesktopAlarms {
@@ -44,15 +44,15 @@ impl DesktopAlarms {
         }
     }
 
-    fn cached_devices(&self) -> Option<Vec<CloudDevice>> {
+    fn cached_devices(&self, account: &str) -> Option<Vec<CloudDevice>> {
         let guard = self.devices.lock().ok()?;
-        let (seen, devices) = guard.as_ref()?;
-        (seen.elapsed() < DEVICE_CACHE_TTL).then(|| devices.clone())
+        let (seen, owner, devices) = guard.as_ref()?;
+        (owner == account && seen.elapsed() < DEVICE_CACHE_TTL).then(|| devices.clone())
     }
 
-    fn keep_devices(&self, devices: &[CloudDevice]) {
+    fn keep_devices(&self, account: &str, devices: &[CloudDevice]) {
         if let Ok(mut guard) = self.devices.lock() {
-            *guard = Some((Instant::now(), devices.to_vec()));
+            *guard = Some((Instant::now(), account.to_string(), devices.to_vec()));
         }
     }
 
@@ -67,7 +67,7 @@ impl DesktopAlarms {
             .ok_or_else(|| {
                 "alarms read the vendor cloud; sign in with the cloud account".to_string()
             })?;
-        let devices = match self.cached_devices() {
+        let devices = match self.cached_devices(&session.account) {
             Some(devices) => devices,
             None => {
                 let devices = self
@@ -75,7 +75,7 @@ impl DesktopAlarms {
                     .device_list(&token)
                     .await
                     .map_err(|error| error.to_string())?;
-                self.keep_devices(&devices);
+                self.keep_devices(&session.account, &devices);
                 devices
             }
         };

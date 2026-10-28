@@ -39,6 +39,8 @@ pub struct DesktopState {
     pub baseline_done: bool,
     #[serde(default)]
     pub tray_hint: bool,
+    #[serde(default)]
+    pub account: String,
 }
 
 impl DesktopState {
@@ -57,6 +59,16 @@ impl DesktopState {
         let body = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         std::fs::write(&staged, body)?;
         std::fs::rename(&staged, path)
+    }
+
+    pub fn switch_account(&mut self, account: &str) -> bool {
+        if self.account == account {
+            return false;
+        }
+        self.account = account.to_string();
+        self.seen.clear();
+        self.last_seen = 0;
+        true
     }
 
     pub fn absorb(
@@ -98,7 +110,7 @@ impl DesktopState {
                 }
             }
         }
-        self.baseline_done = true;
+        batch.changed |= !std::mem::replace(&mut self.baseline_done, true);
         batch
     }
 }
@@ -324,5 +336,41 @@ mod tests {
         let batch = state.absorb(&[], Policy::Silent, 50, 100);
         assert!(batch.changed, "dropping an entry is a change worth saving");
         assert!(state.seen.is_empty(), "the floor is the window start");
+    }
+
+    #[test]
+    fn an_empty_first_pass_reports_the_baseline_as_a_change() {
+        let mut state = DesktopState::default();
+        let batch = state.absorb(&[], Policy::Silent, 0, 10_000);
+        assert!(state.baseline_done);
+        assert!(
+            batch.changed,
+            "the watcher only saves on a change, so the baseline flag must count as one"
+        );
+    }
+
+    #[test]
+    fn another_account_starts_from_a_clean_slate() {
+        let mut state = DesktopState::default();
+        assert!(
+            state.switch_account("owner@example.test"),
+            "the first sign-in names the window"
+        );
+        state.absorb(&[gate("a", 10)], Policy::Silent, 0, 100);
+        assert_eq!(state.seen.len(), 1);
+        assert!(
+            !state.switch_account("owner@example.test"),
+            "the same account keeps its window"
+        );
+        assert!(
+            state.switch_account("other@example.test"),
+            "a different account drops the window"
+        );
+        assert!(
+            state.seen.is_empty(),
+            "the old account's alarms cannot silence the new one"
+        );
+        assert_eq!(state.last_seen, 0, "the window restarts from the new sign-in");
+        assert_eq!(state.account, "other@example.test");
     }
 }

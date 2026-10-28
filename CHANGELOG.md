@@ -58,6 +58,19 @@ stability before 1.0.
 
 ### Fixed
 
+- A desktop alarm check that loses the session no longer goes quiet. The shared
+  session expires `PROVIEW_SESSION_TTL` seconds after sign-in (an hour by
+  default) and reading it does not renew it, so an app kept in the tray stopped
+  checking with one debug line and nothing else. The first failed check of a span
+  whose error says the session is gone now posts one *Alarm notifications paused
+  — open PROVIEW and sign in* notification and logs at warn, once per span; the
+  next successful check re-arms it. A recovery after more than three check
+  intervals summarizes the gap in one notification instead of replaying the
+  backlog alarm by alarm, a single missed interval still toasts. The remembered
+  window and the device cache now belong to the signed-in account, so an account
+  switch drops both and starts the run over, and an empty first pass reports a
+  state change so the baseline mark is saved by the watcher rather than only by
+  a direct `save()`.
 - The desktop **Restart the app** button restarts the app again. The window is
   served from `http://127.0.0.1:<port>/`, an origin Tauri counts as remote, so
   the `restart_app` IPC command was refused and the button did nothing. The page

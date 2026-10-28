@@ -19,6 +19,10 @@ the same question the Alarm messages sheet asks, on a timer, while the app runs.
 | Notification click | focuses the window and opens the Alarm messages sheet with that alarm marked, where the platform reports the click | `src-tauri/src/notify.rs`, `web/alarms.js` |
 | Reaching the page | the desktop hands an event to the page with `WebviewWindow::eval`, which dispatches a DOM `CustomEvent` (`desktop-alarm`, `desktop-live`); the page listens with `addEventListener`. Tauri's own event channel is not used: the window is loaded from `http://127.0.0.1:<port>/`, which Tauri treats as a remote origin, and a capability only covers the local one, so `event.listen` is refused there. The page needs no Tauri permission for any of this, and the app ships no capability file | `src-tauri/src/notify.rs`, `web/alarms.js`, `web/app.js` |
 | Session | the check reuses the session the window signed in with; the shell and the server share one session store, so the desktop never asks for a password of its own and never stores one | `crates/server/src/app.rs` (`serve_shared`) |
+| Session lifetime | that shared session expires `PROVIEW_SESSION_TTL` seconds after sign-in (3600 by default) and reading it does not extend it, so an app left in the tray longer than that cannot reach the alarm centre until the window signs in again; the check says so instead of going quiet, see below | `crates/core/src/config.rs`, `crates/core/src/session.rs` |
+| A check that fails | the first failed check of a span whose error says the session is gone posts one *Alarm notifications paused — open PROVIEW and sign in* notification and logs at warn; the rest of that span stays quiet, and a successful check re-arms it. A cloud or network error logs at warn and posts nothing, because the session is still there | `src-tauri/src/watcher.rs` |
+| Recovering from an outage | when the last successful check is more than three check intervals before the recovering one, that check summarizes everything it finds — one *N alarms came in while PROVIEW was not watching* notification and no per-alarm toast — instead of replaying a backlog one notification at a time. A single missed interval still toasts normally | `src-tauri/src/watcher.rs` |
+| Another account | the remembered window belongs to the account that signed in; when a different account signs in, the window and the device cache are dropped and the run starts over, so one account's alarms can never silence another's | `src-tauri/src/desktop_state.rs`, `crates/server/src/desktop_alarms.rs` |
 | Tray | tray icon with **Open**, **Live** and **Quit**; a left click on the icon focuses the window | `src-tauri/src/tray.rs` |
 | One instance | a second launch — the Start menu shortcut, the Dock, a pinned icon — focuses the window of the running process instead of starting a second server, watcher and session store | `src-tauri/src/main.rs` (`tauri-plugin-single-instance`) |
 | Window close | with *Keep running when the window closes* on (the default) the window hides and the app stays in the tray; the first time it happens, one notification says the app is still running, and the hint is recorded so it never repeats. If the system drops notifications, the tray icon is the only signal that the app is still there | `src-tauri/src/main.rs`, `src-tauri/src/tray.rs` |
@@ -31,6 +35,19 @@ it — Quit in the tray, the window with *Keep running when the window closes* o
 the end of the session — ends the notifications with it. A closed tab in the browser
 build gets nothing; that is what the browser Notification API path is for and it needs
 the tab open.
+
+## When the session ends
+
+The desktop has no password of its own: it borrows the session the window created, and
+that session has a fixed life of `PROVIEW_SESSION_TTL` seconds — an hour by default.
+Nothing renews it on read. On hour two of an app sitting in the tray, the alarm centre
+answers "not signed in", and the process now says that out loud: one notification, one
+warn line, and silence until the window signs in again. When it does, the alarms that
+arrived during the gap arrive as one summary, not as a burst.
+
+Making the desktop outlive that limit — keeping the vendor token past the page session,
+or letting the shell restore a remembered account by itself — changes what a sign-out
+means, so it stays a product decision rather than a detail of this feature.
 
 ## The request window
 
