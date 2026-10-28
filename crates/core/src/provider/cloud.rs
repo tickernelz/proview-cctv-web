@@ -237,6 +237,42 @@ impl Provider for CloudProvider {
         }
         let dest = tunnel.reply.dest_ip.clone();
         let mut connection = tunnel.into_connection();
+
+        let device_token = entry
+            .extra
+            .get("deviceToken")
+            .and_then(|value| value.get("AdminToken"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let login = if device_token.is_empty() {
+            match connection.login(&self.device_user, &self.device_pass).await {
+                Ok(ok) => format!("password login, session {}", ok.session),
+                Err(error) => {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, device login failed: {error:?}"
+                    )))
+                }
+            }
+        } else {
+            match connection.login_token(device_token, "").await {
+                Ok(reply) => format!(
+                    "token login, ret {}",
+                    reply
+                        .get("Ret")
+                        .map(|value| value.to_string())
+                        .unwrap_or_default()
+                ),
+                Err(error) => {
+                    return Err(ProviderError::Upstream(format!(
+                        "relay accepted for {dest}, token login failed: {error:?}"
+                    )))
+                }
+            }
+        };
+        let device_channel = channel.saturating_sub(1) as u8;
+        let stream = if high { "Main" } else { "Sub" };
+        let session = connection.session();
+        let session_id = format!("0x{session:08x}");
         let device_token = entry
             .extra
             .get("deviceToken")
