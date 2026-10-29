@@ -176,7 +176,7 @@ export async function walkScreens(page: Page, check: Check) {
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))
   await page.route(/\/api\/device\/controls(\/presets)?(\?|$)/, (route) =>
     route.fulfill({
-      json: route.request().url().endsWith('/presets')
+      json: new URL(route.request().url()).pathname.endsWith('/presets')
         ? [{ token: '1', name: 'Gate' }, { token: '2', name: 'Driveway' }]
         : {
             onvif: false,

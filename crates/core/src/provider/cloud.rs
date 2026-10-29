@@ -519,6 +519,48 @@ impl CloudProvider {
         Ok(tunnel.into_connection())
     }
 
+    pub async fn open_control(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        match self.control_session(session, device).await {
+            Err(first) if open_is_worth_retrying(&first) => {
+                tracing::warn!(device = %device, %first, "cloud control session failed, opening another tunnel");
+                self.control_session(session, device)
+                    .await
+                    .map_err(|second| ProviderError::Upstream(format!("{first}; retry: {second}")))
+            }
+            outcome => outcome,
+        }
+    }
+
+    async fn control_session(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        let Some(entry) = self.entry_of(session, device.trim()).await? else {
+            return Err(ProviderError::UnknownDevice(device.trim().to_string()));
+        };
+        let target = self.relay_target(&entry).await?;
+        let connection = self.dial(&entry, &target).await?;
+        let control = crate::media::dhav::MediaCipher::channel();
+        let session_key = rps_client::session_key();
+        let (mut connection, note) = self
+            .device_login(connection, &entry, &control, &session_key)
+            .await?;
+        let sealed = crate::media::dhav::MediaCipher::from_text(&session_key).ok_or_else(|| {
+            ProviderError::LoginRefused(format!(
+                "cloud login stage=session key: a {}-character key cannot seal control frames",
+                session_key.len()
+            ))
+        })?;
+        connection.set_seal(sealed);
+        tracing::debug!(device = %entry.uuid, %note, "cloud control login");
+        Ok(connection)
+    }
+
     pub async fn open_media(
         &self,
         session: &VendorSession,
@@ -833,6 +875,13 @@ fn account_device_token(entry: &crate::cloud::types::CloudDevice) -> Option<Stri
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string)
+}
+
+fn open_is_worth_retrying(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::Upstream(_) | ProviderError::Unreachable(_) | ProviderError::Io(_)
+    )
 }
 
 fn parameter_sets_of(bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -2339,6 +2388,10 @@ mod login_tests {
             "a refused token is dropped"
         );
         assert!(
+            !super::open_is_worth_retrying(&error),
+            "a device refusal is not a dead tunnel: {message}"
+        );
+        assert!(
             provider.token_refusal(SERIAL).is_none(),
             "an ip lock is the device's state, not a property of the token"
         );
@@ -2416,5 +2469,27 @@ mod login_tests {
         let events = accepted.events();
         assert_eq!(counted(&events, ":token_login"), 1, "{events:?}");
         drop(connection);
+    }
+
+    #[test]
+    fn a_device_refusal_is_not_retried_but_a_dead_tunnel_is() {
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::LoginRefused("ret 205 ip locked".to_string())
+        ));
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::Misconfigured("no identity".to_string())
+        ));
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::UnknownDevice("x".to_string())
+        ));
+        assert!(super::open_is_worth_retrying(&ProviderError::Upstream(
+            "control session: Frame(NotEnoughData)".to_string()
+        )));
+        assert!(super::open_is_worth_retrying(&ProviderError::Unreachable(
+            "relay".to_string()
+        )));
+        assert!(super::open_is_worth_retrying(&ProviderError::Io(
+            std::io::Error::other("reset")
+        )));
     }
 }

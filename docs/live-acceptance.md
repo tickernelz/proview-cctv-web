@@ -47,6 +47,29 @@ The verdict in `report.md` and on the first stdout line repeats that: `pass`,
 `pass-fixture` (a recorded clip, exit 0, never cloud evidence), `lan-reachable`
 (exit 3) or `fail` (exit 1) with the stage that broke.
 
+## The control path has its own harness
+
+`tools/acceptance/cloud_ptz.py` proves the other half of "the cloud works":
+that a pan reaches the camera and that the picture says so. It takes the same
+relay lock and the same two private files plus `PROVIEW_DEVICE_SERIAL` (or
+`--sn`), because the server offers the camera password only to the serial the
+operator bound; without it the capability report names that setting instead of
+moving anything. It refuses to run while the camera answers on
+`192.168.0.100` (34567 or 554), parks the lower lens at the first
+preset the device lists, reads two frames, sends one `DirectionRight` step
+through `POST /api/device/controls/ptz`, reads two more, then recalls the
+preset and reads two again. Each crop is cut into 60x80 tiles, the eight with
+the most edge energy are measured by phase correlation, and the report carries
+the median shift, its range, how many tiles moved, and the noise floor measured
+between the two frames taken before the move; `RelativeMove` is never used. A
+whole-crop shift is not used because the near wall in front of the lower lens
+makes the displacement differ across the picture (10-40 px in the first run).
+The run fails when the lower crop's median shift is under 8 px, when fewer than
+five of its eight tiles moved, when the upper crop moved more than the noise
+floor plus one pixel, or when `GotoPreset` leaves the lower crop more than 5 px
+from where it started. Reports go to
+`~/re/proview-cctv/acceptance-zha4281/<sha>-<stamp>/`.
+
 ## What a pass does not mean
 
 - It is not a parity claim. Parity is a row-by-row comparison against the

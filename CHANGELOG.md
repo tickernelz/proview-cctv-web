@@ -7,6 +7,36 @@ stability before 1.0.
 
 ## Unreleased
 
+### Added
+
+- Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
+  `/api/device/controls/ptz`, `/api/device/controls/presets`,
+  `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
+  DVRIP session over the same RPS relay the live stream uses, so none of them
+  needs the camera on the local network. The capability report in cloud mode is
+  read from the device (`Ptz.GunBallLocate` binds the motor to the lower lens,
+  `Uart.PTZPreset` lists the presets) instead of answering "unconfigured"; the
+  upper lens keeps its own refusal, and `PROVIEW_LENS_PTZ` stays an override
+  rather than the only source.
+- `tools/acceptance/cloud_ptz.py`: one command that proves the claim with pixels.
+  It refuses to run while the camera answers on the LAN, parks the lens at a
+  preset, moves it, and measures the shift on the busiest tiles of each lens
+  crop by phase correlation against the noise floor between two frames taken
+  before the move.
+- The control tunnel uses the account device token over the relay, the same
+  credential live and playback use (PR #101): `open_control` logs in through
+  `device_login` without claiming the monitor, and every control request and
+  its reply are sealed with the 16-character session key the way playback does
+  it. No camera password is read from the environment on this path.
+
+### Changed
+
+- The Move button no longer greys out without a reason: while it is blocked the
+  lens menu names the device's own refusal and the button carries the same text
+  as its description, and the control panel asks the server for the capability
+  report of the camera on screen (`device`), which is what lets a cloud camera
+  report its motor at all.
+
 ### Fixed
 
 - Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):

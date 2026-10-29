@@ -134,6 +134,7 @@ pub struct Connection {
     session: u32,
     sequence: u32,
     read_buf: BytesMut,
+    seal: Option<crate::media::dhav::MediaCipher>,
 }
 
 fn trim_reply(payload: &[u8]) -> &[u8] {
@@ -198,6 +199,7 @@ impl Connection {
             session: 0,
             sequence: 0,
             read_buf: BytesMut::new(),
+            seal: None,
         })
     }
 
@@ -208,7 +210,12 @@ impl Connection {
             session: 0,
             sequence: 0,
             read_buf: BytesMut::new(),
+            seal: None,
         }
+    }
+
+    pub fn set_seal(&mut self, cipher: crate::media::dhav::MediaCipher) {
+        self.seal = Some(cipher);
     }
 
     pub fn session(&self) -> u32 {
@@ -250,12 +257,35 @@ impl Connection {
     }
 
     async fn send_json(&mut self, id: u16, body: &Value) -> Result<(), DvrError> {
-        let mut payload =
+        let mut plain =
             serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
-        payload.push(b'\n');
-        payload.push(0);
-        self.send_frame(id, &payload).await?;
+        match &self.seal {
+            Some(cipher) => {
+                let mut payload = cipher.encrypt_body(&plain).into_bytes();
+                payload.push(0);
+                self.send_frame_on(0, false, id, &payload).await?;
+            }
+            None => {
+                plain.push(b'\n');
+                plain.push(0);
+                self.send_frame(id, &plain).await?;
+            }
+        }
         Ok(())
+    }
+
+    fn opened_bytes(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        let cipher = self.seal.as_ref()?;
+        cipher.decrypt_body(payload)
+    }
+
+    fn opened_json(&self, payload: &[u8]) -> Option<Value> {
+        let cipher = self.seal.as_ref()?;
+        let raw = cipher.decrypt_body(payload)?;
+        let text = String::from_utf8_lossy(&raw);
+        serde_json::from_str(text.trim_end_matches(['\0', '\n', '\r']))
+            .ok()
+            .filter(Value::is_object)
     }
 
     pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), FrameError> {
@@ -323,6 +353,9 @@ impl Connection {
                     return Ok(value);
                 }
             }
+            if let Some(value) = self.opened_json(&payload) {
+                return Ok(value);
+            }
         }
         Err(DvrError::NoReply)
     }
@@ -337,6 +370,9 @@ impl Connection {
                 if value.is_object() {
                     return Ok(value);
                 }
+            }
+            if let Some(value) = self.opened_json(&payload) {
+                return Ok(value);
             }
         }
         Err(DvrError::NoReply)
@@ -513,6 +549,11 @@ impl Connection {
             let (_, payload) = self.recv().await?;
             if payload.len() > 3 && payload[0] == 0xff && payload[1] == 0xd8 && payload[2] == 0xff {
                 return Ok(payload);
+            }
+            if let Some(opened) = self.opened_bytes(&payload) {
+                if opened.len() > 3 && opened[0] == 0xff && opened[1] == 0xd8 && opened[2] == 0xff {
+                    return Ok(opened);
+                }
             }
             if let Ok(reply) = parse_json(&payload) {
                 if let Ok(ret) = ret_of(&reply) {
@@ -734,6 +775,37 @@ mod tests {
                 .expect("frame after the timeout");
         assert_eq!(header.length, 5);
         assert_eq!(body, b"hello");
+        peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sealed_connection_sends_and_reads_sealed_json() {
+        let key = "0123456789abcdef";
+        let (address, peer) = super::super::fake::serve_scripted(move |_channel, id, body| {
+            let peer_cipher = crate::media::dhav::MediaCipher::from_text(key)
+                .expect("a 16-character key seals frames");
+            let opened = peer_cipher
+                .decrypt_body(body)
+                .expect("the request has to arrive sealed");
+            let text = String::from_utf8_lossy(&opened);
+            let request: Value =
+                serde_json::from_str(text.trim_end_matches(['\0', '\n', '\r'])).expect("json");
+            assert_eq!(request["Name"], "Ptz", "the sealed body is the request");
+            let reply = peer_cipher
+                .encrypt_body(br#"{"Ret":100,"Ptz":{"GunBallLocate":[{"Enable":true}]}}"#)
+                .into_bytes();
+            vec![(id.wrapping_add(1), reply)]
+        })
+        .await;
+        let mut connection = connect(&address).await;
+        connection.set_seal(crate::media::dhav::MediaCipher::from_text(key).expect("key"));
+        let reply = connection
+            .config_get("Ptz")
+            .await
+            .expect("a sealed round trip answers");
+        assert_eq!(reply["Ret"], 100);
+        assert_eq!(reply["Ptz"]["GunBallLocate"][0]["Enable"], true);
+        drop(connection);
         peer.await.unwrap();
     }
 }

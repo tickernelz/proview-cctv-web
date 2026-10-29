@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -8,10 +8,12 @@ use serde_json::{json, Value};
 use crate::config::Config;
 use crate::dvrip::client::Connection as DvripConnection;
 use crate::dvrip::control::{
-    ptz_step_of, PtzDirection, PtzLocate, RecordMode, TourLine, WhiteLightMode,
+    ptz_step_of, PresetEntry, PtzDirection, PtzLocate, RecordMode, TourLine, WhiteLightMode,
 };
 use crate::model::PtzSource;
 use crate::onvif::{self, Client as OnvifClient, OnvifError};
+use crate::provider::cloud::CloudProvider;
+use crate::provider::VendorSession;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -827,12 +829,55 @@ async fn send_ptz_stop(
     result.map_err(|error| error.to_string())
 }
 
+#[async_trait]
+pub trait ControlLink: Send + Sync {
+    fn address(&self) -> String;
+
+    async fn open(&self) -> Result<DvripConnection, String>;
+}
+
+#[derive(Clone)]
+pub struct CloudLink {
+    provider: Arc<CloudProvider>,
+    session: VendorSession,
+    device: String,
+}
+
+impl CloudLink {
+    pub fn new(
+        provider: Arc<CloudProvider>,
+        session: VendorSession,
+        device: impl Into<String>,
+    ) -> Self {
+        Self {
+            provider,
+            session,
+            device: device.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl ControlLink for CloudLink {
+    fn address(&self) -> String {
+        format!("cloud:{}", self.device)
+    }
+
+    async fn open(&self) -> Result<DvripConnection, String> {
+        self.provider
+            .open_control(&self.session, &self.device)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
 #[derive(Clone)]
 pub struct DvripControl {
     address: String,
     user: String,
     password: String,
     window: Duration,
+    link: Option<Arc<dyn ControlLink>>,
 }
 
 impl DvripControl {
@@ -850,7 +895,22 @@ impl DvripControl {
             user: cfg.device_user.clone(),
             password: cfg.device_pass.clone(),
             window,
+            link: None,
         })
+    }
+
+    pub fn over_cloud(link: CloudLink, window: Duration) -> Self {
+        Self::with_link(Arc::new(link), window)
+    }
+
+    pub fn with_link(link: Arc<dyn ControlLink>, window: Duration) -> Self {
+        Self {
+            address: link.address(),
+            user: String::new(),
+            password: String::new(),
+            window,
+            link: Some(link),
+        }
     }
 
     pub async fn session(&self) -> Result<DvripConnection, SessionError> {
@@ -858,7 +918,16 @@ impl DvripControl {
     }
 
     pub async fn session_within(&self, window: Duration) -> Result<DvripConnection, SessionError> {
-        match tokio::time::timeout(window, self.open_session()).await {
+        let open = async {
+            match &self.link {
+                Some(link) => link
+                    .open()
+                    .await
+                    .map_err(|detail| SessionError::Failed(ControlError::Device(detail))),
+                None => self.open_session().await,
+            }
+        };
+        match tokio::time::timeout(window, open).await {
             Ok(result) => result,
             Err(_) => Err(SessionError::Timeout {
                 address: self.address.clone(),
@@ -964,6 +1033,25 @@ impl DeviceControl for DvripControl {
                 LensCapability::supported(Lens::Bottom, "ptz patrol", Backend::Dvrip, tour.evidence)
             } else {
                 LensCapability::blocked(Lens::Bottom, "ptz patrol", Backend::Dvrip, tour.evidence)
+            },
+            if reported.presets.is_empty() {
+                LensCapability::blocked(
+                    Lens::Bottom,
+                    "ptz preset",
+                    Backend::Dvrip,
+                    "Uart.PTZPreset lists no preset on this device, so GotoPreset has nothing to recall",
+                )
+            } else {
+                LensCapability::supported(
+                    Lens::Bottom,
+                    "ptz preset",
+                    Backend::Dvrip,
+                    format!(
+                        "Uart.PTZPreset lists {} preset(s): {}",
+                        reported.presets.len(),
+                        preset_summary(&reported.presets)
+                    ),
+                )
             },
             LensCapability::blocked(Lens::Top, "ptz move", Backend::Dvrip, top_evidence),
             if locate.supported {
@@ -1127,6 +1215,43 @@ impl DeviceControl for DvripControl {
         result
     }
 
+    async fn presets(&self) -> Result<Vec<onvif::Preset>, ControlError> {
+        let mut connection = self.session().await?;
+        let listing = call_within(
+            "preset listing",
+            &self.address,
+            self.window,
+            connection.tour_listing(),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        Ok(listing?
+            .1
+            .into_iter()
+            .map(|preset| onvif::Preset {
+                token: preset.id.to_string(),
+                name: preset.name,
+            })
+            .collect())
+    }
+
+    async fn goto_preset(&self, token: &str) -> Result<(), ControlError> {
+        let preset: i64 = token.parse().map_err(|_| ControlError::Blocked {
+            operation: "ptz goto preset",
+            reason: "a DVRIP preset token is a whole number",
+        })?;
+        let mut connection = self.session().await?;
+        let result = call_within(
+            "ptz goto preset",
+            &self.address,
+            self.window,
+            connection.ptz_goto_preset(preset),
+        )
+        .await;
+        let _ = connection.logout_within(self.window).await;
+        result
+    }
+
     async fn white_light(
         &self,
         mode: Option<WhiteLightMode>,
@@ -1224,6 +1349,20 @@ impl DeviceControl for DvripControl {
     }
 }
 
+fn preset_summary(presets: &[PresetEntry]) -> String {
+    let shown: Vec<String> = presets
+        .iter()
+        .take(6)
+        .map(|preset| format!("{}={}", preset.id, preset.name))
+        .collect();
+    let hidden = presets.len().saturating_sub(shown.len());
+    if hidden == 0 {
+        shown.join(", ")
+    } else {
+        format!("{}, +{hidden} more", shown.join(", "))
+    }
+}
+
 const TOUR_MISSING_REASON: &str =
     "the device reports no tour line with that id; GET /api/device/controls/tour lists the lines it has";
 
@@ -1298,6 +1437,9 @@ fn flip_capability(
     }
 }
 
+const CLOUD_ONVIF_REASON: &str =
+    "the vendor cloud relay carries DVRIP only; ONVIF answers on the local network in this build";
+
 pub struct Controls {
     pub onvif: Option<OnvifControl>,
     pub dvrip: Option<DvripControl>,
@@ -1320,6 +1462,15 @@ impl Controls {
             dvrip,
             onvif_error,
             dvrip_error,
+        }
+    }
+
+    pub fn over_cloud(link: CloudLink) -> Self {
+        Self {
+            onvif: None,
+            dvrip: Some(DvripControl::over_cloud(link, op_window())),
+            onvif_error: Some(CLOUD_ONVIF_REASON.to_string()),
+            dvrip_error: None,
         }
     }
 
@@ -1625,6 +1776,155 @@ mod tests {
         }
         .to_string()
         .contains("onvif"));
+    }
+
+    struct StubLink {
+        peer: String,
+    }
+
+    #[async_trait]
+    impl ControlLink for StubLink {
+        fn address(&self) -> String {
+            format!("cloud:{}", self.peer)
+        }
+
+        async fn open(&self) -> Result<DvripConnection, String> {
+            Ok(crate::dvrip::fake::connect(&self.peer).await)
+        }
+    }
+
+    fn cloud_controls(peer: &str) -> Controls {
+        Controls {
+            onvif: None,
+            dvrip: Some(DvripControl::with_link(
+                Arc::new(StubLink {
+                    peer: peer.to_string(),
+                }),
+                Duration::from_secs(2),
+            )),
+            onvif_error: Some(CLOUD_ONVIF_REASON.to_string()),
+            dvrip_error: None,
+        }
+    }
+
+    fn device_reply(request: &Value) -> Value {
+        let name = request.get("Name").and_then(Value::as_str).unwrap_or("");
+        match name {
+            "SystemFunction" => json!({
+                "Ret": 100,
+                "SystemFunction": {
+                    "OtherFunction": {
+                        "SupportCameraWhiteLight": true,
+                        "SupportTwoWayVoiceTalk": false,
+                        "SupportPTZTour": true,
+                        "SupportPTZDirectionControl": true
+                    },
+                    "EncodeFunction": { "SnapStream": true }
+                }
+            }),
+            "Camera" => json!({
+                "Ret": 100,
+                "Camera": {
+                    "WhiteLight": { "WorkMode": "Off" },
+                    "Param": [{ "PictureFlip": "0x00000001", "PictureMirror": "0x00000000" }]
+                }
+            }),
+            "Record" => json!({ "Ret": 100, "Record": [{ "RecordMode": "Off" }] }),
+            "Uart" => json!({
+                "Ret": 100,
+                "Uart": {
+                    "PTZPreset": [[{ "Id": 1, "PresetName": "Gate" }]],
+                    "PTZTour": [[{ "Id": 1, "Enable": false }]]
+                }
+            }),
+            "Ptz" => json!({
+                "Ret": 100,
+                "Ptz": {
+                    "GunBallLocate": [{
+                        "Enable": true,
+                        "PtzLocate_CenterX": 1152,
+                        "PtzLocate_CenterY": 1944,
+                        "WidthSteps": 2304,
+                        "HeightSteps": 2592,
+                        "motorSpeedX": 4,
+                        "motorSpeedY": 4
+                    }]
+                }
+            }),
+            _ => json!({ "Ret": 100 }),
+        }
+    }
+
+    async fn scripted_device() -> (String, tokio::task::JoinHandle<Vec<(u8, u16, Vec<u8>)>>) {
+        crate::dvrip::fake::serve_scripted(|_channel, id, body| {
+            let text = String::from_utf8_lossy(body);
+            let request: Value = serde_json::from_str(text.trim_end_matches(['\0', '\n', ' ']))
+                .unwrap_or(Value::Null);
+            let reply = match id {
+                crate::dvrip::msg::PTZ_CONTROL => json!({ "Ret": 100 }),
+                _ => device_reply(&request),
+            };
+            vec![(id.wrapping_add(1), crate::dvrip::fake::json_reply(reply))]
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_cloud_link_carries_the_move_over_the_relay() {
+        let (peer, server) = crate::dvrip::fake::serve(vec![
+            crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
+            crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
+            crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
+            crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
+        ])
+        .await;
+        let controls = cloud_controls(&peer);
+        let control = controls.dvrip.as_ref().expect("cloud dvrip control");
+        control
+            .move_ptz(Lens::Bottom, 0.5, 0.0, 0.0, Duration::from_millis(1))
+            .await
+            .expect("the relay carried the move");
+        let seen = server.await.expect("fake peer");
+        assert!(seen[0].contains("\"Command\":\"DirectionRight\""));
+        assert!(seen[0].contains("\"Preset\":65535"));
+        assert!(seen[1].contains("\"Preset\":-1"));
+    }
+
+    #[tokio::test]
+    async fn a_cloud_link_reads_ptz_and_presets_from_the_device() {
+        let (peer, server) = scripted_device().await;
+        let controls = cloud_controls(&peer);
+        let rows = controls.capability_report().await;
+        let _ = server.await;
+        let move_row = rows
+            .iter()
+            .find(|row| row.feature == "ptz move" && row.lens == Lens::Bottom)
+            .expect("a ptz move row for the lower lens");
+        assert_eq!(move_row.state, State::Supported, "{}", move_row.evidence);
+        assert_eq!(move_row.backend, Backend::Dvrip);
+        assert!(move_row.evidence.contains("through the cloud relay"));
+        let preset_row = rows
+            .iter()
+            .find(|row| row.feature == "ptz preset")
+            .expect("a ptz preset row");
+        assert_eq!(
+            preset_row.state,
+            State::Supported,
+            "{}",
+            preset_row.evidence
+        );
+        assert!(preset_row.evidence.contains("1=Gate"));
+        let top = rows
+            .iter()
+            .find(|row| row.feature == "ptz move" && row.lens == Lens::Top)
+            .expect("the upper lens is refused");
+        assert_eq!(top.state, State::Blocked);
+        let onvif = rows
+            .iter()
+            .find(|row| row.feature == "onvif transport")
+            .expect("the cloud report names the missing onvif path");
+        assert_eq!(onvif.state, State::Blocked);
+        assert!(onvif.evidence.contains(CLOUD_ONVIF_REASON));
     }
 
     fn test_config(onvif: Option<&str>, host: Option<&str>) -> crate::config::Config {

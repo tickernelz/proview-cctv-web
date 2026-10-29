@@ -1,9 +1,13 @@
+use std::sync::Arc;
 use std::time::Duration;
 
-use proview_core::config::Config;
-use proview_core::device::{talk_capability, Backend, ControlError, Controls, DeviceControl, Lens};
+use proview_core::config::{Config, ProviderKind};
+use proview_core::device::{
+    talk_capability, Backend, CloudLink, ControlError, Controls, DeviceControl, Lens,
+};
 use proview_core::dvrip::control::{PresetEntry, PtzLocate, TourLine};
 use proview_core::dvrip::control::{RecordMode, WhiteLightMode};
+use proview_core::provider::cloud::CloudProvider;
 use proview_core::session::Store;
 use rocket::form::FromForm;
 use rocket::http::{CookieJar, Status};
@@ -12,6 +16,9 @@ use rocket::State;
 use serde::Serialize;
 
 use super::{fail, fail_code, restore, session_id, Failure};
+use crate::config::ModeStore;
+use proview_core::provider::local::LocalProvider;
+use proview_core::provider::Mode;
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
@@ -46,6 +53,43 @@ fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failur
         .get(&id)
         .map(|_| ())
         .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
+}
+
+fn cloud_carries_control(cfg: &Config, mode: Mode) -> bool {
+    cfg.provider == ProviderKind::Proview
+        && (mode == Mode::Cloud
+            || (LocalProvider::from_config(cfg).is_none() && cfg.device_onvif.is_none()))
+}
+
+fn controls_for(
+    device: Option<&str>,
+    cfg: &Config,
+    cloud: &Arc<CloudProvider>,
+    modes: &ModeStore,
+    store: &Store,
+    cookies: &CookieJar<'_>,
+) -> Result<Controls, Failure> {
+    let id = session_id(cookies)?;
+    let vendor = store
+        .get(&id)
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?;
+    if !cloud_carries_control(cfg, modes.mode_for(Some(&id))) {
+        return Ok(Controls::from_config(cfg));
+    }
+    let serial = device
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            fail(
+                Status::BadRequest,
+                "device is required while the cloud provider carries the control channel; pass the serial from GET /api/devices",
+            )
+        })?;
+    Ok(Controls::over_cloud(CloudLink::new(
+        (*cloud).clone(),
+        vendor,
+        serial,
+    )))
 }
 
 fn control_status(error: &ControlError) -> Status {
@@ -102,14 +146,16 @@ pub struct CapabilityBody {
 async fn capability_report(
     device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<CapabilityBody>, Failure> {
-    let id = session_id(cookies)?;
-    let vendor = restore(store, &id)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let mut rows = controls.capability_report().await;
     if !rows.iter().any(|row| row.feature == "two-way audio") {
+        let id = session_id(cookies)?;
+        let vendor = restore(store, &id)?;
         rows.push(talk_capability(
             cfg,
             vendor.token.as_deref(),
@@ -154,16 +200,19 @@ pub struct PtzQuery {
     tilt: Option<f32>,
     zoom: Option<f32>,
     hold_ms: Option<u64>,
+    device: Option<String>,
 }
 
 #[post("/device/controls/ptz?<query..>")]
 async fn ptz_move(
     query: PtzQuery,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<MoveBody>, Failure> {
-    signed_in(store, cookies)?;
+    let controls = controls_for(query.device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let lens = parse_lens(query.lens.as_deref())?;
     let pan = query.pan.unwrap_or(0.0).clamp(-1.0, 1.0);
     let tilt = query.tilt.unwrap_or(0.0).clamp(-1.0, 1.0);
@@ -172,7 +221,6 @@ async fn ptz_move(
     if pan == 0.0 && tilt == 0.0 && zoom == 0.0 {
         return Err(fail(Status::BadRequest, "a move needs a nonzero velocity"));
     }
-    let controls = controls(cfg);
     let (backend, outcome) = match controls.onvif.as_ref() {
         Some(control) => (
             Backend::Onvif,
@@ -220,15 +268,24 @@ pub struct SimpleBody {
     pub detail: String,
 }
 
-#[post("/device/controls/ptz/stop")]
+const DVRIP_STOP_REASON: &str = "a DVRIP pan or tilt carries its own stop after hold_ms, so this build sends no separate stop on that transport; the pad disables Stop when ONVIF is not the backend";
+
+#[post("/device/controls/ptz/stop?<device>")]
 async fn ptz_stop(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<SimpleBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
-    let control = controls.onvif().map_err(control_failure)?;
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
+    let Some(control) = controls.onvif.as_ref() else {
+        return Err(fail(
+            Status::NotImplemented,
+            format!("ptz stop: {DVRIP_STOP_REASON}"),
+        ));
+    };
     control.stop_ptz().await.map_err(control_failure)?;
     Ok(Json(SimpleBody {
         ok: true,
@@ -242,15 +299,20 @@ pub struct PresetBody {
     pub name: String,
 }
 
-#[get("/device/controls/presets")]
+#[get("/device/controls/presets?<device>")]
 async fn ptz_presets(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<Vec<PresetBody>>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
-    let control = controls.onvif().map_err(control_failure)?;
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
+    let control: &dyn DeviceControl = match controls.onvif.as_ref() {
+        Some(control) => control,
+        None => controls.dvrip().map_err(control_failure)?,
+    };
     let presets = control.presets().await.map_err(control_failure)?;
     Ok(Json(
         presets
@@ -263,16 +325,21 @@ async fn ptz_presets(
     ))
 }
 
-#[post("/device/controls/preset/goto?<token>")]
+#[post("/device/controls/preset/goto?<token>&<device>")]
 async fn ptz_goto_preset(
     token: String,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<PresetBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
-    let control = controls.onvif().map_err(control_failure)?;
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
+    let control: &dyn DeviceControl = match controls.onvif.as_ref() {
+        Some(control) => control,
+        None => controls.dvrip().map_err(control_failure)?,
+    };
     control.goto_preset(&token).await.map_err(control_failure)?;
     Ok(Json(PresetBody {
         token,
@@ -286,34 +353,38 @@ pub struct LightBody {
     pub mode: Option<String>,
 }
 
-#[get("/device/controls/light")]
+#[get("/device/controls/light?<device>")]
 async fn light_read(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<LightBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let mode = control.white_light(None).await.map_err(control_failure)?;
     Ok(Json(LightBody { ok: true, mode }))
 }
 
-#[post("/device/controls/light?<mode>")]
+#[post("/device/controls/light?<mode>&<device>")]
 async fn light_write(
     mode: String,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<LightBody>, Failure> {
-    signed_in(store, cookies)?;
     let parsed = WhiteLightMode::parse(&mode).ok_or_else(|| {
         fail(
             Status::BadRequest,
             "mode must be off, intelligent or always",
         )
     })?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let applied = control
         .white_light(Some(parsed))
@@ -332,14 +403,16 @@ pub struct FlipBody {
     pub mirror: Option<String>,
 }
 
-#[get("/device/controls/flip")]
+#[get("/device/controls/flip?<device>")]
 async fn flip_read(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<FlipBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let (flip, mirror) = control
         .picture_flip(None, None)
@@ -352,22 +425,25 @@ async fn flip_read(
     }))
 }
 
-#[post("/device/controls/flip?<flip>&<mirror>")]
+#[post("/device/controls/flip?<flip>&<mirror>&<device>")]
+#[allow(clippy::too_many_arguments)]
 async fn flip_write(
     flip: Option<bool>,
     mirror: Option<bool>,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<FlipBody>, Failure> {
-    signed_in(store, cookies)?;
     if flip.is_none() && mirror.is_none() {
         return Err(fail(
             Status::BadRequest,
             "set flip and/or mirror to true or false",
         ));
     }
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let (flip, mirror) = control
         .picture_flip(flip, mirror)
@@ -386,30 +462,34 @@ pub struct RecordBody {
     pub mode: Option<String>,
 }
 
-#[get("/device/controls/record")]
+#[get("/device/controls/record?<device>")]
 async fn record_read(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<RecordBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let mode = control.record_mode(None).await.map_err(control_failure)?;
     Ok(Json(RecordBody { ok: true, mode }))
 }
 
-#[post("/device/controls/record?<mode>")]
+#[post("/device/controls/record?<mode>&<device>")]
 async fn record_write(
     mode: String,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<RecordBody>, Failure> {
-    signed_in(store, cookies)?;
     let parsed = RecordMode::parse(&mode)
         .ok_or_else(|| fail(Status::BadRequest, "mode must be config, manual or off"))?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let applied = control
         .record_mode(Some(parsed))
@@ -421,17 +501,57 @@ async fn record_write(
     }))
 }
 
-#[get("/device/controls/snapshot")]
+#[get("/device/controls/snapshot?<device>")]
 async fn snapshot(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<(rocket::http::ContentType, Vec<u8>), Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let picture = control.snapshot().await.map_err(control_failure)?;
     Ok((rocket::http::ContentType::JPEG, picture))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cloud_carries_control;
+    use proview_core::config::{Config, ProviderKind};
+
+    fn config(provider: ProviderKind, host: Option<&str>) -> Config {
+        Config {
+            provider,
+            cloud_base: "https://pub-token.xmeye.net".to_string(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
+            device_user: "admin".to_string(),
+            device_pass: "device-password".to_string(),
+            fixture_dir: "fixtures".to_string(),
+            device_host: host.map(str::to_string),
+            device_rtsp: None,
+            device_onvif: None,
+            session_ttl_secs: 3600,
+        }
+    }
+
+    #[test]
+    fn the_cloud_carries_control_unless_a_local_address_answers_in_local_mode() {
+        use super::Mode;
+        let cloud = config(ProviderKind::Proview, None);
+        assert!(cloud_carries_control(&cloud, Mode::Cloud));
+        assert!(cloud_carries_control(&cloud, Mode::Local));
+        let local = config(ProviderKind::Proview, Some("192.168.0.100"));
+        assert!(cloud_carries_control(&local, Mode::Cloud));
+        assert!(!cloud_carries_control(&local, Mode::Local));
+        let mut rtsp_only = config(ProviderKind::Proview, None);
+        rtsp_only.device_rtsp = Some("192.0.2.10:554".to_string());
+        assert!(cloud_carries_control(&rtsp_only, Mode::Cloud));
+        assert!(!cloud_carries_control(&rtsp_only, Mode::Local));
+        let fixture = config(ProviderKind::Fixture, None);
+        assert!(!cloud_carries_control(&fixture, Mode::Cloud));
+    }
 }
 
 #[derive(Serialize)]
@@ -448,14 +568,16 @@ const TOUR_LISTING_NOTE: &str = "this listing is the device's own configuration;
 
 const TOUR_ACTION_NOTE: &str = "Ret 100 is the device's ack, sent before the motor moves; only frames prove motion, and GET /api/device/controls/tour shows what the device stored";
 
-#[get("/device/controls/tour")]
+#[get("/device/controls/tour?<device>")]
 async fn tour_state(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourStateBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     let state = control.tour_state().await.map_err(control_failure)?;
     Ok(Json(TourStateBody {
@@ -489,44 +611,51 @@ fn tour_action_body(action: &str, tour: i64, index: Option<i64>) -> TourActionBo
     }
 }
 
-#[post("/device/controls/tour/start?<tour>")]
+#[post("/device/controls/tour/start?<tour>&<device>")]
 async fn tour_start(
     tour: i64,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourActionBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     control.start_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("start", tour, None)))
 }
 
-#[post("/device/controls/tour/stop?<tour>")]
+#[post("/device/controls/tour/stop?<tour>&<device>")]
 async fn tour_stop(
     tour: i64,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourActionBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     control.stop_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("stop", tour, None)))
 }
 
-#[post("/device/controls/tour/add?<tour>&<preset>&<index>")]
+#[post("/device/controls/tour/add?<tour>&<preset>&<index>&<device>")]
+#[allow(clippy::too_many_arguments)]
 async fn tour_add(
     tour: i64,
     preset: i64,
     index: Option<i64>,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourActionBody>, Failure> {
-    signed_in(store, cookies)?;
     if preset <= 0 {
         return Err(fail(
             Status::BadRequest,
@@ -534,7 +663,7 @@ async fn tour_add(
         ));
     }
     let index = index.unwrap_or(0).max(0);
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     control
         .add_tour_point(tour, preset, index)
@@ -543,15 +672,17 @@ async fn tour_add(
     Ok(Json(tour_action_body("add", tour, Some(index))))
 }
 
-#[post("/device/controls/tour/clear?<tour>")]
+#[post("/device/controls/tour/clear?<tour>&<device>")]
 async fn tour_clear(
     tour: i64,
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourActionBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
     control.clear_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("clear", tour, None)))

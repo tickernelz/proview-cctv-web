@@ -2,7 +2,7 @@ import { api } from '../lib/api'
 import { live, type Gate } from '../live/store'
 import { renderCaption } from './caption'
 import { selectedDevice } from './devices'
-import { lensEntries } from './lens'
+import { lensEntries, renderLensPicker } from './lens'
 import { sessionLost } from './shell'
 import { state, type Device } from './state'
 
@@ -29,6 +29,11 @@ const CONTROL_ABSENT: Record<string, string> = {
 }
 
 const MOVES: Record<string, [number, number]> = { up: [0, -0.5], down: [0, 0.5], left: [-0.5, 0], right: [0.5, 0] }
+
+function deviceQuery(separator: '?' | '&') {
+  const id = state.selectedId || ''
+  return id ? separator + 'device=' + encodeURIComponent(id) : ''
+}
 
 function movingLensName() {
   const entry = lensEntries().find((lens) => lens.role === 'moving')
@@ -82,6 +87,7 @@ export function renderControlAvailability() {
   for (const act of Object.keys(live.gate)) live.gate[act] = verdict(act)
   if (state.padOpen && !live.gate.move.ok) closePad()
   renderCapabilities()
+  renderLensPicker()
 }
 
 export async function probeControlChannel(device: Device) {
@@ -115,7 +121,7 @@ async function loadPresets() {
   const row = capabilityRow('ptz preset', movingLensName())
   if (!row || row.state !== 'supported') return
   try {
-    const presets = await api('/api/device/controls/presets')
+    const presets = await api('/api/device/controls/presets' + deviceQuery('?'))
     live.pad.presets = presets.map((preset: { token: string; name?: string }) => ({ token: preset.token, name: preset.name || preset.token }))
     live.pad.presetsShown = presets.length > 0
   } catch (error: any) {
@@ -125,7 +131,7 @@ async function loadPresets() {
 
 export async function gotoPreset(token: string, name: string) {
   try {
-    await api('/api/device/controls/preset/goto?token=' + encodeURIComponent(token), { method: 'POST' })
+    await api('/api/device/controls/preset/goto?token=' + encodeURIComponent(token) + deviceQuery('&'), { method: 'POST' })
     setControlStatus('At ' + name + '.')
   } catch (error: any) {
     setControlStatus('The camera refused ' + name + ': ' + error.status + ' ' + error.message)
@@ -134,9 +140,9 @@ export async function gotoPreset(token: string, name: string) {
 
 export async function toggleWhiteLight() {
   try {
-    const current = await api('/api/device/controls/light')
+    const current = await api('/api/device/controls/light' + deviceQuery('?'))
     const next = current.mode === 'always' ? 'off' : 'always'
-    const applied = await api('/api/device/controls/light?mode=' + encodeURIComponent(next), { method: 'POST' })
+    const applied = await api('/api/device/controls/light?mode=' + encodeURIComponent(next) + deviceQuery('&'), { method: 'POST' })
     live.settings.lightStatus = 'White light: ' + (applied.mode || next) + ' (it was ' + (current.mode || 'not reported') + ').'
   } catch (error: any) {
     if (!sessionLost(error)) live.settings.lightStatus = 'The camera refused the white light: ' + error.status + ' ' + error.message
@@ -146,19 +152,19 @@ export async function toggleWhiteLight() {
 async function toggleTour() {
   try {
     if (state.tour !== null) {
-      const stopped = await api('/api/device/controls/tour/stop?tour=' + encodeURIComponent(state.tour), { method: 'POST' })
+      const stopped = await api('/api/device/controls/tour/stop?tour=' + encodeURIComponent(state.tour) + deviceQuery('&'), { method: 'POST' })
       state.tour = null
       live.pad.tour = false
       setControlStatus('Stopped tour ' + stopped.tour + '.')
       return
     }
-    const tour = await api('/api/device/controls/tour')
+    const tour = await api('/api/device/controls/tour' + deviceQuery('?'))
     const line = (tour.lines || []).find((entry: { points?: unknown[] }) => (entry.points || []).length > 0)
     if (!line) {
       setControlStatus('No tour line with points on this camera: ' + (tour.note || 'add presets to a tour first'))
       return
     }
-    const started = await api('/api/device/controls/tour/start?tour=' + encodeURIComponent(line.id), { method: 'POST' })
+    const started = await api('/api/device/controls/tour/start?tour=' + encodeURIComponent(line.id) + deviceQuery('&'), { method: 'POST' })
     state.tour = line.id
     live.pad.tour = true
     const stops = line.points.length === 1 ? '1 stop' : line.points.length + ' stops'
@@ -181,7 +187,7 @@ export async function sendControl(action: string) {
       await toggleTour()
     } else if (MOVES[action]) {
       const [pan, tilt] = MOVES[action]
-      const moved = await api('/api/device/controls/ptz?lens=' + encodeURIComponent(movingLensName()) + '&pan=' + pan + '&tilt=' + tilt + '&hold_ms=600', { method: 'POST' })
+      const moved = await api('/api/device/controls/ptz?lens=' + encodeURIComponent(movingLensName()) + '&pan=' + pan + '&tilt=' + tilt + '&hold_ms=600' + deviceQuery('&'), { method: 'POST' })
       setControlStatus('Moved the ' + moved.lens + ' lens over ' + moved.backend + ' for ' + moved.hold_ms + ' ms.')
     } else {
       setControlStatus('No server call exists for "' + action + '" in this build.')

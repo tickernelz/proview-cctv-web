@@ -83,6 +83,7 @@ pub struct DeviceCapabilities {
     pub ptz_locate: Capability,
     pub ptz_direction: Capability,
     pub tour_lines: Vec<TourLine>,
+    pub presets: Vec<PresetEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -543,6 +544,7 @@ impl Connection {
                 "no PTZ direction control reported",
             ),
             tour_lines,
+            presets: presets_of(uart_block),
         })
     }
 }
@@ -709,6 +711,22 @@ impl Connection {
 
     pub async fn ptz_stop(&mut self, direction: PtzDirection, step: u8) -> Result<(), DvrError> {
         self.ptz_command(direction, step, -1).await.map(|_| ())
+    }
+
+    pub async fn ptz_goto_preset(&mut self, preset: i64) -> Result<(), DvrError> {
+        let parameter = json!({
+            "AUX": { "Number": 0, "Status": "On" },
+            "MenuOpts": "Enter",
+            "Pattern": "SetBegin",
+            "Preset": preset,
+            "PresetIndex": 0,
+            "Step": 3,
+            "Tour": 0,
+            "TourTimes": 1,
+        });
+        self.ptz_control("GotoPreset", 0, parameter)
+            .await
+            .map(|_| ())
     }
 }
 
