@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -11,7 +11,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::{Deserialize, Serialize};
 
-use crate::desktop::{DesktopControl, OfferedToken, PageHost, PageOrigin};
+use crate::desktop::{DesktopControl, OfferedToken, PageHost, PageOrigin, PagePeer};
 
 const FILE: &str = "settings.json";
 
@@ -588,6 +588,10 @@ fn fail(status: Status, message: impl Into<String>) -> Failure {
     )
 }
 
+fn loopback_peer(peer: Option<SocketAddr>) -> bool {
+    peer.is_some_and(|address| address.ip().to_canonical().is_loopback())
+}
+
 fn loopback_authority(host: &str) -> bool {
     let name = match host.rsplit_once(':') {
         Some((name, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => name,
@@ -608,6 +612,7 @@ fn gate(
     offered: &str,
     cookies: &CookieJar<'_>,
     sessions: &Store,
+    peer: Option<SocketAddr>,
 ) -> Result<(), Failure> {
     match control {
         Some(control) => {
@@ -636,6 +641,12 @@ fn gate(
             }
         }
         None => {
+            if !loopback_peer(peer) {
+                return Err(fail(
+                    Status::Forbidden,
+                    "this request did not arrive from this machine, and the settings answer only there",
+                ));
+            }
             if let Some(origin) = origin {
                 if !crate::desktop::same_origin(origin, host) {
                     return Err(fail(
@@ -671,6 +682,7 @@ fn gate(
 }
 
 #[get("/settings")]
+#[allow(clippy::too_many_arguments)]
 fn read_settings(
     settings: &State<SettingsStore>,
     sessions: &State<Store>,
@@ -678,6 +690,7 @@ fn read_settings(
     host: PageHost,
     origin: PageOrigin,
     offered: OfferedToken,
+    peer: PagePeer,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<SettingsView>, Failure> {
     gate(
@@ -687,6 +700,7 @@ fn read_settings(
         &offered.0,
         cookies,
         sessions.inner(),
+        peer.0,
     )?;
     Ok(Json(settings.view()))
 }
@@ -700,6 +714,7 @@ fn write_settings(
     host: PageHost,
     origin: PageOrigin,
     offered: OfferedToken,
+    peer: PagePeer,
     cookies: &CookieJar<'_>,
     body: Json<SettingsFile>,
 ) -> Result<Json<SettingsView>, Failure> {
@@ -710,6 +725,7 @@ fn write_settings(
         &offered.0,
         cookies,
         sessions.inner(),
+        peer.0,
     )?;
     settings
         .inner()
@@ -727,6 +743,9 @@ mod tests {
     use super::*;
     use rocket::http::{ContentType, Header};
     use rocket::local::blocking::Client;
+
+    const LOCAL: ([u8; 4], u16) = ([127, 0, 0, 1], 40000);
+    const REMOTE: ([u8; 4], u16) = ([192, 168, 1, 50], 40000);
 
     fn temp_store(tag: &str) -> (SettingsStore, PathBuf) {
         let dir = env::temp_dir().join(format!("proview-settings-{}-{tag}", std::process::id()));
@@ -1025,9 +1044,20 @@ mod tests {
         }
 
         fn get(&self, host: &str, origin: Option<&str>, token: Option<&str>) -> (Status, String) {
+            self.get_from(host, origin, token, LOCAL)
+        }
+
+        fn get_from(
+            &self,
+            host: &str,
+            origin: Option<&str>,
+            token: Option<&str>,
+            peer: ([u8; 4], u16),
+        ) -> (Status, String) {
             let mut request = self
                 .client
                 .get("/api/settings")
+                .remote(peer.into())
                 .header(Header::new("Host", host.to_string()));
             if let Some(origin) = origin {
                 request = request.header(Header::new("Origin", origin.to_string()));
@@ -1044,6 +1074,7 @@ mod tests {
             let mut request = self
                 .client
                 .post("/api/settings")
+                .remote(LOCAL.into())
                 .header(Header::new("Host", host.to_string()))
                 .header(ContentType::JSON)
                 .body(r#"{"values":{"PROVIEW_DESKTOP_ALARM_INTERVAL":"90"}}"#);
@@ -1182,6 +1213,12 @@ mod tests {
         );
         let (status, body) = app.get("127.0.0.1:8787", Some("https://evil.example"), None);
         assert_eq!(status, Status::Forbidden, "{body}");
+        let (status, body) = app.get_from("127.0.0.1:8787", None, None, REMOTE);
+        assert_eq!(
+            status,
+            Status::Forbidden,
+            "a loopback Host forged by a client on the network is still refused: {body}"
+        );
         let (status, body) = app.get("127.0.0.1:8787", None, None);
         assert_eq!(
             status,

@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+
+#[cfg(test)]
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -124,21 +127,12 @@ fn target() -> SocketAddr {
     SocketAddr::new(apmode::CONFIG_TARGET.into(), apmode::CONFIG_PORT)
 }
 
+#[cfg(test)]
 fn dialable(address: SocketAddr) -> bool {
     match address.ip() {
         IpAddr::V4(ip) => ip.is_private() || ip.is_link_local() || ip.is_broadcast(),
         IpAddr::V6(_) => false,
     }
-}
-
-fn guarded(address: SocketAddr) -> Result<SocketAddr, Failure> {
-    if dialable(address) {
-        return Ok(address);
-    }
-    Err(fail(
-        Status::BadRequest,
-        format!("{address} is not a private or link-local address, and the access-point run only reaches the camera on its own network"),
-    ))
 }
 
 fn credentials(body: &ProvisionBody) -> Result<Credentials<'_>, Failure> {
@@ -182,8 +176,8 @@ fn requested_mode(body: &ProvisionBody) -> Result<&str, Failure> {
     }
 }
 
-fn dvrip_target() -> SocketAddr {
-    SocketAddr::new(apmode::AP_ADDRESS.into(), apmode::AP_DVRIP_PORT)
+fn dvrip_address() -> String {
+    format!("{}:{}", apmode::AP_ADDRESS, apmode::AP_DVRIP_PORT)
 }
 
 #[post("/apmode/plan", data = "<body>")]
@@ -221,8 +215,6 @@ async fn provision(
     signed_in(store, cookies)?;
     let creds = credentials(&body)?;
     let mode = requested_mode(&body)?;
-    let dvrip_address = guarded(dvrip_target())?;
-    let broadcast_address = guarded(target())?;
     let plan = creds
         .plan(apmode::CONFIG_TARGET)
         .map_err(|error| fail(Status::BadRequest, error.to_string()))?;
@@ -235,19 +227,14 @@ async fn provision(
         None
     } else {
         let password = body.device_password.clone().unwrap_or_default();
-        Some(apply_dvrip(dvrip_address, apmode::AP_USER, &password, &creds).await)
+        Some(apply_dvrip(&dvrip_address(), apmode::AP_USER, &password, &creds).await)
     };
 
     let broadcast = if mode == "dvrip" {
         skipped.push("broadcast".to_string());
         None
     } else {
-        Some(start_broadcast(
-            plan.payload,
-            plan.words,
-            broadcast_address,
-            body.rounds,
-        )?)
+        Some(start_broadcast(plan.payload, plan.words, body.rounds)?)
     };
 
     Ok(Json(ProvisionReport {
@@ -308,10 +295,9 @@ fn provision_stop(
 fn start_broadcast(
     payload: Vec<u8>,
     words: Vec<u16>,
-    address: SocketAddr,
     rounds: Option<u32>,
 ) -> Result<BroadcastStatus, Failure> {
-    let target = guarded(address)?;
+    let target = target();
     let mut guard = jobs()
         .lock()
         .map_err(|_| fail(Status::InternalServerError, "job lock"))?;
@@ -460,36 +446,14 @@ fn transmit(
 }
 
 async fn apply_dvrip(
-    address: SocketAddr,
-    user: &str,
-    password: &str,
-    creds: &Credentials<'_>,
-) -> DvripReport {
-    if !dialable(address) {
-        return DvripReport {
-            address: address.to_string(),
-            elapsed_ms: 0,
-            session: None,
-            ret: None,
-            read_back: false,
-            error: Some(format!(
-                "{address} is not a private or link-local address, so nothing was sent"
-            )),
-        };
-    }
-    apply_dvrip_at(address, user, password, creds).await
-}
-
-async fn apply_dvrip_at(
-    address: SocketAddr,
+    address: &str,
     user: &str,
     password: &str,
     creds: &Credentials<'_>,
 ) -> DvripReport {
     let started = Instant::now();
-    let address = address.to_string();
     let mut report = DvripReport {
-        address: address.clone(),
+        address: address.to_string(),
         elapsed_ms: 0,
         session: None,
         ret: None,
@@ -498,7 +462,7 @@ async fn apply_dvrip_at(
     };
     let request_timeout = Duration::from_millis(apmode::CONFIG_TIMEOUT_MS);
     let connect_timeout = Duration::from_millis(apmode::CONNECT_TIMEOUT_MS);
-    let mut connection = match deadline(connect_timeout, Connection::connect(&address)).await {
+    let mut connection = match deadline(connect_timeout, Connection::connect(address)).await {
         Err(_) => {
             report.error = Some(format!(
                 "connect timed out after {} ms",
@@ -690,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn a_public_address_is_refused_before_a_socket_opens() {
+    fn a_public_address_is_outside_the_network_the_route_may_reach() {
         for text in [
             "8.8.8.8:34567",
             "1.1.1.1:8001",
@@ -700,12 +664,6 @@ mod tests {
         ] {
             let address: SocketAddr = text.parse().expect("address");
             assert!(!dialable(address), "{address} is not on a private network");
-            let (status, body) = guarded(address).expect_err("a public address is refused");
-            assert_eq!(status, Status::BadRequest);
-            assert!(
-                body.into_inner().message.contains("private or link-local"),
-                "the refusal names the rule it applies"
-            );
         }
     }
 
@@ -720,11 +678,7 @@ mod tests {
             "255.255.255.255:8001",
         ] {
             let address: SocketAddr = text.parse().expect("address");
-            assert_eq!(
-                guarded(address).ok(),
-                Some(address),
-                "{address} is the camera's own network"
-            );
+            assert!(dialable(address), "{address} is the camera's own network");
         }
     }
 
@@ -749,26 +703,11 @@ mod tests {
             "{:?} is the discovery target and must stay within the allowlist",
             target()
         );
+        let camera: SocketAddr = dvrip_address().parse().expect("the access-point camera");
         assert!(
-            dialable(dvrip_target()),
-            "{:?} is the access-point camera and must stay within the allowlist",
-            dvrip_target()
+            dialable(camera),
+            "{camera:?} is the access-point camera and must stay within the allowlist"
         );
-    }
-
-    #[test]
-    fn a_broadcast_run_refuses_an_address_outside_the_allowlist() {
-        let plan = Credentials {
-            ssid: "CAM-LAB",
-            password: "rahasia123",
-        }
-        .plan(Ipv4Addr::BROADCAST)
-        .unwrap();
-        let public: SocketAddr = "8.8.8.8:8001".parse().expect("address");
-        let refused = start_broadcast(plan.payload, plan.words, public, Some(1));
-        let (status, body) = refused.err().expect("a public target is refused");
-        assert_eq!(status, Status::BadRequest);
-        assert!(body.into_inner().message.contains("8.8.8.8:8001"));
     }
 
     #[tokio::test]
@@ -788,7 +727,7 @@ mod tests {
             password: "x",
         };
         let started = Instant::now();
-        let report = apply_dvrip_at(address.parse().unwrap(), apmode::AP_USER, "", &creds).await;
+        let report = apply_dvrip(&address, apmode::AP_USER, "", &creds).await;
         let elapsed = started.elapsed();
         assert!(report.error.is_some());
         assert!(report.session.is_none());

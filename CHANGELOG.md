@@ -17,23 +17,28 @@ stability before 1.0.
   authority its shell bound (`127.0.0.1:<port>`) and only to a request holding a live
   sign-in or the per-run page token the shell writes into the page; anything else is
   `403` for another `Host` and `401` without a credential. The standalone server answers
-  only a loopback `Host` and refuses every other `Host`, and any request whose
-  `Origin` is not this server's own, with `403`. The sign-in screen keeps its settings
-  on this machine, so a wrong camera address can still be fixed before signing in.
-- AP-mode provisioning reaches the camera on its own network only (ZHA-4026). Both
-  sockets pass an allowlist before they open: private (`10/8`, `172.16/12`,
+  only a request that arrived from this machine (a loopback TCP peer, which a client on
+  the network cannot forge) on a loopback `Host`; every other peer, `Host`, or an
+  `Origin` that is not this server's own, is `403`. The sign-in screen keeps its
+  settings on this machine, so a wrong camera address can still be fixed before
+  signing in.
+- AP-mode provisioning is pinned to the camera's own network (ZHA-4026). The route has
+  read no network target from the body since PR #20; it dials two constants, and those
+  two are now held to an allowlist by a test — private (`10/8`, `172.16/12`,
   `192.168/16`), link-local or limited broadcast, never a public, loopback,
-  unspecified or multicast address, and the route answers `400` instead of sending.
-  The TCP login uses `admin` with only the password typed in the form, never
-  `PROVIEW_DEVICE_USER` / `PROVIEW_DEVICE_PASS`, which stay with the host the app was
-  configured for.
+  unspecified or multicast address — so a later edit that moves either constant out of
+  the camera's network fails the build. The TCP login uses `admin` with only the
+  password typed in the form, never `PROVIEW_DEVICE_USER` / `PROVIEW_DEVICE_PASS`,
+  which stay with the host the app was configured for.
 
 ### Changed
 
 - The tray says why the alarms are quiet (ZHA-4154). Its first line now reads
   `Alarm notifications on · session ends 21:14` while the shared session is live and
-  `Alarm notifications paused · session ended 21:14` once it has lapsed, in local
-  time, so the hour is visible without opening the window; off reads
+  `Alarm notifications paused · session ended 21:14` once the session has gone, in
+  local time, so the hour is visible without opening the window — and an explicit sign
+  out records the moment it happened rather than the hour the session would have
+  expired. Off reads
   `Alarm notifications off` and a run that never had a session says it is waiting for
   one. The pause notification still posts once per loss, and the session lifetime
   itself is unchanged: the store stays the only source of truth and no vendor token

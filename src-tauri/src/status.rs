@@ -1,15 +1,11 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
 
 pub fn clock_at(at: DateTime<Local>) -> String {
     at.format("%H:%M").to_string()
-}
-
-pub fn clock_in(remaining: Option<Duration>) -> Option<String> {
-    let remaining = remaining?;
-    let delta = chrono::Duration::from_std(remaining).ok()?;
-    Some(clock_at(Local::now() + delta))
 }
 
 pub fn label(notify_on: bool, live: Option<&str>, ended: Option<&str>) -> String {
@@ -20,6 +16,41 @@ pub fn label(notify_on: bool, live: Option<&str>, ended: Option<&str>) -> String
         (Some(at), _) => format!("Alarm notifications on · session ends {at}"),
         (None, Some(at)) => format!("Alarm notifications paused · session ended {at}"),
         (None, None) => "Alarm notifications on · waiting for a sign-in".to_string(),
+    }
+}
+
+#[derive(Default)]
+pub struct Tracker {
+    planned: Mutex<Option<DateTime<Local>>>,
+    ended: Mutex<Option<String>>,
+    live: AtomicBool,
+}
+
+impl Tracker {
+    pub fn text(
+        &self,
+        notify_on: bool,
+        remaining: Option<Duration>,
+        now: DateTime<Local>,
+    ) -> String {
+        let Some(remaining) = remaining else {
+            if self.live.swap(false, Ordering::Relaxed) {
+                let planned = self.planned.lock().ok().and_then(|planned| *planned);
+                let at = planned.map_or(now, |planned| planned.min(now));
+                if let Ok(mut ended) = self.ended.lock() {
+                    *ended = Some(clock_at(at));
+                }
+            }
+            let ended = self.ended.lock().ok().and_then(|ended| ended.clone());
+            return label(notify_on, None, ended.as_deref());
+        };
+        let planned = now + chrono::Duration::from_std(remaining).unwrap_or_default();
+        if let Ok(mut slot) = self.planned.lock() {
+            *slot = Some(planned);
+        }
+        self.live.store(true, Ordering::Relaxed);
+        let clock = clock_at(planned);
+        label(notify_on, Some(&clock), None)
     }
 }
 
@@ -80,10 +111,44 @@ mod tests {
     }
 
     #[test]
-    fn a_remaining_time_becomes_a_clock_label() {
-        let label = clock_in(Some(Duration::from_secs(600))).expect("a clock label");
-        assert_eq!(label.len(), 5, "{label}");
-        assert_eq!(label.as_bytes()[2], b':', "{label}");
-        assert_eq!(clock_in(None), None);
+    fn a_session_that_runs_to_its_planned_hour_ends_there() {
+        let tracker = Tracker::default();
+        assert_eq!(
+            tracker.text(true, Some(Duration::from_secs(600)), at(21, 0)),
+            "Alarm notifications on · session ends 21:10"
+        );
+        assert_eq!(
+            tracker.text(true, None, at(21, 10)),
+            "Alarm notifications paused · session ended 21:10"
+        );
+    }
+
+    #[test]
+    fn a_sign_out_ends_the_session_at_the_moment_it_happened() {
+        let tracker = Tracker::default();
+        assert_eq!(
+            tracker.text(true, Some(Duration::from_secs(3600)), at(20, 30)),
+            "Alarm notifications on · session ends 21:30"
+        );
+        assert_eq!(
+            tracker.text(true, None, at(20, 35)),
+            "Alarm notifications paused · session ended 20:35",
+            "an explicit sign-out ends the session now, not at the hour it would have expired"
+        );
+        assert_eq!(
+            tracker.text(true, None, at(22, 0)),
+            "Alarm notifications paused · session ended 20:35",
+            "the hour it ended stays put"
+        );
+    }
+
+    #[test]
+    fn a_switched_off_feature_keeps_reading_off_after_the_session_goes() {
+        let tracker = Tracker::default();
+        tracker.text(false, Some(Duration::from_secs(60)), at(20, 30));
+        assert_eq!(
+            tracker.text(false, None, at(20, 35)),
+            "Alarm notifications off"
+        );
     }
 }

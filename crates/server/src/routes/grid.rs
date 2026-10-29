@@ -116,6 +116,7 @@ mod tests {
     use proview_core::provider::Mode;
     use rocket::http::{ContentType, Header};
     use rocket::local::blocking::Client;
+    use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
 
     static SLOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -285,6 +286,7 @@ mod tests {
         assert_eq!(status, Status::Ok);
         let response = client
             .post("/api/settings")
+            .remote(SocketAddr::from(([127, 0, 0, 1], 40000)))
             .header(Header::new("Host", "127.0.0.1:8787"))
             .header(ContentType::JSON)
             .body(

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 
 use rocket::http::Status;
@@ -80,6 +81,17 @@ impl<'r> FromRequest<'r> for OfferedToken {
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
         let offered = request.headers().get_one(TOKEN_HEADER).unwrap_or_default();
         Outcome::Success(OfferedToken(offered.to_string()))
+    }
+}
+
+pub struct PagePeer(pub Option<SocketAddr>);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for PagePeer {
+    type Error = std::convert::Infallible;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        Outcome::Success(PagePeer(request.remote()))
     }
 }
 

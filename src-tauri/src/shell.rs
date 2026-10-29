@@ -15,8 +15,8 @@ pub struct DesktopShell {
     pub alarm: Mutex<Run>,
     pub state_path: Option<PathBuf>,
     tray_ready: AtomicBool,
-    status: Mutex<String>,
-    ended_at: Mutex<Option<String>>,
+    line: crate::status::Tracker,
+    pushed: Mutex<String>,
 }
 
 impl DesktopShell {
@@ -32,8 +32,8 @@ impl DesktopShell {
             alarm: Mutex::new(Run::new(now_seconds())),
             state_path,
             tray_ready: AtomicBool::new(false),
-            status: Mutex::new(String::new()),
-            ended_at: Mutex::new(None),
+            line: crate::status::Tracker::default(),
+            pushed: Mutex::new(String::new()),
         }
     }
 
@@ -64,19 +64,16 @@ impl DesktopShell {
     }
 
     pub fn tray_status(&self, notify_on: bool) -> String {
-        let live = crate::status::clock_in(self.sessions.latest_remaining());
-        if let Some(label) = live.as_ref() {
-            if let Ok(mut ended) = self.ended_at.lock() {
-                *ended = Some(label.clone());
-            }
-        }
-        let ended = self.ended_at.lock().ok().and_then(|ended| ended.clone());
-        crate::status::label(notify_on, live.as_deref(), ended.as_deref())
+        self.line.text(
+            notify_on,
+            self.sessions.latest_remaining(),
+            chrono::Local::now(),
+        )
     }
 
     pub fn refresh_status(&self, app: &tauri::AppHandle, notify_on: bool) {
         let text = self.tray_status(notify_on);
-        let Ok(mut known) = self.status.lock() else {
+        let Ok(mut known) = self.pushed.lock() else {
             return;
         };
         if *known == text {
@@ -130,7 +127,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tray_line_names_when_the_session_ends_and_keeps_that_hour_once_it_has() {
+    fn a_sign_out_moves_the_tray_line_to_the_hour_it_happened() {
         let (shell, dir) = shell("status");
         shell.sessions.put(
             "test".to_string(),
@@ -141,20 +138,18 @@ mod tests {
             std::time::Duration::from_secs(600),
         );
         let live = shell.tray_status(true);
-        let hour = live
-            .rsplit("session ends ")
-            .next()
-            .expect("the line names an hour")
-            .to_string();
-        assert_eq!(
-            live,
-            format!("Alarm notifications on · session ends {hour}")
+        assert!(
+            live.starts_with("Alarm notifications on · session ends "),
+            "{live}"
         );
+        let before = chrono::Local::now().format("%H:%M").to_string();
         shell.sessions.remove("test");
-        assert_eq!(
-            shell.tray_status(true),
-            format!("Alarm notifications paused · session ended {hour}"),
-            "the line keeps the hour the last session ended at"
+        let lapsed = shell.tray_status(true);
+        let after = chrono::Local::now().format("%H:%M").to_string();
+        assert!(
+            lapsed == format!("Alarm notifications paused · session ended {before}")
+                || lapsed == format!("Alarm notifications paused · session ended {after}"),
+            "a sign-out ends the session now, not at the hour it would have expired: {lapsed}"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
