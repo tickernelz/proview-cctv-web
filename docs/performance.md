@@ -578,6 +578,6 @@ production build (`grep -c 'Vue warn'` = 0 in both bundles), baseline origin/mai
 No new dependency and no new CSS: the encoder fields reuse `.field` instead of the
 legacy nested 200 px label grid, which made `#set-body` scroll sideways at 768 px
 once the forms loaded (650 px in 552 px); `e2e/tests/device-settings.spec.ts`
-checks the loaded page at 320-1920 px. e2e at this change: 223 passed, 1 skipped,
-3.8 min (CI run 40804721874, before the merge of 192f434); node web tests
-`device-settings` and `ui` 16/16.
+checks the loaded page at 320-1920 px. e2e at this change: 232 passed, 9 skipped,
+1 flaky (signin.spec.ts:26, passed on retry), 5.1 min (CI run 40807831475); node
+web tests `device-settings` and `ui` 16/16.
