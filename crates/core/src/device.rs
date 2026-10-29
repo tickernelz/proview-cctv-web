@@ -118,6 +118,12 @@ pub fn reported_talk_capability(
     ))
 }
 
+fn relay_reason(name: &str) -> String {
+    format!(
+        "{name} carries two-way audio over the vendor relay, the same access server the live stream uses"
+    )
+}
+
 pub fn configured_serial() -> String {
     std::env::var("PROVIEW_DEVICE_SERIAL")
         .map(|value| value.trim().to_string())
@@ -160,10 +166,7 @@ pub fn talk_route_with(
         if relay_ready {
             return TalkRoute {
                 ok: true,
-                why: format!(
-                    "{} carries two-way audio over the vendor relay, the same access server the live stream uses",
-                    named.unwrap_or_default()
-                ),
+                why: relay_reason(named.unwrap_or_default()),
             };
         }
         return blocked(
@@ -185,9 +188,7 @@ pub fn talk_route_with(
     }
     TalkRoute {
         ok: true,
-        why: format!(
-            "{name} carries two-way audio over the vendor relay, the same access server the live stream uses"
-        ),
+        why: relay_reason(name),
     }
 }
 
@@ -2079,6 +2080,30 @@ mod tests {
             evidence: "OtherFunction.SupportTwoWayVoiceTalk=true".to_string(),
         };
         assert!(reported_talk_capability(&capable).is_none());
+    }
+
+    #[test]
+    fn a_direct_address_without_a_password_falls_back_to_the_relay() {
+        let mut config = test_config(None, Some("192.168.0.100:34567"));
+        config.device_pass = "  ".to_string();
+        let route = talk_route_with(
+            &config,
+            Some("token"),
+            Some("serial-one"),
+            "serial-one",
+            true,
+        );
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("vendor relay"), "{}", route.why);
+        assert!(!route.why.contains("192.168.0.100"), "{}", route.why);
+        let row = talk_capability_with(
+            &config,
+            Some("token"),
+            Some("serial-one"),
+            "serial-one",
+            true,
+        );
+        assert_eq!(row.state, State::Supported);
     }
 
     #[test]

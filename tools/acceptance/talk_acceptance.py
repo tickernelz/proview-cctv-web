@@ -41,7 +41,7 @@ def main(argv):
     parser.add_argument("--seconds", type=float, default=3.0)
     parser.add_argument("--lan-guard", default="192.168.0.100:34567")
     parser.add_argument("--relay-lock", default="~/re/proview-cctv/relay.lock")
-    parser.add_argument("--out", default="talk-acceptance")
+    parser.add_argument("--out", default="~/re/proview-cctv/acceptance/talk")
     args = parser.parse_args(argv)
 
     out = Path(args.out).expanduser()

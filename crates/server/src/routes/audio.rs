@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
@@ -83,12 +84,11 @@ impl TalkFailure {
 }
 
 async fn relay_link(
-    cfg: &Config,
+    cloud: &CloudProvider,
     vendor: &VendorSession,
     device: &str,
 ) -> Result<TalkLink, TalkFailure> {
-    let provider = CloudProvider::new(cfg);
-    match provider.open_talk(vendor, device).await {
+    match cloud.open_talk(vendor, device).await {
         Ok(connection) => Ok(TalkLink::from_connection(connection)),
         Err(error) => Err(relay_failure(device, error)),
     }
@@ -148,6 +148,7 @@ async fn direct_link(address: &str, account: &TalkAccount) -> Result<TalkLink, S
 
 async fn open_link(
     cfg: &Config,
+    cloud: &CloudProvider,
     vendor: &VendorSession,
     device: Option<&str>,
     account: &TalkAccount,
@@ -177,7 +178,7 @@ async fn open_link(
         }
     }
     let relay_failure = match named {
-        Some(name) if !token.is_empty() => match relay_link(cfg, vendor, name).await {
+        Some(name) if !token.is_empty() => match relay_link(cloud, vendor, name).await {
             Ok(link) => return Ok((link, "relay")),
             Err(failure) => failure,
         },
@@ -208,30 +209,32 @@ async fn ws_talk(
     channel: Option<u8>,
     device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<ws::Channel<'static>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
     let config = cfg.inner().clone();
+    let provider = cloud.inner().clone();
 
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
             let account = TalkAccount::from_config(&config);
-            let (link, path) = match open_link(&config, &vendor, device.as_deref(), &account).await
-            {
-                Ok(pair) => pair,
-                Err(failure) => {
-                    let _ = stream
-                        .send(ws::Message::Text(json_error(
-                            failure.scope,
-                            &failure.message,
-                        )))
-                        .await;
-                    let _ = stream.send(ws::Message::Close(None)).await;
-                    return Ok(());
-                }
-            };
+            let (link, path) =
+                match open_link(&config, &provider, &vendor, device.as_deref(), &account).await {
+                    Ok(pair) => pair,
+                    Err(failure) => {
+                        let _ = stream
+                            .send(ws::Message::Text(json_error(
+                                failure.scope,
+                                &failure.message,
+                            )))
+                            .await;
+                        let _ = stream.send(ws::Message::Close(None)).await;
+                        return Ok(());
+                    }
+                };
             let mut talk = match TalkSession::open(link, channel).await {
                 Ok(talk) => talk,
                 Err(error) => {
@@ -391,7 +394,8 @@ mod tests {
             account: "tester".to_string(),
             token: token.map(str::to_string),
         };
-        match open_link(cfg, &vendor, device, account).await {
+        let cloud = CloudProvider::new(cfg);
+        match open_link(cfg, &cloud, &vendor, device, account).await {
             Ok(_) => panic!("a path was found"),
             Err(failure) => failure,
         }
@@ -399,6 +403,37 @@ mod tests {
 
     fn message(failure: TalkFailure) -> String {
         failure.message
+    }
+
+    #[test]
+    fn relay_failures_scope_a_configuration_mistake_as_path() {
+        let failure = relay_failure("ABC123", ProviderError::UnknownDevice("ABC123".into()));
+        assert_eq!(failure.scope, "path");
+        assert!(failure.message.contains("not on this account"));
+        let failure = relay_failure("ABC123", ProviderError::Misconfigured("no identity".into()));
+        assert_eq!(failure.scope, "path");
+        assert_eq!(failure.message, "no identity");
+        let failure = relay_failure(
+            "ABC123",
+            ProviderError::Upstream(
+                "the device list carries no rps id, so the relay cannot be asked".into(),
+            ),
+        );
+        assert_eq!(failure.scope, "path");
+        assert!(failure.message.contains("no relay id"));
+    }
+
+    #[test]
+    fn relay_failures_scope_a_live_tunnel_as_device() {
+        let failure = relay_failure(
+            "ABC123",
+            ProviderError::Upstream("relay handshake failed; retry: relay refused".into()),
+        );
+        assert_eq!(failure.scope, "device");
+        assert!(failure.message.contains("vendor relay"));
+        assert!(failure.message.contains("relay refused"));
+        let failure = relay_failure("ABC123", ProviderError::LoginRefused("ret 117".into()));
+        assert_eq!(failure.scope, "device");
     }
 
     #[tokio::test]
