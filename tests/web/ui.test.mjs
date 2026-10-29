@@ -175,7 +175,7 @@ test('Talk says why it cannot open when the camera is not reachable', async () =
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait(
-      "(() => { const note = document.getElementById('talk-note'); return Boolean(note) && /talk failed: (no path to the camera|PROVIEW_DEVICE_PASS is empty)/.test(note.textContent); })()",
+      "(() => { const note = document.getElementById('talk-note'); return Boolean(note) && /talk failed: (no path to the camera|the camera password is not set)/.test(note.textContent); })()",
       'the server reason to reach the page',
     );
     assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);

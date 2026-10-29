@@ -436,7 +436,7 @@ fn a_cloud_session_without_a_direct_address_reports_why_talk_is_unavailable() {
     let row = talk_row(&body(response));
     assert_eq!(row["state"], "blocked");
     let reason = row["evidence"].as_str().unwrap_or_default();
-    assert!(reason.contains("cloud token"), "{reason}");
+    assert!(reason.contains("no cloud session"), "{reason}");
     assert!(reason.contains("fixture-dev-0001"), "{reason}");
 }
 

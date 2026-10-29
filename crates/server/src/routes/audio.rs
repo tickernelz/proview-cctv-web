@@ -185,7 +185,7 @@ async fn ws_talk(
                 let _ = stream
                     .send(ws::Message::Text(json_error(
                         "path",
-                        "PROVIEW_DEVICE_PASS is empty, so the camera login would fail and the device locks the source IP after repeated attempts; set the camera password first",
+                        "the camera password is not set, so the talk login would fail and the device locks the source IP after repeated attempts; set it under Settings, Configuration, Local network",
                     )))
                     .await;
                 let _ = stream.send(ws::Message::Close(None)).await;
