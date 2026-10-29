@@ -84,6 +84,14 @@ stability before 1.0.
   updated 22:16" (timings moved to its tooltip), rows show the channel only on
   multi-channel cameras and count it from 1 like the caption, and a row
   without a picture shows an icon instead of an empty box.
+- The fisheye overlay and Talk are Vue-side modules now (ZHA-4213):
+  `FisheyeOverlay.vue` puts the WebGL2 dewarp canvas over the live video for
+  `?fisheye=equirect|ptz` (same shader, same `window.ProviewFisheye` and
+  `window.ProviewFisheyeLive` handles), and `live/talk.ts` carries the 8 kHz
+  AudioWorklet uplink unchanged. The overlay now takes its lens from the video
+  once the video has a size, so a 512 px wide stream no longer keeps a zero
+  radius. e2e specs check the shader against `/api/fisheye/map` and Talk
+  against a fake peer.
 
 ### Added
 
