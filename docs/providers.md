@@ -108,12 +108,16 @@ A-law audio. Consequences for the live path:
   never appear in argv.
 - RTSP `Content-Base` echoes the URL it was given; the client strips userinfo
   before logging and sends credentials only in `Authorization`.
-- The `AdminToken` a password login returns is kept per serial in
+- The device token a cloud login succeeds with is kept per serial in
   `device-tokens.json` (AES-256-GCM under `device-token.key`, both in the data
-  directory), so the next open can log in with the token instead of the password.
-  A camera that answers `Ret` 117 or 137 to that token login is marked refused for
-  the life of the process: no token is offered to it again, the `AdminToken` its
-  password login returns is not stored, and the open runs the password login on its
-  first tunnel instead of paying a second one. Any other non-100 answer drops the
-  token and tries the token path again on the next open, and a token answer of 100
-  clears the mark.
+  directory), so the next open offers it without asking the account again.
+- The cloud path logs in with the token the account issues
+  (`deviceToken.AdminToken`) and never with a device password. A camera that
+  answers `Ret` 117 or 137 to a token login is marked refused for the life of the
+  process, and every later open fails with `cloud login stage=token ret <code>`
+  before a token is offered. Any other non-100 answer drops the stored token and
+  reports what the device said — `Ret` 205 "ip locked" included — and a token
+  answer of 100 clears the mark. Camera credentials
+  (`PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`) belong to the local-network path:
+  playback, live and walk diagnosis never send them. Talk over the relay still
+  logs in with them until ZHA-4283 moves it to the account token.

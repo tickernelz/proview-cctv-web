@@ -9,6 +9,7 @@ pub mod live;
 pub mod media;
 pub mod model;
 pub mod onvif;
+pub mod process;
 pub mod provider;
 pub mod rtsp;
 pub mod session;

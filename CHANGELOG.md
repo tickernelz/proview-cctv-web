@@ -23,6 +23,13 @@ stability before 1.0.
   preset, moves it, and measures the shift on the busiest tiles of each lens
   crop by phase correlation against the noise floor between two frames taken
   before the move.
+- The control tunnel is a DVRIP-Web session, opened with the camera user and
+  password and only for the serial `PROVIEW_DEVICE_SERIAL` binds; live and
+  playback keep PR #101's token-only rule. Measured on the test camera: on a
+  media token session `Ptz`, `Uart`, `SystemFunction` and even
+  `OPPTZControl` answer "device sent no reply" within 150-270 ms, while the same
+  reads answer in 215-383 ms over the password session, so the token tunnel
+  cannot carry control.
 
 ### Changed
 
@@ -31,6 +38,21 @@ stability before 1.0.
   as its description, and the control panel asks the server for the capability
   report of the camera on screen (`device`), which is what lets a cloud camera
   report its motor at all.
+
+### Fixed
+
+- Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
+  every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
+  only its own window.
+- H.264 cameras no longer start ffmpeg for the copy remux. The live path
+  depacketizes the RTP stream itself (single NAL, STAP-A and FU-A) and muxes
+  fMP4 in process, so ffmpeg runs only when a stream must be transcoded, such as
+  HEVC turned into H.264 for a browser without HEVC support.
+- The hub now replays the fragments since the last keyframe instead of a single
+  fragment, and transcode fragments carry up to 10 access units with their real
+  keyframe flag. A viewer that joins late receives the whole current GOP, and one
+  that falls behind resumes on the next keyframe-start fragment with no gap.
+
 ## 0.3.7 — 2026-10-29
 
 ### Security

@@ -12,7 +12,6 @@ use rocket::routes;
 use rocket::State;
 
 const LISTED: &str = "serial-review-0001";
-const OTHER: &str = "serial-other-0002";
 const FOREIGN: &str = "serial-foreign-0003";
 const BARE: &str = "bare-review-0004";
 
@@ -235,7 +234,7 @@ fn set_env(serial: Option<&str>, user: Option<&str>, pass: Option<&str>) {
 }
 
 #[test]
-fn the_ticket_names_why_the_device_cannot_log_in() {
+fn the_ticket_names_the_missing_account_token() {
     let rows: Rows = Arc::new(Mutex::new(vec![LISTED.to_string(), BARE.to_string()]));
     let stop: Stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (base, cloud) = fake_cloud(rows, stop.clone());
@@ -246,10 +245,19 @@ fn the_ticket_names_why_the_device_cannot_log_in() {
     let (code, body) = ticket(address, BARE, &cookie);
     assert_eq!(
         code, 501,
-        "a row without a token and no configured serial is a configuration answer: {body}"
+        "a row without an account token is a configuration answer: {body}"
     );
-    assert!(body.contains("PROVIEW_DEVICE_SERIAL"), "{body}");
-    assert!(body.contains("misconfigured"), "{body}");
+    assert!(body.contains("stage=token"), "{body}");
+    assert!(body.contains("account carries no device token"), "{body}");
+
+    set_env(Some(BARE), Some("admin"), Some("camera-pass"));
+    let (code, body) = ticket(address, BARE, &cookie);
+    assert_eq!(
+        code, 501,
+        "camera credentials never unlock the cloud path: {body}"
+    );
+    assert!(body.contains("account carries no device token"), "{body}");
+    assert!(!body.contains("PROVIEW_DEVICE_USER"), "{body}");
 
     set_env(None, None, None);
     let (code, body) = ticket(address, LISTED, &cookie);
@@ -259,20 +267,11 @@ fn the_ticket_names_why_the_device_cannot_log_in() {
     );
     assert!(body.contains("/ws/live"), "{body}");
 
-    set_env(Some(OTHER), Some("admin"), Some("camera-pass"));
-    let (code, body) = ticket(address, BARE, &cookie);
-    assert_eq!(
-        code, 501,
-        "another serial is a configuration answer: {body}"
-    );
-    assert!(body.contains("belong to"), "{body}");
-
     set_env(Some(LISTED), Some("admin"), Some("camera-pass"));
     let (code, body) = ticket(address, LISTED, &cookie);
     assert_eq!(code, 200, "a configured serial issues a ticket: {body}");
     assert!(body.contains("/ws/live"), "{body}");
 
-    set_env(Some(LISTED), Some("admin"), Some("camera-pass"));
     let (code, body) = ticket(address, FOREIGN, &cookie);
     assert_eq!(
         code, 404,
