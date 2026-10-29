@@ -7,7 +7,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
 use crate::live::{Fragment, LiveHub, LiveMode, LivePacket, StreamKey, StreamMeta};
-use crate::media::{hevc, rtp};
+use crate::media::fmp4::{init_segment, media_segment, Sample, TrackConfig};
+use crate::media::{h264, hevc, rtp};
 use crate::rtsp::{RtspSession, Track};
 
 #[derive(Debug, Clone)]
@@ -163,9 +164,10 @@ impl Fmp4Splitter {
     }
 }
 
-pub fn ffmpeg_command(codec: &str) -> Command {
+pub fn ffmpeg_command() -> Command {
     let binary = std::env::var("PROVIEW_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
     let mut command = Command::new(binary);
+    crate::process::hide_console(command.as_std_mut());
     command.args([
         "-hide_banner",
         "-loglevel",
@@ -176,31 +178,25 @@ pub fn ffmpeg_command(codec: &str) -> Command {
         "32768",
         "-analyzeduration",
         "0",
+        "-f",
+        "hevc",
+        "-i",
+        "pipe:0",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-tune",
+        "zerolatency",
+        "-profile:v",
+        "baseline",
+        "-g",
+        "25",
+        "-keyint_min",
+        "25",
+        "-sc_threshold",
+        "0",
     ]);
-    if codec.eq_ignore_ascii_case("H264") {
-        command.args(["-f", "h264", "-i", "pipe:0", "-c:v", "copy"]);
-    } else {
-        command.args([
-            "-f",
-            "hevc",
-            "-i",
-            "pipe:0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "zerolatency",
-            "-profile:v",
-            "baseline",
-            "-g",
-            "25",
-            "-keyint_min",
-            "25",
-            "-sc_threshold",
-            "0",
-        ]);
-    }
     command.args([
         "-an",
         "-f",
@@ -301,7 +297,14 @@ async fn pump_inner(
         LiveMode::Passthrough => {
             pump_passthrough(hub, key, session, video, audio_channel, meta, stop).await
         }
-        LiveMode::Transcode => pump_transcode(hub, key, session, video, audio_channel, stop).await,
+        LiveMode::Transcode => match transcode_path(&video.codec) {
+            TranscodePath::NativeH264 => {
+                pump_h264(hub, key, session, video, audio_channel, meta, stop).await
+            }
+            TranscodePath::Ffmpeg => {
+                pump_transcode(hub, key, session, video, audio_channel, stop).await
+            }
+        },
     }
 }
 
@@ -317,8 +320,7 @@ async fn pump_transcode(
         .into_iter()
         .flatten()
         .collect();
-    let (mut stdin, reader, child) =
-        spawn_fmp4_publisher(hub, key, &video.codec, &parameter_sets).await?;
+    let (mut stdin, reader, child) = spawn_fmp4_publisher(hub, key, &parameter_sets).await?;
 
     let mut depacketizer = hevc::Depacketizer::new();
     let mut written = Vec::with_capacity(256 * 1024);
@@ -360,6 +362,169 @@ async fn pump_transcode(
         tracing::debug!(%text, "ffmpeg stderr");
     }
     result
+}
+
+fn h264_codec_string(sps: &[u8]) -> String {
+    let profile = sps.get(1).copied().unwrap_or(0x42);
+    let compatibility = sps.get(2).copied().unwrap_or(0x00);
+    let level = sps.get(3).copied().unwrap_or(0x1e);
+    format!("avc1.{profile:02X}{compatibility:02X}{level:02X}")
+}
+
+fn h264_init(sps: &[u8], pps: &[u8]) -> Option<(Fragment, String, u32, u32)> {
+    if pps.is_empty() || h264::nal_type(sps) != Some(7) || h264::nal_type(pps) != Some(8) {
+        return None;
+    }
+    let info = h264::parse_sps(sps).ok()?;
+    let track = TrackConfig {
+        width: info.width.max(16),
+        height: info.height.max(16),
+        sps: sps.to_vec(),
+        pps: pps.to_vec(),
+    };
+    Some((
+        Fragment::from(init_segment(&track)),
+        h264_codec_string(sps),
+        track.width,
+        track.height,
+    ))
+}
+
+#[derive(Default)]
+struct H264Mux {
+    sequence: u32,
+    base: u64,
+    started: bool,
+    previous_pts: Option<u64>,
+}
+
+impl H264Mux {
+    fn new() -> Self {
+        Self {
+            sequence: 1,
+            ..Self::default()
+        }
+    }
+
+    fn segment(&mut self, pts_us: u64, keyframe: bool, nals: &[Vec<u8>]) -> Fragment {
+        let duration = match self.previous_pts {
+            Some(previous) => {
+                let delta = pts_us.saturating_sub(previous);
+                ((delta * 90) / 1_000).clamp(1, 9_000) as u32
+            }
+            None => 3_600,
+        };
+        if !self.started {
+            self.base = (pts_us * 90) / 1_000;
+            self.started = true;
+        }
+        self.previous_pts = Some(pts_us);
+        let sample = Sample {
+            data: h264::avcc(nals),
+            duration,
+            keyframe,
+        };
+        let segment = media_segment(self.sequence, self.base, std::slice::from_ref(&sample));
+        self.base += u64::from(duration);
+        self.sequence = self.sequence.wrapping_add(1);
+        Fragment::from(segment)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn pump_h264(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+    mut session: RtspSession,
+    video: Track,
+    audio_channel: Option<u8>,
+    mut meta: StreamMeta,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), SourceError> {
+    let _sender = hub.publisher(key.clone());
+    let mut reader = h264::Reader::new();
+    let mut gate = Gate::default();
+    let mut sps = video.sps.clone();
+    let mut pps = video.pps.clone();
+    let mut ready = false;
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let mut mux = H264Mux::new();
+    let mut units = 0u64;
+    let result = loop {
+        if stop.load(Ordering::Relaxed) {
+            break Ok(());
+        }
+        let (channel, packet) =
+            match tokio::time::timeout(Duration::from_secs(10), session.next_packet()).await {
+                Ok(Ok(packet)) => packet,
+                Ok(Err(error)) => break Err(SourceError::Rtsp(error)),
+                Err(_) => continue,
+            };
+        if Some(channel) == audio_channel {
+            hub.note_audio(key);
+            continue;
+        }
+        let Some(parsed) = rtp::parse(&packet) else {
+            continue;
+        };
+        if parsed.payload_type != video.payload_type {
+            continue;
+        }
+        let Some(unit) = reader.push(&parsed) else {
+            continue;
+        };
+        for nal in &unit.nals {
+            match h264::nal_type(nal) {
+                Some(7) => sps = Some(nal.clone()),
+                Some(8) => pps = Some(nal.clone()),
+                _ => {}
+            }
+        }
+        if !ready {
+            if let (Some(sps_nal), Some(pps_nal)) = (sps.as_deref(), pps.as_deref()) {
+                if let Some((init, codec, width, height)) = h264_init(sps_nal, pps_nal) {
+                    meta.codec_string = Some(codec);
+                    meta.width = Some(width);
+                    meta.height = Some(height);
+                    hub.set_meta(key, meta.clone());
+                    hub.publish_packet(key, LivePacket::init(init));
+                    ready = true;
+                }
+            }
+        }
+        if !ready || !gate.accept(unit.keyframe) {
+            pending.clear();
+            hub.note_drop(key);
+            continue;
+        }
+        let mut nals = std::mem::take(&mut pending);
+        nals.extend(unit.nals);
+        if !nals.iter().any(|nal| h264::is_vcl(nal)) {
+            pending = nals;
+            continue;
+        }
+        units += 1;
+        hub.publish(key, mux.segment(unit.pts_us, unit.keyframe, &nals));
+    };
+
+    tracing::info!(units, dropped = reader.dropped(), "h264 source finished");
+    hub.publisher_done(key);
+    let _ = tokio::time::timeout(Duration::from_secs(2), session.teardown()).await;
+    result
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranscodePath {
+    NativeH264,
+    Ffmpeg,
+}
+
+fn transcode_path(codec: &str) -> TranscodePath {
+    if codec.eq_ignore_ascii_case("H264") || codec.eq_ignore_ascii_case("AVC") {
+        TranscodePath::NativeH264
+    } else {
+        TranscodePath::Ffmpeg
+    }
 }
 
 #[derive(Default)]
@@ -535,10 +700,9 @@ pub type Fmp4Publisher = (
 pub async fn spawn_fmp4_publisher(
     hub: &Arc<LiveHub>,
     key: &StreamKey,
-    codec: &str,
     parameter_sets: &[Vec<u8>],
 ) -> Result<Fmp4Publisher, SourceError> {
-    let mut child = ffmpeg_command(codec)
+    let mut child = ffmpeg_command()
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -638,9 +802,9 @@ mod tests {
     }
 
     #[test]
-    fn ffmpeg_args_transcode_hevc_and_copy_h264() {
-        let hevc = ffmpeg_command("H265");
-        let args: Vec<String> = hevc
+    fn ffmpeg_is_only_asked_to_transcode_hevc() {
+        let command = ffmpeg_command();
+        let args: Vec<String> = command
             .as_std()
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())
@@ -648,16 +812,16 @@ mod tests {
         assert!(args.windows(2).any(|pair| pair == ["-f", "hevc"]));
         assert!(args.contains(&"libx264".to_string()));
         assert!(args.contains(&"pipe:1".to_string()));
+        assert!(!args.contains(&"copy".to_string()));
+    }
 
-        let h264 = ffmpeg_command("H264");
-        let args: Vec<String> = h264
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().to_string())
-            .collect();
-        assert!(args.windows(2).any(|pair| pair == ["-f", "h264"]));
-        assert!(args.windows(2).any(|pair| pair == ["-c:v", "copy"]));
-        assert!(!args.contains(&"libx264".to_string()));
+    #[test]
+    fn h264_cameras_use_the_native_remux_not_ffmpeg() {
+        assert_eq!(transcode_path("H264"), TranscodePath::NativeH264);
+        assert_eq!(transcode_path("h264"), TranscodePath::NativeH264);
+        assert_eq!(transcode_path("AVC"), TranscodePath::NativeH264);
+        assert_eq!(transcode_path("H265"), TranscodePath::Ffmpeg);
+        assert_eq!(transcode_path("MJPEG"), TranscodePath::Ffmpeg);
     }
 
     #[test]
@@ -690,5 +854,61 @@ mod tests {
         assert!(!gate.accept(false));
         assert!(gate.accept(true));
         assert!(gate.accept(false));
+    }
+
+    #[test]
+    fn a_real_h264_clip_muxes_into_fmp4_the_browser_can_append() {
+        let clip = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/dual-lens/dual-lens-stacked-640x720.h264"
+        ))
+        .expect("fixture clip");
+        let units = crate::media::nal::split_annexb(&clip);
+        let sps = units
+            .iter()
+            .find(|unit| unit.h264_type() == Some(7))
+            .map(|unit| unit.data.to_vec())
+            .expect("SPS in the fixture");
+        let pps = units
+            .iter()
+            .find(|unit| unit.h264_type() == Some(8))
+            .map(|unit| unit.data.to_vec())
+            .expect("PPS in the fixture");
+        let (init, codec, width, height) = h264_init(&sps, &pps).expect("init segment");
+        assert_eq!(
+            codec,
+            format!("avc1.{:02X}{:02X}{:02X}", sps[1], sps[2], sps[3])
+        );
+        assert_eq!(&init[4..8], b"ftyp");
+        assert!(init.windows(4).any(|window| window == b"avc1"));
+        assert!(init.windows(4).any(|window| window == b"avcC"));
+        assert!(width >= 16 && height >= 16);
+
+        let mut mux = H264Mux::new();
+        let mut stream = init.to_vec();
+        let mut frames = 0u64;
+        let mut pending: Vec<Vec<u8>> = Vec::new();
+        for unit in &units {
+            match unit.h264_type() {
+                Some(1) | Some(5) => {
+                    pending.push(unit.data.to_vec());
+                    let keyframe = pending.iter().any(|nal| h264::is_keyframe(nal));
+                    stream.extend_from_slice(&mux.segment(frames * 40_000, keyframe, &pending));
+                    pending.clear();
+                    frames += 1;
+                }
+                Some(7) | Some(8) => {}
+                _ => pending.push(unit.data.to_vec()),
+            }
+        }
+        assert!(frames > 10, "{frames} frames");
+
+        let mut splitter = Fmp4Splitter::new();
+        let pieces = splitter.push(&stream);
+        match &pieces[0] {
+            Piece::Init(bytes) => assert_eq!(bytes.as_ref(), init.as_ref()),
+            Piece::Fragment(_) => panic!("the first piece must be the init segment"),
+        }
+        assert_eq!(pieces.len() as u64, frames + 1);
     }
 }

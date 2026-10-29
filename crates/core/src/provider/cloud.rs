@@ -680,7 +680,7 @@ impl CloudProvider {
             ));
         }
         let (mut stdin, reader, child) =
-            crate::source::spawn_fmp4_publisher(&hub, &key, "H265", &parameter_sets)
+            crate::source::spawn_fmp4_publisher(&hub, &key, &parameter_sets)
                 .await
                 .map_err(|error| ProviderError::Upstream(error.to_string()))?;
         let mut written = 0usize;

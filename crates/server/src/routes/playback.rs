@@ -374,6 +374,7 @@ fn demuxer(codec: Codec) -> &'static str {
 fn ffmpeg(codec: Codec, fps: Option<f64>) -> Command {
     let binary = std::env::var("PROVIEW_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
     let mut command = Command::new(binary);
+    proview_core::process::hide_console(command.as_std_mut());
     command.args([
         "-hide_banner",
         "-loglevel",

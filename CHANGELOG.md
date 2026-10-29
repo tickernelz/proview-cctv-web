@@ -5,6 +5,18 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Fixed
+
+- Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
+  every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
+  only its own window.
+- H.264 cameras no longer start ffmpeg for the copy remux. The live path
+  depacketizes the RTP stream itself (single NAL, STAP-A and FU-A) and muxes
+  fMP4 in process, so ffmpeg runs only when a stream must be transcoded, such as
+  HEVC turned into H.264 for a browser without HEVC support.
+
 ## 0.3.6 — 2026-10-29
 
 ### Changed
