@@ -11,7 +11,7 @@ type Peer = { pcm: Buffer[]; text: string[]; closed: boolean }
 
 async function openWithPeer(page: Page, first: object): Promise<Peer> {
   const peer: Peer = { pcm: [], text: [], closed: false }
-  await page.route(/\/api\/device\/controls$/, (route) =>
+  await page.route(/\/api\/device\/controls(\?.*)?$/, (route) =>
     route.fulfill({
       json: {
         onvif: false,
