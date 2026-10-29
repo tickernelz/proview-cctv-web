@@ -41,7 +41,9 @@ stability before 1.0.
   ended. The title reads "Cloud recordings".
 - Playback is a Vue screen (ZHA-4181): it opens on the camera on screen
   instead of the first in the list, focus moves to it and Escape returns to
-  Live (Escape did nothing, and number keys switched the camera behind it); the
+  Live (Escape did nothing, and number keys switched the camera behind it, also
+  after a click on the strip); `#playback` opens it again (the link fell back
+  to #live); the
   summary names the camera and day; a failed file query is a red alert instead
   of "No files in that range." with the reason in grey under the video;
   switching day or camera while a list loads no longer lets the older answer

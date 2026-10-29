@@ -3,21 +3,20 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
 import { sessionLost, state as page } from '../legacy/app.js'
+import PlaybackRows from './PlaybackRows.vue'
+import PlaybackStrip from './PlaybackStrip.vue'
+import { mb, secondsBetween, stamp, type Clip } from './playback-clips'
 import { addLauncher, live } from './store'
 
 type Device = { id: string; name?: string }
-type Clip = { name: string; begin: string; end: string; bytes: number }
 type Listing = { files?: Clip[]; truncated?: boolean; cap?: number; elapsed_ms?: number }
 type Query = { device: string; day: string }
 type Frame = { type?: string; message?: string; [key: string]: unknown }
 
 const MEDIA_TYPE = 'video/mp4; codecs="avc1.42E01E"'
-const HOURS = [0, 3, 6, 9, 12, 15, 18, 21]
 
-const open = ref(false)
-const screen = ref<HTMLElement>()
+const open = computed(() => live.screen === 'playback')
 const title = ref<HTMLElement>()
-const timeline = ref<HTMLElement>()
 const video = ref<HTMLVideoElement>()
 const devices = ref<Device[]>([])
 const query = reactive<Query>({ device: '', day: today() })
@@ -31,7 +30,6 @@ const list = reactive({
 const chosen = ref<Clip | null>(null)
 const scrub = reactive({ value: 0, max: 0 })
 const status = reactive({ text: '', bad: false })
-const hover = ref('')
 
 let ticket = 0
 const stream = {
@@ -67,82 +65,11 @@ function today() {
   return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0')
 }
 
-function mb(bytes: number) {
-  return (bytes / 1048576).toFixed(2) + ' MB'
-}
-
 function clock(seconds: number) {
   const whole = Math.max(0, Math.round(seconds))
   return String(Math.floor(whole / 60)).padStart(2, '0') + ':' + String(whole % 60).padStart(2, '0')
 }
 
-function stamp(text: string) {
-  const value = Date.parse(String(text).replace(' ', 'T'))
-  return Number.isFinite(value) ? value : null
-}
-
-function secondsBetween(begin: string, end: string) {
-  const a = stamp(begin)
-  const b = stamp(end)
-  if (a === null || b === null || b <= a) return 0
-  return Math.round((b - a) / 1000)
-}
-
-const modeOf = (file: Clip) => (/\[M\]/.test(file.name) ? 'motion' : 'continuous')
-const span = (file: Clip) => file.begin.slice(11) + ' – ' + file.end.slice(11)
-
-const segments = computed(() => {
-  const base = stamp(list.asked.day + ' 00:00:00')
-  if (base === null) return []
-  const drawn: { key: string; left: number; width: number; mode: string; current: boolean }[] = []
-  for (const file of list.files) {
-    const from = stamp(file.begin)
-    const to = stamp(file.end)
-    if (from === null || to === null) continue
-    const left = ((from - base) / 86400000) * 100
-    if (left < 0 || left > 100) continue
-    const width = Math.max(((to - from) / 86400000) * 100, 0.06)
-    drawn.push({ key: file.name + file.begin, left, width: Math.min(width, 100 - left), mode: modeOf(file), current: chosen.value === file })
-  }
-  return drawn
-})
-
-function fileAt(clientX: number) {
-  const track = timeline.value
-  if (!track || !list.files.length) return null
-  const box = track.getBoundingClientRect()
-  if (!box.width) return null
-  const base = stamp(list.asked.day + ' 00:00:00')
-  if (base === null) return null
-  const ratio = Math.min(Math.max((clientX - box.left) / box.width, 0), 1)
-  const at = base + ratio * 86400000
-  let next: Clip | null = null
-  let prior: Clip | null = null
-  for (const file of list.files) {
-    const from = stamp(file.begin)
-    const to = stamp(file.end)
-    if (from === null || to === null) continue
-    if (at >= from && at <= to) return { file, from, at }
-    if (from > at && (next === null || from < (stamp(next.begin) as number))) next = file
-    if (to < at && (prior === null || to > (stamp(prior.end) as number))) prior = file
-  }
-  const near = next || prior
-  if (!near) return null
-  const from = stamp(near.begin)
-  return from === null ? null : { file: near, from, at }
-}
-
-function onTrackClick(event: MouseEvent) {
-  const hit = fileAt(event.clientX)
-  if (!hit) return
-  const duration = secondsBetween(hit.file.begin, hit.file.end)
-  play(hit.file, Math.min(Math.max(0, Math.round((hit.at - hit.from) / 1000)), Math.max(duration - 1, 0)))
-}
-
-function onTrackMove(event: MouseEvent) {
-  const hit = fileAt(event.clientX)
-  hover.value = hit ? span(hit.file) + ' · ' + mb(hit.file.bytes) + ' · ' + modeOf(hit.file) : ''
-}
 
 function say(text: string, bad = false) {
   status.text = text ? text.charAt(0).toUpperCase() + text.slice(1) : ''
@@ -338,23 +265,18 @@ function downloadChosen() {
   say('the device is streaming ' + mb(file.bytes) + '; the browser saves the clip when it lands')
 }
 
-function syncDevices() {
-  devices.value = (page.devices || []) as Device[]
-  if (devices.value.some((device) => device.id === query.device)) return false
-  const wanted = devices.value.find((device) => device.id === page.selectedId) || devices.value[0]
-  query.device = wanted ? wanted.id : ''
-  return true
+function show() {
+  live.screen = 'playback'
 }
 
-async function show() {
-  if (open.value) return
+async function opened() {
   live.sheet = ''
-  open.value = true
-  syncDevices()
-  if (devices.value.length && page.selectedId && devices.value.some((device) => device.id === page.selectedId)) query.device = page.selectedId
+  devices.value = (page.devices || []) as Device[]
+  const wanted = devices.value.find((device) => device.id === page.selectedId) || devices.value[0]
+  query.device = wanted ? wanted.id : ''
   await nextTick()
   title.value?.focus()
-  if (!devices.value.length) return
+  if (!query.device) return
   if (list.phase === 'idle' || list.asked.device !== query.device || list.asked.day !== query.day) loadFiles()
 }
 
@@ -363,23 +285,25 @@ function close(returnFocus = true) {
   stop()
   ticket += 1
   if (list.phase === 'loading') list.phase = 'idle'
-  open.value = false
+  live.screen = ''
+  if (location.hash === '#playback') history.replaceState(null, '', '#live')
   if (returnFocus) document.getElementById('pb-open')?.focus()
 }
 
 function onKey(event: KeyboardEvent) {
-  if (event.key === 'Escape' && !event.defaultPrevented) {
-    event.preventDefault()
-    close()
-  }
-  event.stopPropagation()
+  if (!open.value || event.key !== 'Escape' || event.defaultPrevented) return
+  event.preventDefault()
+  close()
 }
 
 watch(() => [query.device, query.day], () => {
   if (open.value) loadFiles()
 })
 
-watch(open, (shown) => (launcher.pressed = shown))
+watch(open, (shown) => {
+  launcher.pressed = shown
+  if (shown) opened()
+})
 
 onMounted(() => {
   const screens = new MutationObserver(() => {
@@ -394,16 +318,12 @@ onMounted(() => {
   })
   const signin = document.getElementById('signin')
   if (signin) screens.observe(signin, { attributes: true, attributeFilter: ['hidden'] })
-  const route = () => {
-    if ((location.hash || '').replace(/^#/, '') === 'playback') show()
-  }
-  window.addEventListener('hashchange', route)
-  route()
+  document.addEventListener('keydown', onKey)
 })
 </script>
 
 <template>
-  <div id="pb" ref="screen" class="pb-screen" data-testid="playback" role="dialog" aria-labelledby="pb-title" :hidden="!open" @keydown="onKey">
+  <div id="pb" class="pb-screen" data-testid="playback" role="dialog" aria-labelledby="pb-title" :hidden="!open">
     <header class="topbar">
       <button class="ctl back" type="button" data-testid="pb-back" @click="close()"><Icon name="arrow-left" small /><span>Live</span></button>
       <h1 id="pb-title" ref="title" class="screen-title" tabindex="-1">Playback</h1>
@@ -424,48 +344,8 @@ onMounted(() => {
       <p v-if="!devices.length && open" class="pb-summary" data-testid="pb-empty-account">No cameras on this account yet.</p>
       <p v-if="list.phase === 'error'" class="err pb-err" role="alert" data-testid="pb-error"><Icon name="warning" small /><span>{{ list.error }}</span></p>
       <p id="pb-summary" class="pb-summary" data-testid="pb-summary" role="status">{{ summary }}</p>
-      <div class="pb-strip">
-        <div
-          id="pb-timeline"
-          ref="timeline"
-          class="pb-timeline"
-          role="group"
-          aria-label="Recordings across the day; click to play from that time"
-          :title="hover"
-          :aria-busy="list.phase === 'loading'"
-          @click="onTrackClick"
-          @mousemove="onTrackMove"
-          @mouseleave="hover = ''"
-        >
-          <span v-for="hour in HOURS" :key="'t' + hour" class="pb-tick" :style="{ left: (hour * 100) / 24 + '%' }" aria-hidden="true" />
-          <span
-            v-for="segment in segments"
-            :key="segment.key"
-            class="pb-seg"
-            :data-mode="segment.mode"
-            :data-current="segment.current || null"
-            :style="{ left: segment.left + '%', width: segment.width + '%' }"
-            aria-hidden="true"
-          />
-        </div>
-        <div class="pb-hours" aria-hidden="true">
-          <span v-for="hour in HOURS" :key="'h' + hour" :style="{ left: (hour * 100) / 24 + '%' }">{{ String(hour).padStart(2, '0') }}:00</span>
-        </div>
-        <p class="pb-legend"><span class="pb-key" data-mode="continuous" />Continuous<span class="pb-key" data-mode="motion" />Motion</p>
-      </div>
-      <div id="pb-files" class="pb-list" data-testid="pb-files">
-        <button
-          v-for="file in list.files"
-          :key="file.name + file.begin"
-          class="pb-row"
-          type="button"
-          :data-mode="modeOf(file)"
-          :aria-pressed="chosen === file"
-          @click="play(file, 0)"
-        >
-          <span class="pb-when">{{ span(file) }}</span><span class="pb-size">{{ mb(file.bytes) }}<template v-if="modeOf(file) === 'motion'"> · motion</template></span>
-        </button>
-      </div>
+      <PlaybackStrip :files="list.files" :day="list.asked.day" :current="chosen" :busy="list.phase === 'loading'" @pick="play" />
+      <PlaybackRows :files="list.files" :current="chosen" @play="(file) => play(file, 0)" />
       <div class="pb-stage">
         <video id="pb-video" ref="video" playsinline muted controls />
         <p id="pb-playing" class="pb-playing" data-testid="pb-playing">{{ chosen ? chosen.begin + ' → ' + chosen.end : 'Pick a recording from the list or the strip.' }}</p>

@@ -481,19 +481,40 @@ e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 
 ### Playback in Vue (measured 2026-10-29, ZHA-4181)
 
-`src/live/PlaybackScreen.vue` replaces `legacy/playback.js`. Same method,
-baseline origin/main e299f4d:
+`src/live/PlaybackScreen.vue` replaces `legacy/playback.js`; the day strip and
+the file rows are child components (`PlaybackStrip.vue`, `PlaybackRows.vue`),
+so the start slider and the strip's hover title do not re-render them. Same
+method, baseline origin/main e299f4d:
 
 | File | main e299f4d | Playback in Vue | Delta |
 |---|---:|---:|---:|
-| JS | 110,859 B | 111,354 B | +495 B |
-| CSS | 7,494 B | 7,703 B | +209 B |
+| JS | 110,859 B | 111,609 B | +750 B |
+| CSS | 7,494 B | 7,696 B | +202 B |
+
+Per-event cost on a 557-file day (the 2026-10-24 pattern), 1440x900, event
+handler plus the Vue flush, two rounds per run, in the Playwright image against
+the fixture server (probe not committed):
+
+| per event | main e299f4d | first Vue port f5926b4 | this change |
+|---|---:|---:|---:|
+| mousemove on the strip, Chromium | 0.32-0.38 ms | 3.3-3.8 ms | 0.37-0.48 ms |
+| mousemove on the strip, WebKit | 0.33-0.40 ms | 3.6 ms | 0.34-0.47 ms |
+| slider input, Chromium | 0.005-0.008 ms | 2.7-2.8 ms | 0.04-0.08 ms |
+| slider input, WebKit | < 0.01 ms | 3.2-3.5 ms | 0.06-0.11 ms |
+| row click (starts a clip), Chromium | 0.23-0.25 ms | 4.1-4.9 ms | 0.58-0.93 ms |
+| row click (starts a clip), WebKit | 0.05-0.08 ms | 3.8-4.7 ms | 0.35-0.83 ms |
+
+The first port re-rendered all 557 rows and segments on every hover and slider
+step, because the root template read the hover title and the slider value. The
+hover title is now written to the strip element, and rows and segments are
+memoised on whether they hold the playing clip. A row click still costs more
+than the old DOM code (two rows and two segments are patched and the
+MediaSource is rebuilt), and stays well under one frame. The slider is a Vue
+binding where the old code wrote nothing per step; it stays under 0.11 ms.
 
 Opening Playback no longer sends its own `/api/devices` (one vendor status
-query per camera in cloud mode); it reads the list the app loaded. The 557-file
-day in `tests/web/ui.test.mjs` still draws every row and segment. e2e at this
-change: 209 passed, 1 skipped, 2.7 min locally on a busy box; node web tests
-46/46.
+query per camera in cloud mode); it reads the list the app loaded. e2e at this
+change: 212 passed, 1 skipped, 2.8 min locally; node web tests 46/46.
 
 ### Devices sheet in Vue (measured 2026-10-29, ZHA-4181)
 

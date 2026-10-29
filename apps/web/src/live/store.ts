@@ -29,6 +29,7 @@ export const live = reactive({
   } as Record<string, Gate>,
   padOpen: false,
   sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
+  screen: '' as '' | 'playback',
   talk: { on: false, level: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',

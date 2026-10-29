@@ -50,6 +50,47 @@ test('Playback opens on the camera on screen, keeps keys to itself, and Escape r
   await expect(launcher).toBeFocused()
 })
 
+test('after a click on the strip or the summary, keys still stay out of Live and Escape closes Playback', async ({ page }) => {
+  await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
+  await signIn(page, 'many')
+  await playing(page)
+  await expect(page.getByTestId('camera-name')).toHaveText('Gate camera')
+  const screen = await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  await page.getByTestId('pb-summary').click()
+  await page.keyboard.press('3')
+  await page.locator('#pb-timeline').click({ position: { x: 4, y: 16 } })
+  await page.keyboard.press('5')
+  await expect(page.getByTestId('pb-playing')).toHaveText('2026-10-27 01:10:00 → 2026-10-27 01:15:00')
+  await expect(page.getByTestId('camera-name')).toHaveText('Gate camera')
+  await page.keyboard.press('Escape')
+  await expect(screen).toBeHidden()
+  await expect(page.getByTestId('pb-open')).toBeFocused()
+  await page.keyboard.press('3')
+  await expect(page.getByTestId('camera-name')).toHaveText('Garage')
+})
+
+test('#playback opens Playback after sign-in and leaving it goes back to #live', async ({ page }) => {
+  const asked: string[] = []
+  await page.route(/\/api\/playback\/files/, (route) => {
+    asked.push(deviceOf(route.request().url()) || '')
+    return route.fulfill({ json: BODY })
+  })
+  const base = await signIn(page, 'one')
+  await playing(page)
+  await page.goto(base + '/#playback')
+  const screen = page.getByTestId('playback')
+  await expect(screen).toBeVisible()
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  expect(asked).toEqual(['gate'])
+  await page.getByTestId('pb-back').click()
+  await expect(screen).toBeHidden()
+  await expect(page).toHaveURL(/#live$/)
+  await page.evaluate(() => (location.hash = 'playback'))
+  await expect(screen).toBeVisible()
+})
+
 test('the day lists its recordings with camera and day, and a chosen clip is marked in the list and the strip', async ({ page }) => {
   await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
   await signIn(page, 'one')

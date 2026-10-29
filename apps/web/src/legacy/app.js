@@ -403,6 +403,10 @@ function route(hash, focus) {
   if (state.screen !== 'watch') {
     showScreen('watch');
   }
+  if (raw === 'playback') {
+    live.screen = 'playback';
+    return;
+  }
   setView(raw === 'grid' && state.cameras.length > 1 ? 'grid' : 'live');
 }
 
@@ -2356,7 +2360,7 @@ function onWatchKey(event) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented || menuOpen()) {
+  if (event.defaultPrevented || menuOpen() || live.screen) {
     return;
   }
   if (state.screen === 'watch') {
