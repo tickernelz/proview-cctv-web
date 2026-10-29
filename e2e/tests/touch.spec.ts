@@ -49,6 +49,7 @@ for (const [name, open] of Object.entries(SCREENS)) {
       const root = await page.evaluate(() => [document.scrollingElement!.scrollWidth, document.scrollingElement!.clientWidth])
       expect(root[0]).toBeLessThanOrEqual(root[1])
       await page.evaluate(() => document.fonts.ready.then(() => true))
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
       await expect(page).toHaveScreenshot(`${name}-${info.project.name}-${theme}.png`, {
         mask,
       })
