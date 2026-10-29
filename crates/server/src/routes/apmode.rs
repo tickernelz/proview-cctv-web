@@ -1,4 +1,7 @@
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+
+#[cfg(test)]
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -122,6 +125,14 @@ fn jobs() -> &'static Mutex<Option<Job>> {
 
 fn target() -> SocketAddr {
     SocketAddr::new(apmode::CONFIG_TARGET.into(), apmode::CONFIG_PORT)
+}
+
+#[cfg(test)]
+fn dialable(address: SocketAddr) -> bool {
+    match address.ip() {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_link_local() || ip.is_broadcast(),
+        IpAddr::V6(_) => false,
+    }
 }
 
 fn credentials(body: &ProvisionBody) -> Result<Credentials<'_>, Failure> {
@@ -286,6 +297,7 @@ fn start_broadcast(
     words: Vec<u16>,
     rounds: Option<u32>,
 ) -> Result<BroadcastStatus, Failure> {
+    let target = target();
     let mut guard = jobs()
         .lock()
         .map_err(|_| fail(Status::InternalServerError, "job lock"))?;
@@ -306,7 +318,7 @@ fn start_broadcast(
     let status = progress
         .lock()
         .map_err(|_| fail(Status::InternalServerError, "progress lock"))?
-        .status(target());
+        .status(target);
     let thread_stop = Arc::clone(&stop);
     let thread_progress = Arc::clone(&progress);
     let lengths: Vec<usize> = words.iter().map(|word| usize::from(*word)).collect();
@@ -317,7 +329,7 @@ fn start_broadcast(
             let outcome = transmit(
                 &payload,
                 &lengths,
-                target(),
+                target,
                 timing,
                 rounds,
                 &thread_stop,
@@ -639,6 +651,63 @@ mod tests {
         let progress = state.lock().unwrap();
         assert_eq!(progress.rounds, 0);
         assert_eq!(progress.datagrams, 0);
+    }
+
+    #[test]
+    fn a_public_address_is_outside_the_network_the_route_may_reach() {
+        for text in [
+            "8.8.8.8:34567",
+            "1.1.1.1:8001",
+            "203.0.113.9:34567",
+            "[2606:4700:4700::1111]:34567",
+            "[2001:db8::1]:8001",
+        ] {
+            let address: SocketAddr = text.parse().expect("address");
+            assert!(!dialable(address), "{address} is not on a private network");
+        }
+    }
+
+    #[test]
+    fn private_link_local_and_broadcast_addresses_stay_dialable() {
+        for text in [
+            "192.168.10.1:34567",
+            "192.168.0.200:8001",
+            "10.4.5.6:34567",
+            "172.16.4.4:8001",
+            "169.254.10.9:34567",
+            "255.255.255.255:8001",
+        ] {
+            let address: SocketAddr = text.parse().expect("address");
+            assert!(dialable(address), "{address} is the camera's own network");
+        }
+    }
+
+    #[test]
+    fn loopback_and_unnumbered_addresses_are_not_targets() {
+        for text in [
+            "127.0.0.1:34567",
+            "127.9.8.7:8001",
+            "0.0.0.0:34567",
+            "224.0.0.1:8001",
+            "[::1]:34567",
+        ] {
+            let address: SocketAddr = text.parse().expect("address");
+            assert!(!dialable(address), "{address} is not a camera network");
+        }
+    }
+
+    #[test]
+    fn the_targets_the_module_uses_stay_inside_the_network_it_may_reach() {
+        assert!(
+            dialable(target()),
+            "{:?} is the discovery target and must stay within the allowlist",
+            target()
+        );
+        let camera: SocketAddr = dvrip_address().parse().expect("the access-point camera");
+        assert!(
+            dialable(camera),
+            "{camera:?} is the access-point camera and must stay within the allowlist"
+        );
     }
 
     #[tokio::test]
