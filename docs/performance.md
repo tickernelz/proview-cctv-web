@@ -531,3 +531,27 @@ Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
 budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.
+### Fisheye overlay and Talk in Vue (measured 2026-10-29, ZHA-4213)
+
+`src/live/FisheyeOverlay.vue` + `src/live/fisheye.ts` replace `legacy/fisheye.js`,
+and `src/live/talk.ts` replaces `legacy/talk.js`. Same method, baseline origin/main
+4bdbd7e:
+
+| File | main 4bdbd7e | Fisheye + Talk in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,619 B | 111,519 B | -100 B |
+| CSS | 7,701 B | 7,738 B | +37 B |
+
+The shader source is byte-identical (2,572 characters). Per frame the overlay no
+longer allocates a 65-float array or looks up the attribute location; upload plus
+draw plus `gl.finish()` of the live 640x720 video into a 960x540 equirect canvas in
+the e2e image (SwiftShader), 5 rounds of 200 frames, legacy and Vue alternated twice
+on a box at load 18 on 16 cores: legacy 3.24 / 3.66 ms median, Vue 3.98 / 3.55 ms,
+so the difference is inside the noise. Against `/api/fisheye/map` on the 512x512
+lens, every shader pixel agrees on coverage (8,100 of 8,100 equirect 180x90,
+14,399 of 14,399 ptz 160x90) with a worst source error of 1.58 px and 2.00 px, the
+8-bit read-back quantisation; legacy/fisheye.js gives the same two numbers, and a
+mutant that shifts the bearing by 3.6 deg fails at 15.9 px. The live overlay paints
+50.07 % of the canvas in equirect and 100 % in ptz. Talk against a fake `/ws/talk`
+peer: 49 chunks of 640 B in about 2 s (legacy/talk.js: 48), stop message and
+closed socket the same.
