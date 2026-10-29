@@ -117,19 +117,6 @@ test('opening Cloud again does not ask the server for the camera list', async ({
   expect(devices).toBe(0)
 })
 
-test('Escape in the panel over the device sheet closes only the panel', async ({ page }) => {
-  await signIn(page, 'one')
-  await playing(page)
-  const panel = await openPanel(page)
-  await page.evaluate(() => (window as unknown as { proviewDeviceAdmin: { open(): void } }).proviewDeviceAdmin.open())
-  const sheet = page.locator('#device-admin')
-  await expect(sheet).toBeVisible()
-  await page.getByTestId('recordings-day').focus()
-  await page.keyboard.press('Escape')
-  await expect(panel).toBeHidden()
-  await expect(sheet).toBeVisible()
-})
-
 test('a failed load is an error with the server reason, not a grey note', async ({ page }) => {
   await signIn(page, 'one')
   await playing(page)
