@@ -39,7 +39,11 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_hidden_child_reports_no_console_window() {
-        fn console_width(hidden: bool) -> Option<Option<i32>> {
+        use std::os::windows::process::CommandExt;
+
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+        fn console_width(flags: u32) -> Option<Option<i32>> {
             let mut command = Command::new("powershell");
             command.args([
                 "-NoProfile",
@@ -49,10 +53,8 @@ mod tests {
             ]);
             command
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null());
-            if hidden {
-                hide_console(&mut command);
-            }
+                .stderr(std::process::Stdio::null())
+                .creation_flags(flags);
             let output = command.output().ok()?;
             if !output.status.success() {
                 return Some(None);
@@ -61,16 +63,15 @@ mod tests {
             Some(text.parse::<i32>().ok())
         }
 
-        match console_width(false) {
-            Some(Some(width)) => {
-                assert!(width > 0);
-                assert_eq!(
-                    console_width(true),
-                    Some(None),
-                    "a child started with CREATE_NO_WINDOW must not own a console"
-                );
-            }
-            _ => assert_eq!(CREATE_NO_WINDOW, 0x0800_0000),
-        }
+        let control = console_width(CREATE_NEW_CONSOLE).expect("the control child must start");
+        assert!(
+            matches!(control, Some(width) if width > 0),
+            "a child started with CREATE_NEW_CONSOLE must own a console: {control:?}"
+        );
+        assert_eq!(
+            console_width(CREATE_NO_WINDOW),
+            Some(None),
+            "a child started with CREATE_NO_WINDOW must not own a console"
+        );
     }
 }

@@ -394,9 +394,11 @@ fn h264_init(sps: &[u8], pps: &[u8]) -> Option<(Fragment, String, u32, u32)> {
 struct H264Mux {
     sequence: u32,
     base: u64,
-    started: bool,
     previous_pts: Option<u64>,
+    samples: Vec<Sample>,
 }
+
+const FRAGMENT_FRAMES: usize = 10;
 
 impl H264Mux {
     fn new() -> Self {
@@ -406,28 +408,48 @@ impl H264Mux {
         }
     }
 
-    fn segment(&mut self, pts_us: u64, keyframe: bool, nals: &[Vec<u8>]) -> Fragment {
+    fn push(&mut self, pts_us: u64, keyframe: bool, nals: &[Vec<u8>]) -> Option<(Fragment, bool)> {
+        let full = self.samples.len() >= FRAGMENT_FRAMES;
+        let flushed = if !self.samples.is_empty() && (keyframe || full) {
+            self.flush()
+        } else {
+            None
+        };
         let duration = match self.previous_pts {
             Some(previous) => {
                 let delta = pts_us.saturating_sub(previous);
-                ((delta * 90) / 1_000).clamp(1, 9_000) as u32
+                ((delta * 90) / 1_000).clamp(1, 90_000) as u32
             }
             None => 3_600,
         };
-        if !self.started {
+        if self.previous_pts.is_none() {
             self.base = (pts_us * 90) / 1_000;
-            self.started = true;
         }
         self.previous_pts = Some(pts_us);
-        let sample = Sample {
+        self.samples.push(Sample {
             data: h264::avcc(nals),
             duration,
             keyframe,
-        };
-        let segment = media_segment(self.sequence, self.base, std::slice::from_ref(&sample));
-        self.base += u64::from(duration);
+        });
+        flushed
+    }
+
+    fn flush(&mut self) -> Option<(Fragment, bool)> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let samples = std::mem::take(&mut self.samples);
+        let keyframe = samples
+            .first()
+            .map(|sample| sample.keyframe)
+            .unwrap_or(false);
+        let segment = media_segment(self.sequence, self.base, &samples);
+        self.base += samples
+            .iter()
+            .map(|sample| u64::from(sample.duration))
+            .sum::<u64>();
         self.sequence = self.sequence.wrapping_add(1);
-        Fragment::from(segment)
+        Some((Fragment::from(segment), keyframe))
     }
 }
 
@@ -504,9 +526,14 @@ async fn pump_h264(
             continue;
         }
         units += 1;
-        hub.publish(key, mux.segment(unit.pts_us, unit.keyframe, &nals));
+        if let Some((fragment, keyframe)) = mux.push(unit.pts_us, unit.keyframe, &nals) {
+            hub.publish_media(key, fragment, keyframe);
+        }
     };
 
+    if let Some((fragment, keyframe)) = mux.flush() {
+        hub.publish_media(key, fragment, keyframe);
+    }
     tracing::info!(units, dropped = reader.dropped(), "h264 source finished");
     hub.publisher_done(key);
     let _ = tokio::time::timeout(Duration::from_secs(2), session.teardown()).await;
@@ -857,6 +884,23 @@ mod tests {
     }
 
     #[test]
+    fn a_fragment_is_flagged_as_a_keyframe_only_when_it_opens_on_one() {
+        let mut mux = H264Mux::new();
+        let nal = vec![vec![0x41, 0x9a]];
+        assert!(mux.push(0, true, &nal).is_none());
+        let mut flags = Vec::new();
+        for index in 1..=FRAGMENT_FRAMES as u64 {
+            if let Some((_, keyframe)) = mux.push(index * 40_000, false, &nal) {
+                flags.push(keyframe);
+            }
+        }
+        if let Some((_, keyframe)) = mux.flush() {
+            flags.push(keyframe);
+        }
+        assert_eq!(flags, vec![true, false]);
+    }
+
+    #[test]
     fn a_real_h264_clip_muxes_into_fmp4_the_browser_can_append() {
         let clip = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -887,13 +931,18 @@ mod tests {
         let mut mux = H264Mux::new();
         let mut stream = init.to_vec();
         let mut frames = 0u64;
+        let mut flags: Vec<bool> = Vec::new();
         let mut pending: Vec<Vec<u8>> = Vec::new();
         for unit in &units {
             match unit.h264_type() {
                 Some(1) | Some(5) => {
                     pending.push(unit.data.to_vec());
                     let keyframe = pending.iter().any(|nal| h264::is_keyframe(nal));
-                    stream.extend_from_slice(&mux.segment(frames * 40_000, keyframe, &pending));
+                    if let Some((fragment, flagged)) = mux.push(frames * 40_000, keyframe, &pending)
+                    {
+                        stream.extend_from_slice(&fragment);
+                        flags.push(flagged);
+                    }
                     pending.clear();
                     frames += 1;
                 }
@@ -901,7 +950,12 @@ mod tests {
                 _ => pending.push(unit.data.to_vec()),
             }
         }
+        if let Some((fragment, flagged)) = mux.flush() {
+            stream.extend_from_slice(&fragment);
+            flags.push(flagged);
+        }
         assert!(frames > 10, "{frames} frames");
+        assert_eq!(flags, vec![true, true]);
 
         let mut splitter = Fmp4Splitter::new();
         let pieces = splitter.push(&stream);
@@ -909,6 +963,6 @@ mod tests {
             Piece::Init(bytes) => assert_eq!(bytes.as_ref(), init.as_ref()),
             Piece::Fragment(_) => panic!("the first piece must be the init segment"),
         }
-        assert_eq!(pieces.len() as u64, frames + 1);
+        assert_eq!(pieces.len() as u64, flags.len() as u64 + 1);
     }
 }

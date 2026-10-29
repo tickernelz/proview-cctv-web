@@ -46,6 +46,25 @@ Reading the numbers:
    attack before a 4-tile grid, together with a bitrate cap
    (`-maxrate`) so a fragment cannot grow past the ring budget.
 
+## H.264 remux without ffmpeg (measured 2026-10-29, `zha4280/ffmpeg-no-window`)
+
+The H.264 transcode path used to pay for a child process: the server piped
+Annex-B into `ffmpeg -f h264 -i pipe:0 -c:v copy`, which only remuxed it into
+fragmented MP4. `pump_h264` now depacketizes RTP itself and muxes with the same
+`fmp4` builders the fixture publisher uses. Same input on both sides:
+`fixtures/dual-lens/dual-lens-stacked-640x720.h264` repeated 50 times (640×720,
+20 access units per copy, 1000 access units, 40 s of video at 25 fps).
+
+| Metric | ffmpeg copy child | in-process remux |
+|---|---|---|
+| CPU | 0.02 s (user 0.01, sys 0.01) | under one 10 ms tick for the same 1000 access units (638 ns per access unit, wall clock) |
+| peak RSS | 24.4 MiB, in its own process | no child process; the mux holds one fragment at a time (≤ 10 access units, 20 KB of avcc here) and the test binary's high-water mark stayed at 6.9 MiB |
+| muxed bytes for the same 1000 access units | 2 059 569 | 2 063 650 (+0.2 %) |
+| fragment boundaries | `frag_keyframe`: one per keyframe interval | one per 10 access units or at a keyframe boundary, 100 in total |
+
+The muxing cost is therefore noise next to the RTSP work it shares a task with,
+and the stream no longer depends on an ffmpeg binary being installed.
+
 ## Recorded clip path (measured 2026-10-26, commit `a2a87ae`)
 
 ```sh
@@ -178,16 +197,20 @@ Reading the numbers:
    cheaper on the wire (0.75–1.11 MB vs 8.6 MB per 8 s). The hub ring is sized
    per transport — 8 fragments for transcode (each starts on a keyframe) and 96
    access units for passthrough, about two GOPs at 12 fps — so a viewer that
-   jitters by half a second does not have to wait for the next IDR.
+   jitters by half a second does not have to wait for the next IDR. A transcode
+   fragment now covers up to 10 access units (0.4 s at 25 fps) and the hub also
+   keeps a replay buffer of the fragments since the last keyframe (capped at 240
+   fragments / 8 MiB), so 8 ring slots absorb a 3.2 s stall and a viewer that
+   joins late receives the whole current GOP instead of a single fragment.
 3. Cold start for the transcode transport is the sum of RTSP setup, the
    camera's IDR interval and ffmpeg's first output: `frag_keyframe` holds a
    fragment until it can start on a keyframe, so the first painted frame
    costs 2.6–5.0 s. The passthrough column reports the first keyframe
    **on the socket** (0.56–0.78 s), which is the camera's own IDR cadence with
    a warm RTSP session — a different stopwatch, not a cheaper cold start.
-   Warm starts are 111–240 ms because the hub replays the newest
-   keyframe-start fragment (transcode); passthrough has no replay and always
-   waits for the camera's next IDR.
+   Warm starts are 111–240 ms because the hub replays the fragments since the
+   last keyframe (transcode); passthrough has no replay and always waits for the
+   camera's next IDR.
 4. The frame really painted on this machine: Chromium reported `readyState 4`,
    `videoWidth 2304`, `videoHeight 2592` and an advancing `currentTime`, and a
    screenshot of that moment measured `YAVG 171.8`, `YMIN 16`, `YMAX 235` — a

@@ -16,6 +16,10 @@ stability before 1.0.
   depacketizes the RTP stream itself (single NAL, STAP-A and FU-A) and muxes
   fMP4 in process, so ffmpeg runs only when a stream must be transcoded, such as
   HEVC turned into H.264 for a browser without HEVC support.
+- The hub now replays the fragments since the last keyframe instead of a single
+  fragment, and transcode fragments carry up to 10 access units with their real
+  keyframe flag. A viewer that joins late receives the whole current GOP, and one
+  that falls behind resumes on the next keyframe-start fragment with no gap.
 
 ## 0.3.6 — 2026-10-29
 

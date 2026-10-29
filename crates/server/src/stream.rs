@@ -113,7 +113,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
             let Subscription {
                 init,
                 config,
-                last,
+                replay,
                 meta,
                 mut receiver,
             } = subscription;
@@ -161,10 +161,15 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                     return Ok(());
                 }
             }
+            let mut replayed: Option<Arc<LivePacket>> = None;
             if !passthrough {
-                if let Some(packet) = last.lock().ok().and_then(|slot| slot.clone()) {
+                let held: Vec<Arc<LivePacket>> = replay
+                    .lock()
+                    .map(|fragments| fragments.iter().cloned().collect())
+                    .unwrap_or_default();
+                for packet in &held {
                     if stream
-                        .send(ws::Message::Binary(frame(&packet)))
+                        .send(ws::Message::Binary(frame(packet)))
                         .await
                         .is_err()
                     {
@@ -172,11 +177,18 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                         return Ok(());
                     }
                 }
+                replayed = held.last().cloned();
             }
             let mut waiting_keyframe = passthrough;
             loop {
                 match receiver.recv().await {
                     Ok(packet) => {
+                        if let Some(target) = replayed.as_ref() {
+                            if Arc::ptr_eq(&packet, target) {
+                                replayed = None;
+                            }
+                            continue;
+                        }
                         if !forward(&packet, &mut waiting_keyframe) {
                             continue;
                         }
@@ -195,6 +207,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                             mode = key.mode.as_str(),
                             "viewer fell behind, resuming at the next keyframe"
                         );
+                        replayed = None;
                         waiting_keyframe = true;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,

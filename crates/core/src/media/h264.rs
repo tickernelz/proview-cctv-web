@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::media::rtp::RtpPacket;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,9 +328,12 @@ impl Depacketizer {
     }
 }
 
+pub const MAX_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
+
 pub struct Reader {
     depacketizer: Depacketizer,
     nals: Vec<Vec<u8>>,
+    bytes: usize,
     keyframe: bool,
     timestamp: u32,
     unwrapped: Option<u64>,
@@ -336,6 +341,7 @@ pub struct Reader {
     expected: Option<u16>,
     in_sync: bool,
     boundary: bool,
+    ready: VecDeque<AccessUnit>,
 }
 
 impl Default for Reader {
@@ -349,6 +355,7 @@ impl Reader {
         Self {
             depacketizer: Depacketizer::new(),
             nals: Vec::new(),
+            bytes: 0,
             keyframe: false,
             timestamp: 0,
             unwrapped: None,
@@ -356,6 +363,7 @@ impl Reader {
             expected: None,
             in_sync: true,
             boundary: true,
+            ready: VecDeque::new(),
         }
     }
 
@@ -374,9 +382,12 @@ impl Reader {
         let nals = self.depacketizer.push(packet);
         if !self.in_sync {
             if !self.boundary || !nals.iter().any(|nal| is_picture_start(nal)) {
-                return None;
+                return self.ready.pop_front();
             }
             self.in_sync = true;
+        }
+        if !self.nals.is_empty() && packet.timestamp != self.timestamp {
+            self.close();
         }
         if self.nals.is_empty() {
             self.timestamp = packet.timestamp;
@@ -385,30 +396,35 @@ impl Reader {
             if is_keyframe(&nal) {
                 self.keyframe = true;
             }
+            self.bytes += nal.len();
             self.nals.push(nal);
         }
-        if packet.marker {
-            self.finish()
+        if self.bytes > MAX_ACCESS_UNIT_BYTES {
+            self.gap();
+        } else if packet.marker {
+            self.close();
+            self.boundary = true;
         } else {
             self.boundary = false;
-            None
         }
+        self.ready.pop_front()
     }
 
     fn gap(&mut self) {
         self.nals.clear();
+        self.bytes = 0;
         self.keyframe = false;
         self.in_sync = false;
         self.boundary = true;
     }
 
-    fn finish(&mut self) -> Option<AccessUnit> {
-        self.boundary = true;
+    fn close(&mut self) {
         if self.nals.is_empty() {
-            return None;
+            return;
         }
         let nals = std::mem::take(&mut self.nals);
         let keyframe = std::mem::take(&mut self.keyframe);
+        self.bytes = 0;
         let unwrapped = match self.unwrapped {
             None => (1u64 << 32) + u64::from(self.timestamp),
             Some(previous) => {
@@ -419,11 +435,11 @@ impl Reader {
         self.unwrapped = Some(unwrapped);
         let base = *self.base.get_or_insert(unwrapped);
         let pts_us = (unwrapped.saturating_sub(base) * 1_000_000) / 90_000;
-        Some(AccessUnit {
+        self.ready.push_back(AccessUnit {
             nals,
             keyframe,
             pts_us,
-        })
+        });
     }
 }
 
