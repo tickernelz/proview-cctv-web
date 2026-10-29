@@ -173,7 +173,10 @@ function showReports(body: any) {
 }
 
 async function write(job: Exclude<Job, ''>, path: string, patch: Record<string, string>, nothing: string, writing: string) {
-  if (busy.value) return
+  if (busy.value) {
+    if (busy.value !== job) say('Wait for the ' + busy.value + ' write to finish.')
+    return
+  }
   if (!Object.keys(patch).length) {
     say(nothing)
     return

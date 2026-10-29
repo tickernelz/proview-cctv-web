@@ -72,6 +72,10 @@ async function openDeviceSettings(page: Page) {
 
 test('Device settings writes one encoder field, shows the read-back, and ignores a second press', async ({ page }) => {
   let release = () => {}
+  const puts: string[] = []
+  page.on('request', (request) => {
+    if (request.method() === 'PUT') puts.push(new URL(request.url()).pathname)
+  })
   const device = await fakeDevice(page, (fps) => {
     const before = device.encode.main.fps
     device.encode.main = { ...device.encode.main, fps }
@@ -100,9 +104,12 @@ test('Device settings writes one encoder field, shows the read-back, and ignores
   await expect(save).toHaveAttribute('aria-busy', 'true')
   await expect(page.getByTestId('device-status')).toHaveText('Writing the main encoder…')
   await save.click()
+  await page.getByTestId('device-save-network').click()
+  await expect(page.getByTestId('device-status')).toHaveText('Wait for the main write to finish.')
   release()
   await expect(page.getByTestId('device-status')).toHaveText('Read back after the write and kept.')
   expect(device.writes).toEqual(['/api/device/settings/encode?stream=main&fps=10'])
+  expect(puts).toEqual(['/api/device/settings/encode'])
   const report = page.getByTestId('device-report')
   await expect(report).toContainText('Read back and kept. Copy: /data/config-backup-simplify-encode.json')
   await expect(report.locator('tbody tr')).toHaveText([/MainFormat\.Video\.FPS\s*12\s*10\s*10\s*matches/])
@@ -184,4 +191,14 @@ test('the server refuses a gateway change and the device keeps its route', async
   await expect(status).toContainText('Could not write: gateway=192.168.0.254 would change how this app reaches the camera')
   await expect(status).toHaveClass(/warn-text/)
   expect(writes).toEqual(['?gateway=192.168.0.254'])
+})
+
+test('an expired session while reading the camera returns to sign-in', async ({ page }) => {
+  await fakeDevice(page, () => ({ status: 500, json: { message: 'not faked' } }))
+  await signIn(page, 'one')
+  await page.route(/\/api\/device\/settings\/encode$/, (route) => route.fulfill({ status: 401, json: { ok: false, message: 'session expired' } }))
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('device-settings-link').click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(page.getByTestId('settings')).toBeHidden()
 })
