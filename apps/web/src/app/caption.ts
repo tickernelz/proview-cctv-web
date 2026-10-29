@@ -1,5 +1,5 @@
 import { live } from '../live/store'
-import { lensEntries, lensViewLabel } from '../legacy/app.js'
+import { lensEntries, lensViewLabel } from './lens'
 import { currentCamera } from './devices'
 import { hms } from './format'
 import { state } from './state'

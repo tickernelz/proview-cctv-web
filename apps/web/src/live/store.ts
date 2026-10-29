@@ -15,6 +15,7 @@ export type LensOption = { value: string; name: string; sub: string }
 export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
+export type Preset = { token: string; name: string }
 export type CameraInfo = { name: string; id: string; channel: string; model: string; connection: string; stream: string }
 
 const noop = () => {}
@@ -27,11 +28,11 @@ export const live = reactive({
   muted: true,
   record: { on: false, disabled: true, elapsed: '' },
   snapshotDisabled: true,
-  gate: {
-    intercom: { ok: false, why: 'Device controls have not been checked yet.' } as Gate,
-    move: { ok: false, why: 'Device controls have not been checked yet.' } as Gate,
-  } as Record<string, Gate>,
+  gate: Object.fromEntries(
+    ['intercom', 'move', 'up', 'down', 'left', 'right', 'home', 'cruise'].map((act) => [act, { ok: false, why: 'Device controls have not been checked yet.' } as Gate]),
+  ) as Record<string, Gate>,
   padOpen: false,
+  pad: { presets: [] as Preset[], presetsShown: false, tour: false, status: '' },
   panes: { empty: false, live: true, grid: false },
   stage: {
     name: 'idle',
@@ -44,6 +45,9 @@ export const live = reactive({
     copied: false,
     passwordHint: false,
     fs: { shown: false, name: '', time: '' },
+    lens: 'combined',
+    crop: { width: '', height: '', flipped: 'false' },
+    view: { left: '0%', top: '0%', width: '100%', height: '100%' },
   },
   sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
   screen: '' as '' | 'playback',

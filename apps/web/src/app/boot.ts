@@ -1,4 +1,5 @@
-import { chooseLens, renderControlAvailability, togglePad } from '../legacy/app.js'
+import { renderControlAvailability, togglePad } from './controls'
+import { chooseLens } from './lens'
 import { live } from '../live/store'
 import { startTalk, stopTalk } from '../live/talk'
 import { renderCaption } from './caption'

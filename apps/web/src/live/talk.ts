@@ -1,6 +1,6 @@
 import { state } from '../app/state'
 import { renderCaption } from '../app/caption'
-import { setControlStatus } from '../legacy/app.js'
+import { setControlStatus } from '../app/controls'
 import { live } from './store'
 
 type Ready = { kind: 'ready'; path?: string; channel: number | null; claim_ms: number }

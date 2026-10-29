@@ -479,6 +479,31 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Lens, pan-and-tilt and device controls in TypeScript (measured 2026-10-29, ZHA-4181)
+
+Step 4 of 6. `src/app/lens.ts` and `src/app/controls.ts` take the last of
+`legacy/app.js` (572 lines, file deleted); the pad, presets and Tour render
+from `live.pad`/`live.gate` in `LiveMain.vue`, the lens crop from
+`live.stage.crop`/`view`. No measurable change in load cost. The reviewer's
+paired A/B (24 interleaved loads, fresh context each, Chromium 1440×900,
+`many` fixture, both servers up at once, DevTools `Performance.getMetrics`)
+against main 587640e:
+
+| Measure | main 587640e | lens + controls in TS | paired difference |
+|---|---:|---:|---:|
+| JS gzip | 119,775 B | 119,823 B | +48 B |
+| Script time | 63.4 (60.5-67.3) ms | 64.2 (59.4-68.2) ms | -0.6 (-4.0..+5.1) ms |
+| Task time | 154.3 (147.6-168.7) ms | 154.8 (148.3-167.6) ms | 0 (-10.1..+12.9) ms |
+| Style recalc + layout | 11.0 ms | 10.9 ms | -0.4 ms |
+| First frame | 162 (155-173) ms | 163.5 (154-182) ms | -1 (-10.5..+15.3) ms |
+| DOM elements (page / Live) | 771 / 219 | 771 / 219 | 0 |
+
+Every interval crosses zero. Earlier unpaired rounds taken while the box ran
+at load 7 to 14 showed differences of 20 to 45 ms in both directions; they
+measured the box, not the change, and are not kept. The presets load only
+when the pad opens, so they are not on this path. e2e 311 passed, 9 skipped;
+node web tests 44/44; contrast 78/78.
+
 ### Live picture area in TypeScript and Vue (measured 2026-10-29, ZHA-4181)
 
 Step 3 of 6. `src/live/LiveMain.vue` renders the empty state and the Live

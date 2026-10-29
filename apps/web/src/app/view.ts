@@ -1,4 +1,5 @@
-import { closePad, loadLens, probeControlChannel, renderLensPicker, setControlStatus } from '../legacy/app.js'
+import { closePad, probeControlChannel, setControlStatus } from './controls'
+import { loadLens, renderLensPicker } from './lens'
 import { live } from '../live/store'
 import { stopTalk } from '../live/talk'
 import { renderBanner, renderCameraMenu, renderSwitcher } from './chrome'
@@ -74,7 +75,7 @@ async function selectDevice(deviceId: string, options: { channel?: number } = {}
   state.ticket = null
   state.stage.lastFrameAt = 0
   state.tour = null
-  document.getElementById('tour')?.setAttribute('aria-pressed', 'false')
+  live.pad.tour = false
   renderSwitcher()
   renderCameraMenu()
   setControlStatus('')

@@ -1,6 +1,7 @@
 import { api } from '../lib/api'
 import { live, type Prefs } from '../live/store'
-import { layoutLensCrop, renderControlAvailability } from '../legacy/app.js'
+import { renderControlAvailability } from './controls'
+import { layoutLensCrop } from './lens'
 import { renderMute } from './media'
 import { renderCameraInfo, renderFsLine } from './stage'
 import { loadDevices, setQuality, setView, stopAll } from './view'

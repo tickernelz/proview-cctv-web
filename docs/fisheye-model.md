@@ -203,7 +203,7 @@ coordinate-coded 512x512 lens through the shader and compares every output pixel
 `/api/fisheye/map` for an equirect and a ptz view.
 `crates/server/src/routes/fisheye.rs` exposes the model document, a source map and a
 fixture render. Two limits are deliberate and
-recorded in the parity row: nothing in `apps/web/src/legacy/app.js` calls the renderer yet, so no live
+recorded in the parity row: nothing in the Live screen (`apps/web/src/app/`) calls the renderer by default, so no live
 frame reaches either path, and `MountType` is decoded but does not rotate the map, so
 ceiling, table and wall mount produce the same panorama.
 

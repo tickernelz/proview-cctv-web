@@ -39,6 +39,11 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- `apps/web/src/legacy/app.js` is gone (ZHA-4181): the lens picker, lens
+  crop, pan-and-tilt pad, presets, tour and the device-control gates moved to
+  `src/app/lens.ts` and `src/app/controls.ts`, and the pad is rendered by
+  `LiveMain.vue` from the store. The pad keys, Tour and the presets behave as
+  before; only `legacy/account.js` remains.
 - The Live picture area is Vue (ZHA-4181): a failed stream is announced as an
   alert with the warning icon in its title; a 502 without stage detail says
   its reason is the line below instead of pointing at a tooltip nobody can
