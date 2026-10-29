@@ -174,7 +174,7 @@ unattended installs and wins over the file until the key is cleared in the view.
 | `PROVIEW_DEVICE_HOST` | Camera address | unset | `host:port` for DVRIP (probe, settings, snapshots) |
 | `PROVIEW_DEVICE_RTSP` | Camera video address | unset | `host:port` for RTSP; what `local` mode streams |
 | `PROVIEW_DEVICE_ONVIF` | Camera control address | unset | ONVIF base for movement and presets |
-| `PROVIEW_DEVICE_SERIAL` | Camera serial for the device sign-in | unset | `local` mode and the LAN probes send `PROVIEW_DEVICE_USER`/`PASS` only to this serial; the cloud path never sends them |
+| `PROVIEW_DEVICE_SERIAL` | Camera serial for the device sign-in | unset | `local` mode and the LAN probes send `PROVIEW_DEVICE_USER`/`PASS` only to this serial; the cloud playback, live stream and walk diagnosis never send them (talk over the relay still does, until ZHA-4283) |
 | `PROVIEW_DEVICE_USER` | Camera user | `admin` | device-side account |
 | `PROVIEW_DEVICE_PASS` | Camera password | empty | device-side password, secret |
 | `PROVIEW_SESSION_TTL` | Sign-in lifetime | `3600` | browser session lifetime, seconds |

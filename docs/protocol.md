@@ -1484,7 +1484,9 @@ observed, so the provider does not call it and the device list stays `msdlistCod
 
 The cloud path never falls back to a device password: the token the account
 issues is the only login it offers, and a device that refuses it answers with the
-Ret in the error. Camera credentials stay the local-network path (ZHA-4282).
+Ret in the error. Camera credentials stay the local-network path for playback,
+live and the walk diagnosis (ZHA-4282); talk over the relay still logs in with
+them until ZHA-4283 moves it to the account token.
 
 ### 4C.28 After a token login the control frames are sealed with the session key,
 and the media start is not (2026-10-29, ZHA-4282)
@@ -1522,7 +1524,8 @@ of HEVC 2304x2592 behind 8.17 MB of fMP4 in both.
 3. `tcp <agent>:6611` → base64 `<rps>:<client token>:<serial>:<RpsAV SessionId>`
    plus `XXEE` → base64 JSON with `ErrorNum 200` and `MTU`.
 4. DVRIP over the tunnel: login with the account device token (4C.24, 4C.28) and
-   the `OPMonitor` claim (4C.8); a device password is the `local` mode path only.
+   the `OPMonitor` claim (4C.8); a device password is the `local` mode path only,
+   with talk over the relay the one cloud caller still using it (ZHA-4283).
    The `rps` id comes from `msdlistCode`, so no new account call is needed.
 
 ## 5. Open items

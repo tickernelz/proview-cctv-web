@@ -118,4 +118,6 @@ A-law audio. Consequences for the live path:
   before a token is offered. Any other non-100 answer drops the stored token and
   reports what the device said — `Ret` 205 "ip locked" included — and a token
   answer of 100 clears the mark. Camera credentials
-  (`PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`) are the local-network path only.
+  (`PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`) belong to the local-network path:
+  playback, live and walk diagnosis never send them. Talk over the relay still
+  logs in with them until ZHA-4283 moves it to the account token.
