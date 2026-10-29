@@ -524,14 +524,10 @@ impl CloudProvider {
         session: &VendorSession,
         device: &str,
     ) -> Result<crate::dvrip::client::Connection, ProviderError> {
-        let Some(entry) = self.entry_of(session, device).await? else {
-            return Err(ProviderError::UnknownDevice(device.to_string()));
-        };
-        let target = self.relay_target(&entry).await?;
-        match self.control_session(&entry, &target).await {
+        match self.control_session(session, device).await {
             Err(first) if open_is_worth_retrying(&first) => {
-                tracing::warn!(device = %entry.uuid, %first, "cloud control session failed, opening another tunnel");
-                self.control_session(&entry, &target)
+                tracing::warn!(device = %device, %first, "cloud control session failed, opening another tunnel");
+                self.control_session(session, device)
                     .await
                     .map_err(|second| ProviderError::Upstream(format!("{first}; retry: {second}")))
             }
@@ -541,20 +537,27 @@ impl CloudProvider {
 
     async fn control_session(
         &self,
-        entry: &crate::cloud::types::CloudDevice,
-        target: &RelayTarget,
+        session: &VendorSession,
+        device: &str,
     ) -> Result<crate::dvrip::client::Connection, ProviderError> {
-        let (user, pass) = control_credentials(entry.uuid.trim())?;
-        let mut connection = self.dial(entry, target).await?;
-        connection
-            .login_reply(&user, &pass)
-            .await
-            .map_err(|error| {
-                ProviderError::Upstream(format!(
-                    "control session, password login failed: {error:?}"
-                ))
-            })?;
-        tracing::debug!(device = %entry.uuid, session = connection.session(), "cloud control login");
+        let Some(entry) = self.entry_of(session, device.trim()).await? else {
+            return Err(ProviderError::UnknownDevice(device.trim().to_string()));
+        };
+        let target = self.relay_target(&entry).await?;
+        let connection = self.dial(&entry, &target).await?;
+        let control = crate::media::dhav::MediaCipher::channel();
+        let session_key = rps_client::session_key();
+        let (mut connection, note) = self
+            .device_login(connection, &entry, &control, &session_key)
+            .await?;
+        let sealed = crate::media::dhav::MediaCipher::from_text(&session_key).ok_or_else(|| {
+            ProviderError::LoginRefused(format!(
+                "cloud login stage=session key: a {}-character key cannot seal control frames",
+                session_key.len()
+            ))
+        })?;
+        connection.set_seal(sealed);
+        tracing::debug!(device = %entry.uuid, %note, "cloud control login");
         Ok(connection)
     }
 
@@ -872,35 +875,6 @@ fn account_device_token(entry: &crate::cloud::types::CloudDevice) -> Option<Stri
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string)
-}
-
-fn control_credentials(serial: &str) -> Result<(String, String), ProviderError> {
-    let configured = std::env::var("PROVIEW_DEVICE_SERIAL")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let user = std::env::var("PROVIEW_DEVICE_USER")
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let pass = std::env::var("PROVIEW_DEVICE_PASS").unwrap_or_default();
-    if configured.is_empty() {
-        return Err(ProviderError::Misconfigured(
-            "no camera serial is configured, so the camera credentials are not sent to any device: set PROVIEW_DEVICE_SERIAL under Settings, Local network".to_string(),
-        ));
-    }
-    if configured != serial.trim() {
-        return Err(ProviderError::Misconfigured(format!(
-            "camera credentials belong to {configured}, not to {}",
-            serial.trim()
-        )));
-    }
-    if user.is_empty() || pass.is_empty() {
-        return Err(ProviderError::Misconfigured(format!(
-            "no camera user and password for {serial}: set PROVIEW_DEVICE_USER and PROVIEW_DEVICE_PASS"
-        )));
-    }
-    Ok((user, pass))
 }
 
 fn open_is_worth_retrying(error: &ProviderError) -> bool {
@@ -2491,5 +2465,27 @@ mod login_tests {
         let events = accepted.events();
         assert_eq!(counted(&events, ":token_login"), 1, "{events:?}");
         drop(connection);
+    }
+
+    #[test]
+    fn a_device_refusal_is_not_retried_but_a_dead_tunnel_is() {
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::LoginRefused("ret 205 ip locked".to_string())
+        ));
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::Misconfigured("no identity".to_string())
+        ));
+        assert!(!super::open_is_worth_retrying(
+            &ProviderError::UnknownDevice("x".to_string())
+        ));
+        assert!(super::open_is_worth_retrying(&ProviderError::Upstream(
+            "control session: Frame(NotEnoughData)".to_string()
+        )));
+        assert!(super::open_is_worth_retrying(&ProviderError::Unreachable(
+            "relay".to_string()
+        )));
+        assert!(super::open_is_worth_retrying(&ProviderError::Io(
+            std::io::Error::other("reset")
+        )));
     }
 }

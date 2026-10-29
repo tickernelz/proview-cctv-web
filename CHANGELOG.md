@@ -23,13 +23,11 @@ stability before 1.0.
   preset, moves it, and measures the shift on the busiest tiles of each lens
   crop by phase correlation against the noise floor between two frames taken
   before the move.
-- The control tunnel is a DVRIP-Web session, opened with the camera user and
-  password and only for the serial `PROVIEW_DEVICE_SERIAL` binds; live and
-  playback keep PR #101's token-only rule. Measured on the test camera: on a
-  media token session `Ptz`, `Uart`, `SystemFunction` and even
-  `OPPTZControl` answer "device sent no reply" within 150-270 ms, while the same
-  reads answer in 215-383 ms over the password session, so the token tunnel
-  cannot carry control.
+- The control tunnel uses the account device token over the relay, the same
+  credential live and playback use (PR #101): `open_control` logs in through
+  `device_login` without claiming the monitor, and every control request and
+  its reply are sealed with the 16-character session key the way playback does
+  it. No camera password is read from the environment on this path.
 
 ### Changed
 

@@ -263,8 +263,14 @@ def main(argv) -> int:
 
         port = base.free_port()
         env = base.server_env(args, port, out_dir / "state")
+        env.pop("PROVIEW_DEVICE_USER", None)
+        env.pop("PROVIEW_DEVICE_PASS", None)
         if bound_serial:
             env["PROVIEW_DEVICE_SERIAL"] = bound_serial
+        report["credentials"] = {
+            "device_serial": bool(bound_serial),
+            "device_password": "PROVIEW_DEVICE_PASS" in env,
+        }
         clock = time.monotonic()
         process, log = base.start_server(binary, root, env, out_dir / "server.log")
         http = base.Http("127.0.0.1", port)
