@@ -728,29 +728,6 @@ impl Connection {
             .await
             .map(|_| ())
     }
-
-    pub async fn ptz_set_preset(
-        &mut self,
-        preset: i64,
-        name: Option<&str>,
-    ) -> Result<(), DvrError> {
-        let mut parameter = json!({
-            "AUX": { "Number": 0, "Status": "On" },
-            "MenuOpts": "Enter",
-            "Pattern": "SetBegin",
-            "Preset": preset,
-            "PresetIndex": 0,
-            "Step": 3,
-            "Tour": 0,
-            "TourTimes": 1,
-        });
-        if let Some(name) = name {
-            parameter["PresetName"] = json!(name);
-        }
-        self.ptz_control("SetPreset", 0, parameter)
-            .await
-            .map(|_| ())
-    }
 }
 
 pub fn ptz_step_of(pan: f32, tilt: f32) -> Option<(PtzDirection, u8)> {

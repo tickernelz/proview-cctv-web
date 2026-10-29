@@ -729,10 +729,6 @@ impl CloudLink {
             device: device.into(),
         }
     }
-
-    pub fn device(&self) -> &str {
-        &self.device
-    }
 }
 
 #[async_trait]

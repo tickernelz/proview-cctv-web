@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use super::{fail, fail_code, session_id, Failure};
 use crate::config::ModeStore;
+use proview_core::provider::local::LocalProvider;
 use proview_core::provider::Mode;
 
 pub fn routes() -> Vec<rocket::route::Route> {
@@ -54,7 +55,8 @@ fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failur
 
 fn cloud_carries_control(cfg: &Config, mode: Mode) -> bool {
     cfg.provider == ProviderKind::Proview
-        && (mode == Mode::Cloud || (cfg.device_host.is_none() && cfg.device_onvif.is_none()))
+        && (mode == Mode::Cloud
+            || (LocalProvider::from_config(cfg).is_none() && cfg.device_onvif.is_none()))
 }
 
 fn controls_for(
@@ -255,15 +257,24 @@ pub struct SimpleBody {
     pub detail: String,
 }
 
-#[post("/device/controls/ptz/stop")]
+const DVRIP_STOP_REASON: &str = "a DVRIP pan or tilt carries its own stop after hold_ms, so this build sends no separate stop on that transport; the pad disables Stop when ONVIF is not the backend";
+
+#[post("/device/controls/ptz/stop?<device>")]
 async fn ptz_stop(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<SimpleBody>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
-    let control = controls.onvif().map_err(control_failure)?;
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
+    let Some(control) = controls.onvif.as_ref() else {
+        return Err(fail(
+            Status::NotImplemented,
+            format!("ptz stop: {DVRIP_STOP_REASON}"),
+        ));
+    };
     control.stop_ptz().await.map_err(control_failure)?;
     Ok(Json(SimpleBody {
         ok: true,
@@ -523,6 +534,10 @@ mod tests {
         let local = config(ProviderKind::Proview, Some("192.168.0.100"));
         assert!(cloud_carries_control(&local, Mode::Cloud));
         assert!(!cloud_carries_control(&local, Mode::Local));
+        let mut rtsp_only = config(ProviderKind::Proview, None);
+        rtsp_only.device_rtsp = Some("192.0.2.10:554".to_string());
+        assert!(cloud_carries_control(&rtsp_only, Mode::Cloud));
+        assert!(!cloud_carries_control(&rtsp_only, Mode::Local));
         let fixture = config(ProviderKind::Fixture, None);
         assert!(!cloud_carries_control(&fixture, Mode::Cloud));
     }
