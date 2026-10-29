@@ -128,7 +128,7 @@ test('Settings opened during a held sign-in keeps the edits and starts no stream
       await page.goto(base + '/');
       await page.wait("!document.getElementById('signin').hidden", 'the sign-in screen', BUDGET);
       await page.evaluate(
-        "document.getElementById('email').value = 'fixture@example.invalid'; document.getElementById('password').value = 'fixture-password';",
+        "for (const [id, value] of [['email', 'fixture@example.invalid'], ['password', 'fixture-password']]) { const input = document.getElementById(id); input.value = value; input.dispatchEvent(new Event('input')); }",
       );
       await page.evaluate("document.getElementById('login-submit').click()");
       await page.evaluate("document.getElementById('login-settings').click()");

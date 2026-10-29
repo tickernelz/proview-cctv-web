@@ -26,46 +26,7 @@
     <div class="spacer"></div>
     <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
   </header>
-  <main class="auth">
-    <div class="auth-form">
-      <h1 id="signin-title" tabindex="-1">Watch the camera from this desk</h1>
-      <p class="lede" id="signin-lede">The same PROVIEW account your phone uses. The camera password stays on this machine.</p>
-      <div class="notice" id="signin-notice" data-testid="signin-notice" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-clock"></use></svg><span>Nothing is being recorded while you are signed out.</span></div>
-      <div class="tabs" role="tablist" aria-label="Sign-in method">
-        <button id="tab-cloud" type="button" role="tab" aria-selected="true" aria-controls="panel-cloud">Account</button>
-        <button id="tab-local" type="button" role="tab" aria-selected="false" aria-controls="panel-local" tabindex="-1">This network</button>
-      </div>
-      <div id="panel-cloud" role="tabpanel" aria-labelledby="tab-cloud">
-        <form id="login-form" autocomplete="on" novalidate>
-          <div class="field"><label for="email">Email</label><input id="email" data-testid="signin-email" name="email" type="email" autocomplete="username" placeholder="name@example.com" spellcheck="false" required></div>
-          <div class="field" id="password-field"><label for="password">Password</label><input id="password" data-testid="signin-password" name="password" type="password" autocomplete="current-password" required>
-            <p class="err" id="login-error" data-testid="signin-error" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-warning"></use></svg><span></span></p></div>
-          <button id="login-submit" data-testid="signin-submit" class="btn btn-fill" type="submit">Sign in</button>
-        </form>
-      </div>
-      <div id="panel-local" role="tabpanel" aria-labelledby="tab-local" hidden>
-        <p class="auth-sub" id="local-mode" role="status">Checking which provider the server uses.</p>
-        <form id="local-form" novalidate>
-          <div class="field"><label for="local-user">Camera username</label><input id="local-user" type="text" autocomplete="username" spellcheck="false" disabled></div>
-          <div class="field" id="local-pass-field"><label for="local-pass">Camera password</label><input id="local-pass" type="password" autocomplete="current-password" disabled>
-            <p class="err" id="local-error" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-warning"></use></svg><span></span></p></div>
-          <button id="local-submit" class="btn btn-fill" type="submit" disabled>Sign in to the camera</button>
-        </form>
-        <button id="local-connect" class="btn btn-line wide" type="button">Probe the camera on this network</button>
-        <dl id="local-report" class="report" hidden>
-          <div><dt>Host</dt><dd id="local-host"></dd></div>
-          <div><dt>Session</dt><dd id="local-session"></dd></div>
-          <div><dt>Device type</dt><dd id="local-type"></dd></div>
-          <div><dt>Video</dt><dd id="local-video"></dd></div>
-          <div><dt>Audio</dt><dd id="local-audio"></dd></div>
-          <div><dt>Frame rate</dt><dd id="local-fps"></dd></div>
-        </dl>
-        <p id="local-next" class="auth-note" hidden>This server is set to the camera on this network, so the account sign-in shows that camera too.</p>
-      </div>
-      <p class="auth-note">Settings opens before you sign in: cloud address, camera address, camera password. <button id="login-settings" class="btn-text" type="button">Open Settings</button></p>
-    </div>
-    <div class="auth-stage" aria-hidden="true"><div class="stage"></div><p class="stage-cap" id="signin-stage">The picture appears here as soon as a camera answers.</p></div>
-  </main>
+  <main class="auth" id="signin-main"></main>
 </div>
 
 <div id="watch" data-testid="live" class="screen" hidden>

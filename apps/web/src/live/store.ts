@@ -30,6 +30,7 @@ export const live = reactive({
   padOpen: false,
   sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
   screen: '' as '' | 'playback',
+  signin: { expired: false, expiredAt: 0, lastFrameAt: 0, generation: 0, focus: 0, mode: null as { mode?: string; source?: string } | null },
   grid: { open: false, generation: 0, selected: '', moveFocus: noop as (key: string) => void },
   talk: { on: false, level: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },

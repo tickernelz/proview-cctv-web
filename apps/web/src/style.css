@@ -202,6 +202,11 @@ kbd { display: inline-block; min-width: 18px; padding: 1px var(--s1); border-rad
 .btn-text:hover { color: var(--ink); }
 .btn-text.inv { color: var(--stage-ink); }
 .auth-note .btn-text { min-height: 0; font-size: inherit; }
+.auth-note .signin-settings { display: flex; width: fit-content; margin-top: var(--s2); font-size: var(--t-13); }
+.signin-remember { margin-bottom: var(--s3); }
+.auth-form #remember-note { margin: 0 0 var(--s3); }
+.signin-probe-err { margin-top: var(--s3); }
+.auth-form .btn-line.wide { gap: var(--s2); }
 .btn-text.danger { color: var(--bad); }
 
 .report { display: grid; gap: 0; margin-top: var(--s3); font-size: var(--t-13); max-width: 640px; }
