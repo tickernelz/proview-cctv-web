@@ -559,8 +559,24 @@ impl CloudProvider {
             return Err(ProviderError::UnknownDevice(device.to_string()));
         };
         let target = self.relay_target(&entry).await?;
-        let connection = self.dial(&entry, &target).await?;
-        let credential = device_credential_for(entry.uuid.trim(), &entry);
+        match self.control_session(&entry, &target).await {
+            Err(first) if open_is_worth_retrying(&first) => {
+                tracing::warn!(device = %entry.uuid, %first, "cloud control session failed, opening another tunnel");
+                self.control_session(&entry, &target)
+                    .await
+                    .map_err(|second| ProviderError::Upstream(format!("{first}; retry: {second}")))
+            }
+            outcome => outcome,
+        }
+    }
+
+    async fn control_session(
+        &self,
+        entry: &crate::cloud::types::CloudDevice,
+        target: &RelayTarget,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        let connection = self.dial(entry, target).await?;
+        let credential = device_credential_for(entry.uuid.trim(), entry);
         let (user, pass) = credential_pair(&credential, "control session")?;
         let (connection, login_note) = self
             .password_login(
@@ -865,6 +881,13 @@ fn credential_pair(
             Err(ProviderError::Misconfigured(format!("{note}; {reason}")))
         }
     }
+}
+
+fn open_is_worth_retrying(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::Upstream(_) | ProviderError::Unreachable(_) | ProviderError::Io(_)
+    )
 }
 
 fn credential_decision(configured: &str, serial: &str, user: &str, pass: &str) -> DeviceCredential {
