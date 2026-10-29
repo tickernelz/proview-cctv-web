@@ -81,11 +81,28 @@ pub struct TalkRoute {
     pub why: String,
 }
 
+pub const LOCAL_DEVICE: &str = "local";
+
+pub fn reported_talk_capability(
+    talk: &crate::dvrip::control::Capability,
+) -> Option<LensCapability> {
+    if talk.supported {
+        return None;
+    }
+    Some(LensCapability::blocked(
+        Lens::Device,
+        "two-way audio",
+        Backend::Dvrip,
+        talk.evidence.clone(),
+    ))
+}
+
 pub fn talk_route(cfg: &Config, token: Option<&str>, device: Option<&str>) -> TalkRoute {
     talk_route_with(
         cfg,
         token,
         device,
+        &crate::provider::cloud::configured_serial(),
         crate::cloud::envelope::Identity::resolve().is_complete(),
     )
 }
@@ -94,6 +111,7 @@ pub fn talk_route_with(
     cfg: &Config,
     token: Option<&str>,
     device: Option<&str>,
+    serial: &str,
     cloud_identity: bool,
 ) -> TalkRoute {
     let blocked = |why: String| TalkRoute { ok: false, why };
@@ -102,13 +120,29 @@ pub fn talk_route_with(
             "two-way audio needs the camera password, which is not set; add it under Settings, Configuration, Local network".to_string(),
         );
     }
+    let named = device.map(str::trim).filter(|name| !name.is_empty());
+    let bound = serial.trim();
+    if let Some(name) = named {
+        if name != LOCAL_DEVICE {
+            if bound.is_empty() {
+                return blocked(format!(
+                    "no camera serial is configured, so the camera credentials are not sent to {name}; add the serial under Settings, Configuration, Local network"
+                ));
+            }
+            if bound != name {
+                return blocked(format!(
+                    "camera credentials belong to {bound}, not to {name}"
+                ));
+            }
+        }
+    }
     if let Some(address) = cfg.device_host.as_deref() {
         return TalkRoute {
             ok: true,
             why: format!("the camera is addressed directly at {address}"),
         };
     }
-    let Some(device) = device.map(str::trim).filter(|name| !name.is_empty()) else {
+    let Some(device) = named else {
         return blocked("no camera was named, so there is no path to open".to_string());
     };
     if token.map(str::trim).unwrap_or("").is_empty() {
@@ -132,6 +166,7 @@ pub fn talk_capability(cfg: &Config, token: Option<&str>, device: Option<&str>) 
         cfg,
         token,
         device,
+        &crate::provider::cloud::configured_serial(),
         crate::cloud::envelope::Identity::resolve().is_complete(),
     )
 }
@@ -140,9 +175,10 @@ pub fn talk_capability_with(
     cfg: &Config,
     token: Option<&str>,
     device: Option<&str>,
+    serial: &str,
     cloud_identity: bool,
 ) -> LensCapability {
-    let route = talk_route_with(cfg, token, device, cloud_identity);
+    let route = talk_route_with(cfg, token, device, serial, cloud_identity);
     if route.ok {
         LensCapability::supported(Lens::Device, "two-way audio", Backend::Dvrip, route.why)
     } else {
@@ -871,7 +907,7 @@ impl DeviceControl for DvripControl {
         } else {
             TOP_LENS_BLOCKER.to_string()
         };
-        Ok(vec![
+        let mut rows = vec![
             LensCapability::supported(
                 Lens::Device,
                 "white light",
@@ -925,7 +961,9 @@ impl DeviceControl for DvripControl {
             } else {
                 LensCapability::blocked(Lens::Device, "ptz locate", Backend::Dvrip, locate.evidence)
             },
-        ])
+        ];
+        rows.extend(reported_talk_capability(&reported.talk));
+        Ok(rows)
     }
 
     async fn tour_state(&self) -> Result<TourState, ControlError> {
@@ -1593,7 +1631,13 @@ mod tests {
     fn talk_needs_the_camera_password_before_any_path() {
         let mut config = test_config(None, Some("192.168.0.100:34567"));
         config.device_pass = "  ".to_string();
-        let route = talk_route_with(&config, Some("token"), Some("serial"), true);
+        let route = talk_route_with(
+            &config,
+            Some("token"),
+            Some("serial-one"),
+            "serial-one",
+            true,
+        );
         assert!(!route.ok);
         assert!(route.why.contains("camera password"), "{}", route.why);
         assert!(!route.why.contains("PROVIEW_"), "{}", route.why);
@@ -1602,37 +1646,45 @@ mod tests {
     #[test]
     fn a_direct_address_makes_two_way_audio_available_without_the_cloud() {
         let config = test_config(None, Some("192.168.0.100:34567"));
-        let route = talk_route_with(&config, None, None, false);
+        let route = talk_route_with(&config, None, None, "", false);
         assert!(route.ok, "{}", route.why);
         assert!(route.why.contains("192.168.0.100:34567"), "{}", route.why);
-        let row = talk_capability_with(&config, None, None, false);
+        let row = talk_capability_with(&config, None, None, "", false);
         assert_eq!(row.feature, "two-way audio");
         assert_eq!(row.state, State::Supported);
     }
 
     #[test]
+    fn the_local_camera_reaches_the_direct_address_too() {
+        let config = test_config(None, Some("192.168.0.100:34567"));
+        let route = talk_route_with(&config, None, Some(LOCAL_DEVICE), "", false);
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("192.168.0.100:34567"), "{}", route.why);
+    }
+
+    #[test]
     fn the_relay_names_the_missing_camera_before_anything_else() {
         let config = test_config(None, None);
-        let route = talk_route_with(&config, Some("token"), None, true);
+        let route = talk_route_with(&config, Some("token"), None, "", true);
         assert!(!route.ok);
         assert!(route.why.contains("no camera was named"), "{}", route.why);
     }
 
     #[test]
-    fn the_relay_needs_a_cloud_token_in_the_session() {
+    fn the_relay_needs_a_cloud_session_in_the_request() {
         let config = test_config(None, None);
-        let route = talk_route_with(&config, None, Some("ABC123"), true);
+        let route = talk_route_with(&config, None, Some("ABC123"), "ABC123", true);
         assert!(!route.ok);
         assert!(route.why.contains("no cloud session"), "{}", route.why);
         assert!(route.why.contains("ABC123"), "{}", route.why);
-        let row = talk_capability_with(&config, None, Some("ABC123"), true);
+        let row = talk_capability_with(&config, None, Some("ABC123"), "ABC123", true);
         assert_eq!(row.state, State::Blocked);
     }
 
     #[test]
     fn the_relay_needs_the_cloud_identity_to_claim_a_session() {
         let config = test_config(None, None);
-        let route = talk_route_with(&config, Some("token"), Some("ABC123"), false);
+        let route = talk_route_with(&config, Some("token"), Some("ABC123"), "ABC123", false);
         assert!(!route.ok);
         assert!(route.why.contains("cloud identity"), "{}", route.why);
     }
@@ -1640,9 +1692,56 @@ mod tests {
     #[test]
     fn a_signed_in_cloud_session_with_identity_reports_two_way_audio_over_the_relay() {
         let config = test_config(None, None);
-        let row = talk_capability_with(&config, Some("token"), Some("ABC123"), true);
+        let row = talk_capability_with(&config, Some("token"), Some("ABC123"), "ABC123", true);
         assert_eq!(row.state, State::Supported);
         assert!(row.evidence.contains("vendor relay"), "{}", row.evidence);
         assert!(row.evidence.contains("ABC123"), "{}", row.evidence);
+    }
+
+    #[test]
+    fn the_credentials_do_not_cover_a_camera_that_is_not_the_bound_one() {
+        let config = test_config(None, None);
+        let route = talk_route_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        assert!(!route.ok);
+        assert!(
+            route
+                .why
+                .contains("camera credentials belong to ABC123, not to ABC999"),
+            "{}",
+            route.why
+        );
+        let row = talk_capability_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        assert_eq!(row.state, State::Blocked);
+    }
+
+    #[test]
+    fn a_camera_that_reports_no_talk_blocks_the_row_with_its_own_reason() {
+        let silent = crate::dvrip::control::Capability {
+            supported: false,
+            evidence: "no two-way audio reported".to_string(),
+        };
+        let row = reported_talk_capability(&silent).expect("a blocked row");
+        assert_eq!(row.feature, "two-way audio");
+        assert_eq!(row.state, State::Blocked);
+        assert_eq!(row.evidence, "no two-way audio reported");
+        let capable = crate::dvrip::control::Capability {
+            supported: true,
+            evidence: "OtherFunction.SupportTwoWayVoiceTalk=true".to_string(),
+        };
+        assert!(reported_talk_capability(&capable).is_none());
+    }
+
+    #[test]
+    fn a_named_cloud_camera_needs_a_configured_serial() {
+        let config = test_config(None, None);
+        let route = talk_route_with(&config, Some("token"), Some("ABC123"), "", true);
+        assert!(!route.ok);
+        assert!(
+            route.why.contains("no camera serial is configured"),
+            "{}",
+            route.why
+        );
+        assert!(route.why.contains("ABC123"), "{}", route.why);
+        assert!(!route.why.contains("PROVIEW_"), "{}", route.why);
     }
 }

@@ -785,15 +785,24 @@ pub fn live_ticket(device: &str, channel: u32, high: bool) -> Result<StreamTicke
     })
 }
 
-fn configured_serial() -> String {
+pub fn configured_serial() -> String {
     std::env::var("PROVIEW_DEVICE_SERIAL")
         .map(|value| value.trim().to_string())
         .unwrap_or_default()
 }
 
-enum DeviceCredential {
+pub enum DeviceCredential {
     Allowed { user: String, pass: String },
     Refused(String),
+}
+
+impl DeviceCredential {
+    pub fn refused_reason(&self) -> Option<&str> {
+        match self {
+            Self::Allowed { .. } => None,
+            Self::Refused(reason) => Some(reason),
+        }
+    }
 }
 
 fn device_credential_for(
@@ -842,7 +851,12 @@ fn credential_pair(
     }
 }
 
-fn credential_decision(configured: &str, serial: &str, user: &str, pass: &str) -> DeviceCredential {
+pub fn credential_decision(
+    configured: &str,
+    serial: &str,
+    user: &str,
+    pass: &str,
+) -> DeviceCredential {
     if configured.trim().is_empty() {
         return DeviceCredential::Refused(
             "no camera serial is configured, so the camera credentials are not sent to any device: set PROVIEW_DEVICE_SERIAL under Settings, Local network".to_string(),

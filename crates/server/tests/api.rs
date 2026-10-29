@@ -426,7 +426,7 @@ fn an_empty_ssid_or_an_unknown_mode_is_refused_before_any_socket_is_opened() {
 }
 
 #[test]
-fn a_cloud_session_without_a_direct_address_reports_why_talk_is_unavailable() {
+fn a_cloud_camera_without_a_bound_serial_reports_why_talk_is_unavailable() {
     let client = client();
     assert_eq!(sign_in(&client), Status::Ok);
     let response = client
@@ -436,7 +436,10 @@ fn a_cloud_session_without_a_direct_address_reports_why_talk_is_unavailable() {
     let row = talk_row(&body(response));
     assert_eq!(row["state"], "blocked");
     let reason = row["evidence"].as_str().unwrap_or_default();
-    assert!(reason.contains("no cloud session"), "{reason}");
+    assert!(
+        reason.contains("no camera serial is configured"),
+        "{reason}"
+    );
     assert!(reason.contains("fixture-dev-0001"), "{reason}");
 }
 

@@ -105,16 +105,17 @@ async fn capability_report(
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<CapabilityBody>, Failure> {
-    signed_in(store, cookies)?;
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
     let controls = controls(cfg);
     let mut rows = controls.capability_report().await;
-    rows.push(talk_capability(
-        cfg,
-        vendor.token.as_deref(),
-        device.as_deref(),
-    ));
+    if !rows.iter().any(|row| row.feature == "two-way audio") {
+        rows.push(talk_capability(
+            cfg,
+            vendor.token.as_deref(),
+            device.as_deref(),
+        ));
+    }
     Ok(Json(CapabilityBody {
         ok: true,
         onvif: controls.onvif.is_some(),

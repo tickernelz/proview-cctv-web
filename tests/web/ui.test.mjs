@@ -133,7 +133,7 @@ test('holding T carries the microphone to the camera speaker', async () => {
   const device = await fakeTalkDevice();
   const talking = await startServer(DEVICES, {
     clips: CLIPS,
-    env: { PROVIEW_DEVICE_HOST: '127.0.0.1:' + device.port, PROVIEW_DEVICE_PASS: 'hunter2' },
+    env: { PROVIEW_DEVICE_HOST: '127.0.0.1:' + device.port, PROVIEW_DEVICE_PASS: 'hunter2', PROVIEW_DEVICE_SERIAL: 'gate' },
   });
   const page = await browser.page({ intercept: TALK_CAPS });
   try {
@@ -147,7 +147,7 @@ test('holding T carries the microphone to the camera speaker', async () => {
     await page.wait("window.proviewTalk.state().chunks >= 25", 'a second of microphone audio to go up', 15000);
     await page.wait("window.proviewTalk.state().mic === 1", 'the microphone track to be live');
     await page.wait(
-      "/^sending · \\d+ frames · \\d+ PCM bytes · /.test(document.getElementById('talk-note').textContent)",
+      "/^sending · \\d+ frames · \\d+ G\\.711 bytes · /.test(document.getElementById('talk-note').textContent)",
       'the byte and latency report to reach the page',
       8000,
     );
@@ -156,7 +156,7 @@ test('holding T carries the microphone to the camera speaker', async () => {
     assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
     assert.doesNotMatch(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone/);
     await page.wait("window.proviewTalk.state().mic === 0", 'the microphone track to be released');
-    assert.match(await page.evaluate("document.getElementById('talk-note').textContent"), /^talk closed · the direct address · \d+ chunks · \d+ PCM bytes/);
+    assert.match(await page.evaluate("document.getElementById('talk-note').textContent"), /^talk closed · the direct address · \d+ chunks · \d+ PCM16 bytes/);
     const frames = device.frames();
     assert.ok(frames.length > 15, 'frames reached the camera: ' + frames.length);
     assert.equal(frames[0].id, 1432);
@@ -175,7 +175,7 @@ test('Talk says why it cannot open when the camera is not reachable', async () =
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait(
-      "(() => { const note = document.getElementById('talk-note'); return Boolean(note) && /talk failed: (no path to the camera|the camera password is not set)/.test(note.textContent); })()",
+      "(() => { const note = document.getElementById('talk-note'); return Boolean(note) && /talk failed: (no path to the camera|the camera password is not set|no camera serial is configured)/.test(note.textContent); })()",
       'the server reason to reach the page',
     );
     assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);

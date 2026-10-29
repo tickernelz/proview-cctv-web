@@ -80,6 +80,10 @@ export function renderControlAvailability() {
   }
   live.settings.light = verdict('strobe')
   for (const act of Object.keys(live.gate)) live.gate[act] = verdict(act)
+  const blocked = state.control.talkBlocked
+  if (blocked && blocked.device === state.selectedId) {
+    live.gate.intercom = { ok: false, why: 'two-way audio is unavailable: ' + blocked.why }
+  }
   if (state.padOpen && !live.gate.move.ok) closePad()
   renderCapabilities()
 }
@@ -92,6 +96,7 @@ export async function probeControlChannel(device: Device) {
   try {
     const payload = await api('/api/device/controls?device=' + encodeURIComponent(device.id))
     state.control = {
+      ...state.control,
       rows: Array.isArray(payload.capabilities) ? payload.capabilities : [],
       onvif: payload.onvif === true,
       dvrip: payload.dvrip === true,
@@ -100,7 +105,7 @@ export async function probeControlChannel(device: Device) {
     }
   } catch (error: any) {
     if (sessionLost(error)) return
-    state.control = { rows: [], onvif: false, dvrip: false, error: error.status + ' ' + error.message, checkedFor: null }
+    state.control = { ...state.control, rows: [], onvif: false, dvrip: false, error: error.status + ' ' + error.message, checkedFor: null }
   }
   renderControlAvailability()
 }

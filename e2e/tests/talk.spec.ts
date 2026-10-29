@@ -49,7 +49,7 @@ test('holding T streams 8 kHz PCM to the talk peer and releasing it stops the up
   await page.keyboard.up('t')
   await expect(talk).toHaveAttribute('aria-pressed', 'false')
   await expect(page.getByTestId('live-state')).not.toContainText('microphone')
-  await expect(page.getByTestId('talk-note')).toContainText(/^talk closed · the fake peer · \d+ chunks · \d+ PCM bytes · \d+\.\d s · \d+\.\d chunks\/s$/)
+  await expect(page.getByTestId('talk-note')).toContainText(/^talk closed · the fake peer · \d+ chunks · \d+ PCM16 bytes · \d+\.\d s · \d+\.\d chunks\/s$/)
   await expect(page.getByTestId('ctl-talk')).toBeEnabled()
   await expect.poll(() => peer.closed).toBe(true)
   expect(peer.text).toEqual([JSON.stringify({ type: 'stop' })])
@@ -81,10 +81,21 @@ test('the microphone is released when the button comes up', async ({ page }) => 
 test('a refusal from the path disables Talk and keeps the reason on screen', async ({ page }) => {
   await openWithPeer(page, { kind: 'error', scope: 'path', message: 'no path to the camera (direct: PROVIEW_DEVICE_HOST is not set; vendor relay: no camera was named)' })
   await page.keyboard.down('t')
-  await expect(page.getByTestId('talk-note')).toHaveText('talk failed: no path to the camera (direct: PROVIEW_DEVICE_HOST is not set; vendor relay: no camera was named)')
+  await expect(page.getByTestId('talk-note')).toHaveText(/^talk failed: no path to the camera /)
+  const title = await page.evaluate(() => document.getElementById('talk')!.title)
+  const note = await page.evaluate(() => document.getElementById('talk-note')!.textContent)
+  expect(title).toBe('two-way audio is unavailable: ' + (note ?? '').replace('talk failed: ', ''))
   await expect(page.getByTestId('ctl-talk')).toBeDisabled()
-  await expect(page.getByTestId('ctl-talk')).toHaveAttribute('title', 'two-way audio is unavailable: no path to the camera (direct: PROVIEW_DEVICE_HOST is not set; vendor relay: no camera was named)')
   await page.keyboard.up('t')
+})
+
+test('a refusal from the camera leaves Talk usable and names the trouble', async ({ page }) => {
+  await openWithPeer(page, { kind: 'error', scope: 'device', message: 'the vendor relay answered 12' })
+  await page.keyboard.down('t')
+  await expect(page.getByTestId('talk-note')).toHaveText('talk failed: the vendor relay answered 12')
+  await expect(page.getByTestId('talk-note')).toHaveClass(/bad/)
+  await page.keyboard.up('t')
+  await expect(page.getByTestId('ctl-talk')).toBeEnabled()
 })
 
 test('a refusal from the talk peer is shown and leaves Talk off', async ({ page }) => {
