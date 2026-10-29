@@ -140,12 +140,26 @@ export function lensViewLabel() {
   return entry ? entry.label : 'Both lenses'
 }
 
+function moveReason() {
+  if (live.gate.move.ok) return ''
+  const why = (live.gate.move.why || '').trim()
+  return why ? 'Move is off: ' + why : 'Move is off for this camera.'
+}
+
 function lensNote() {
   if (!state.selectedId) return 'Pick a camera.'
   if (!state.lens) return 'Waiting for the first frame.'
-  if (state.lens.source === 'contract') return contractCaption(state.lens).replace(/^Lens layout: /, '')
-  const dims = state.lens.streams[0].width + '×' + state.lens.streams[0].height
-  return state.lens.lenses.length > 1 ? 'Split inferred from the frame shape (' + dims + '). The server has not reported the lens layout yet.' : 'One picture (' + dims + '), no stacked lens.'
+  const blocked = moveReason()
+  const base =
+    state.lens.source === 'contract'
+      ? contractCaption(state.lens).replace(/^Lens layout: /, '')
+      : (() => {
+          const dims = state.lens.streams[0].width + '×' + state.lens.streams[0].height
+          return state.lens.lenses.length > 1
+            ? 'Split inferred from the frame shape (' + dims + '). The server has not reported the lens layout yet.'
+            : 'One picture (' + dims + '), no stacked lens.'
+        })()
+  return blocked ? base + ' ' + blocked : base
 }
 
 function lensSub(entry: LensEntry) {

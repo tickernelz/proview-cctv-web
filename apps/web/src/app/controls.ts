@@ -2,7 +2,7 @@ import { api } from '../lib/api'
 import { live, type Gate } from '../live/store'
 import { renderCaption } from './caption'
 import { selectedDevice } from './devices'
-import { lensEntries } from './lens'
+import { lensEntries, renderLensPicker } from './lens'
 import { sessionLost } from './shell'
 import { state, type Device } from './state'
 
@@ -87,6 +87,7 @@ export function renderControlAvailability() {
   for (const act of Object.keys(live.gate)) live.gate[act] = verdict(act)
   if (state.padOpen && !live.gate.move.ok) closePad()
   renderCapabilities()
+  renderLensPicker()
 }
 
 export async function probeControlChannel(device: Device) {

@@ -134,6 +134,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       :aria-pressed="live.padOpen"
       :disabled="!live.gate.move.ok"
       :title="live.gate.move.why"
+      :aria-description="live.gate.move.why"
       @click="live.actions.togglePad()"
     >
       <Icon name="move" /><span>Move</span>

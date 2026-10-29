@@ -27,9 +27,10 @@ stability before 1.0.
 ### Changed
 
 - The Move button no longer greys out without a reason: while it is blocked the
-  caption names the device's own refusal, and the control panel asks the server
-  for the capability report of the camera on screen (`device`), which is what
-  lets a cloud camera report its motor at all.
+  lens menu names the device's own refusal and the button carries the same text
+  as its description, and the control panel asks the server for the capability
+  report of the camera on screen (`device`), which is what lets a cloud camera
+  report its motor at all.
 ## 0.3.7 — 2026-10-29
 
 ### Security

@@ -16,14 +16,6 @@ function liveLag() {
   return Number.isFinite(lag) && lag >= 0 ? lag : null
 }
 
-function moveNote(limit = 96) {
-  if (live.gate.move.ok) return ''
-  const why = (live.gate.move.why || '').trim()
-  if (!why) return 'Move off for this camera.'
-  const text = why.length <= limit ? why : why.slice(0, limit - 12).replace(/[\s,;:.-]+$/, '') + '…'
-  return 'Move off: ' + text
-}
-
 function captionText() {
   const name = state.stage.name
   if (state.networkLostAt && state.stage.lastFrameAt) return 'not updating — last frame ' + hms(state.stage.lastFrameAt)
@@ -37,8 +29,7 @@ function captionText() {
   if (name === 'offline') return 'offline'
   if (name === 'playing') {
     const lens = lensEntries().length > 1 ? ', ' + lensViewLabel().toLowerCase() : ''
-    const note = state.padOpen ? '' : moveNote()
-    return 'live' + lens + (state.padOpen ? ' — arrow keys move it' : note ? ' — ' + note : '')
+    return 'live' + lens + (state.padOpen ? ' — arrow keys move it' : '')
   }
   return ''
 }
