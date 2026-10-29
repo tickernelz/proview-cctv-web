@@ -40,8 +40,7 @@ export function setStage(name: string, detail: StageDetail = {}) {
     text = detail.text || 'The stream stopped.'
   } else if (name === 'offline') {
     title = 'Camera offline'
-    const detail = camera ? deviceStatus(camera.device).detail : ''
-    text = camera ? (detail ? detail + '. ' : '') + 'The picture comes back once ' + camera.name + ' answers and the list is refreshed.' : 'The cloud reports it offline.'
+    text = camera ? 'The picture comes back once ' + camera.name + ' answers and the list is refreshed.' : 'The cloud reports it offline.'
   }
   const stage = live.stage
   stage.name = name
