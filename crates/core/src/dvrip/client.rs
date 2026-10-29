@@ -226,6 +226,15 @@ impl Connection {
         self.session = session;
     }
 
+    pub(crate) fn into_parts(self) -> (TcpStream, u32, u32, Vec<u8>) {
+        (
+            self.stream,
+            self.session,
+            self.sequence,
+            self.read_buf.to_vec(),
+        )
+    }
+
     fn next_sequence(&mut self) -> u32 {
         self.sequence = self.sequence.wrapping_add(1);
         self.sequence

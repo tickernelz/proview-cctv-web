@@ -1485,8 +1485,9 @@ observed, so the provider does not call it and the device list stays `msdlistCod
 The cloud path never falls back to a device password: the token the account
 issues is the only login it offers, and a device that refuses it answers with the
 Ret in the error. Camera credentials stay the local-network path for playback,
-live and the walk diagnosis (ZHA-4282); talk over the relay still logs in with
-them until ZHA-4283 moves it to the account token.
+live and the walk diagnosis (ZHA-4282) and, since ZHA-4292, talk over the
+relay too: its DVRIP session logs in with the account device token and its talk frames stay
+plain (4C.29).
 
 ### 4C.28 After a token login the control frames are sealed with the session key,
 and the media start is not (2026-10-29, ZHA-4282)
@@ -1513,6 +1514,44 @@ runs minutes apart: 529 file rows for the day (10,253,928,448 bytes in 2.70 s an
 socket opened (2.4-2.6 s priming, 150 records, 5 keyframes), and 75 decoded frames
 of HEVC 2304x2592 behind 8.17 MB of fMP4 in both.
 
+### 4C.29 Talk over the relay uses the account token, and its talk frames stay plain (2026-10-30, ZHA-4292)
+
+Measured through the RPS tunnel on the test camera with the camera LAN closed
+(192.168.0.100:34567/554 refused), the server started without
+`PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`, and the DVRIP session opened the way
+control and playback open it: `device_login` with the account device token, no
+camera password on the wire.
+
+| Frame | Framing that the device answers |
+|---|---|
+| `OPTalk` Claim (1434) | plain JSON on channel 0, end bit clear - `Ret 100` in 105-111 ms, `SessionID` echoed |
+| the same claim sealed with the 16-character session key | `Ret 117` with an empty `Name`, on two separate token sessions (`0x00000256`, `0x0000025f`) |
+| `OPTalk` Start (1430) | plain, no reply; the camera then streams `1433` back, which means it accepted the start |
+| audio out (1432) | plain, silent PCM; no reply of its own, so on the token session it is only known to leave and be accepted at the TCP level, not that the speaker played it |
+| audio back (1433) | plain 328-byte frames, 25 a second, no reply msgid |
+
+Only the sealed **claim** was measured: the probe stops when the claim is refused,
+so a sealed `1430` or `1432` was never sent and nothing here says how the device
+would take one. Sealed and plain ran on **separate** token sessions (`0x256` and
+`0x25f` sealed, `0x257` and `0x25e` plain); a fresh claim is answered `Ret 100` on
+its own session every time, so "the first claim of a session always fails" is ruled
+out as an explanation for the `Ret 117`, and an empty `Name` in that refusal reads
+as a body the device did not decrypt. The talk path therefore reuses the token
+session for its credentials and keeps the claim and the audio frames plain.
+
+The token path sends no camera credential, so it can reach any camera on the account,
+the same rule live and PTZ already follow; the `PROVIEW_DEVICE_SERIAL` guard now runs
+only before a direct-address login.
+
+`/ws/talk` with silent PCM through the relay, 2026-10-30: claim 111 ms, 75 frames /
+24,000 bytes out in 3.00 s (25.0 frames/s, 0 dropped), write 0.026 ms mean /
+0.062 ms max, camera inbound 25,752 bytes / 74 frames, and
+`GET /api/device/controls?device=<serial>` answering `two-way audio: supported`
+with the relay as the path. `tools/acceptance/talk_acceptance.py` reproduces the
+run: it refuses a camera that answers on the LAN, refuses to start the server with
+a camera credential in its environment, and fails when the row is blocked or when
+the report has no frames, no bytes or no inbound traffic.
+
 ### 4C.4 What that means for the implementation
 
 1. The status cluster that holds the device reports `ServerIP:ServerPort`; that
@@ -1525,7 +1564,7 @@ of HEVC 2304x2592 behind 8.17 MB of fMP4 in both.
    plus `XXEE` → base64 JSON with `ErrorNum 200` and `MTU`.
 4. DVRIP over the tunnel: login with the account device token (4C.24, 4C.28) and
    the `OPMonitor` claim (4C.8); a device password is the `local` mode path only,
-   with talk over the relay the one cloud caller still using it (ZHA-4283).
+   and, since ZHA-4292, talk over the relay as well (4C.29).
    The `rps` id comes from `msdlistCode`, so no new account call is needed.
 
 ## 5. Open items

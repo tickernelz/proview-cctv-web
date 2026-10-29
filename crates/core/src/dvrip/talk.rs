@@ -130,6 +130,17 @@ impl TalkLink {
         }
     }
 
+    pub fn from_connection(connection: crate::dvrip::client::Connection) -> Self {
+        let (stream, session, sequence, pending) = connection.into_parts();
+        stream.set_nodelay(true).ok();
+        Self {
+            stream,
+            session,
+            sequence,
+            pending,
+        }
+    }
+
     pub fn session(&self) -> u32 {
         self.session
     }
@@ -244,10 +255,6 @@ impl TalkLink {
             }
         }
         Ok(())
-    }
-
-    pub async fn close(mut self) {
-        let _ = self.stream.shutdown().await;
     }
 
     fn into_parts(self) -> (OwnedReadHalf, OwnedWriteHalf, u32, u32, Vec<u8>) {
@@ -914,5 +921,40 @@ mod tests {
         let sent = vec![0x11u8; 100];
         assert_eq!(session.send_alaw(&sent).await.expect("send"), 1);
         server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn a_link_taken_from_a_sealed_connection_still_sends_plain_talk_frames() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let (claim, claim_body) = read_frame(&mut socket).await;
+            let (data, data_body) = read_frame(&mut socket).await;
+            (claim, claim_body, data, data_body)
+        });
+
+        let stream = TcpStream::connect(address).await.expect("connect");
+        let mut connection = crate::dvrip::client::Connection::from_stream(stream);
+        connection.set_session(0x0000_0257);
+        connection
+            .set_seal(crate::media::dhav::MediaCipher::from_text("0123456789abcdef").expect("key"));
+        let mut link = TalkLink::from_connection(connection);
+        assert_eq!(link.session_id(), "0x00000257");
+        let session = link.session_id();
+        link.send_json(msg::TALK_CLAIM, &talk_body("Claim", None, &session))
+            .await
+            .expect("claim");
+        link.send(msg::TALK_DATA, &data_frame(&vec![0x11u8; PACKET_BYTES]))
+            .await
+            .expect("audio");
+
+        let (claim, claim_body, data, data_body) = server.await.expect("server");
+        assert_eq!(claim.session, 0x0000_0257);
+        assert_eq!(claim.id, msg::TALK_CLAIM);
+        assert!(json_of(&claim_body)["OPTalk"]["Action"] == "Claim");
+        assert_eq!(data.id, msg::TALK_DATA);
+        assert_eq!(data_body.len(), 8 + PACKET_BYTES);
+        assert_eq!(&data_body[..4], &[0x00, 0x00, 0x01, 0xfa]);
     }
 }

@@ -28,6 +28,20 @@ stability before 1.0.
   `device_login` without claiming the monitor, and every control request and
   its reply are sealed with the 16-character session key the way playback does
   it. No camera password is read from the environment on this path.
+- Two-way audio reaches a cloud camera without its password (ZHA-4292):
+  `/ws/talk` opens the vendor relay with `CloudProvider::open_talk`, whose DVRIP
+  session logs in with the account device token, and the capability report in
+  cloud mode now answers `two-way audio: supported` over the relay instead of
+  asking for `PROVIEW_DEVICE_PASS`. The camera password stays the direct-address
+  path only. The session-key seal of the control channel is not applied to the talk
+  claim: sealed `1434` is refused with `Ret 117`, plain `1434` is answered, and plain
+  `1430`/`1432` are accepted (sealed `1430`/`1432` were not sent, so they are
+  untested - 4C.29).
+- `tools/acceptance/talk_acceptance.py`: one command that proves the talk path
+  end to end. It refuses a camera that answers on the LAN, refuses to start the
+  server with a camera credential in its environment, opens `/ws/talk` with
+  silent PCM, and fails unless the capability row is supported, the report has
+  frames and bytes out, and the camera sent audio back.
 
 ### Changed
 

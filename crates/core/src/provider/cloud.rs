@@ -524,10 +524,27 @@ impl CloudProvider {
         session: &VendorSession,
         device: &str,
     ) -> Result<crate::dvrip::client::Connection, ProviderError> {
-        match self.control_session(session, device).await {
+        self.open_session(session, device, true).await
+    }
+
+    pub async fn open_talk(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        self.open_session(session, device, false).await
+    }
+
+    async fn open_session(
+        &self,
+        session: &VendorSession,
+        device: &str,
+        seal: bool,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        match self.login_session(session, device, seal).await {
             Err(first) if open_is_worth_retrying(&first) => {
-                tracing::warn!(device = %device, %first, "cloud control session failed, opening another tunnel");
-                self.control_session(session, device)
+                tracing::warn!(device = %device, %first, seal, "cloud session failed, opening another tunnel");
+                self.login_session(session, device, seal)
                     .await
                     .map_err(|second| ProviderError::Upstream(format!("{first}; retry: {second}")))
             }
@@ -535,10 +552,11 @@ impl CloudProvider {
         }
     }
 
-    async fn control_session(
+    async fn login_session(
         &self,
         session: &VendorSession,
         device: &str,
+        seal: bool,
     ) -> Result<crate::dvrip::client::Connection, ProviderError> {
         let Some(entry) = self.entry_of(session, device.trim()).await? else {
             return Err(ProviderError::UnknownDevice(device.trim().to_string()));
@@ -550,14 +568,17 @@ impl CloudProvider {
         let (mut connection, note) = self
             .device_login(connection, &entry, &control, &session_key)
             .await?;
-        let sealed = crate::media::dhav::MediaCipher::from_text(&session_key).ok_or_else(|| {
-            ProviderError::LoginRefused(format!(
-                "cloud login stage=session key: a {}-character key cannot seal control frames",
-                session_key.len()
-            ))
-        })?;
-        connection.set_seal(sealed);
-        tracing::debug!(device = %entry.uuid, %note, "cloud control login");
+        if seal {
+            let sealed =
+                crate::media::dhav::MediaCipher::from_text(&session_key).ok_or_else(|| {
+                    ProviderError::LoginRefused(format!(
+                        "cloud login stage=session key: a {}-character key cannot seal control frames",
+                        session_key.len()
+                    ))
+                })?;
+            connection.set_seal(sealed);
+        }
+        tracing::debug!(device = %entry.uuid, %note, seal, "cloud device login");
         Ok(connection)
     }
 
