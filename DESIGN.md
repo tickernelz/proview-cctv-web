@@ -183,6 +183,24 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Playback.** A full screen (Vue, `src/live/PlaybackScreen.vue`) over Live,
+opened by Playback or `#playback` (`live.screen` in the store; leaving it sets
+`#live` again). It opens on the camera on screen with focus on the title. While
+it is open the page-wide key handler stands down whatever has focus, so number
+keys never switch the camera behind it, and Escape or "← Live" returns focus to
+Playback. The strip and the rows are child components so hovering the strip or
+dragging the start slider does not redraw a 557-file day. Camera, day
+(chevron icons either side) and Refresh sit on one row. The summary names the
+camera and the day ("5 files · 185.97 MB · Gate camera on 2026-10-27", "No
+recordings of … on …"); a failed file query is a `--bad` alert; changing the
+day or camera while a list loads shows only the last one asked. The day strip
+carries only ticks, with the hours below it and a legend (blue continuous,
+amber motion); the clip that plays is outlined on the strip and filled in the
+list. Rows carry a 3 px mode bar and the word "motion", not only a colour.
+"Play from here" and Download stay disabled until a clip is chosen, and the
+start slider shows its time in tabular figures. It reuses the camera list the
+app already loaded, and an expired session goes back to sign-in.
+
 **Devices.** A corner sheet (Vue, `src/live/DevicesSheet.vue`) opened by
 Devices; it shares the corner with Cloud recordings and Alarm messages, one at a
 time. The account's cameras are a radio group: arrows move the choice, focus

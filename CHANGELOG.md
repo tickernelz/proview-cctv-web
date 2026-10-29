@@ -39,6 +39,18 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Playback is a Vue screen (ZHA-4181): it opens on the camera on screen
+  instead of the first in the list, focus moves to it and Escape returns to
+  Live (Escape did nothing, and number keys switched the camera behind it, also
+  after a click on the strip); `#playback` opens it again (the link fell back
+  to #live); the
+  summary names the camera and day; a failed file query is a red alert instead
+  of "No files in that range." with the reason in grey under the video;
+  switching day or camera while a list loads no longer lets the older answer
+  win; the strip has hours below it, a legend, and the playing clip outlined;
+  motion rows say "motion" instead of only being greyer; the day arrows are
+  icons instead of ‹ ›; Play from here and Download are disabled until a clip
+  is chosen; the slider shows its time; an expired session returns to sign-in.
 - Devices is a Vue sheet (ZHA-4181): the result of Rename, Save, Share,
   Accept or a password change shows in a line pinned to the bottom of the sheet
   instead of under a form taller than the window, with a red warning for a

@@ -458,11 +458,12 @@ test('the playback overlay draws the whole day and plays the file under the poin
       " const y = first.top + first.height / 2;" +
       " const node = document.elementFromPoint(x, y);" +
       " node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));" +
-      " return (node.id || '') + '|' + document.getElementById('pb-playing').textContent;" +
+      " return node.id || '';" +
       " })()",
     );
-    assert.ok(gapClick.startsWith('pb-timeline|'), 'the gap click reaches the strip: ' + gapClick);
-    assert.equal(gapClick.split('|')[1], GAP_DAY[1].begin + ' → ' + GAP_DAY[1].end, 'a click in a gap plays the clip that follows it');
+    assert.equal(gapClick, 'pb-timeline', 'the gap click reaches the strip');
+    const expected = GAP_DAY[1].begin + ' → ' + GAP_DAY[1].end;
+    await page.wait("document.getElementById('pb-playing').textContent === " + JSON.stringify(expected), 'a click in a gap to play the clip that follows it');
     await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-24'; day.dispatchEvent(new Event('change')); })()");
     await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the dense day again');
 
