@@ -39,6 +39,19 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Devices is a Vue sheet (ZHA-4181): the result of Rename, Save, Share,
+  Accept or a password change shows in a line pinned to the bottom of the sheet
+  instead of under a form taller than the window, with a red warning for a
+  refusal; a working button says "Renaming…" and ignores a second press; the
+  three jobs are on tabs (Name, Sharing, Password) instead of one long form;
+  cameras are a radio group with arrow keys, focus moves into the sheet and
+  Escape or Close hands it back to Devices; a list that fails to load is an
+  alert with Try again instead of grey text above an unusable form, and Accept
+  stays available there and on an account without cameras; Favourite is a
+  switch; the sheet sits in the shared corner below the top bar instead of
+  filling the window and covering Settings; it closes on Settings and sign-in,
+  and signing out clears the typed account password, which stayed in the page
+  before; Indonesian placeholder names are English like the rest of the page.
 - Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
   sign-in instead of after the first 20 s poll or the first open, opening it
   puts focus on Camera and Escape or Close hands it back to the bell (Escape
