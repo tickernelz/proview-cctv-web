@@ -31,16 +31,7 @@
 
 <div id="watch" data-testid="live" class="screen" hidden>
   <a class="skip" href="#controls">Skip to controls</a>
-  <header class="topbar">
-    <button class="switcher" id="switcher" data-testid="camera-switcher" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="camera-menu">
-      <span class="dot" id="switcher-dot" role="img" aria-label="Online"></span><span class="name" id="switcher-name" data-testid="camera-name">No camera</span><span class="meta" id="switcher-meta"></span><svg class="i i-16 chev" aria-hidden="true"><use href="#i-chevron-down"></use></svg>
-    </button>
-    <div class="spacer"></div>
-    <button class="iconbtn" id="grid-toggle" data-testid="grid-toggle" type="button" aria-label="Show every camera" title="Show every camera (G)"><svg class="i" aria-hidden="true"><use href="#i-grid"></use></svg></button>
-    <button class="iconbtn" id="open-settings" data-testid="open-settings" type="button" aria-label="Settings" title="Settings (,)"><svg class="i" aria-hidden="true"><use href="#i-sliders"></use></svg></button>
-    <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
-  </header>
-  <div class="banner" id="banner" role="alert" hidden><svg class="i i-16" aria-hidden="true"><use href="#i-disconnect"></use></svg><span><strong id="banner-title"></strong> <span id="banner-text"></span></span><div class="spacer"></div><button id="banner-action" type="button">Retry now</button></div>
+  <div id="live-top" class="live-top"></div>
   <main id="main" class="viewer">
     <div class="emptywrap" id="empty" data-testid="devices-empty" hidden>
       <div class="empty">
@@ -76,28 +67,6 @@
     </section>
     <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" hidden></section>
   </main>
-
-  <div class="menu" id="camera-menu" data-testid="camera-menu" role="menu" aria-label="Cameras" hidden></div>
-  <section class="menu sheet" id="keys" aria-labelledby="keys-title" hidden>
-    <div class="sheet-h"><h2 id="keys-title">Keyboard</h2><button class="iconbtn" id="keys-close" type="button" aria-label="Close the keyboard list"><svg class="i i-16" aria-hidden="true"><use href="#i-x"></use></svg></button></div>
-    <dl class="keys">
-      <div><dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Switch to camera n</dd></div>
-      <div><dt><kbd>G</kbd></dt><dd>Live or every camera</dd></div>
-      <div><dt><kbd>F</kbd></dt><dd>Full screen</dd></div>
-      <div><dt><kbd>M</kbd></dt><dd>Sound on or off</dd></div>
-      <div><dt><kbd>T</kbd> held</dt><dd>Talk through the camera</dd></div>
-      <div><dt><kbd>R</kbd></dt><dd>Start or stop recording</dd></div>
-      <div><dt><kbd>S</kbd></dt><dd>Snapshot</dd></div>
-      <div><dt><kbd>L</kbd></dt><dd>Both, top, bottom lens</dd></div>
-      <div><dt><kbd>Q</kbd></dt><dd>HD or SD</dd></div>
-      <div><dt><kbd>V</kbd></dt><dd>Open or close the move pad</dd></div>
-      <div><dt>Arrows</dt><dd>Move the lens (pad open) or the tile focus (grid)</dd></div>
-      <div><dt><kbd>Space</kbd></dt><dd>Stop moving</dd></div>
-      <div><dt><kbd>,</kbd></dt><dd>Settings</dd></div>
-      <div><dt><kbd>Esc</kbd></dt><dd>Close menu, then pad, then full screen</dd></div>
-      <div><dt><kbd>?</kbd></dt><dd>This list</dd></div>
-    </dl>
-  </section>
 </div>
 
 <div id="settings" data-testid="settings" class="screen" hidden></div>

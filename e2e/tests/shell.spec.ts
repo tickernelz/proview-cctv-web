@@ -55,3 +55,12 @@ test('a 401 on a signed-in call returns to sign-in to resume the same camera', a
   await expect(page.getByTestId('camera-name')).toHaveText('Porch')
   expect(base).toBeTruthy()
 })
+
+test('the address of another screen closes the Playback overlay', async ({ page }) => {
+  const base = await signIn(page, 'many')
+  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await expect(page.getByTestId('playback')).toBeVisible()
+  await page.evaluate(() => (location.hash = '#settings/server'))
+  await expect(page.locator('#h-server')).toBeVisible()
+  await expect(page.getByTestId('playback')).toBeHidden()
+})

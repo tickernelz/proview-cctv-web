@@ -39,6 +39,16 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- The Live top bar, camera menu, banner and keyboard list are Vue (ZHA-4181):
+  an offline camera banner no longer repeats "cloud status offline" after
+  saying the camera is offline, and its button says what it does: "Refresh
+  the list" when it reloads the cameras, "Retry now" only when it retries the
+  stream after the network came back, as an outlined button with the refresh
+  icon instead of an underlined link; a camera list that fails to load uses
+  the warning icon; the keyboard list gives focus back to where it was when
+  closed from its button; the camera menu keeps digits 1-9 as camera
+  shortcuts while it is open; the address of another screen closes the
+  Playback overlay.
 - Settings is Vue (ZHA-4181): a save the server refuses shows its reason as a
   red alert in the save bar and keeps focus on Save (it used to land only in a
   grey line at the top of Configuration while the bar still said "Unsaved

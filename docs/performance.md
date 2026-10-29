@@ -479,6 +479,30 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Live top bar in Vue (measured 2026-10-29, ZHA-4181)
+
+Step 2 of 6. `src/live/LiveTop.vue` with `src/app/chrome.ts` and
+`src/app/caption.ts` replace the top bar, camera menu, banner and keyboard
+list markup and the floating-menu, banner, caption and flag code in
+`legacy/app.js` (1,733 to 1,362 lines). Same method, baseline origin/main
+c82f7ac, Chromium 1440×900, `many` fixture, median of 10 reloads (box load
+2 to 5):
+
+| Measure | main c82f7ac | Live top bar in Vue |
+|---|---:|---:|
+| JS gzip | 119.03 kB | 119.84 kB |
+| CSS gzip | 8.16 kB | 8.19 kB |
+| HTML gzip | 3.88 kB | 3.21 kB |
+| Live screen shown | 56.7 ms | 57.3 ms |
+| First frame | 100.1 ms | 104.0 ms |
+| DOM elements (page / Live) | 820 / 268 | 771 / 219 |
+
+The camera menu and keyboard list are now built only while open, so the
+closed Live screen carries 49 fewer elements. JS grows 810 B for the Reka
+menu items; HTML loses the static menu and keyboard markup. The two timings
+are within run-to-run spread. e2e 293 passed, 9 skipped; node web tests
+46/46; contrast 76/76.
+
 ### App shell in TypeScript (measured 2026-10-29, ZHA-4181)
 
 First of six steps that empty `src/legacy/`. `src/app/state.ts` (the page

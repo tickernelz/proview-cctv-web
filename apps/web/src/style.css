@@ -107,7 +107,7 @@ code, kbd, .mono { font-family: var(--f-mono); font-size: var(--t-11); letter-sp
 .menu-row { display: flex; align-items: center; gap: var(--s2); min-height: 48px; padding: 0 var(--s3); border-radius: var(--r-md); width: 100%; }
 .menu-row:hover, .menu-row:focus-visible, .menu-row[data-highlighted], .menu-row[aria-checked="true"] { background: var(--bg-3); }
 .menu-panel .menu-row { cursor: pointer; outline: none; }
-.menu-panel .menu-row[data-highlighted] { box-shadow: inset 0 0 0 2px var(--focus); }
+.menu-panel .menu-row[data-highlighted]:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .menu-check { width: 16px; height: 16px; flex: none; display: grid; place-items: center; color: var(--accent); }
 .live-bar { display: contents; }
 .menu-row:focus-visible { outline-offset: -2px; }
@@ -159,9 +159,12 @@ code, kbd, .mono { font-family: var(--f-mono); font-size: var(--t-11); letter-sp
 kbd { display: inline-block; min-width: 18px; padding: 1px var(--s1); border-radius: var(--r-sm); background: var(--bg-3); color: var(--ink); text-align: center; }
 
 .banner { flex: none; display: flex; align-items: center; gap: var(--s2); padding: var(--s3) var(--s5); background: var(--bg-2); border-bottom: 1px solid var(--line); font-size: var(--t-14); color: var(--ink-2); }
-.banner .i { color: var(--warn); }
+.banner > .i { color: var(--warn); }
 .banner strong { font-weight: 500; color: var(--ink); }
-.banner button { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; font-size: var(--t-14); min-height: var(--hit); }
+.banner .btn { flex: none; }
+.banner[data-tone="list"] > .i { color: var(--bad); }
+.live-top { display: contents; }
+.keys-sheet { z-index: 35; }
 
 .auth { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(420px, 500px) 1fr; gap: var(--s8); align-items: center; padding: 0 var(--s5) 0 0; overflow: auto; }
 .auth-form { padding: var(--s6) 0 var(--s6) 72px; display: flex; flex-direction: column; justify-content: center; max-width: 392px; width: 100%; box-sizing: content-box; }

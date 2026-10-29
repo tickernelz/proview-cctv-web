@@ -48,16 +48,15 @@ async function open(options = {}) {
 
 const active = "document.activeElement && (document.activeElement.id || document.activeElement.querySelector('.name')?.textContent)";
 const menuShown =
-  "(() => { const menu = document.getElementById('camera-menu'); return getComputedStyle(menu).display !== 'none' && menu.getBoundingClientRect().height > 0; })()";
+  "(() => { const menu = document.getElementById('camera-menu'); return Boolean(menu) && getComputedStyle(menu).display !== 'none' && menu.getBoundingClientRect().height > 0; })()";
 
-for (const [label, init, mode] of [
-  ['native popover', [], 'native'],
-  ['fallback without the Popover API', [NO_POPOVER], 'fallback'],
+for (const [label, init] of [
+  ['the Popover API present', []],
+  ['no Popover API', [NO_POPOVER]],
 ]) {
   test('camera menu with ' + label + ': arrows rove and wrap, Escape returns focus to the switcher', async () => {
     const page = await open({ init });
     try {
-      assert.equal(await page.evaluate('document.documentElement.dataset.popover'), mode);
       await page.evaluate("document.getElementById('switcher').focus()");
       await page.key('Enter');
       await page.wait(menuShown, 'the camera menu to show');
@@ -73,7 +72,7 @@ for (const [label, init, mode] of [
       assert.equal(await page.evaluate(active), 'Add a camera');
       await page.key('Escape');
       await page.wait('!' + menuShown, 'the camera menu to close');
-      assert.equal(await page.evaluate(active), 'switcher');
+      await page.wait("document.activeElement && document.activeElement.id === 'switcher'", 'focus back on the switcher');
       assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'false');
       assert.equal(await page.evaluate("document.getElementById('watch').hidden"), false, 'Escape inside the menu must not leave Live');
     } finally {
@@ -89,7 +88,7 @@ for (const [label, init, mode] of [
       await page.key('ArrowDown');
       await page.key('Enter');
       await page.wait("document.getElementById('switcher-name').textContent === 'Porch'", 'the switch to Porch');
-      assert.equal(await page.evaluate(active), 'switcher');
+      await page.wait("document.activeElement && document.activeElement.id === 'switcher'", 'focus back on the switcher');
       await page.evaluate("document.getElementById('switcher').click()");
       await page.wait(menuShown, 'the camera menu to reopen');
       await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 700, y: 400, button: 'left', clickCount: 1 });
