@@ -561,10 +561,15 @@ impl CloudProvider {
         let target = self.relay_target(&entry).await?;
         let connection = self.dial(&entry, &target).await?;
         let credential = device_credential_for(entry.uuid.trim(), &entry);
+        let (user, pass) = credential_pair(&credential, "control session")?;
         let (connection, login_note) = self
-            .device_login(connection, &entry, credential, || {
-                self.dial(&entry, &target)
-            })
+            .password_login(
+                connection,
+                entry.uuid.trim(),
+                &user,
+                &pass,
+                "control session".to_string(),
+            )
             .await?;
         tracing::debug!(device = %entry.uuid, %login_note, "cloud control login");
         Ok(connection)

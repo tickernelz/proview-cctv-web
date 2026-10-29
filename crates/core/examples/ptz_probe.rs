@@ -321,6 +321,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if phase == "control" {
+        use proview_core::provider::Provider;
+        let serial = env("PROVIEW_DEVICE_SERIAL");
+        let cfg = proview_core::config::Config::from_env();
+        let provider = proview_core::provider::cloud::CloudProvider::new(&cfg);
+        let account = provider
+            .login(&env("PROVIEW_EMAIL"), &env("PROVIEW_PASSWORD"))
+            .await?;
+        let started = Instant::now();
+        let mut connection = provider.open_control(&account, &serial).await?;
+        let mut timings = vec![json!({
+            "read": "open_control",
+            "ms": started.elapsed().as_millis() as u64,
+            "session": connection.session(),
+        })];
+        for name in ["SystemFunction", "Ptz", "Uart"] {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(Duration::from_secs(8), async {
+                match name {
+                    "SystemFunction" => connection
+                        .abilities()
+                        .await
+                        .map(|value| json!({ "keys": value.as_object().map(|map| map.len()).unwrap_or(0) })),
+                    other => connection.config_get(other).await.map(|value| {
+                        json!({ "bytes": serde_json::to_string(&value).map(|text| text.len()).unwrap_or(0) })
+                    }),
+                }
+            })
+            .await;
+            let entry = match outcome {
+                Ok(Ok(value)) => {
+                    json!({ "read": name, "ms": started.elapsed().as_millis() as u64, "value": value })
+                }
+                Ok(Err(error)) => {
+                    json!({ "read": name, "ms": started.elapsed().as_millis() as u64, "error": error.to_string() })
+                }
+                Err(_) => {
+                    json!({ "read": name, "ms": started.elapsed().as_millis() as u64, "error": "timeout after 8 s" })
+                }
+            };
+            eprintln!("{}", entry);
+            timings.push(entry);
+        }
+        report["reads"] = Value::Array(timings);
+        write_json(&dir, "control.json", &report);
+        let _ = connection.logout().await;
+        return Ok(());
+    }
+
     if phase == "preset" {
         let preset = number("PROVIEW_PRESET", 1);
         let mut steps: Vec<Value> = Vec::new();

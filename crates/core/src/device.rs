@@ -783,7 +783,7 @@ impl DvripControl {
 
     pub fn with_link(link: Arc<dyn ControlLink>, window: Duration) -> Self {
         Self {
-            address: format!("cloud:{}", link.address()),
+            address: link.address(),
             user: String::new(),
             password: String::new(),
             window,
