@@ -6,7 +6,7 @@ import { deviceStatus, statusLine } from '../app/devices'
 import { hms } from '../app/format'
 import { sessionLost } from '../app/shell'
 import { state as page } from '../app/state'
-import { shortStreamError } from '../legacy/app.js'
+import { shortStreamError } from '../app/stage'
 import { gridNow } from './grid-clock'
 
 type View = { device: string; channel: number; quality: 'main' | 'sub' }

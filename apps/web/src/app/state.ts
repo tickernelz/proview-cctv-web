@@ -58,7 +58,7 @@ export const state = {
   recordChunks: [] as Blob[],
   recordStart: 0,
   muted: true,
-  stage: { name: 'idle', requestedAt: 0, failedAt: 0, lastFrameAt: 0, error: null as any },
+  stage: { name: 'idle', requestedAt: 0, failedAt: 0, lastFrameAt: 0, error: null as any, attempt: null as any },
   padOpen: false,
   tour: null as any,
   bannerError: '',

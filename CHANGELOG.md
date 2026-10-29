@@ -39,6 +39,14 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- The Live picture area is Vue (ZHA-4181): a failed stream is announced as an
+  alert with the warning icon in its title; a 502 without stage detail says
+  its reason is the line below instead of pointing at a tooltip nobody can
+  hover on a touch screen; an offline camera says it comes back once that
+  camera answers and the list is refreshed, without repeating "cloud status
+  offline" from the banner above it; the error actions wrap on a narrow
+  screen. The stream, view switching, snapshot, recording, full screen and
+  the Live keyboard shortcuts moved from `legacy/app.js` to `src/app/*.ts`.
 - The Live top bar, camera menu, banner and keyboard list are Vue (ZHA-4181):
   an offline camera banner no longer repeats "cloud status offline" after
   saying the camera is offline, and its button says what it does: "Refresh

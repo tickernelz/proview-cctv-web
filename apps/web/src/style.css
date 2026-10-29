@@ -52,10 +52,11 @@ code, kbd, .mono { font-family: var(--f-mono); font-size: var(--t-11); letter-sp
 .lens-crop video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
 .well-msg { display: flex; flex-direction: column; gap: var(--s2); max-width: 520px; padding: 0 var(--s5); }
 .well[data-state="loading"] .well-msg, .well[data-state="offline"] .well-msg { align-items: center; text-align: center; max-width: 460px; gap: var(--s2); }
-.well-msg h2 { font-size: var(--t-17); font-weight: 500; }
+.well-msg h2 { font-size: var(--t-17); font-weight: 500; display: flex; align-items: center; gap: var(--s2); }
+.well[data-state="error"] .well-msg h2 .i { color: var(--stage-warn); }
 .well-msg p { font-size: var(--t-14); color: var(--stage-ink-2); line-height: 1.5; }
 .well-msg .mono { font-size: var(--t-11); color: var(--stage-ink); }
-.well-msg .actions { display: flex; gap: var(--s2); margin-top: var(--s2); align-items: center; }
+.well-msg .actions { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); align-items: center; }
 .prog { position: absolute; top: 0; left: 0; height: 2px; width: 30%; background: var(--stage-ink); border-radius: 0 2px 2px 0; opacity: 0.85; animation: prog 1.2s linear infinite; }
 @keyframes prog { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 @media (prefers-reduced-motion: reduce) { .prog { animation: none; } }
