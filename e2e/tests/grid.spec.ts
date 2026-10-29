@@ -10,6 +10,7 @@ test('the grid shows every camera as a tile and the layout picks 1 to 3 columns'
   await expect(tiles).toHaveCount(5)
   await expect(tiles.filter({ hasText: 'Shed' })).toHaveAttribute('data-state', 'offline')
   const layout = grid.getByTestId('grid-layout')
+  await layout.getByRole('button', { name: 'Auto', exact: true }).click()
   await expect(layout.getByRole('button', { name: 'Auto', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(grid.getByTestId('grid-tiles')).toBeVisible()
   await expect
@@ -125,6 +126,7 @@ test('arrow keys move focus between tiles and the focused tile shows a ring', as
 
 test('the grid rings the camera that was on screen, also after opening another tile and coming back', async ({ page }) => {
   await signIn(page, 'grid')
+  await expect(page.getByTestId('camera-name')).not.toHaveText('No camera')
   await page.keyboard.press('2')
   await expect(page.getByTestId('camera-name')).toHaveText('Porch')
   await page.getByTestId('grid-toggle').click()

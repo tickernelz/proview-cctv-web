@@ -492,8 +492,11 @@ method, baseline origin/main 4bdbd7e:
 The per-second tile clock is one shared ref read by the playing tiles, instead
 of `querySelectorAll('.tile[data-state="playing"] .tile-meta .right')` in the
 page tick. Stream requests per tile are unchanged (one `/api/stream` per tile
-on open, one per HD/SD toggle or Try again). e2e at this change: 225 passed,
-1 skipped, 3.0 min locally; node web tests 46/46.
+on open, one per HD/SD toggle or Try again). After merging main 192f434 (the
+fisheye and Talk port) the built bundle is JS 111,779 B and CSS 7,794 B gzip.
+e2e at this change: 237 passed, 9 skipped (WebKit-only skips of the fisheye,
+Talk and notification specs), 5.1 min locally on a loaded box; node web tests
+46/46.
 
 ### Playback in Vue (measured 2026-10-29, ZHA-4181)
 
