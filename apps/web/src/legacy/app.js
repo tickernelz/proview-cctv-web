@@ -1848,6 +1848,7 @@ export async function toggleFullscreen() {
 }
 
 function startGrid() {
+  renderTileSelection();
   live.grid.generation += 1;
   live.grid.open = true;
 }

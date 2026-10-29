@@ -388,7 +388,7 @@ select.text-input { background: var(--bg-2); }
 #recordings-panel { overflow-y: auto; }
 
 @media (max-width: 640px), (max-height: 600px) {
-  .tiles { grid-template-rows: none; grid-auto-rows: max-content; overflow-x: hidden; overflow-y: auto; align-content: start; }
+  .tiles, .tiles[data-count] { grid-template-rows: none; grid-auto-rows: max-content; overflow-x: hidden; overflow-y: auto; align-content: start; }
   .tile .well { flex: none; aspect-ratio: 16 / 9; }
 }
 
