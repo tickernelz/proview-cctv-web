@@ -483,7 +483,7 @@ e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 
 `src/live/SettingsScreen.vue` replaces the Settings markup in `index.html`
 and the Settings rendering, save bar, server checks and preference handlers in
-`legacy/app.js` (app.js 2,555 to 2,226 lines). Same method, baseline
+`legacy/app.js` (app.js 2,555 to 2,104 lines). Same method, baseline
 origin/main 1621d21:
 
 | File | main 1621d21 | Settings in Vue | Delta |

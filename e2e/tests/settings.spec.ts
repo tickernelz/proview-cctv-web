@@ -119,3 +119,38 @@ test('a provider switch the server refuses stays on screen as an alert', async (
   await expect(error).toContainText('the provider is busy')
   await expect(page.getByRole('radio', { name: 'Cloud account', exact: true })).toBeChecked()
 })
+
+test('Settings opens again on the section that was clicked last, from the gear, the comma key and the address', async ({ page }) => {
+  await openSection(page, 'Configuration')
+  await expect(page.locator('#h-config')).toBeVisible()
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await page.getByTestId('open-settings').click()
+  await expect(page.locator('#h-config')).toBeVisible()
+  await expect(page.getByTestId('settings').getByRole('link', { name: 'Configuration', exact: true })).toHaveAttribute('aria-current', 'page')
+  await page.getByTestId('settings').getByRole('link', { name: 'Server', exact: true }).focus()
+  await page.keyboard.press('ArrowUp')
+  await expect(page.locator('#h-config')).toBeVisible()
+  await page.keyboard.press('ArrowDown')
+  await expect(page.locator('#h-server')).toBeVisible()
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await page.keyboard.press(',')
+  await expect(page.locator('#h-server')).toBeVisible()
+  await expect(page).toHaveURL(/#settings\/server$/)
+})
+
+test('a refused provider switch is not shown again when Settings opens later', async ({ page }) => {
+  await page.route('**/api/config/mode', (route) =>
+    route.request().method() === 'POST' ? route.fulfill({ status: 500, json: { message: 'the provider is busy' } }) : route.continue(),
+  )
+  await openSection(page, 'Connection')
+  await page.getByRole('radio', { name: 'This network', exact: true }).check()
+  await expect(page.getByTestId('mode-error')).toBeVisible()
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings').getByRole('link', { name: 'Connection', exact: true }).click()
+  await expect(page.locator('#h-connection')).toBeVisible()
+  await expect(page.getByTestId('mode-error')).toHaveCount(0)
+})

@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
-import { leaveSettings, setMode, setPref, signOut, toggleTheme, toggleWhiteLight } from '../legacy/app.js'
+import { leaveSettings, setMode, setPref, showSection, signOut, toggleTheme, toggleWhiteLight } from '../legacy/app.js'
 import { live, menuOpen, type Prefs } from './store'
 
 type Field = {
@@ -30,7 +30,6 @@ const SECTIONS = [
   { id: 'config', name: 'Configuration' },
   { id: 'server', name: 'Server' },
 ]
-const KNOWN = ['playback', 'camera', 'device', 'connection', 'config', 'server']
 const OPTION_LABELS: Record<string, string> = {
   proview: 'Vendor cloud',
   cloud: 'Cloud account',
@@ -226,9 +225,7 @@ async function goBack() {
 }
 
 function show(section: string, focus: boolean) {
-  const next = KNOWN.includes(section) ? section : 'playback'
-  s.section = next
-  if (focus) s.focusHeading += 1
+  showSection(section, focus)
 }
 
 function onNavKey(event: KeyboardEvent) {
@@ -356,15 +353,11 @@ watch(changed, (count) => {
 })
 
 onMounted(() => {
-  s.dirty = () => changed.value > 0
-  s.blockLeave = () => goBack()
-  s.save = save
   ;(window as unknown as { loadSettings: () => Promise<void> }).loadSettings = load
   document.addEventListener('keydown', onKey)
 })
 onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 
-defineExpose({ show })
 </script>
 
 <template>

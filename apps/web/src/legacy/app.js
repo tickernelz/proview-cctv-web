@@ -1817,6 +1817,7 @@ function renderSettingsChrome() {
 
 export function openSettings(section, options = {}) {
   stopAll();
+  live.settings.modeError = '';
   showScreen('settings');
   showSection(section || state.section, options.focus);
   if (location.hash !== '#settings/' + state.section) {
