@@ -5,7 +5,7 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## Unreleased
+## 0.3.6 — 2026-10-29
 
 ### Changed
 
@@ -57,7 +57,7 @@ stability before 1.0.
   crop, pan-and-tilt pad, presets, tour and the device-control gates moved to
   `src/app/lens.ts` and `src/app/controls.ts`, and the pad is rendered by
   `LiveMain.vue` from the store. The pad keys, Tour and the presets behave as
-  before; only `legacy/account.js` remains.
+  before.
 - The Live picture area is Vue (ZHA-4181): a failed stream is announced as an
   alert with the warning icon in its title; a 502 without stage detail says
   its reason is the line below instead of pointing at a tooltip nobody can
