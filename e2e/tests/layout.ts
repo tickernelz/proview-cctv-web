@@ -170,7 +170,7 @@ export async function walkScreens(page: Page, check: Check) {
   await expect(page.getByTestId('signin')).toBeVisible()
   await check('sign-in, account')
   await page.getByRole('tab', { name: 'This network', exact: true }).click()
-  await expect(page.locator('#panel-local')).toBeVisible()
+  await expect(page.getByRole('tabpanel', { name: 'This network', exact: true })).toBeVisible()
   await check('sign-in, this network')
 
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))

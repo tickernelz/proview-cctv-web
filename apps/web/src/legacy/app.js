@@ -9,8 +9,6 @@ export const enc = encodeURIComponent;
 const PREFS_KEY = 'pvw_prefs_v2';
 const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server'];
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
-const SIGNIN_LEDE = 'The same PROVIEW account your phone uses. The camera password stays on this machine.';
-const SIGNIN_STAGE = 'The picture appears here as soon as a camera answers.';
 
 document.documentElement.dataset.popover = POPOVER ? 'native' : 'fallback';
 
@@ -314,24 +312,6 @@ function applyTheme() {
   }
 }
 
-function setLoginError(message, fieldId) {
-  const box = el(fieldId === 'local-pass' ? 'local-error' : 'login-error');
-  const field = el(fieldId === 'local-pass' ? 'local-pass-field' : 'password-field');
-  const input = el(fieldId || 'password');
-  box.querySelector('span').textContent = message || '';
-  box.hidden = !message;
-  field.classList.toggle('bad', Boolean(message));
-  if (message) {
-    input.setAttribute('aria-invalid', 'true');
-    input.setAttribute('aria-describedby', box.id);
-    input.focus();
-    input.select();
-  } else {
-    input.removeAttribute('aria-invalid');
-    input.removeAttribute('aria-describedby');
-  }
-}
-
 function showSignin(options = {}) {
   stopAll();
   state.signedIn = false;
@@ -339,39 +319,22 @@ function showSignin(options = {}) {
   state.cameras = [];
   state.selectedId = null;
   showScreen('signin');
-  const expired = Boolean(options.expired);
-  el('signin-notice').hidden = !expired;
-  el('signin-lede').textContent = expired
-    ? 'The server ended this session at ' + hm(state.expiredAt) + '. Signing in again picks the camera back up.'
-    : SIGNIN_LEDE;
-  el('signin-stage').textContent =
-    expired && state.stage.lastFrameAt
-      ? 'Last frame ' + hms(state.stage.lastFrameAt) + '. Signing in picks the stream up again.'
-      : SIGNIN_STAGE;
-  el('login-submit').textContent = expired ? 'Sign in to resume' : 'Sign in';
-  setLoginError('');
-  setLoginError('', 'local-pass');
+  const signin = live.signin;
+  signin.expired = Boolean(options.expired);
+  signin.expiredAt = state.expiredAt || 0;
+  signin.lastFrameAt = state.stage.lastFrameAt || 0;
+  signin.generation += 1;
   if (options.focus !== false) {
-    el(expired && el('email').value ? 'password' : 'email').focus();
+    signin.focus += 1;
   }
 }
 
-function switchSignInMode(mode) {
-  const cloud = mode !== 'local';
-  el('tab-cloud').setAttribute('aria-selected', String(cloud));
-  el('tab-local').setAttribute('aria-selected', String(!cloud));
-  el('tab-cloud').tabIndex = cloud ? 0 : -1;
-  el('tab-local').tabIndex = cloud ? -1 : 0;
-  el('panel-cloud').hidden = !cloud;
-  el('panel-local').hidden = cloud;
-}
-
-async function signedIn() {
+export async function signedIn() {
   let me;
   try {
     me = await api('/api/me');
   } catch {
-    showSignin({ focus: state.screen !== 'boot' });
+    showSignin();
     await loadMode();
     return;
   }
@@ -443,17 +406,15 @@ async function loadMode() {
 function renderMode() {
   const status = el('mode-status');
   const notice = el('mode-notice');
-  const localMode = el('local-mode');
   for (const radio of document.querySelectorAll('input[name="mode"]')) {
     radio.disabled = !state.signedIn;
     radio.checked = Boolean(state.mode) && radio.value === state.mode.mode;
   }
   el('account-row').hidden = !state.signedIn;
+  live.signin.mode = state.mode;
   if (!state.mode) {
     status.textContent = 'The server did not report a provider mode.';
     notice.hidden = true;
-    localMode.textContent = 'The server did not report which provider it uses.';
-    setLocalFormEnabled(false);
     return;
   }
   status.textContent =
@@ -471,18 +432,7 @@ function renderMode() {
   } else {
     notice.hidden = true;
   }
-  localMode.textContent =
-    state.mode.mode === 'local'
-      ? 'The server is set to this network, so the camera login below is the one to use.'
-      : 'The server is set to the ' + modeName(state.mode.mode) + '. Open Settings, Connection, choose this network, then come back to this tab.';
-  setLocalFormEnabled(state.mode.mode === 'local');
   renderCameraInfo();
-}
-
-function setLocalFormEnabled(enabled) {
-  for (const id of ['local-user', 'local-pass', 'local-submit']) {
-    el(id).disabled = !enabled;
-  }
 }
 
 async function setMode(mode) {
@@ -2177,7 +2127,7 @@ function renderSettingsChrome() {
   renderControlAvailability();
 }
 
-function openSettings(section, options = {}) {
+export function openSettings(section, options = {}) {
   stopAll();
   showScreen('settings');
   showSection(section || state.section, options.focus);
@@ -2383,88 +2333,6 @@ document.addEventListener('keyup', (event) => {
 
 window.addEventListener('blur', () => stopTalk());
 
-el('login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  setLoginError('');
-  const button = el('login-submit');
-  setBusy(button, true, 'Signing in…');
-  try {
-    await api('/api/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: el('email').value, password: el('password').value }),
-    });
-    el('password').value = '';
-    setBusy(button, false, '');
-    await signedIn();
-  } catch (error) {
-    setBusy(button, false, '');
-    setLoginError(
-      error.status === 401 ? 'That email and password were not accepted: ' + error.message : 'Sign in failed: ' + error.message,
-    );
-  }
-});
-
-el('tab-cloud').addEventListener('click', () => switchSignInMode('cloud'));
-el('tab-local').addEventListener('click', () => switchSignInMode('local'));
-for (const tab of [el('tab-cloud'), el('tab-local')]) {
-  tab.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
-      event.preventDefault();
-      const next = tab.id === 'tab-cloud' ? 'local' : 'cloud';
-      switchSignInMode(next);
-      el('tab-' + next).focus();
-    }
-  });
-}
-
-el('local-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  setLoginError('', 'local-pass');
-  const button = el('local-submit');
-  setBusy(button, true, 'Signing in…');
-  try {
-    await api('/api/login', {
-      method: 'POST',
-      body: JSON.stringify({ email: el('local-user').value, password: el('local-pass').value }),
-    });
-    el('local-pass').value = '';
-    setBusy(button, false, '');
-    await signedIn();
-  } catch (error) {
-    setBusy(button, false, '');
-    setLoginError(
-      error.status === 401 ? 'The camera did not accept that username and password.' : 'The camera login failed: ' + error.message,
-      'local-pass',
-    );
-  }
-});
-
-el('local-connect').addEventListener('click', async () => {
-  const button = el('local-connect');
-  setLoginError('', 'local-pass');
-  el('local-report').hidden = true;
-  el('local-next').hidden = true;
-  setBusy(button, true, 'Probing…');
-  try {
-    const report = await api('/api/device/probe', { method: 'POST' });
-    el('local-host').textContent = report.host;
-    el('local-session').textContent = String(report.session);
-    el('local-type').textContent = report.device_type || 'not reported';
-    el('local-video').textContent = report.video_codec || 'not reported';
-    el('local-audio').textContent = report.audio_codec || 'none';
-    el('local-fps').textContent = report.framerate ? report.framerate + ' fps' : 'not reported';
-    el('local-report').hidden = false;
-    el('local-next').hidden = false;
-  } catch (error) {
-    el('local-mode').textContent =
-      error.code === 'device_host_missing'
-        ? 'This server has no camera address yet. Open Settings, Configuration, add the camera address and its login, restart the app, then probe again.'
-        : 'The camera on this network did not answer: ' + error.message;
-  } finally {
-    setBusy(button, false, '');
-  }
-});
-
 for (const radio of document.querySelectorAll('input[name="mode"]')) {
   radio.addEventListener('change', () => {
     if (radio.checked) {
@@ -2485,7 +2353,6 @@ el('signout').addEventListener('click', async () => {
   await loadMode();
 });
 
-el('login-settings').addEventListener('click', () => openSettings('config', { focus: true }));
 el('empty-settings').addEventListener('click', () => openSettings('config', { focus: true }));
 el('open-settings').addEventListener('click', () => openSettings(state.section));
 el('settings-back').addEventListener('click', () => leaveSettings());

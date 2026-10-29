@@ -183,6 +183,18 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Sign-in.** Vue (`src/live/SignInScreen.vue`, mounted into `#signin-main`;
+the top bar stays static). Account and This network are Reka tabs. Email has
+focus on open; after an expired session the password has it when the email is
+known. A refused sign-in is a `--bad` alert with the warning icon under the
+password, which stays selected and carries `aria-invalid`; the server text is
+not repeated for a 401. Submit reads "Signing in…" with `aria-busy` and
+ignores further presses. This network shows the camera form only when the
+server is in local mode; otherwise one sentence points to Account or Settings.
+The probe is an outlined button; its failure is an alert, its report a
+definition list. Remember is the same switch as in Settings. Open Settings is
+an outlined button with the sliders icon.
+
 **Every camera (grid).** Vue (`src/live/GridView.vue`, one `GridTile.vue` per
 camera, mounted into `#grid`). Columns: Auto / 1 / 2 / 3 as a labelled segment;
 below 641 px wide every layout is one column (a saved 3-column layout no longer

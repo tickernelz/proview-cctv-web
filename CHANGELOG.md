@@ -39,6 +39,13 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Sign-in is Vue (ZHA-4181): the cursor starts in Email; a wrong password is
+  an alert with the warning icon in our own words, and the password stays
+  selected; Sign in shows "Signing in…" while it works and a second press sends
+  nothing; "This network" on a cloud server says to use Account instead of
+  showing a disabled form; a failed camera probe is a red alert, not grey text;
+  Remember is a switch next to the form instead of an injected checkbox; Open
+  Settings is an outlined button instead of an underlined link.
 - Every camera (the grid) is Vue (ZHA-4181): on a phone the tiles no longer
   overlap (a tile's HD/SD and caption sat on the next tile's picture) and a
   saved 2- or 3-column layout falls back to one column below 641 px; a tile

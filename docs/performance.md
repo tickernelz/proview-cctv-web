@@ -479,6 +479,24 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Sign-in in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/SignInScreen.vue` replaces the sign-in markup in `index.html`, the
+sign-in handlers in `legacy/app.js` and the remember checkbox that
+`legacy/account.js` injected. Same method, baseline origin/main 056072d:
+
+| File | main 056072d | Sign-in in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 113,230 B | 114,300 B | +1,070 B |
+| CSS | 7,830 B | 7,900 B | +70 B |
+| HTML | 6,710 B | 5,850 B | -860 B |
+
+Requests are unchanged: one `GET /api/account/remembered` on load, one
+`POST /api/login` per accepted press (a second press while busy sends none),
+`POST /api/account/remember` only with the switch on. e2e at this change:
+120 passed in the sign-in, visual, touch and responsive specs; node web tests
+17/17 for `settings-boot` and `ui`.
+
 ### Every camera in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/GridView.vue` and `GridTile.vue` replace `legacy/grid.js`. Same

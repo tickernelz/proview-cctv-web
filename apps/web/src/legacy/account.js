@@ -20,81 +20,6 @@
     return body;
   }
 
-  function rememberBox() {
-    const form = el('login-form');
-    if (!form || el('remember-account')) {
-      return el('remember-account');
-    }
-    const field = document.createElement('div');
-    field.className = 'field';
-    field.innerHTML =
-      '<label style="display:flex;gap:8px;align-items:center;font-size:var(--t-14)"><input id="remember-account" type="checkbox" style="height:16px;width:16px"> <span>Remember this account in this browser</span></label>' +
-      '<p class="hint" id="remember-note" hidden></p>';
-    const submit = el('login-submit');
-    form.insertBefore(field, submit || null);
-    el('remember-account').addEventListener('change', () => {
-      el('remember-note').hidden = true;
-    });
-    return el('remember-account');
-  }
-
-  function setNote(text) {
-    const note = el('remember-note');
-    if (!note) {
-      return;
-    }
-    note.textContent = text;
-    note.hidden = !text;
-  }
-
-  async function rememberNow() {
-    const box = el('remember-account');
-    if (!box || !box.checked) {
-      return;
-    }
-    try {
-      await call('/api/account/remember', { method: 'POST' });
-      setNote('This account will come back signed in next time.');
-    } catch (error) {
-      setNote('Could not remember the account: ' + error.message);
-    }
-  }
-
-  async function restore() {
-    let state = null;
-    try {
-      state = await call('/api/account/remembered');
-    } catch (error) {
-      state = null;
-    }
-    if (!state || !state.email) {
-      return;
-    }
-    const email = el('email');
-    if (email && !email.value) {
-      email.value = state.email;
-    }
-    if (!state.restored) {
-      setNote('The remembered session for ' + state.email + ' expired. Sign in again to continue.');
-    }
-  }
-
-  function watchSignIn() {
-    const screen = el('signin');
-    if (!screen) {
-      return;
-    }
-    let wasVisible = !screen.hidden;
-    const observer = new MutationObserver(() => {
-      const visible = !screen.hidden;
-      if (wasVisible && !visible) {
-        rememberNow();
-      }
-      wasVisible = visible;
-    });
-    observer.observe(screen, { attributes: true, attributeFilter: ['hidden'] });
-  }
-
   function panel() {
     if (el('add-device')) {
       return el('add-device');
@@ -226,9 +151,6 @@
   }
 
   function start() {
-    rememberBox();
-    restore();
-    watchSignIn();
     watchEmpty();
     watchSignOut();
   }
