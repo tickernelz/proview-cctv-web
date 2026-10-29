@@ -487,10 +487,10 @@ Tabs vendored as `src/components/ui/tabs/`. Same method, baseline origin/main
 
 | File | main 8960187 | Devices in Vue | Delta |
 |---|---:|---:|---:|
-| JS | 107,987 B | 110,710 B | +2,723 B |
-| CSS | 7,173 B | 7,482 B | +309 B |
+| JS | 107,987 B | 110,859 B | +2,872 B |
+| CSS | 7,173 B | 7,494 B | +321 B |
 
 Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
-budgets. e2e at this change: 195 passed, 1 skipped, 1.7 min locally; node web
+budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.

@@ -46,10 +46,12 @@ stability before 1.0.
   three jobs are on tabs (Name, Sharing, Password) instead of one long form;
   cameras are a radio group with arrow keys, focus moves into the sheet and
   Escape or Close hands it back to Devices; a list that fails to load is an
-  alert with Try again instead of grey text above an unusable form; Favourite
-  is a switch; the sheet sits in the shared corner instead of filling the
-  window from the top; Indonesian placeholder names are English like the rest
-  of the page.
+  alert with Try again instead of grey text above an unusable form, and Accept
+  stays available there and on an account without cameras; Favourite is a
+  switch; the sheet sits in the shared corner below the top bar instead of
+  filling the window and covering Settings; it closes on Settings and sign-in,
+  and signing out clears the typed account password, which stayed in the page
+  before; Indonesian placeholder names are English like the rest of the page.
 - Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
   sign-in instead of after the first 20 s poll or the first open, opening it
   puts focus on Camera and Escape or Close hands it back to the bell (Escape

@@ -193,7 +193,12 @@ the result line stay put while the body scrolls, so a result is seen without
 scrolling: green check for done, red warning with `role="alert"` for a refusal.
 A button that is working reads "Renaming…" with `aria-busy` and ignores a
 second press. Favourite is the same switch as in Settings. A list that fails to
-load is an alert with Try again and no form; an account without cameras says so.
+load is an alert with Try again; an account without cameras says so. Without a
+chosen camera the sheet opens on Sharing with Name and Password disabled, so
+Accept (a camera shared with you, or an invitation key) still works: an empty
+account gets its first camera that way. The sheet closes when Live is left for
+Settings or sign-in, signing out clears every typed field, and its height stops
+below the top bar.
 
 **Alarm messages.** The bell in the top bar (Vue, `src/live/AlarmCenter.vue`)
 counts alarms from the first check after sign-in, without opening anything. The
