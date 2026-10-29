@@ -2,84 +2,18 @@ import { api } from '../lib/api';
 import { StreamPlayer } from '../lib/stream-player';
 import { live, menuOpen } from '../live/store';
 import { startTalk, stopTalk } from '../live/talk';
+import { savePrefs, state } from '../app/state';
+import { hms } from '../app/format';
+import { buildCameras, currentCamera, deviceStatus, selectedDevice, statusLine } from '../app/devices';
+import { applyTheme } from '../app/theme';
+import { modeName, openSettings, renderPrefsIntoForm, sessionLost, showSection, signedIn, sourceLabel } from '../app/shell';
 
 export const el = (id) => document.getElementById(id);
 export const enc = encodeURIComponent;
 
-const PREFS_KEY = 'pvw_prefs_v2';
-const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server'];
 const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
 
 document.documentElement.dataset.popover = POPOVER ? 'native' : 'fallback';
-
-export const state = {
-  screen: 'boot',
-  view: 'live',
-  section: 'playback',
-  signedIn: false,
-  account: null,
-  devices: [],
-  cameras: [],
-  selectedId: null,
-  channel: 1,
-  lens: null,
-  lensSupport: 'unknown',
-  lensView: 'combined',
-  control: { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null },
-  players: new Map(),
-  ticket: null,
-  mode: null,
-  recorder: null,
-  recordChunks: [],
-  recordStart: 0,
-  muted: true,
-  stage: { name: 'idle', requestedAt: 0, failedAt: 0, lastFrameAt: 0, error: null },
-  padOpen: false,
-  tour: null,
-  bannerError: '',
-  networkLostAt: null,
-  expiredAt: null,
-  resume: null,
-  prefs: loadPrefs(),
-};
-
-function defaultPrefs() {
-  return { theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: false };
-}
-
-function loadPrefs() {
-  let stored = {};
-  try {
-    stored = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') || {};
-  } catch {
-    stored = {};
-  }
-  let legacyTheme = null;
-  try {
-    legacyTheme = localStorage.getItem('pvw_theme');
-  } catch {
-    legacyTheme = null;
-  }
-  const prefs = { ...defaultPrefs(), ...stored };
-  if (!stored.theme && (legacyTheme === 'dark' || legacyTheme === 'light')) {
-    prefs.theme = legacyTheme;
-  }
-  return prefs;
-}
-
-function savePrefs() {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(state.prefs));
-  } catch {}
-}
-
-export function hms(time) {
-  return new Date(time).toLocaleTimeString([], { hour12: false });
-}
-
-export function hm(time) {
-  return new Date(time).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
-}
 
 function icon(name, extra) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -96,17 +30,6 @@ export function make(tag, className, text) {
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
-}
-
-
-export function sessionLost(error) {
-  if (!error || error.status !== 401 || !state.signedIn) {
-    return false;
-  }
-  state.expiredAt = Date.now();
-  state.resume = state.selectedId ? { id: state.selectedId, channel: state.channel } : null;
-  showSignin({ expired: true });
-  return true;
 }
 
 const floating = { open: null };
@@ -149,7 +72,7 @@ function settleFloating(restoreFocus) {
   }
 }
 
-function closeFloating(restoreFocus) {
+export function closeFloating(restoreFocus) {
   const open = floating.open;
   if (!open) {
     return false;
@@ -268,207 +191,12 @@ window.addEventListener('resize', () => {
   layoutLensCrop();
 });
 
-function showScreen(name) {
-  closeFloating(false);
-  state.screen = name;
-  for (const id of ['boot', 'signin', 'watch', 'settings']) {
-    el(id).hidden = id !== name;
-  }
-  document.body.dataset.screen = name;
-  live.settings.shown = name === 'settings';
-}
-
-function resolveTheme() {
-  const chosen = state.prefs.theme;
-  if (chosen === 'light' || chosen === 'dark') {
-    return chosen;
-  }
-  return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-}
-
-function applyTheme() {
-  const theme = resolveTheme();
-  document.documentElement.dataset.theme = theme;
-  live.theme = theme;
-  live.settings.prefs.theme = state.prefs.theme;
-  for (const button of document.querySelectorAll('[data-theme-toggle]')) {
-    button.setAttribute('aria-label', theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme');
-    button.querySelector('use').setAttribute('href', theme === 'dark' ? '#i-sun' : '#i-moon');
-  }
-}
-
-export function toggleTheme() {
-  state.prefs.theme = resolveTheme() === 'dark' ? 'light' : 'dark';
-  savePrefs();
-  applyTheme();
-}
-
-function showSignin(options = {}) {
-  stopAll();
-  state.signedIn = false;
-  state.devices = [];
-  state.cameras = [];
-  state.selectedId = null;
-  live.settings.signedIn = false;
-  showScreen('signin');
-  const signin = live.signin;
-  signin.expired = Boolean(options.expired);
-  signin.expiredAt = state.expiredAt || 0;
-  signin.lastFrameAt = state.stage.lastFrameAt || 0;
-  signin.generation += 1;
-  if (options.focus !== false) {
-    signin.focus += 1;
-  }
-}
-
-export async function signedIn() {
-  let me;
-  try {
-    me = await api('/api/me');
-  } catch {
-    showSignin();
-    await loadMode();
-    return;
-  }
-  state.signedIn = true;
-  state.account = me.account || null;
-  live.settings.signedIn = true;
-  live.settings.account = state.account || '';
-  if (state.screen !== 'settings') {
-    showScreen('watch');
-  }
-  await loadMode();
-  await loadDevices();
-  if (state.screen === 'settings') {
-    stopAll();
-    renderSettingsChrome();
-    return;
-  }
-  route(location.hash, false);
-}
-
-function route(hash, focus) {
-  const raw = (hash || '').replace(/^#/, '');
-  if (raw.startsWith('settings')) {
-    openSettings(raw.split('/')[1] || state.section, { focus });
-    return;
-  }
-  if (!state.signedIn) {
-    return;
-  }
-  if (state.screen !== 'watch') {
-    showScreen('watch');
-  }
-  if (raw === 'playback') {
-    live.screen = 'playback';
-    return;
-  }
-  setView(raw === 'grid' && state.cameras.length > 1 ? 'grid' : 'live');
-}
-
-function modeName(mode) {
-  if (mode === 'local') {
-    return 'this network';
-  }
-  if (mode === 'cloud') {
-    return 'cloud account';
-  }
-  return 'unknown';
-}
-
-function sourceLabel() {
-  if (state.ticket && state.ticket.source) {
-    return state.ticket.source;
-  }
-  if (state.mode && state.mode.source) {
-    return state.mode.source;
-  }
-  return 'source unknown';
-}
-
-async function loadMode() {
-  try {
-    state.mode = await api('/api/config/mode');
-  } catch (error) {
-    state.mode = null;
-    console.error('mode report failed', error);
-  }
-  renderMode();
-}
-
-function renderMode() {
-  live.signin.mode = state.mode;
-  live.settings.mode = state.mode;
-  live.settings.signedIn = state.signedIn;
-  if (state.mode) {
-    renderCameraInfo();
-  }
-}
-
-export async function setMode(mode) {
-  live.settings.modeError = '';
-  try {
-    state.mode = await api('/api/config/mode', { method: 'POST', body: JSON.stringify({ mode }) });
-    state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null };
-    state.tour = null;
-    renderMode();
-    await loadDevices({ keepScreen: true });
-  } catch (error) {
-    if (sessionLost(error)) {
-      return;
-    }
-    await loadMode();
-    live.settings.modeError = 'The server did not change the provider: ' + error.message;
-  }
-}
-
-function buildCameras() {
-  state.cameras = [];
-  for (const device of state.devices) {
-    const count = Math.max(1, device.channels || 1);
-    for (let channel = 1; channel <= count; channel += 1) {
-      state.cameras.push({
-        device,
-        channel,
-        key: device.id + ':' + channel,
-        name: count > 1 ? device.name + ' · channel ' + channel : device.name,
-      });
-    }
-  }
-}
-
-function selectedDevice() {
-  return state.devices.find((device) => device.id === state.selectedId) || null;
-}
-
-function currentCamera() {
-  const key = state.selectedId + ':' + state.channel;
-  return state.cameras.find((camera) => camera.key === key) || null;
-}
-
 function lensMeta() {
   const count = lensEntries().length;
   if (count > 1) {
     return 'dual lens';
   }
   return state.lens ? 'single lens' : '';
-}
-
-export function deviceStatus(device) {
-  if (!device) {
-    return { known: false, online: false, detail: '' };
-  }
-  const status = String(device.online_status || '').toLowerCase();
-  const known = status ? status !== 'unknown' : Boolean(device.online !== undefined);
-  return { known, online: Boolean(device.online), detail: device.online_detail || '' };
-}
-
-export function statusLine(device) {
-  const status = deviceStatus(device);
-  if (status.detail) {
-    return status.detail;
-  }
-  return status.known ? (status.online ? 'cloud status online' : 'cloud status offline') : 'cloud status not read';
 }
 
 function renderSwitcher() {
@@ -551,7 +279,7 @@ export function openCamera(index) {
   selectDevice(camera.device.id, { channel: camera.channel });
 }
 
-async function loadDevices(options = {}) {
+export async function loadDevices(options = {}) {
   state.bannerError = '';
   renderBanner();
   try {
@@ -750,7 +478,7 @@ function liveLag() {
   return Number.isFinite(lag) && lag >= 0 ? lag : null;
 }
 
-function renderFsLine() {
+export function renderFsLine() {
   const camera = currentCamera();
   const showing = state.stage.name === 'playing' || state.stage.name === 'stalled';
   el('fs-line').hidden = !(document.fullscreenElement === el('well') && state.prefs.osd && showing && camera);
@@ -909,8 +637,6 @@ function explainStreamError(error, attempt) {
   return 'The stream could not be started: the server answered ' + error.status + '. The exact reason is in this line\u2019s tooltip.';
 }
 
-
-
 function stagePlayer() {
   let player = state.players.get('stage');
   if (!player) {
@@ -942,7 +668,7 @@ function stopStagePlayer() {
   stopRecording();
 }
 
-function stopAll() {
+export function stopAll() {
   stopTalk();
   stopStagePlayer();
   stopGrid();
@@ -1220,7 +946,7 @@ function frameDims() {
   };
 }
 
-function layoutLensCrop() {
+export function layoutLensCrop() {
   const well = el('well');
   const box = el('lens-crop');
   if (!well || !box || box.hidden) {
@@ -1262,7 +988,7 @@ function currentCrop() {
   return entry ? entry.crop : { x: 0, y: 0, w: 1, h: 1 };
 }
 
-function renderControlAvailability() {
+export function renderControlAvailability() {
   const rows = state.control.rows;
   if (state.control.error) {
     live.settings.controlNote = 'Device controls could not be read: ' + state.control.error;
@@ -1592,7 +1318,7 @@ async function requestStream() {
   }
 }
 
-function renderCameraInfo() {
+export function renderCameraInfo() {
   const camera = currentCamera();
   if (!camera) {
     live.settings.camera = null;
@@ -1633,7 +1359,7 @@ export function shortStreamError(error) {
   return 'The stream could not be started: the server answered ' + error.status + '.';
 }
 
-function renderMute() {
+export function renderMute() {
   const video = el('video');
   video.muted = state.muted;
   live.muted = state.muted;
@@ -1769,7 +1495,7 @@ function moveTileFocus(key) {
   live.grid.moveFocus(key);
 }
 
-function setView(name, options = {}) {
+export function setView(name, options = {}) {
   const next = name === 'grid' && state.cameras.length > 0 ? 'grid' : 'live';
   const changed = state.view !== next;
   state.view = next;
@@ -1800,75 +1526,7 @@ function setView(name, options = {}) {
   }
 }
 
-export function showSection(name, focus) {
-  const section = SECTIONS.includes(name) ? name : 'playback';
-  state.section = section;
-  live.settings.section = section;
-  if (focus) {
-    live.settings.focusHeading += 1;
-  }
-}
-
-function renderSettingsChrome() {
-  renderMode();
-  renderCameraInfo();
-  renderControlAvailability();
-}
-
-export function openSettings(section, options = {}) {
-  stopAll();
-  live.settings.modeError = '';
-  showScreen('settings');
-  showSection(section || state.section, options.focus);
-  if (location.hash !== '#settings/' + state.section) {
-    history.replaceState(null, '', '#settings/' + state.section);
-  }
-  renderPrefsIntoForm();
-  renderSettingsChrome();
-  live.settings.load += 1;
-  if (!options.focus) {
-    live.settings.focusBack += 1;
-  }
-}
-
-export function leaveSettings() {
-  if (!state.signedIn) {
-    showSignin();
-    return;
-  }
-  showScreen('watch');
-  const view = state.view;
-  state.view = null;
-  setView(view);
-  el('open-settings').focus();
-}
-
-function renderPrefsIntoForm() {
-  Object.assign(live.settings.prefs, state.prefs);
-  live.quality = state.prefs.quality;
-}
-
-export function setPref(name, value) {
-  if (name === 'quality') {
-    setQuality(value);
-    return;
-  }
-  state.prefs[name] = value;
-  savePrefs();
-  renderPrefsIntoForm();
-  if (name === 'theme') {
-    applyTheme();
-  } else if (name === 'osd') {
-    renderFsLine();
-  } else if (name === 'muted') {
-    state.muted = value;
-    renderMute();
-  } else if (name === 'flip') {
-    layoutLensCrop();
-  }
-}
-
-function setQuality(quality) {
+export function setQuality(quality) {
   if (state.prefs.quality === quality) {
     return;
   }
@@ -1980,16 +1638,6 @@ document.addEventListener('keyup', (event) => {
 
 window.addEventListener('blur', () => stopTalk());
 
-export async function signOut() {
-  try {
-    await api('/api/logout', { method: 'POST' });
-  } catch {}
-  state.stage.lastFrameAt = 0;
-  live.settings.reset += 1;
-  showSignin();
-  await loadMode();
-}
-
 el('empty-settings').addEventListener('click', () => openSettings('config', { focus: true }));
 el('open-settings').addEventListener('click', () => openSettings(state.section));
 el('refresh').addEventListener('click', () => loadDevices());
@@ -2026,18 +1674,6 @@ Object.assign(live.actions, {
   toggleFullscreen,
   chooseLens,
   setQuality,
-});
-
-for (const button of document.querySelectorAll('[data-theme-toggle]')) {
-  button.addEventListener('click', toggleTheme);
-}
-
-window.addEventListener('hashchange', () => route(location.hash, true));
-
-window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
-  if (state.prefs.theme === 'system') {
-    applyTheme();
-  }
 });
 
 window.addEventListener('offline', () => {
@@ -2083,13 +1719,6 @@ if (typeof ResizeObserver === 'function') {
 document.addEventListener('fullscreenchange', () => {
   layoutLensCrop();
   renderFsLine();
-});
-
-window.addEventListener('desktop-live', () => {
-  if (state.signedIn) {
-    showScreen('watch');
-    setView('live');
-  }
 });
 
 state.muted = state.prefs.muted;

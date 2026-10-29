@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { sessionLost } from '../legacy/app.js'
+import { sessionLost } from '../app/shell'
 
 type Stream = 'main' | 'extra'
 type Block = 'encode' | 'network' | 'storage'

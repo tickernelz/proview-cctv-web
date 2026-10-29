@@ -479,6 +479,31 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### App shell in TypeScript (measured 2026-10-29, ZHA-4181)
+
+First of six steps that empty `src/legacy/`. `src/app/state.ts` (the page
+state and the stored preferences), `format.ts` (clock strings), `devices.ts`
+(camera list and cloud status), `theme.ts` and `shell.ts` (screens, hash
+routing, sign-in, sign-out, provider mode, opening and leaving Settings,
+preferences) replace the same code in `legacy/app.js` (2,104 to 1,733
+lines). Every Vue component now imports these from `src/app/`; what it still
+imports from `legacy/app.js` is Live-frame code that the next steps move.
+Same build, baseline origin/main e1e731a, Chromium at 1440×900 on the `many`
+fixture, median of 10 reloads on a shared box (load 10 to 16):
+
+| Measure | main e1e731a | App shell in TS |
+|---|---:|---:|
+| JS gzip | 119.00 kB | 119.03 kB |
+| CSS gzip | 8.16 kB | 8.16 kB |
+| HTML gzip | 3.88 kB | 3.88 kB |
+| Live screen shown | 108.8 ms | 85.0 ms |
+| First frame | 204.0 ms | 147.0 ms |
+| DOM elements (page / Live) | 820 / 268 | 820 / 268 |
+
+The code moved without changing behaviour, so the two timings differ by box
+noise rather than by the change. e2e: 282 passed, 9 skipped with the new
+`shell.spec.ts` (4 tests); node web tests 46/46; contrast 76/76.
+
 ### Settings in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/SettingsScreen.vue` replaces the Settings markup in `index.html`

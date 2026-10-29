@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
-import { state as page } from '../legacy/app.js'
+import { state as page } from '../app/state'
 import { live } from './store'
 
 type Picture = { object?: string; bucket?: string }

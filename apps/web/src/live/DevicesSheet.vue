@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { api } from '../lib/api'
-import { sessionLost } from '../legacy/app.js'
+import { sessionLost } from '../app/shell'
 import { addLauncher, live, menuOpen } from './store'
 
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
