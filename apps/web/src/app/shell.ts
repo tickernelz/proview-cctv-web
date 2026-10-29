@@ -118,7 +118,7 @@ export async function setMode(mode: string) {
   live.settings.modeError = ''
   try {
     state.mode = await api('/api/config/mode', { method: 'POST', body: JSON.stringify({ mode }) })
-    state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null, talkBlocked: null }
+    state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null }
     state.tour = null
     renderMode()
     await loadDevices({ keepScreen: true })

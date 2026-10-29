@@ -158,7 +158,6 @@ function failTalk(message: string, scope?: string) {
   live.talk.note = 'talk failed: ' + message
   if (scope === 'path') {
     live.gate.intercom = { ok: false, why: 'two-way audio is unavailable: ' + message }
-    state.control.talkBlocked = { device: state.selectedId, why: message }
   }
   renderCaption()
 }
