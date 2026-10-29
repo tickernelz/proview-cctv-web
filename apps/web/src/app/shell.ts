@@ -205,6 +205,7 @@ window.addEventListener('hashchange', () => route(location.hash, true))
 
 window.addEventListener('desktop-live', () => {
   if (state.signedIn) {
+    live.screen = ''
     showScreen('watch')
     setView('live')
   }

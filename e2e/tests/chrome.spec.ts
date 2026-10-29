@@ -50,6 +50,17 @@ test('the keyboard list closes from its button and gives focus back to where it 
   await expect(page.getByTestId('grid-toggle')).toBeFocused()
 })
 
+test('Tab in the keyboard list closes it and moves on from where focus was', async ({ page }) => {
+  await signIn(page, 'many')
+  await playing(page)
+  await page.getByTestId('open-settings').focus()
+  await page.keyboard.press('?')
+  await expect(page.locator('#keys-close')).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(page.getByTestId('keys-sheet')).toBeHidden()
+  await expect(page.getByTestId('live').getByTestId('theme-toggle')).toBeFocused()
+})
+
 test('a digit typed while the camera menu is open switches to that camera', async ({ page }) => {
   await signIn(page, 'many')
   await playing(page)

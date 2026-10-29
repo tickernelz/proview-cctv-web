@@ -64,3 +64,14 @@ test('the address of another screen closes the Playback overlay', async ({ page 
   await expect(page.locator('#h-server')).toBeVisible()
   await expect(page.getByTestId('playback')).toBeHidden()
 })
+
+test('the desktop tray Live item closes the Playback overlay and gives the digit keys back', async ({ page }) => {
+  const base = await signIn(page, 'many')
+  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await expect(page.getByTestId('playback')).toBeVisible()
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktop-live')))
+  await expect(page.getByTestId('playback')).toBeHidden()
+  await playing(page)
+  await page.keyboard.press('2')
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+})

@@ -78,6 +78,12 @@ function closeKeys() {
   top.keysOpen = false
 }
 
+function tabOut() {
+  if (previous && previous.isConnected) previous.focus()
+  top.restoreFocus = false
+  top.keysOpen = false
+}
+
 function outside(event: PointerEvent) {
   if (keys.value && !keys.value.contains(event.target as Node)) {
     top.restoreFocus = false
@@ -147,7 +153,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside, true)
       <Icon name="refresh" small />{{ live.banner.action === 'retry' ? 'Retry now' : 'Refresh the list' }}
     </button>
   </div>
-  <section id="keys" ref="keys" class="menu sheet keys-sheet" data-testid="keys-sheet" aria-labelledby="keys-title" :hidden="!top.keysOpen">
+  <section id="keys" ref="keys" class="menu sheet keys-sheet" data-testid="keys-sheet" aria-labelledby="keys-title" :hidden="!top.keysOpen" @keydown.tab="tabOut">
     <div class="sheet-h">
       <h2 id="keys-title">Keyboard</h2>
       <button id="keys-close" ref="keysClose" class="iconbtn" type="button" aria-label="Close the keyboard list" @click="closeKeys"><Icon name="x" small /></button>
