@@ -17,6 +17,20 @@ on Linux, `~/Library/Application Support/io.zhafron.proview-cctv` on macOS) or
 `PROVIEW_DATA_DIR` for the standalone server. The resolved path is shown in the
 Settings view and returned by `GET /api/settings`.
 
+## Who may read or write it
+
+The route carries the camera credentials, the cloud
+address and the cookie secret, so both calls are gated. The desktop build answers
+only on the authority the shell bound (`127.0.0.1:<port>`) and only to a request
+that holds a live sign-in or the per-run page token from
+`window.__PROVIEW_DESKTOP__`; anything else gets `403` (another `Host`) or `401`
+(no session and no token). The standalone server answers only a loopback `Host`
+(`127.0.0.1`, `localhost`, `[::1]`, with or without a port) and refuses any other
+`Host` with `403`, so a name that resolves to this machine through DNS rebinding,
+or a request that arrived over the network, cannot read or write it; a browser page
+on this machine keeps the pre-sign-in path the sign-in screen needs. A request that
+carries an `Origin` must carry this server's own origin.
+
 ## How it applies
 
 1. On start the file is read and every key is exported into the environment **only when
@@ -129,3 +143,4 @@ it writes behind it.
 |---|---|---|
 | `GET /api/settings` | — | `{path, exists, fields:[{key,label,group,kind,options,hint,restart,secret,set,value,default,min,max}]}`; `default` is what an unset key behaves as, `min`/`max` bound a number |
 | `POST /api/settings` | `{"values":{ "<KEY>": "<value>" }}` | the same view, after the file is written |
+| either call from another `Host`, or from an `Origin` that is not this server's own | — | `403 {"ok":false,"message":"…"}`; in the desktop build a request with no session and no page token answers `401` |

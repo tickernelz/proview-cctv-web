@@ -85,6 +85,29 @@ test('the desktop group stays out of the way on a self-hosted page', async () =>
   }
 });
 
+test('the desktop page hands its run token to the settings calls', async () => {
+  const page = await browser.page({
+    init: [
+      "window.__PROVIEW_DESKTOP__ = { token: 'web-test-token' };",
+      "window.__seenSettings = []; window.fetch = ((inner) => (url, options) => { if (String(url).indexOf('/api/settings') === 0) { const headers = (options && options.headers) || {}; window.__seenSettings.push(headers['x-proview-desktop-token'] || ''); } return inner(url, options); })(window.fetch);",
+    ],
+  });
+  try {
+    await page.call('Network.clearBrowserCookies');
+    await page.goto(server.base + '/');
+    await page.wait("!document.getElementById('signin').hidden", 'the sign-in screen', 20000);
+    await page.evaluate("document.getElementById('login-settings').click()");
+    await page.wait("document.getElementById('setting-proview-device-host') !== null", 'the settings fields', 20000);
+    assert.deepEqual(
+      await page.evaluate('window.__seenSettings'),
+      ['web-test-token'],
+      'the page token rides every settings call, which is what the desktop build asks for',
+    );
+  } finally {
+    await page.close();
+  }
+});
+
 test('a desktop alarm event opens the sheet on that camera', async () => {
   const page = await browser.page({ init: SHELL });
   try {

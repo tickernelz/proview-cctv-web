@@ -7,8 +7,37 @@ stability before 1.0.
 
 ## Unreleased
 
+### Security
+
+- The settings route answers only the machine it serves, and only a page it served
+  (ZHA-4132). `GET` and `POST /api/settings` carry the camera user and password, the
+  cloud address and the cookie secret, and answered any request that reached the port,
+  so a name that resolved to this machine through DNS rebinding, or a request from the
+  network, could read and rewrite them. The desktop build now answers only the
+  authority its shell bound (`127.0.0.1:<port>`) and only to a request holding a live
+  sign-in or the per-run page token the shell writes into the page; anything else is
+  `403` for another `Host` and `401` without a credential. The standalone server answers
+  only a loopback `Host` and refuses every other `Host`, and any request whose
+  `Origin` is not this server's own, with `403`. The sign-in screen keeps its settings
+  on this machine, so a wrong camera address can still be fixed before signing in.
+- AP-mode provisioning reaches the camera on its own network only (ZHA-4026). Both
+  sockets pass an allowlist before they open: private (`10/8`, `172.16/12`,
+  `192.168/16`), link-local or limited broadcast, never a public, loopback,
+  unspecified or multicast address, and the route answers `400` instead of sending.
+  The TCP login uses `admin` with only the password typed in the form, never
+  `PROVIEW_DEVICE_USER` / `PROVIEW_DEVICE_PASS`, which stay with the host the app was
+  configured for.
+
 ### Changed
 
+- The tray says why the alarms are quiet (ZHA-4154). Its first line now reads
+  `Alarm notifications on · session ends 21:14` while the shared session is live and
+  `Alarm notifications paused · session ended 21:14` once it has lapsed, in local
+  time, so the hour is visible without opening the window; off reads
+  `Alarm notifications off` and a run that never had a session says it is waiting for
+  one. The pause notification still posts once per loss, and the session lifetime
+  itself is unchanged: the store stays the only source of truth and no vendor token
+  is kept anywhere else.
 - The page has a refined look (ZHA-4181): one icon family (Lucide, built into
   the inline sprite, so no icon runtime ships), a blue accent for what is
   pressed, selected, checked or primary, no text under 12 px, tabular numbers on

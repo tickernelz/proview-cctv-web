@@ -36,6 +36,19 @@ QuickConfigResultActivity
 number is stored as the message id by `CConfigAPDev::Start_Wifi`
 (`0xb28254`, `mov w9, #0x1407`).
 
+### What the route may reach (ZHA-4026)
+
+`POST /api/apmode/provision` no longer chooses a network target from the body: it
+dials the two addresses the protocol needs, `192.168.10.1:34567` over TCP for the
+config write and `255.255.255.255:8001` over UDP for the discovery datagrams, and both
+pass an allowlist before any socket opens — private (`10/8`, `172.16/12`, `192.168/16`),
+link-local (`169.254/16`) or limited broadcast only. A public, loopback, unspecified or
+multicast address is refused with `400`, and nothing is sent. The TCP login uses
+`admin` and only the password typed into that form, never `PROVIEW_DEVICE_USER` /
+`PROVIEW_DEVICE_PASS`, so the configured camera credentials never leave the machine for
+a host this app was not configured with. The route needs a signed-in session, like the
+rest of `/api/apmode`.
+
 ## 2. Native chain
 
 | Symbol | Address | Role |

@@ -114,7 +114,7 @@ mod tests {
     use super::*;
     use proview_core::config::{Config, ProviderKind};
     use proview_core::provider::Mode;
-    use rocket::http::ContentType;
+    use rocket::http::{ContentType, Header};
     use rocket::local::blocking::Client;
     use std::path::{Path, PathBuf};
 
@@ -285,6 +285,7 @@ mod tests {
         assert_eq!(status, Status::Ok);
         let response = client
             .post("/api/settings")
+            .header(Header::new("Host", "127.0.0.1:8787"))
             .header(ContentType::JSON)
             .body(
                 serde_json::json!({ "values": { "PROVIEW_DEVICE_USER": "operator" } }).to_string(),

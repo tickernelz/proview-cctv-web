@@ -45,6 +45,16 @@ impl Store {
             .map(|(id, entry)| (id.clone(), entry.session.clone()))
     }
 
+    pub fn latest_remaining(&self) -> Option<Duration> {
+        let mut guard = self.inner.lock().expect("session store poisoned");
+        let now = Instant::now();
+        guard.retain(|_, entry| entry.expires > now);
+        guard
+            .values()
+            .max_by_key(|entry| entry.order)
+            .map(|entry| entry.expires.saturating_duration_since(now))
+    }
+
     pub fn get(&self, id: &str) -> Option<VendorSession> {
         let mut guard = self.inner.lock().expect("session store poisoned");
         match guard.get(id) {
