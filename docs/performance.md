@@ -531,3 +531,35 @@ Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
 budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.
+### Fisheye overlay and Talk in Vue (measured 2026-10-29, ZHA-4213)
+
+`src/live/FisheyeOverlay.vue` + `src/live/fisheye.ts` replace `legacy/fisheye.js`,
+and `src/live/talk.ts` replaces `legacy/talk.js`. Same method, baseline origin/main
+4bdbd7e:
+
+| File | main 4bdbd7e | Fisheye + Talk in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,619 B | 111,524 B | -95 B |
+| CSS | 7,701 B | 7,738 B | +37 B |
+
+The shader source is byte-identical (2,572 characters). Per frame the overlay no
+longer allocates a 65-float array or a size string, nor looks up the attribute location.
+`gl.finish()` does not wait for the draw in headless Chrome 156 (SwiftShader), so each
+frame is synchronised with a 1 px `readPixels`. Base 4bdbd7e and this change in one
+page, 6 alternating rounds, box load 7.4-12.8 (measured in review, ZHA-4220):
+
+| Measure | legacy/fisheye.js | Vue | |
+|---|---:|---:|---|
+| Upload 640x720 + render 960x540 + readPixels, median of medians | 13.9 ms (12.4-14.0) | 13.1 ms (12.1-14.7) | inside the noise |
+| `render()` on a real 4x4 GL canvas, 20k calls | 2.77 us (2.22-4.06) | 1.62 us (1.09-2.03) | |
+| `render()` against a GL stub (JS cost only), 1M calls | 2,484 ns (2,194-2,849) | 1,718 ns (1,435-1,995) | -31 %, ranges disjoint |
+
+Against `/api/fisheye/map` on the 512x512
+lens, every shader pixel agrees on coverage (8,100 of 8,100 equirect 180x90,
+14,399 of 14,399 ptz 160x90) with a worst source error of 1.58 px and 2.00 px, the
+8-bit read-back quantisation; legacy/fisheye.js gives the same two numbers, and a
+mutant that shifts the bearing by 3.6 deg fails at 15.9 px. The live overlay paints
+50.07 % of the canvas in equirect and 100 % in ptz. Talk against a fake `/ws/talk`
+peer: 49 chunks of 640 B in about 2 s (legacy/talk.js: 48), stop message and
+closed socket the same. e2e at this change: 223 passed, 9 skipped (CI run
+40803589907).
