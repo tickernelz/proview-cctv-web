@@ -4,7 +4,7 @@ A small Rocket server, and a Tauri desktop shell around it, that put PROVIEW
 CCTV (package `com.proview.cctv`, a Xiongmai / XMEye white-label) cameras on a
 desktop instead of a phone.
 
-Current release: **v0.3.6** (`CHANGELOG.md` carries what changed). Status: a
+Current release: **v0.3.7** (`CHANGELOG.md` carries what changed). Status: a
 working server and desktop app with configuration in the app itself. Live video
 from a LAN camera works end to end. The vendor cloud account login **ships
 here**: email + password is sealed in the signed v3 envelope from Rust
@@ -216,7 +216,7 @@ docs                 protocol record, contracts, deploy and install guides
 
 ## Download and signing status
 
-Installers and server binaries come from one release per tag (v0.3.6 is the
+Installers and server binaries come from one release per tag (v0.3.7 is the
 current one), with `SHA256SUMS` covering every file. None of them are
 code-signed — there is no Apple Developer certificate and no Windows signing
 certificate behind this project.

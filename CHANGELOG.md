@@ -5,7 +5,7 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## 0.3.6 — 2026-10-29
+## 0.3.7 — 2026-10-29
 
 ### Security
 
@@ -44,6 +44,11 @@ stability before 1.0.
   one. The pause notification still posts once per loss, and the session lifetime
   itself is unchanged: the store stays the only source of truth and no vendor token
   is kept anywhere else.
+
+## 0.3.6 — 2026-10-29
+
+### Changed
+
 - The page has a refined look (ZHA-4181): one icon family (Lucide, built into
   the inline sprite, so no icon runtime ships), a blue accent for what is
   pressed, selected, checked or primary, no text under 12 px, tabular numbers on
