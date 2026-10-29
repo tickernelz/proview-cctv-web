@@ -1,4 +1,5 @@
-import { closePad, cycleLens, sendControl, togglePad } from '../legacy/app.js'
+import { closePad, sendControl, togglePad } from './controls'
+import { cycleLens } from './lens'
 import { live, menuOpen } from '../live/store'
 import { startTalk, stopTalk } from '../live/talk'
 import { closeFloating, toggleKeys } from './chrome'
@@ -11,11 +12,6 @@ const ARROWS: Record<string, string> = { ArrowUp: 'up', ArrowDown: 'down', Arrow
 
 function typing(target: EventTarget | null) {
   return Boolean(target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"]'))
-}
-
-function enabled(selector: string) {
-  const button = document.querySelector(selector) as HTMLButtonElement | null
-  return Boolean(button && !button.disabled)
 }
 
 function onWatchKey(event: KeyboardEvent) {
@@ -44,7 +40,7 @@ function onWatchKey(event: KeyboardEvent) {
     if (state.view === 'live' && state.padOpen) {
       event.preventDefault()
       const act = ARROWS[key]
-      if (enabled('.pk.' + act)) sendControl(act)
+      if (live.gate[act].ok) sendControl(act)
     } else if (state.view === 'grid') {
       event.preventDefault()
       moveTileFocus(key)
@@ -54,7 +50,7 @@ function onWatchKey(event: KeyboardEvent) {
   if (key === ' ') {
     if (state.padOpen && !(event.target instanceof Element && event.target.closest('button'))) {
       event.preventDefault()
-      if (enabled('#pad .home')) sendControl('home')
+      if (live.gate.home.ok) sendControl('home')
     }
     return
   }

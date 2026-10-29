@@ -4,7 +4,7 @@ import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
 import { leaveSettings, setMode, setPref, showSection, signOut } from '../app/shell'
 import { toggleTheme } from '../app/theme'
-import { toggleWhiteLight } from '../legacy/app.js'
+import { toggleWhiteLight } from '../app/controls'
 import { live, menuOpen, type Prefs } from './store'
 
 type Field = {

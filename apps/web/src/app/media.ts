@@ -1,4 +1,5 @@
-import { currentCrop, setControlStatus } from '../legacy/app.js'
+import { setControlStatus } from './controls'
+import { currentCrop } from './lens'
 import { live } from '../live/store'
 import { elapsed, renderFlag } from './caption'
 import { selectedDevice } from './devices'

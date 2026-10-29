@@ -1,6 +1,7 @@
 import { api } from '../lib/api'
 import { StreamPlayer } from '../lib/stream-player'
-import { layoutLensCrop, lensEntries, lensViewLabel, setControlStatus } from '../legacy/app.js'
+import { setControlStatus } from './controls'
+import { layoutLensCrop, lensEntries, lensViewLabel } from './lens'
 import { live } from '../live/store'
 import { elapsed, renderCaption, renderFlag } from './caption'
 import { renderBanner } from './chrome'
