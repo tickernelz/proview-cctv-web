@@ -183,6 +183,37 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Every camera (grid).** Vue (`src/live/GridView.vue`, one `GridTile.vue` per
+camera, mounted into `#grid`). Columns: Auto / 1 / 2 / 3 as a labelled segment;
+below 641 px wide every layout is one column (a saved 3-column layout no longer
+squeezes tiles to 111 px on a phone), and rows size to the picture so the
+caption of one tile never lands on the next. Each tile is a 16:9 well with the
+name, state word, an outlined HD/SD toggle and the clock (tabular, hidden while
+there is nothing to time). Connecting says so inside the picture; a failed or
+offline tile centres its reason, and a failed one offers Try again as a button.
+A layout the server refuses to save is a `--bad` alert with the warning icon.
+Arrow keys move focus between tiles and the focused tile shows the 2 px ring.
+The count line names cameras and states only; the layout lives on the segment.
+One shared 1 s clock drives every tile instead of a DOM query per second.
+
+**Playback.** A full screen (Vue, `src/live/PlaybackScreen.vue`) over Live,
+opened by Playback or `#playback` (`live.screen` in the store; leaving it sets
+`#live` again). It opens on the camera on screen with focus on the title. While
+it is open the page-wide key handler stands down whatever has focus, so number
+keys never switch the camera behind it, and Escape or "← Live" returns focus to
+Playback. The strip and the rows are child components so hovering the strip or
+dragging the start slider does not redraw a 557-file day. Camera, day
+(chevron icons either side) and Refresh sit on one row. The summary names the
+camera and the day ("5 files · 185.97 MB · Gate camera on 2026-10-27", "No
+recordings of … on …"); a failed file query is a `--bad` alert; changing the
+day or camera while a list loads shows only the last one asked. The day strip
+carries only ticks, with the hours below it and a legend (blue continuous,
+amber motion); the clip that plays is outlined on the strip and filled in the
+list. Rows carry a 3 px mode bar and the word "motion", not only a colour.
+"Play from here" and Download stay disabled until a clip is chosen, and the
+start slider shows its time in tabular figures. It reuses the camera list the
+app already loaded, and an expired session goes back to sign-in.
+
 **Devices.** A corner sheet (Vue, `src/live/DevicesSheet.vue`) opened by
 Devices; it shares the corner with Cloud recordings and Alarm messages, one at a
 time. The account's cameras are a radio group: arrows move the choice, focus
@@ -199,6 +230,17 @@ Accept (a camera shared with you, or an invitation key) still works: an empty
 account gets its first camera that way. The sheet closes when Live is left for
 Settings or sign-in, signing out clears every typed field, and its height stops
 below the top bar.
+
+**Device settings.** A Settings section (Vue, `src/live/DeviceSettings.vue`,
+mounted into `#set-body` with its link added to the section nav). It reads
+encode, network and storage together each time it is shown. One status line
+(`#device-status`) says what is happening; a write's outcome stays there after
+the read-back reload, in `--warn` for a revert, a failed revert or a refusal.
+The write report sits above the forms: per field before, asked for, after and
+state, then the fields put back from the saved copy. The address is read only;
+DHCP, gateway and submask stay editable so the server's 409 refusal names what
+would have moved the camera. A save button that is working says so with
+`aria-busy` and ignores a second press.
 
 **Alarm messages.** The bell in the top bar (Vue, `src/live/AlarmCenter.vue`)
 counts alarms from the first check after sign-in, without opening anything. The

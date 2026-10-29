@@ -1,7 +1,7 @@
 import { api } from '../lib/api';
 import { StreamPlayer } from '../lib/stream-player';
 import { live, menuOpen } from '../live/store';
-import { startTalk, stopTalk } from './talk.js';
+import { startTalk, stopTalk } from '../live/talk';
 
 export const el = (id) => document.getElementById(id);
 export const enc = encodeURIComponent;
@@ -403,6 +403,10 @@ function route(hash, focus) {
   if (state.screen !== 'watch') {
     showScreen('watch');
   }
+  if (raw === 'playback') {
+    live.screen = 'playback';
+    return;
+  }
   setView(raw === 'grid' && state.cameras.length > 1 ? 'grid' : 'live');
 }
 
@@ -753,7 +757,7 @@ function captionText() {
   if (state.networkLostAt && state.stage.lastFrameAt) {
     return 'not updating — last frame ' + hms(state.stage.lastFrameAt);
   }
-  if (talk.active) {
+  if (live.talk.on) {
     return 'live — the microphone is open';
   }
   if (name === 'loading') {
@@ -790,7 +794,7 @@ function renderFlag() {
   if (state.recorder) {
     text = 'Recording ' + elapsed(state.recordStart);
     tone = 'rec';
-  } else if (talk.active) {
+  } else if (live.talk.on) {
     text = 'release to stop';
   } else if (state.networkLostAt) {
     text = 'stale';
@@ -843,9 +847,6 @@ function tick() {
     live.record.elapsed = elapsed(state.recordStart);
   }
   renderFlag();
-  for (const tile of document.querySelectorAll('.tile[data-state="playing"] .tile-meta .right')) {
-    tile.textContent = now;
-  }
 }
 
 window.setInterval(tick, 1000);
@@ -1833,9 +1834,7 @@ function toggleRecord() {
   renderRecord();
 }
 
-export const talk = { active: false, stream: null, context: null, frame: 0 };
-
-async function toggleFullscreen() {
+export async function toggleFullscreen() {
   const target = state.view === 'grid' ? el('tiles') : el('well');
   if (document.fullscreenElement) {
     await document.exitFullscreen().catch(() => {});
@@ -1847,19 +1846,21 @@ async function toggleFullscreen() {
 }
 
 function startGrid() {
-  ProviewGrid.open();
+  renderTileSelection();
+  live.grid.generation += 1;
+  live.grid.open = true;
 }
 
 function stopGrid() {
-  ProviewGrid.close();
+  live.grid.open = false;
 }
 
 function renderTileSelection() {
-  ProviewGrid.syncSelection();
+  live.grid.selected = state.selectedId + ':' + state.channel;
 }
 
 function moveTileFocus(key) {
-  ProviewGrid.moveFocus(key);
+  live.grid.moveFocus(key);
 }
 
 function setView(name, options = {}) {
@@ -2356,7 +2357,7 @@ function onWatchKey(event) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented || menuOpen()) {
+  if (event.defaultPrevented || menuOpen() || live.screen) {
     return;
   }
   if (state.screen === 'watch') {
@@ -2545,7 +2546,6 @@ el('check-password').addEventListener('click', () => {
 el('switcher').addEventListener('click', () => toggleFloating(el('camera-menu'), el('switcher'), renderCameraMenu));
 el('grid-toggle').addEventListener('click', () => setView(state.view === 'grid' ? 'live' : 'grid'));
 el('keys-close').addEventListener('click', () => closeFloating(false));
-el('grid-fullscreen').addEventListener('click', toggleFullscreen);
 el('light').addEventListener('click', toggleWhiteLight);
 el('run-checks').addEventListener('click', runChecks);
 for (const key of el('pad').querySelectorAll('.pk')) {

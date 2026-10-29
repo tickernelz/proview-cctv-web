@@ -479,6 +479,62 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Every camera in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/GridView.vue` and `GridTile.vue` replace `legacy/grid.js`. Same
+method, baseline origin/main 4bdbd7e:
+
+| File | main 4bdbd7e | Grid in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,609 B | 111,891 B | +282 B |
+| CSS | 7,696 B | 7,753 B | +57 B |
+
+The per-second tile clock is one shared ref read by the playing tiles, instead
+of `querySelectorAll('.tile[data-state="playing"] .tile-meta .right')` in the
+page tick. Stream requests per tile are unchanged (one `/api/stream` per tile
+on open, one per HD/SD toggle or Try again). After merging main 192f434 (the
+fisheye and Talk port) the built bundle is JS 111,779 B and CSS 7,794 B gzip.
+e2e at this change: 237 passed, 9 skipped (WebKit-only skips of the fisheye,
+Talk and notification specs), 5.1 min locally on a loaded box; node web tests
+46/46.
+
+### Playback in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/PlaybackScreen.vue` replaces `legacy/playback.js`; the day strip and
+the file rows are child components (`PlaybackStrip.vue`, `PlaybackRows.vue`),
+so the start slider and the strip's hover title do not re-render them. Same
+method, baseline origin/main e299f4d:
+
+| File | main e299f4d | Playback in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 110,859 B | 111,609 B | +750 B |
+| CSS | 7,494 B | 7,696 B | +202 B |
+
+Per-event cost on a 557-file day (the 2026-10-24 pattern), 1440x900, event
+handler plus the Vue flush, two rounds per run, in the Playwright image against
+the fixture server (probe not committed):
+
+| per event | main e299f4d | first Vue port f5926b4 | this change |
+|---|---:|---:|---:|
+| mousemove on the strip, Chromium | 0.32-0.38 ms | 3.3-3.8 ms | 0.37-0.48 ms |
+| mousemove on the strip, WebKit | 0.33-0.40 ms | 3.6 ms | 0.34-0.47 ms |
+| slider input, Chromium | 0.005-0.008 ms | 2.7-2.8 ms | 0.04-0.08 ms |
+| slider input, WebKit | < 0.01 ms | 3.2-3.5 ms | 0.06-0.11 ms |
+| row click (starts a clip), Chromium | 0.23-0.25 ms | 4.1-4.9 ms | 0.58-0.93 ms |
+| row click (starts a clip), WebKit | 0.05-0.08 ms | 3.8-4.7 ms | 0.35-0.83 ms |
+
+The first port re-rendered all 557 rows and segments on every hover and slider
+step, because the root template read the hover title and the slider value. The
+hover title is now written to the strip element, and rows and segments are
+memoised on whether they hold the playing clip. A row click still costs more
+than the old DOM code (two rows and two segments are patched and the
+MediaSource is rebuilt), and stays well under one frame. The slider is a Vue
+binding where the old code wrote nothing per step; it stays under 0.11 ms.
+
+Opening Playback no longer sends its own `/api/devices` (one vendor status
+query per camera in cloud mode); it reads the list the app loaded. e2e at this
+change: 212 passed, 1 skipped, 2.8 min locally; node web tests 46/46.
+
 ### Devices sheet in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/DevicesSheet.vue` replaces `legacy/device-admin.js`, with Reka UI
@@ -494,3 +550,53 @@ Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
 budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.
+### Fisheye overlay and Talk in Vue (measured 2026-10-29, ZHA-4213)
+
+`src/live/FisheyeOverlay.vue` + `src/live/fisheye.ts` replace `legacy/fisheye.js`,
+and `src/live/talk.ts` replaces `legacy/talk.js`. Same method, baseline origin/main
+4bdbd7e:
+
+| File | main 4bdbd7e | Fisheye + Talk in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,619 B | 111,524 B | -95 B |
+| CSS | 7,701 B | 7,738 B | +37 B |
+
+The shader source is byte-identical (2,572 characters). Per frame the overlay no
+longer allocates a 65-float array or a size string, nor looks up the attribute location.
+`gl.finish()` does not wait for the draw in headless Chrome 156 (SwiftShader), so each
+frame is synchronised with a 1 px `readPixels`. Base 4bdbd7e and this change in one
+page, 6 alternating rounds, box load 7.4-12.8 (measured in review, ZHA-4220):
+
+| Measure | legacy/fisheye.js | Vue | |
+|---|---:|---:|---|
+| Upload 640x720 + render 960x540 + readPixels, median of medians | 13.9 ms (12.4-14.0) | 13.1 ms (12.1-14.7) | inside the noise |
+| `render()` on a real 4x4 GL canvas, 20k calls | 2.77 us (2.22-4.06) | 1.62 us (1.09-2.03) | |
+| `render()` against a GL stub (JS cost only), 1M calls | 2,484 ns (2,194-2,849) | 1,718 ns (1,435-1,995) | -31 %, ranges disjoint |
+
+Against `/api/fisheye/map` on the 512x512
+lens, every shader pixel agrees on coverage (8,100 of 8,100 equirect 180x90,
+14,399 of 14,399 ptz 160x90) with a worst source error of 1.58 px and 2.00 px, the
+8-bit read-back quantisation; legacy/fisheye.js gives the same two numbers, and a
+mutant that shifts the bearing by 3.6 deg fails at 15.9 px. The live overlay paints
+50.07 % of the canvas in equirect and 100 % in ptz. Talk against a fake `/ws/talk`
+peer: 49 chunks of 640 B in about 2 s (legacy/talk.js: 48), stop message and
+closed socket the same. e2e at this change: 223 passed, 9 skipped (CI run
+40803589907).
+
+### Device settings in Vue (measured 2026-10-29, ZHA-4212)
+
+`src/live/DeviceSettings.vue` replaces `legacy/device-settings.js`. Same method,
+production build (`grep -c 'Vue warn'` = 0 in both bundles), baseline origin/main
+192f434:
+
+| File | main 192f434 | Device settings in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,524 B | 112,512 B | +988 B |
+| CSS | 7,738 B | 7,738 B | 0 B |
+
+No new dependency and no new CSS: the encoder fields reuse `.field` instead of the
+legacy nested 200 px label grid, which made `#set-body` scroll sideways at 768 px
+once the forms loaded (650 px in 552 px); `e2e/tests/device-settings.spec.ts`
+checks the loaded page at 320-1920 px. e2e at this change: 232 passed, 9 skipped,
+1 flaky (signin.spec.ts:26, passed on retry), 5.1 min (CI run 40807831475); node
+web tests `device-settings` and `ui` 16/16.

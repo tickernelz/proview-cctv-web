@@ -34,6 +34,7 @@ export const ICONS: Record<string, string> = {
   more: 'ellipsis',
   bell: 'bell',
   'no-picture': 'image-off',
+  download: 'download',
   cloud: 'cloud',
   cctv: 'cctv',
 }

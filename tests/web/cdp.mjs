@@ -179,9 +179,11 @@ export async function startBrowser(extraArgs = []) {
       for (const source of init) {
         await call('Page.addScriptToEvaluateOnNewDocument', { source });
       }
+      let closed = false;
+      let paused = null;
       if (intercept) {
         await call('Fetch.enable', { patterns: intercept.patterns });
-        listeners.add(async (data) => {
+        paused = async (data) => {
           if (data.sessionId !== sessionId || data.method !== 'Fetch.requestPaused') return;
           const answer = await intercept.respond(data.params.request.url, data.params.request);
           const raw = answer && answer.raw;
@@ -198,8 +200,11 @@ export async function startBrowser(extraArgs = []) {
             body: raw
               ? Buffer.from(raw.body, 'base64').toString('base64')
               : Buffer.from(JSON.stringify(answer)).toString('base64'),
+          }).catch((error) => {
+            if (!closed) throw error;
           });
-        });
+        };
+        listeners.add(paused);
       }
       const evaluate = async (expression) => {
         const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -232,7 +237,11 @@ export async function startBrowser(extraArgs = []) {
           const { data } = await call('Page.captureScreenshot', { format: 'png' });
           writeFileSync(path, Buffer.from(data, 'base64'));
         },
-        close: () => send('Target.closeTarget', { targetId }),
+        close: () => {
+          closed = true;
+          if (paused) listeners.delete(paused);
+          return send('Target.closeTarget', { targetId });
+        },
       };
     },
     async close() {

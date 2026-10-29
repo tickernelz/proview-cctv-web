@@ -39,6 +39,26 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Every camera (the grid) is Vue (ZHA-4181): on a phone the tiles no longer
+  overlap (a tile's HD/SD and caption sat on the next tile's picture) and a
+  saved 2- or 3-column layout falls back to one column below 641 px; a tile
+  that is connecting says so, a failed tile centres its reason with a Try
+  again button instead of a left-aligned underlined link, an offline tile says
+  "offline" once instead of twice; HD/SD is an outlined button; a layout the
+  server refuses to save is a red alert with the warning icon; the count line
+  drops the repeated "layout auto".
+- Playback is a Vue screen (ZHA-4181): it opens on the camera on screen
+  instead of the first in the list, focus moves to it and Escape returns to
+  Live (Escape did nothing, and number keys switched the camera behind it, also
+  after a click on the strip); `#playback` opens it again (the link fell back
+  to #live); the
+  summary names the camera and day; a failed file query is a red alert instead
+  of "No files in that range." with the reason in grey under the video;
+  switching day or camera while a list loads no longer lets the older answer
+  win; the strip has hours below it, a legend, and the playing clip outlined;
+  motion rows say "motion" instead of only being greyer; the day arrows are
+  icons instead of ‹ ›; Play from here and Download are disabled until a clip
+  is chosen; the slider shows its time; an expired session returns to sign-in.
 - Devices is a Vue sheet (ZHA-4181): the result of Rename, Save, Share,
   Accept or a password change shows in a line pinned to the bottom of the sheet
   instead of under a form taller than the window, with a red warning for a
@@ -52,6 +72,15 @@ stability before 1.0.
   filling the window and covering Settings; it closes on Settings and sign-in,
   and signing out clears the typed account password, which stayed in the page
   before; Indonesian placeholder names are English like the rest of the page.
+- Device settings is Vue (ZHA-4212, `src/live/DeviceSettings.vue`): the
+  result of a write (kept, reverted, or a failed revert) stays in the status
+  line after the read-back reload instead of being replaced at once by "Read
+  from the device just now.", so a 409 revert is still on screen; a save button
+  reads "Saving main…" with `aria-busy` and ignores a second press until the
+  read-back is in; every field label is tied to its input; the page reloads
+  whenever it is shown, including through the keyboard and `#settings/device`,
+  and a 401 returns to sign-in. Ids, fields, the writes sent and the
+  DNS-only network rule are unchanged.
 - Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
   sign-in instead of after the first 20 s poll or the first open, opening it
   puts focus on Camera and Escape or Close hands it back to the bell (Escape
@@ -63,6 +92,14 @@ stability before 1.0.
   updated 22:16" (timings moved to its tooltip), rows show the channel only on
   multi-channel cameras and count it from 1 like the caption, and a row
   without a picture shows an icon instead of an empty box.
+- The fisheye overlay and Talk are Vue-side modules now (ZHA-4213):
+  `FisheyeOverlay.vue` puts the WebGL2 dewarp canvas over the live video for
+  `?fisheye=equirect|ptz` (same shader, same `window.ProviewFisheye` and
+  `window.ProviewFisheyeLive` handles), and `live/talk.ts` carries the 8 kHz
+  AudioWorklet uplink unchanged. The overlay now takes its lens from the video
+  once the video has a size, so a 512 px wide stream no longer keeps a zero
+  radius. e2e specs check the shader against `/api/fisheye/map` and Talk
+  against a fake peer.
 
 ### Added
 
