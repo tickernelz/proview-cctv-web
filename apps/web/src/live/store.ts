@@ -14,6 +14,7 @@ export type Launcher = {
 export type LensOption = { value: string; name: string; sub: string }
 export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
+export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type CameraInfo = { name: string; id: string; channel: string; model: string; connection: string; stream: string }
 
 const noop = () => {}
@@ -35,6 +36,21 @@ export const live = reactive({
   screen: '' as '' | 'playback',
   signin: { expired: false, expiredAt: 0, lastFrameAt: 0, generation: 0, focus: 0, mode: null as { mode?: string; source?: string } | null },
   theme: 'dark',
+  top: {
+    name: 'No camera',
+    meta: 'nothing selected',
+    dotOff: false,
+    dotLabel: 'cloud status not read',
+    several: false,
+    gridDisabled: true,
+    inGrid: false,
+    menuOpen: false,
+    keysOpen: false,
+    restoreFocus: false,
+    selected: '',
+    cameras: [] as CameraOption[],
+  },
+  banner: { title: '', text: '', tone: '' as '' | 'network' | 'device' | 'list', action: '' as '' | 'retry' | 'refresh' },
   settings: {
     shown: false,
     section: 'playback',

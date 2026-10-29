@@ -183,6 +183,18 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Live top bar.** Vue (`src/live/LiveTop.vue`, mounted into `#live-top`):
+the camera switcher is a Reka dropdown (roving focus, Home/End, wrap, Escape
+back to the switcher, outside click closes) whose rows keep the status dot,
+the channel/model line and the 1-9 shortcut; digits typed in the open menu
+switch camera. The banner is one `role="alert"` row: icon, bold title, one
+sentence, and an outlined action named for what it does (Refresh the list or
+Retry now); a failed list load uses the `--bad` warning icon, network and
+device problems the `--warn` disconnect icon. The keyboard list is a sheet
+that takes focus on its close button and returns it on close. Banner,
+switcher and caption text are computed in `src/app/chrome.ts` and
+`src/app/caption.ts`.
+
 **Settings.** Vue (`src/live/SettingsScreen.vue`, mounted into `#settings`;
 Device settings stays its own app teleporting its link into the section nav).
 The save bar is the one place for the outcome of a save: "Unsaved changes ·

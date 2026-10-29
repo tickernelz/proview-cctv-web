@@ -10,7 +10,6 @@ const DEVICES = [
   { id: 'porch', name: 'Porch', model: 'XM-IPC', online: true, channels: 1 },
 ];
 const CLIPS = Object.fromEntries(DEVICES.flatMap((device) => [[device.id + '_ch1_main.h264', DUAL_LENS_CLIP], [device.id + '_ch1_sub.h264', DUAL_LENS_CLIP]]));
-const NO_POPOVER = 'delete HTMLElement.prototype.showPopover; delete HTMLElement.prototype.hidePopover; delete HTMLElement.prototype.togglePopover;';
 const TALK_CAPS = {
   patterns: [{ urlPattern: '*/api/device/controls' }],
   respond: () => ({
@@ -48,59 +47,53 @@ async function open(options = {}) {
 
 const active = "document.activeElement && (document.activeElement.id || document.activeElement.querySelector('.name')?.textContent)";
 const menuShown =
-  "(() => { const menu = document.getElementById('camera-menu'); return getComputedStyle(menu).display !== 'none' && menu.getBoundingClientRect().height > 0; })()";
+  "(() => { const menu = document.getElementById('camera-menu'); return Boolean(menu) && getComputedStyle(menu).display !== 'none' && menu.getBoundingClientRect().height > 0; })()";
 
-for (const [label, init, mode] of [
-  ['native popover', [], 'native'],
-  ['fallback without the Popover API', [NO_POPOVER], 'fallback'],
-]) {
-  test('camera menu with ' + label + ': arrows rove and wrap, Escape returns focus to the switcher', async () => {
-    const page = await open({ init });
-    try {
-      assert.equal(await page.evaluate('document.documentElement.dataset.popover'), mode);
-      await page.evaluate("document.getElementById('switcher').focus()");
-      await page.key('Enter');
-      await page.wait(menuShown, 'the camera menu to show');
-      assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'true');
-      assert.equal(await page.evaluate(active), 'Gate camera');
-      await page.key('ArrowDown');
-      assert.equal(await page.evaluate(active), 'Porch');
-      await page.key('End');
-      assert.equal(await page.evaluate(active), 'Add a camera');
-      await page.key('ArrowDown');
-      assert.equal(await page.evaluate(active), 'Gate camera');
-      await page.key('ArrowUp');
-      assert.equal(await page.evaluate(active), 'Add a camera');
-      await page.key('Escape');
-      await page.wait('!' + menuShown, 'the camera menu to close');
-      assert.equal(await page.evaluate(active), 'switcher');
-      assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'false');
-      assert.equal(await page.evaluate("document.getElementById('watch').hidden"), false, 'Escape inside the menu must not leave Live');
-    } finally {
-      await page.close();
-    }
-  });
+test('camera menu: arrows rove and wrap, Escape returns focus to the switcher', async () => {
+  const page = await open();
+  try {
+    await page.evaluate("document.getElementById('switcher').focus()");
+    await page.key('Enter');
+    await page.wait(menuShown, 'the camera menu to show');
+    assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'true');
+    assert.equal(await page.evaluate(active), 'Gate camera');
+    await page.key('ArrowDown');
+    assert.equal(await page.evaluate(active), 'Porch');
+    await page.key('End');
+    assert.equal(await page.evaluate(active), 'Add a camera');
+    await page.key('ArrowDown');
+    assert.equal(await page.evaluate(active), 'Gate camera');
+    await page.key('ArrowUp');
+    assert.equal(await page.evaluate(active), 'Add a camera');
+    await page.key('Escape');
+    await page.wait('!' + menuShown, 'the camera menu to close');
+    await page.wait("document.activeElement && document.activeElement.id === 'switcher'", 'focus back on the switcher');
+    assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'false');
+    assert.equal(await page.evaluate("document.getElementById('watch').hidden"), false, 'Escape inside the menu must not leave Live');
+  } finally {
+    await page.close();
+  }
+});
 
-  test('camera menu with ' + label + ': picking a row switches the camera and a click outside closes it', async () => {
-    const page = await open({ init });
-    try {
-      await page.evaluate("document.getElementById('switcher').click()");
-      await page.wait(menuShown, 'the camera menu to show');
-      await page.key('ArrowDown');
-      await page.key('Enter');
-      await page.wait("document.getElementById('switcher-name').textContent === 'Porch'", 'the switch to Porch');
-      assert.equal(await page.evaluate(active), 'switcher');
-      await page.evaluate("document.getElementById('switcher').click()");
-      await page.wait(menuShown, 'the camera menu to reopen');
-      await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 700, y: 400, button: 'left', clickCount: 1 });
-      await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 700, y: 400, button: 'left', clickCount: 1 });
-      await page.wait('!' + menuShown, 'the camera menu to close on an outside click');
-      assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'false');
-    } finally {
-      await page.close();
-    }
-  });
-}
+test('camera menu: picking a row switches the camera and a click outside closes it', async () => {
+  const page = await open();
+  try {
+    await page.evaluate("document.getElementById('switcher').click()");
+    await page.wait(menuShown, 'the camera menu to show');
+    await page.key('ArrowDown');
+    await page.key('Enter');
+    await page.wait("document.getElementById('switcher-name').textContent === 'Porch'", 'the switch to Porch');
+    await page.wait("document.activeElement && document.activeElement.id === 'switcher'", 'focus back on the switcher');
+    await page.evaluate("document.getElementById('switcher').click()");
+    await page.wait(menuShown, 'the camera menu to reopen');
+    await page.call('Input.dispatchMouseEvent', { type: 'mousePressed', x: 700, y: 400, button: 'left', clickCount: 1 });
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 700, y: 400, button: 'left', clickCount: 1 });
+    await page.wait('!' + menuShown, 'the camera menu to close on an outside click');
+    assert.equal(await page.evaluate("document.getElementById('switcher').getAttribute('aria-expanded')"), 'false');
+  } finally {
+    await page.close();
+  }
+});
 
 test('shortcuts switch the camera and the view, and stay out of text fields', async () => {
   const page = await open();

@@ -1,7 +1,6 @@
 import { api } from '../lib/api'
 import { live, type Prefs } from '../live/store'
 import {
-  closeFloating,
   layoutLensCrop,
   loadDevices,
   renderCameraInfo,
@@ -12,6 +11,7 @@ import {
   setView,
   stopAll,
 } from '../legacy/app.js'
+import { closeFloating } from './chrome'
 import { savePrefs, SECTIONS, state } from './state'
 import { applyTheme } from './theme'
 
@@ -77,6 +77,7 @@ export async function signedIn() {
 
 export function route(hash: string, focus: boolean) {
   const raw = (hash || '').replace(/^#/, '')
+  if (raw !== 'playback') live.screen = ''
   if (raw.startsWith('settings')) {
     openSettings(raw.split('/')[1] || state.section, { focus })
     return
@@ -204,6 +205,7 @@ window.addEventListener('hashchange', () => route(location.hash, true))
 
 window.addEventListener('desktop-live', () => {
   if (state.signedIn) {
+    live.screen = ''
     showScreen('watch')
     setView('live')
   }

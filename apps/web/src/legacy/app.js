@@ -6,24 +6,12 @@ import { savePrefs, state } from '../app/state';
 import { hms } from '../app/format';
 import { buildCameras, currentCamera, deviceStatus, selectedDevice, statusLine } from '../app/devices';
 import { applyTheme } from '../app/theme';
+import { closeFloating, renderBanner, renderCameraMenu, renderSwitcher, toggleKeys } from '../app/chrome';
+import { elapsed, renderCaption, renderFlag } from '../app/caption';
 import { modeName, openSettings, renderPrefsIntoForm, sessionLost, showSection, signedIn, sourceLabel } from '../app/shell';
 
 export const el = (id) => document.getElementById(id);
 export const enc = encodeURIComponent;
-
-const POPOVER = typeof HTMLElement.prototype.showPopover === 'function';
-
-document.documentElement.dataset.popover = POPOVER ? 'native' : 'fallback';
-
-function icon(name, extra) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'i' + (extra ? ' ' + extra : ''));
-  svg.setAttribute('aria-hidden', 'true');
-  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-  use.setAttribute('href', '#i-' + name);
-  svg.append(use);
-  return svg;
-}
 
 export function make(tag, className, text) {
   const node = document.createElement(tag);
@@ -32,241 +20,7 @@ export function make(tag, className, text) {
   return node;
 }
 
-const floating = { open: null };
-
-function menuItems(panel) {
-  return [...panel.querySelectorAll('[role^="menuitem"]:not(:disabled)')];
-}
-
-function placeFloating(panel, anchor) {
-  if (!anchor) {
-    return;
-  }
-  const rect = anchor.getBoundingClientRect();
-  const width = panel.offsetWidth;
-  const height = panel.offsetHeight;
-  let left = rect.left;
-  if (left + width > window.innerWidth - 8) {
-    left = rect.right - width;
-  }
-  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-  let top = rect.bottom + 6;
-  if (top + height > window.innerHeight - 8) {
-    top = Math.max(8, rect.top - height - 6);
-  }
-  panel.style.left = Math.round(left) + 'px';
-  panel.style.top = Math.round(top) + 'px';
-}
-
-function settleFloating(restoreFocus) {
-  const open = floating.open;
-  if (!open) {
-    return;
-  }
-  floating.open = null;
-  if (open.anchor) {
-    open.anchor.setAttribute('aria-expanded', 'false');
-  }
-  if (restoreFocus && open.restore) {
-    open.restore.focus();
-  }
-}
-
-export function closeFloating(restoreFocus) {
-  const open = floating.open;
-  if (!open) {
-    return false;
-  }
-  settleFloating(restoreFocus);
-  if (!POPOVER) {
-    open.panel.hidden = true;
-  } else if (open.panel.matches(':popover-open')) {
-    open.panel.hidePopover();
-  }
-  return true;
-}
-
-function openFloating(panel, anchor, focusTarget) {
-  closeFloating(false);
-  floating.open = { panel, anchor, restore: anchor || document.activeElement };
-  if (POPOVER) {
-    panel.showPopover();
-  } else {
-    panel.hidden = false;
-  }
-  if (anchor) {
-    anchor.setAttribute('aria-expanded', 'true');
-  }
-  placeFloating(panel, anchor);
-  const items = menuItems(panel);
-  const target = focusTarget || items.find((item) => item.getAttribute('aria-checked') === 'true') || items[0];
-  if (target) {
-    target.focus();
-  }
-}
-
-function toggleFloating(panel, anchor, prepare) {
-  const pressedOpen = anchor.dataset.pressedOpen === 'true';
-  delete anchor.dataset.pressedOpen;
-  if (floating.open && floating.open.panel === panel) {
-    closeFloating(true);
-    return;
-  }
-  if (pressedOpen) {
-    return;
-  }
-  if (prepare) {
-    prepare();
-  }
-  openFloating(panel, anchor);
-}
-
-function onMenuKey(event) {
-  const panel = event.currentTarget;
-  const items = menuItems(panel);
-  const index = items.indexOf(document.activeElement);
-  let next = null;
-  if (event.key === 'ArrowDown') {
-    next = items[(index + 1) % items.length];
-  } else if (event.key === 'ArrowUp') {
-    next = items[(index - 1 + items.length) % items.length];
-  } else if (event.key === 'Home') {
-    next = items[0];
-  } else if (event.key === 'End') {
-    next = items[items.length - 1];
-  } else if (event.key === 'Escape') {
-    event.preventDefault();
-    event.stopPropagation();
-    closeFloating(true);
-    return;
-  } else if (event.key === 'Tab') {
-    closeFloating(true);
-    return;
-  } else {
-    return;
-  }
-  event.preventDefault();
-  event.stopPropagation();
-  if (next) {
-    next.focus();
-  }
-}
-
-for (const panel of document.querySelectorAll('.menu')) {
-  if (POPOVER) {
-    panel.setAttribute('popover', 'auto');
-    panel.hidden = false;
-    panel.addEventListener('beforetoggle', (event) => {
-      if (event.newState === 'closed' && floating.open && floating.open.panel === panel) {
-        settleFloating(false);
-      }
-    });
-  }
-  panel.addEventListener('keydown', onMenuKey);
-}
-
-for (const anchor of document.querySelectorAll('[aria-haspopup="menu"]')) {
-  anchor.addEventListener('pointerdown', () => {
-    anchor.dataset.pressedOpen = String(Boolean(floating.open && floating.open.anchor === anchor));
-  });
-}
-
-if (!POPOVER) {
-  document.addEventListener(
-    'pointerdown',
-    (event) => {
-      const open = floating.open;
-      if (open && !open.panel.contains(event.target) && !(open.anchor && open.anchor.contains(event.target))) {
-        closeFloating(false);
-      }
-    },
-    true,
-  );
-}
-
-window.addEventListener('resize', () => {
-  if (floating.open) {
-    placeFloating(floating.open.panel, floating.open.anchor);
-  }
-  layoutLensCrop();
-});
-
-function lensMeta() {
-  const count = lensEntries().length;
-  if (count > 1) {
-    return 'dual lens';
-  }
-  return state.lens ? 'single lens' : '';
-}
-
-function renderSwitcher() {
-  const camera = currentCamera();
-  const switcher = el('switcher');
-  const several = state.cameras.length > 1;
-  switcher.classList.toggle('static', !several);
-  switcher.disabled = !several;
-  el('switcher-name').textContent = camera ? camera.name : 'No camera';
-  const online = Boolean(camera && camera.device.online);
-  const status = camera ? deviceStatus(camera.device) : { known: false, online: false };
-  el('switcher-dot').classList.toggle('off', Boolean(camera) && status.known && !status.online);
-  el('switcher-dot').setAttribute('aria-label', statusLine(camera ? camera.device : null));
-  el('switcher-meta').textContent = camera
-    ? ['channel ' + camera.channel, lensMeta()].filter(Boolean).join(' · ')
-    : 'nothing selected';
-  const grid = el('grid-toggle');
-  grid.disabled = state.cameras.length === 0;
-  const inGrid = state.view === 'grid';
-  grid.setAttribute('aria-label', inGrid ? 'Back to the camera' : 'Show every camera');
-  grid.title = (inGrid ? 'Back to the camera' : 'Show every camera') + ' (G)';
-  grid.querySelector('use').setAttribute('href', inGrid ? '#i-frame' : '#i-grid');
-}
-
-function renderCameraMenu() {
-  const menu = el('camera-menu');
-  menu.replaceChildren();
-  const count = state.cameras.length;
-  menu.append(make('div', 'menu-h', 'Cameras · 1-' + Math.min(9, count) + ' on the keyboard'));
-  state.cameras.forEach((camera, index) => {
-    const row = make('button', 'menu-row');
-    row.type = 'button';
-    row.tabIndex = -1;
-    row.setAttribute('role', 'menuitemradio');
-    row.setAttribute('aria-checked', String(camera.key === state.selectedId + ':' + state.channel));
-    row.dataset.testid = 'camera-option';
-    const dot = make('span', 'dot' + (camera.device.online ? '' : ' off'));
-    const col = make('span', 'col');
-    col.append(
-      make('span', 'name', camera.name),
-      make('span', 'sub', camera.device.online ? ['channel ' + camera.channel, camera.device.model].filter(Boolean).join(' · ') : statusLine(camera.device)),
-    );
-    row.append(dot, col, make('span', 'meta', index < 9 ? String(index + 1) : ''));
-    row.addEventListener('click', () => {
-      closeFloating(true);
-      openCamera(index);
-    });
-    menu.append(row);
-  });
-  menu.append(make('div', 'menu-sep'));
-  const refresh = make('button', 'menu-row');
-  refresh.type = 'button';
-  refresh.tabIndex = -1;
-  refresh.setAttribute('role', 'menuitem');
-  refresh.append(icon('refresh', 'i-16'), make('span', 'name', 'Refresh the list'));
-  refresh.addEventListener('click', () => {
-    closeFloating(true);
-    loadDevices();
-  });
-  const add = make('button', 'menu-row');
-  add.type = 'button';
-  add.tabIndex = -1;
-  add.setAttribute('role', 'menuitem');
-  add.append(icon('sliders', 'i-16'), make('span', 'name', 'Add a camera'), make('span', 'meta', 'Settings'));
-  add.addEventListener('click', () => {
-    closeFloating(false);
-    openSettings('config', { focus: true });
-  });
-  menu.append(refresh, add);
-}
+window.addEventListener('resize', () => layoutLensCrop());
 
 export function openCamera(index) {
   const camera = state.cameras[index];
@@ -320,35 +74,6 @@ export async function loadDevices(options = {}) {
   }
 }
 
-function renderBanner() {
-  const camera = currentCamera();
-  let title = '';
-  let text = '';
-  let action = null;
-  if (state.networkLostAt) {
-    title = 'This computer lost its network at ' + hms(state.networkLostAt) + '.';
-    text = 'What you see below is the last frame the app received.';
-    action = () => requestStream();
-  } else if (state.view === 'live' && camera && deviceStatus(camera.device).known && !camera.device.online) {
-    title = camera.name + ' is offline according to the cloud.';
-    text = statusLine(camera.device) + '. Refresh the list once it answers again.';
-    action = () => loadDevices();
-  } else if (state.view === 'live' && camera && !deviceStatus(camera.device).known) {
-    title = 'The cloud status of ' + camera.name + ' could not be read.';
-    text = statusLine(camera.device) + '. The stream is still attempted, and its own error is shown below.';
-    action = () => loadDevices();
-  } else if (state.bannerError) {
-    title = state.bannerError;
-    action = () => loadDevices();
-  }
-  el('banner').hidden = !title;
-  el('banner-title').textContent = title;
-  el('banner-text').textContent = text;
-  bannerAction = action;
-}
-
-let bannerAction = null;
-
 function setStage(name, detail = {}) {
   const well = el('well');
   const camera = currentCamera();
@@ -399,83 +124,6 @@ function setStage(name, detail = {}) {
   renderFsLine();
   layoutLensCrop();
   renderBanner();
-}
-
-function captionText() {
-  const name = state.stage.name;
-  if (state.networkLostAt && state.stage.lastFrameAt) {
-    return 'not updating — last frame ' + hms(state.stage.lastFrameAt);
-  }
-  if (live.talk.on) {
-    return 'live — the microphone is open';
-  }
-  if (name === 'loading') {
-    return 'connecting — nothing has been received yet';
-  }
-  if (name === 'stalled') {
-    return 'frozen — the frame below is from ' + hms(state.stage.lastFrameAt || Date.now());
-  }
-  if (name === 'error') {
-    const after = Math.max(0, Math.round((state.stage.failedAt - state.stage.requestedAt) / 1000));
-    return 'failed at ' + hms(state.stage.failedAt) + ' — ' + after + ' s after the request';
-  }
-  if (name === 'offline') {
-    return 'offline';
-  }
-  if (name === 'playing') {
-    const lens = lensEntries().length > 1 ? ', ' + lensViewLabel().toLowerCase() : '';
-    return 'live' + lens + (state.padOpen ? ' — arrow keys move it' : '');
-  }
-  return '';
-}
-
-export function renderCaption() {
-  const camera = currentCamera();
-  live.camera = camera ? camera.name : '';
-  live.state = captionText();
-  renderFlag();
-}
-
-function renderFlag() {
-  const name = state.stage.name;
-  let text = '';
-  let tone = '';
-  if (state.recorder) {
-    text = 'Recording ' + elapsed(state.recordStart);
-    tone = 'rec';
-  } else if (live.talk.on) {
-    text = 'release to stop';
-  } else if (state.networkLostAt) {
-    text = 'stale';
-    tone = 'warn';
-  } else if (name === 'stalled') {
-    text = 'frozen ' + Math.max(0, Math.round((Date.now() - (state.stage.lastFrameAt || Date.now())) / 1000)) + ' s';
-    tone = 'warn';
-  } else if (name === 'offline') {
-    text = 'offline';
-    tone = 'warn';
-  } else if (name === 'loading' || name === 'error') {
-    text = 'not live';
-  } else if (name === 'playing') {
-    const lag = liveLag();
-    text = lag === null ? '' : lag.toFixed(1) + ' s behind';
-  }
-  live.flag.text = text;
-  live.flag.tone = tone;
-}
-
-function elapsed(since) {
-  const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
-  return String(Math.floor(seconds / 60)).padStart(2, '0') + ':' + String(seconds % 60).padStart(2, '0');
-}
-
-function liveLag() {
-  const video = el('video');
-  if (!video.buffered || video.buffered.length === 0) {
-    return null;
-  }
-  const lag = video.buffered.end(video.buffered.length - 1) - video.currentTime;
-  return Number.isFinite(lag) && lag >= 0 ? lag : null;
 }
 
 export function renderFsLine() {
@@ -864,11 +512,11 @@ async function loadLens(deviceId, channel) {
   }
 }
 
-function lensEntries() {
+export function lensEntries() {
   return state.lens && state.lens.lenses.length ? state.lens.lenses : [];
 }
 
-function lensViewLabel() {
+export function lensViewLabel() {
   if (state.lensView === 'combined') {
     return 'Both lenses';
   }
@@ -1269,7 +917,7 @@ async function selectDevice(deviceId, options = {}) {
   renderCameraInfo();
 }
 
-async function requestStream() {
+export async function requestStream() {
   const camera = currentCamera();
   if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
     return;
@@ -1547,14 +1195,6 @@ function typing(target) {
   return Boolean(target && target.closest && target.closest('input, textarea, select, [contenteditable="true"]'));
 }
 
-function toggleKeys() {
-  if (floating.open && floating.open.panel === el('keys')) {
-    closeFloating(true);
-    return;
-  }
-  openFloating(el('keys'), null, el('keys-close'));
-}
-
 function onWatchKey(event) {
   const key = event.key;
   if (key === 'Escape') {
@@ -1602,7 +1242,7 @@ function onWatchKey(event) {
     return;
   }
   const actions = {
-    g: () => (el('grid-toggle').disabled ? null : setView(state.view === 'grid' ? 'live' : 'grid')),
+    g: () => (live.top.gridDisabled ? null : setView(state.view === 'grid' ? 'live' : 'grid')),
     f: () => toggleFullscreen(),
     m: () => toggleMute(),
     r: () => (live.record.disabled ? null : toggleRecord()),
@@ -1639,21 +1279,12 @@ document.addEventListener('keyup', (event) => {
 window.addEventListener('blur', () => stopTalk());
 
 el('empty-settings').addEventListener('click', () => openSettings('config', { focus: true }));
-el('open-settings').addEventListener('click', () => openSettings(state.section));
 el('refresh').addEventListener('click', () => loadDevices());
-el('banner-action').addEventListener('click', () => {
-  if (bannerAction) {
-    bannerAction();
-  }
-});
 el('retry').addEventListener('click', () => requestStream());
 el('check-password').addEventListener('click', () => {
   live.settings.focusKey = 'PROVIEW_DEVICE_PASS';
   openSettings('config');
 });
-el('switcher').addEventListener('click', () => toggleFloating(el('camera-menu'), el('switcher'), renderCameraMenu));
-el('grid-toggle').addEventListener('click', () => setView(state.view === 'grid' ? 'live' : 'grid'));
-el('keys-close').addEventListener('click', () => closeFloating(false));
 for (const key of el('pad').querySelectorAll('.pk')) {
   key.addEventListener('click', () => sendControl(key.dataset.act));
 }
