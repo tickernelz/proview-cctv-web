@@ -3,7 +3,7 @@ import { playing, scenarioUrl, signIn } from './app'
 
 test('the address opens the screen it names, and a hash change moves between them', async ({ page }) => {
   const base = await signIn(page, 'many')
-  await page.goto(base + '/?signed-in#settings/server')
+  await page.goto(base + '/?signed-in&boot=settings#settings/server')
   await expect(page.getByTestId('settings')).toBeVisible()
   await expect(page.locator('#h-server')).toBeVisible()
   await page.evaluate(() => (location.hash = '#grid'))
@@ -28,7 +28,7 @@ test('a theme chosen with the toggle survives a reload and drives every toggle l
 
 test('Sign out from Settings returns to sign-in, keeps no camera, and a fresh sign-in opens Live again', async ({ page }) => {
   const base = await signIn(page, 'one')
-  await page.goto(base + '/?signed-in#settings/connection')
+  await page.goto(base + '/?signed-in&boot=connection#settings/connection')
   await page.getByTestId('settings-signout').click()
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('settings')).toBeHidden()
