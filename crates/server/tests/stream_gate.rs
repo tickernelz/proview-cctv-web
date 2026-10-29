@@ -14,6 +14,7 @@ use rocket::State;
 const LISTED: &str = "serial-review-0001";
 const OTHER: &str = "serial-other-0002";
 const FOREIGN: &str = "serial-foreign-0003";
+const BARE: &str = "bare-review-0004";
 
 type Rows = Arc<Mutex<Vec<String>>>;
 type Stop = Arc<std::sync::atomic::AtomicBool>;
@@ -59,9 +60,15 @@ fn fake_cloud(rows: Rows, stop: Stop) -> (String, std::thread::JoinHandle<()>) {
             let entries: Vec<String> = serials
                 .iter()
                 .map(|serial| {
-                    format!(
-                        "{{\"uuid\":\"{serial}\",\"nickname\":\"camera\",\"username\":\"admin\",\"deviceToken\":{{\"AdminToken\":\"token\"}}}}"
-                    )
+                    if serial.starts_with("bare-") {
+                        format!(
+                            "{{\"uuid\":\"{serial}\",\"nickname\":\"camera\",\"username\":\"admin\"}}"
+                        )
+                    } else {
+                        format!(
+                            "{{\"uuid\":\"{serial}\",\"nickname\":\"camera\",\"username\":\"admin\",\"deviceToken\":{{\"AdminToken\":\"token\"}}}}"
+                        )
+                    }
                 })
                 .collect();
             let payload = format!(
@@ -229,23 +236,31 @@ fn set_env(serial: Option<&str>, user: Option<&str>, pass: Option<&str>) {
 
 #[test]
 fn the_ticket_names_why_the_device_cannot_log_in() {
-    let rows: Rows = Arc::new(Mutex::new(vec![LISTED.to_string()]));
+    let rows: Rows = Arc::new(Mutex::new(vec![LISTED.to_string(), BARE.to_string()]));
     let stop: Stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (base, cloud) = fake_cloud(rows, stop.clone());
     let (address, runtime) = spawn_server(base);
     let cookie = signed_in(address);
 
-    set_env(None, Some("admin"), Some("camera-pass"));
-    let (code, body) = ticket(address, LISTED, &cookie);
+    set_env(None, None, None);
+    let (code, body) = ticket(address, BARE, &cookie);
     assert_eq!(
         code, 501,
-        "an unset serial is a configuration answer: {body}"
+        "a row without a token and no configured serial is a configuration answer: {body}"
     );
     assert!(body.contains("PROVIEW_DEVICE_SERIAL"), "{body}");
     assert!(body.contains("misconfigured"), "{body}");
 
-    set_env(Some(OTHER), Some("admin"), Some("camera-pass"));
+    set_env(None, None, None);
     let (code, body) = ticket(address, LISTED, &cookie);
+    assert_eq!(
+        code, 200,
+        "the account token needs no configured serial: {body}"
+    );
+    assert!(body.contains("/ws/live"), "{body}");
+
+    set_env(Some(OTHER), Some("admin"), Some("camera-pass"));
+    let (code, body) = ticket(address, BARE, &cookie);
     assert_eq!(
         code, 501,
         "another serial is a configuration answer: {body}"
