@@ -72,6 +72,15 @@ stability before 1.0.
   filling the window and covering Settings; it closes on Settings and sign-in,
   and signing out clears the typed account password, which stayed in the page
   before; Indonesian placeholder names are English like the rest of the page.
+- Device settings is Vue (ZHA-4212, `src/live/DeviceSettings.vue`): the
+  result of a write (kept, reverted, or a failed revert) stays in the status
+  line after the read-back reload instead of being replaced at once by "Read
+  from the device just now.", so a 409 revert is still on screen; a save button
+  reads "Saving main…" with `aria-busy` and ignores a second press until the
+  read-back is in; every field label is tied to its input; the page reloads
+  whenever it is shown, including through the keyboard and `#settings/device`,
+  and a 401 returns to sign-in. Ids, fields, the writes sent and the
+  DNS-only network rule are unchanged.
 - Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
   sign-in instead of after the first 20 s poll or the first open, opening it
   puts focus on Camera and Escape or Close hands it back to the bell (Escape
