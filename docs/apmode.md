@@ -36,6 +36,23 @@ QuickConfigResultActivity
 number is stored as the message id by `CConfigAPDev::Start_Wifi`
 (`0xb28254`, `mov w9, #0x1407`).
 
+### What the route may reach (ZHA-4026)
+
+`POST /api/apmode/provision` reads no network target from the body (PR #20 removed the
+host/target/port fields; `ProvisionBody` has carried only the SSID, the Wi-Fi key, an
+optional device password, the mode and the round count since). It dials exactly two
+addresses, both constant: `192.168.10.1:34567` over TCP for the config write and
+`255.255.255.255:8001` over UDP for the discovery datagrams. This change pins that:
+the `dialable` test predicate states the set the route may reach — private (`10/8`,
+`172.16/12`, `192.168/16`), link-local (`169.254/16`) or limited broadcast, never a
+public, loopback, unspecified or multicast address — and
+`the_targets_the_module_uses_stay_inside_the_network_it_may_reach` fails the build's
+tests the moment either constant moves outside it. The TCP login uses `admin` and only
+the password typed into that form, never `PROVIEW_DEVICE_USER` / `PROVIEW_DEVICE_PASS`,
+so the configured camera credentials never leave the machine for a host this app was
+not configured with. The route needs a signed-in session, like the rest of
+`/api/apmode`.
+
 ## 2. Native chain
 
 | Symbol | Address | Role |

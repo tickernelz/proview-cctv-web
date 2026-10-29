@@ -1,13 +1,17 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use rocket::http::Status;
+use proview_core::session::Store;
+use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
 use rocket::State;
 use serde::{Deserialize, Serialize};
+
+use crate::desktop::{DesktopControl, OfferedToken, PageHost, PageOrigin, PagePeer};
 
 const FILE: &str = "settings.json";
 
@@ -584,17 +588,146 @@ fn fail(status: Status, message: impl Into<String>) -> Failure {
     )
 }
 
+fn loopback_peer(peer: Option<SocketAddr>) -> bool {
+    peer.is_some_and(|address| address.ip().to_canonical().is_loopback())
+}
+
+fn loopback_authority(host: &str) -> bool {
+    let name = match host.rsplit_once(':') {
+        Some((name, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => name,
+        _ => host,
+    };
+    if name.eq_ignore_ascii_case("localhost") || name == "[::1]" {
+        return true;
+    }
+    name.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+const SESSION_COOKIE: &str = "pvw_session";
+
+fn gate(
+    control: Option<&DesktopControl>,
+    host: &str,
+    origin: Option<&str>,
+    offered: &str,
+    cookies: &CookieJar<'_>,
+    sessions: &Store,
+    peer: Option<SocketAddr>,
+) -> Result<(), Failure> {
+    match control {
+        Some(control) => {
+            if !control.serves(host) {
+                return Err(fail(
+                    Status::Forbidden,
+                    format!(
+                        "{host} is not the address this app opened, and the settings answer only on {}",
+                        control.authority()
+                    ),
+                ));
+            }
+            if let Some(origin) = origin {
+                if !crate::desktop::same_origin(origin, control.authority()) {
+                    return Err(fail(
+                        Status::Forbidden,
+                        format!(
+                            "{origin} is not the page this app serves, and the settings answer only to {}",
+                            control.authority()
+                        ),
+                    ));
+                }
+            }
+            if !offered.is_empty() && control.accepts(offered) {
+                return Ok(());
+            }
+        }
+        None => {
+            if !loopback_peer(peer) {
+                return Err(fail(
+                    Status::Forbidden,
+                    "this request did not arrive from this machine, and the settings answer only there",
+                ));
+            }
+            if let Some(origin) = origin {
+                if !crate::desktop::same_origin(origin, host) {
+                    return Err(fail(
+                        Status::Forbidden,
+                        format!("{origin} is not this server's own origin ({host})"),
+                    ));
+                }
+            }
+            if !loopback_authority(host) {
+                return Err(fail(
+                    Status::Forbidden,
+                    format!("{host} is not this machine, and the settings answer only on a loopback address"),
+                ));
+            }
+            return Ok(());
+        }
+    }
+    let id = cookies
+        .get_private(SESSION_COOKIE)
+        .map(|cookie| cookie.value().to_string())
+        .ok_or_else(|| {
+            fail(
+                Status::Unauthorized,
+                "the settings are only for a signed-in page; sign in first",
+            )
+        })?;
+    sessions.get(&id).map(|_| ()).ok_or_else(|| {
+        fail(
+            Status::Unauthorized,
+            "the session expired; sign in again to read or change the settings",
+        )
+    })
+}
+
 #[get("/settings")]
-fn read_settings(store: &State<SettingsStore>) -> Json<SettingsView> {
-    Json(store.view())
+#[allow(clippy::too_many_arguments)]
+fn read_settings(
+    settings: &State<SettingsStore>,
+    sessions: &State<Store>,
+    control: &State<Option<DesktopControl>>,
+    host: PageHost,
+    origin: PageOrigin,
+    offered: OfferedToken,
+    peer: PagePeer,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<SettingsView>, Failure> {
+    gate(
+        control.inner().as_ref(),
+        &host.0,
+        origin.0.as_deref(),
+        &offered.0,
+        cookies,
+        sessions.inner(),
+        peer.0,
+    )?;
+    Ok(Json(settings.view()))
 }
 
 #[post("/settings", data = "<body>")]
+#[allow(clippy::too_many_arguments)]
 fn write_settings(
-    store: &State<SettingsStore>,
+    settings: &State<SettingsStore>,
+    sessions: &State<Store>,
+    control: &State<Option<DesktopControl>>,
+    host: PageHost,
+    origin: PageOrigin,
+    offered: OfferedToken,
+    peer: PagePeer,
+    cookies: &CookieJar<'_>,
     body: Json<SettingsFile>,
 ) -> Result<Json<SettingsView>, Failure> {
-    store
+    gate(
+        control.inner().as_ref(),
+        &host.0,
+        origin.0.as_deref(),
+        &offered.0,
+        cookies,
+        sessions.inner(),
+        peer.0,
+    )?;
+    settings
         .inner()
         .update(body.into_inner().values)
         .map(Json)
@@ -608,6 +741,11 @@ pub fn routes() -> Vec<rocket::route::Route> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rocket::http::{ContentType, Header};
+    use rocket::local::blocking::Client;
+
+    const LOCAL: ([u8; 4], u16) = ([127, 0, 0, 1], 40000);
+    const REMOTE: ([u8; 4], u16) = ([192, 168, 1, 50], 40000);
 
     fn temp_store(tag: &str) -> (SettingsStore, PathBuf) {
         let dir = env::temp_dir().join(format!("proview-settings-{}-{tag}", std::process::id()));
@@ -845,6 +983,277 @@ mod tests {
             "the desktop shell holds a clone of the store the server writes"
         );
         let _ = fs::remove_dir_all(dir);
+    }
+
+    static SLOT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    fn scratch(tag: &str) -> PathBuf {
+        let slot = SLOT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("proview-gate-{}-{slot}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn fixtures(tag: &str) -> PathBuf {
+        let dir = scratch(tag);
+        fs::write(
+            dir.join("account.json"),
+            r#"{"email":"fixture@example.invalid","password":"fixture-password"}"#,
+        )
+        .expect("account fixture");
+        fs::write(
+            dir.join("devices.json"),
+            r#"[{"id":"gate","name":"Gate camera","model":"XM-IPC","online":true,"channels":1,"lan_host":null}]"#,
+        )
+        .expect("device fixture");
+        dir
+    }
+
+    fn fixture_config(dir: &std::path::Path) -> proview_core::config::Config {
+        proview_core::config::Config {
+            provider: proview_core::config::ProviderKind::Fixture,
+            cloud_base: String::new(),
+            share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
+            device_user: "admin".to_string(),
+            device_pass: String::new(),
+            fixture_dir: dir.to_string_lossy().to_string(),
+            device_onvif: None,
+            device_host: None,
+            device_rtsp: None,
+            session_ttl_secs: 600,
+        }
+    }
+
+    struct Tower {
+        client: Client,
+        data: PathBuf,
+        fixtures: PathBuf,
+        _restarts: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
+    }
+
+    impl Tower {
+        fn sign_in(&self) -> Status {
+            self.client
+                .post("/api/login")
+                .header(ContentType::JSON)
+                .body(r#"{"email":"fixture@example.invalid","password":"fixture-password"}"#)
+                .dispatch()
+                .status()
+        }
+
+        fn get(&self, host: &str, origin: Option<&str>, token: Option<&str>) -> (Status, String) {
+            self.get_from(host, origin, token, LOCAL)
+        }
+
+        fn get_from(
+            &self,
+            host: &str,
+            origin: Option<&str>,
+            token: Option<&str>,
+            peer: ([u8; 4], u16),
+        ) -> (Status, String) {
+            let mut request = self
+                .client
+                .get("/api/settings")
+                .remote(peer.into())
+                .header(Header::new("Host", host.to_string()));
+            if let Some(origin) = origin {
+                request = request.header(Header::new("Origin", origin.to_string()));
+            }
+            if let Some(token) = token {
+                request = request.header(Header::new("x-proview-desktop-token", token.to_string()));
+            }
+            let response = request.dispatch();
+            let status = response.status();
+            (status, response.into_string().unwrap_or_default())
+        }
+
+        fn save(&self, host: &str, origin: Option<&str>, token: Option<&str>) -> (Status, String) {
+            let mut request = self
+                .client
+                .post("/api/settings")
+                .remote(LOCAL.into())
+                .header(Header::new("Host", host.to_string()))
+                .header(ContentType::JSON)
+                .body(r#"{"values":{"PROVIEW_DESKTOP_ALARM_INTERVAL":"90"}}"#);
+            if let Some(origin) = origin {
+                request = request.header(Header::new("Origin", origin.to_string()));
+            }
+            if let Some(token) = token {
+                request = request.header(Header::new("x-proview-desktop-token", token.to_string()));
+            }
+            let response = request.dispatch();
+            let status = response.status();
+            (status, response.into_string().unwrap_or_default())
+        }
+    }
+
+    impl Drop for Tower {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.data);
+            let _ = fs::remove_dir_all(&self.fixtures);
+        }
+    }
+
+    fn tower(tag: &str, authority: Option<&str>) -> Tower {
+        let data = scratch(&format!("{tag}-data"));
+        let fixtures = fixtures(&format!("{tag}-fixtures"));
+        let settings = SettingsStore::load(Some(&data));
+        let figment = rocket::Config::figment()
+            .merge(("secret_key", "aGVsbG8gd29ybGQgdGhpcyBpcyBhIHRlc3Qga2V5ISE="));
+        let (control, restarts) = match authority {
+            Some(authority) => {
+                let (control, receiver) = DesktopControl::new("desk-token-0123456789");
+                (Some(control.for_authority(authority)), Some(receiver))
+            }
+            None => (None, None),
+        };
+        let rocket = crate::app::build_with_control(
+            figment,
+            fixture_config(&fixtures),
+            crate::config::ModeStore::new(proview_core::provider::Mode::default(), None),
+            settings,
+            crate::routes::cloud_bind::AccountStore::from_env(),
+            control,
+            Store::new(),
+        );
+        Tower {
+            client: Client::tracked(rocket).expect("rocket"),
+            data,
+            fixtures,
+            _restarts: restarts,
+        }
+    }
+
+    #[test]
+    fn a_foreign_host_is_refused_before_the_session_is_even_asked_for() {
+        let app = tower("host", Some("127.0.0.1:8787"));
+        let (status, body) = app.get("evil.example:8787", None, None);
+        assert_eq!(status, Status::Forbidden, "{body}");
+        assert!(
+            body.contains("127.0.0.1:8787"),
+            "the refusal names the only address that answers: {body}"
+        );
+        assert_eq!(
+            app.sign_in(),
+            Status::Ok,
+            "the fixture sign-in gives a real session"
+        );
+        let (status, body) = app.get("evil.example:8787", None, None);
+        assert_eq!(
+            status,
+            Status::Forbidden,
+            "a session does not buy a foreign host any access: {body}"
+        );
+    }
+
+    #[test]
+    fn a_signed_in_page_on_the_app_address_reads_and_writes_the_settings() {
+        let app = tower("session", Some("127.0.0.1:8787"));
+        let (status, body) = app.get("127.0.0.1:8787", None, None);
+        assert_eq!(status, Status::Unauthorized, "{body}");
+        assert_eq!(app.sign_in(), Status::Ok);
+        let (status, body) = app.get("127.0.0.1:8787", None, None);
+        assert_eq!(status, Status::Ok, "{body}");
+        assert!(
+            body.contains("PROVIEW_DEVICE_PASS"),
+            "the view is the settings view"
+        );
+        let (status, body) = app.save("127.0.0.1:8787", Some("http://127.0.0.1:8787"), None);
+        assert_eq!(status, Status::Ok, "{body}");
+        assert!(body.contains(r#""value":"90""#), "{body}");
+    }
+
+    #[test]
+    fn the_desktop_token_stands_in_for_the_session_before_a_sign_in() {
+        let app = tower("token", Some("127.0.0.1:8787"));
+        let (status, body) = app.get("127.0.0.1:8787", None, Some("desk-token-0123456789"));
+        assert_eq!(
+            status,
+            Status::Ok,
+            "the page the app opened can read before sign-in: {body}"
+        );
+        let (status, body) = app.get("127.0.0.1:8787", None, Some("desk-token-0000000000"));
+        assert_eq!(
+            status,
+            Status::Unauthorized,
+            "a wrong token is no credential: {body}"
+        );
+        let (status, body) = app.get("127.0.0.1:8787", None, None);
+        assert_eq!(status, Status::Unauthorized, "{body}");
+    }
+
+    #[test]
+    fn another_origin_cannot_post_even_with_the_desktop_token() {
+        let app = tower("origin", Some("127.0.0.1:8787"));
+        let (status, body) = app.save(
+            "127.0.0.1:8787",
+            Some("https://evil.example"),
+            Some("desk-token-0123456789"),
+        );
+        assert_eq!(status, Status::Forbidden, "{body}");
+        let (status, body) = app.save(
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:8787"),
+            Some("desk-token-0123456789"),
+        );
+        assert_eq!(status, Status::Ok, "{body}");
+    }
+
+    #[test]
+    fn the_standalone_server_answers_this_machine_and_nothing_else() {
+        let app = tower("standalone", None);
+        let (status, body) = app.get("192.168.1.5:8787", None, None);
+        assert_eq!(
+            status,
+            Status::Forbidden,
+            "a request that arrived from the network is refused: {body}"
+        );
+        let (status, body) = app.get("127.0.0.1:8787", Some("https://evil.example"), None);
+        assert_eq!(status, Status::Forbidden, "{body}");
+        let (status, body) = app.get_from("127.0.0.1:8787", None, None, REMOTE);
+        assert_eq!(
+            status,
+            Status::Forbidden,
+            "a loopback Host forged by a client on the network is still refused: {body}"
+        );
+        let (status, body) = app.get("127.0.0.1:8787", None, None);
+        assert_eq!(
+            status,
+            Status::Ok,
+            "the sign-in screen keeps its settings so a wrong address can be fixed there: {body}"
+        );
+        assert_eq!(app.sign_in(), Status::Ok);
+        let (status, body) = app.get("localhost:8787", Some("http://localhost:8787"), None);
+        assert_eq!(status, Status::Ok, "{body}");
+    }
+
+    #[test]
+    fn a_loopback_host_is_recognised_with_and_without_a_port() {
+        for host in [
+            "127.0.0.1:8787",
+            "127.0.0.1",
+            "localhost:8787",
+            "LOCALHOST",
+            "[::1]:8787",
+            "[::1]",
+            "127.9.9.9:80",
+        ] {
+            assert!(loopback_authority(host), "{host} is this machine");
+        }
+        for host in [
+            "192.168.1.5:8787",
+            "10.0.0.1:8787",
+            "evil.example",
+            "evil.example:8787",
+            "0.0.0.0:8787",
+            "[2001:db8::1]:8787",
+            "",
+        ] {
+            assert!(!loopback_authority(host), "{host} is somewhere else");
+        }
     }
 
     #[test]

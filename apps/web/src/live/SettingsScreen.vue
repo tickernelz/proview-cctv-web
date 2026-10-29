@@ -139,13 +139,18 @@ function fill(next: View, keepTyped: boolean) {
   for (const [key, value] of Object.entries(typed)) if (key in values) values[key] = value
 }
 
+const credentials = () => {
+  const control = desktop()
+  return control ? { headers: { 'content-type': 'application/json', 'x-proview-desktop-token': control.token } } : {}
+}
+
 let loads = 0
 async function load() {
   const mine = ++loads
   status.text = 'Loading…'
   status.bad = false
   try {
-    const next = await api<View>('/api/settings')
+    const next = await api<View>('/api/settings', credentials())
     if (mine !== loads) return
     fill(next, true)
     status.text = next.exists
@@ -162,6 +167,12 @@ async function load() {
     }
   } catch (error) {
     if (mine !== loads) return
+    if ((error as { status?: number }).status === 401) {
+      view.value = null
+      status.text = 'Sign in to read and change the settings.'
+      status.bad = false
+      return
+    }
     status.text = 'Could not read the settings: ' + message(error)
     status.bad = true
   }
@@ -174,13 +185,19 @@ async function save() {
   saving.value = true
   barError.value = ''
   try {
-    const next = await api<View>('/api/settings', { method: 'POST', body: JSON.stringify({ values: out }) })
+    const next = await api<View>('/api/settings', { method: 'POST', ...credentials(), body: JSON.stringify({ values: out }) })
     pendingRestart.value += keys.filter((key) => restartKeys.value.has(key)).length
     fill(next, false)
     blocked.value = false
     status.text = 'Saved ' + plural(keys.length, 'field') + ' to ' + (next.path || 'this run') + '.'
     status.bad = false
   } catch (error) {
+    if ((error as { status?: number }).status === 401) {
+      view.value = null
+      status.text = 'Sign in to change the settings.'
+      status.bad = false
+      return
+    }
     barError.value = 'Not saved: ' + message(error)
     status.text = 'Could not save: ' + message(error)
     status.bad = true

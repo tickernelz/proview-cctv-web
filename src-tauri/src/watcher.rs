@@ -22,6 +22,7 @@ pub fn spawn(handle: &tokio::runtime::Handle, app: AppHandle, shell: Arc<Desktop
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let settings = shell.current();
+            shell.refresh_status(&app, settings.alarm_notify);
             if !settings.alarm_notify {
                 if enabled {
                     tracing::info!("alarm notifications switched off");

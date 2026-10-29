@@ -136,6 +136,7 @@ fn the_platform_identity_is_read_per_request_not_frozen_at_start() {
     let (base, hits, seen, stop) = fake_cloud();
     let settings = SettingsStore::load(Some(&dir));
     settings.apply_env();
+    let saver = settings.clone();
     let client = Client::tracked(proview_server::build_with_state(
         figment(),
         config(base),
@@ -155,16 +156,13 @@ fn the_platform_identity_is_read_per_request_not_frozen_at_start() {
         );
     }
 
-    let values: serde_json::Map<String, serde_json::Value> = SAVED
+    let values: std::collections::BTreeMap<String, String> = SAVED
         .iter()
-        .map(|(key, value)| (key.to_string(), json!(value)))
+        .map(|(key, value)| (key.to_string(), value.to_string()))
         .collect();
-    let saved = client
-        .post("/api/settings")
-        .header(ContentType::JSON)
-        .body(json!({"values": values}).to_string())
-        .dispatch();
-    assert_eq!(saved.status(), Status::Ok, "the settings save answered");
+    saver
+        .update(values)
+        .expect("the settings save the running server holds");
 
     let (status, body) = sign_in(&client);
     assert_eq!(

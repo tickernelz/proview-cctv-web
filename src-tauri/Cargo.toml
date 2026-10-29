@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 proview-core = { path = "../crates/core" }
 proview-server = { path = "../crates/server" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 keyring.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png", "image-ico"] }
 tauri-plugin-notification = "2"

@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::OnceLock;
 
 use rocket::http::Status;
@@ -34,8 +35,16 @@ impl DesktopControl {
         self
     }
 
+    pub fn authority(&self) -> &str {
+        &self.authority
+    }
+
     pub fn serves(&self, host: &str) -> bool {
         !self.authority.is_empty() && matches(host, &self.authority)
+    }
+
+    pub fn accepts(&self, offered: &str) -> bool {
+        matches(offered, &self.token)
     }
 
     pub fn page(&self) -> &'static str {
@@ -73,6 +82,39 @@ impl<'r> FromRequest<'r> for OfferedToken {
         let offered = request.headers().get_one(TOKEN_HEADER).unwrap_or_default();
         Outcome::Success(OfferedToken(offered.to_string()))
     }
+}
+
+pub struct PagePeer(pub Option<SocketAddr>);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for PagePeer {
+    type Error = std::convert::Infallible;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        Outcome::Success(PagePeer(request.remote()))
+    }
+}
+
+pub struct PageOrigin(pub Option<String>);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for PageOrigin {
+    type Error = std::convert::Infallible;
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        let origin = request.headers().get_one("Origin").map(str::to_string);
+        Outcome::Success(PageOrigin(origin))
+    }
+}
+
+pub fn same_origin(origin: &str, authority: &str) -> bool {
+    let Some(rest) = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    else {
+        return false;
+    };
+    rest.eq_ignore_ascii_case(authority)
 }
 
 fn matches(offered: &str, expected: &str) -> bool {
