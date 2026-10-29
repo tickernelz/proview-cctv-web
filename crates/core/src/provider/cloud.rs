@@ -26,6 +26,11 @@ struct SessionEntries {
     devices: Arc<Vec<CloudDevice>>,
 }
 
+struct Refusal {
+    ret: i64,
+    token: String,
+}
+
 struct RelayTarget {
     rps: String,
     host: String,
@@ -41,7 +46,7 @@ pub struct CloudProvider {
     counter: Arc<std::sync::atomic::AtomicU32>,
     status: StatusClient,
     tokens: crate::cloud::DeviceTokenStore,
-    token_refusals: Mutex<HashMap<String, i64>>,
+    token_refusals: Mutex<HashMap<String, Refusal>>,
     entries: Mutex<HashMap<String, SessionEntries>>,
     gates: Mutex<HashMap<String, Gate>>,
     entry_ttl: Duration,
@@ -222,15 +227,18 @@ impl CloudProvider {
             )
         })
     }
-    fn token_refusal(&self, serial: &str) -> Option<i64> {
+    fn token_refusal(&self, serial: &str) -> Option<Refusal> {
         let refusals = match self.token_refusals.lock() {
             Ok(refusals) => refusals,
             Err(poisoned) => poisoned.into_inner(),
         };
-        refusals.get(serial).copied()
+        refusals.get(serial).map(|refusal| Refusal {
+            ret: refusal.ret,
+            token: refusal.token.clone(),
+        })
     }
 
-    fn remember_token_refusal(&self, serial: &str, ret: i64) -> bool {
+    fn remember_token_refusal(&self, serial: &str, ret: i64, token: &str) -> bool {
         if !TOKEN_REFUSAL_RETS.contains(&ret) {
             return false;
         }
@@ -238,7 +246,13 @@ impl CloudProvider {
             Ok(refusals) => refusals,
             Err(poisoned) => poisoned.into_inner(),
         };
-        refusals.insert(serial.to_string(), ret);
+        refusals.insert(
+            serial.to_string(),
+            Refusal {
+                ret,
+                token: token.to_string(),
+            },
+        );
         true
     }
 
@@ -258,14 +272,6 @@ impl CloudProvider {
         session_key: &str,
     ) -> Result<(crate::dvrip::client::Connection, String), ProviderError> {
         let serial = entry.uuid.trim().to_string();
-        if let Some(ret) = self.token_refusal(&serial) {
-            let _ = self.tokens.forget(&serial);
-            return Err(login_refused(
-                &serial,
-                ret,
-                "device token earlier in this process",
-            ));
-        }
         let stored = self.tokens.get(&serial);
         let source = match stored {
             Some(_) => "stored device token",
@@ -274,6 +280,16 @@ impl CloudProvider {
         let Some(device_token) = stored.or_else(|| account_device_token(entry)) else {
             return Err(no_device_token(&serial));
         };
+        if let Some(refusal) = self.token_refusal(&serial) {
+            if refusal.token == device_token {
+                return Err(login_refused(
+                    &serial,
+                    refusal.ret,
+                    "device token earlier in this process",
+                ));
+            }
+            self.forget_token_refusal(&serial);
+        }
         let offered = crate::dvrip::crypto::open_login_name(&serial, &device_token)
             .unwrap_or_else(|| device_token.clone());
         match self
@@ -290,7 +306,7 @@ impl CloudProvider {
             }
             Ok(ret) => {
                 let _ = self.tokens.forget(&serial);
-                self.remember_token_refusal(&serial, ret);
+                self.remember_token_refusal(&serial, ret, &device_token);
                 Err(login_refused(&serial, ret, source))
             }
             Err(error) => {
@@ -553,6 +569,17 @@ impl CloudProvider {
         Ok(connection)
     }
 
+    pub async fn log_in(
+        &self,
+        connection: crate::dvrip::client::Connection,
+        entry: &CloudDevice,
+        session_key: &str,
+    ) -> Result<(crate::dvrip::client::Connection, String), ProviderError> {
+        let control = crate::media::dhav::MediaCipher::channel();
+        self.device_login(connection, entry, &control, session_key)
+            .await
+    }
+
     pub async fn open_playback(
         &self,
         session: &VendorSession,
@@ -585,7 +612,7 @@ impl CloudProvider {
             .device_login(connection, &entry, &control, session_key)
             .await?;
         let sealed = crate::media::dhav::MediaCipher::from_text(session_key).ok_or_else(|| {
-            ProviderError::Upstream(format!(
+            ProviderError::LoginRefused(format!(
                 "cloud login stage=session key: a {}-character key cannot seal control frames",
                 session_key.len()
             ))
@@ -781,11 +808,11 @@ pub fn live_ticket(device: &str, channel: u32, high: bool) -> Result<StreamTicke
 }
 
 fn login_stage_error(stage: &str, detail: impl std::fmt::Display) -> ProviderError {
-    ProviderError::Upstream(format!("cloud login stage={stage}: {detail}"))
+    ProviderError::LoginRefused(format!("cloud login stage={stage}: {detail}"))
 }
 
 fn login_refused(serial: &str, ret: i64, source: &str) -> ProviderError {
-    ProviderError::Upstream(format!(
+    ProviderError::LoginRefused(format!(
         "cloud login stage=token ret {ret} ({}): the device refused the {source} for {serial}",
         crate::dvrip::client::describe_ret(ret)
     ))
@@ -1005,15 +1032,21 @@ impl Provider for CloudProvider {
                 "{device} is not in this account"
             )));
         };
-        if let Some(ret) = self.token_refusal(device.trim()) {
-            return Err(login_refused(
-                device.trim(),
-                ret,
-                "device token earlier in this process",
-            ));
-        }
-        if self.tokens.get(device.trim()).is_none() && account_device_token(&entry).is_none() {
+        let Some(candidate) = self
+            .tokens
+            .get(device.trim())
+            .or_else(|| account_device_token(&entry))
+        else {
             return Err(no_device_token(device.trim()));
+        };
+        if let Some(refusal) = self.token_refusal(device.trim()) {
+            if refusal.token == candidate {
+                return Err(login_refused(
+                    device.trim(),
+                    refusal.ret,
+                    "device token earlier in this process",
+                ));
+            }
         }
         Ok(ticket)
     }
@@ -1829,6 +1862,23 @@ mod login_tests {
 
     const SESSION_KEY: &str = "abcdefghij012345";
 
+    struct DeviceEnv;
+
+    impl Drop for DeviceEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("PROVIEW_DEVICE_SERIAL");
+            std::env::remove_var("PROVIEW_DEVICE_USER");
+            std::env::remove_var("PROVIEW_DEVICE_PASS");
+        }
+    }
+
+    fn device_env(serial: &str, user: &str, pass: &str) -> DeviceEnv {
+        std::env::set_var("PROVIEW_DEVICE_SERIAL", serial);
+        std::env::set_var("PROVIEW_DEVICE_USER", user);
+        std::env::set_var("PROVIEW_DEVICE_PASS", pass);
+        DeviceEnv
+    }
+
     fn control() -> crate::media::dhav::MediaCipher {
         crate::media::dhav::MediaCipher::channel()
     }
@@ -2244,9 +2294,7 @@ mod login_tests {
     }
     #[tokio::test]
     async fn a_cloud_login_never_reads_the_device_credentials() {
-        std::env::set_var("PROVIEW_DEVICE_SERIAL", SERIAL);
-        std::env::set_var("PROVIEW_DEVICE_USER", "admin");
-        std::env::set_var("PROVIEW_DEVICE_PASS", "hunter2");
+        let _env = device_env(SERIAL, "admin", "hunter2");
         let peer = LoginPeer::start(100, Duration::from_millis(10)).await;
         let dir = TokenDir::new("no-credentials");
         let provider = provider_with_store(&dir);
@@ -2256,9 +2304,6 @@ mod login_tests {
             .await
             .map(|_| ())
             .expect_err("an account without a device token cannot log in");
-        std::env::remove_var("PROVIEW_DEVICE_SERIAL");
-        std::env::remove_var("PROVIEW_DEVICE_USER");
-        std::env::remove_var("PROVIEW_DEVICE_PASS");
         let message = error.to_string();
         assert!(message.contains("stage=token"), "{message}");
         assert!(
@@ -2308,16 +2353,21 @@ mod login_tests {
             .tokens
             .put(SERIAL, "refused-token")
             .expect("stored token");
+        let mut device = entry(SERIAL);
+        device.extra.insert(
+            "deviceToken".to_string(),
+            serde_json::json!({ "AdminToken": "refused-token" }),
+        );
         let first = connect(&peer.address).await;
         let opening = provider
-            .device_login(first, &entry(SERIAL), &control(), SESSION_KEY)
+            .device_login(first, &device, &control(), SESSION_KEY)
             .await
             .map(|_| ())
             .expect_err("the device refuses the token");
         assert!(opening.to_string().contains("ret 137"), "{opening}");
         let second = connect(&peer.address).await;
         let again = provider
-            .device_login(second, &entry(SERIAL), &control(), SESSION_KEY)
+            .device_login(second, &device, &control(), SESSION_KEY)
             .await
             .map(|_| ())
             .expect_err("the remembered refusal fails the next open");
@@ -2331,5 +2381,40 @@ mod login_tests {
             1,
             "a device that refuses tokens must not be offered one twice: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_new_account_token_is_offered_after_the_old_one_was_refused() {
+        let refused = LoginPeer::start(137, Duration::from_millis(10)).await;
+        let accepted = LoginPeer::start(100, Duration::from_millis(10)).await;
+        let dir = TokenDir::new("fresh-account-token");
+        let provider = provider_with_store(&dir);
+        let mut old = entry(SERIAL);
+        old.extra.insert(
+            "deviceToken".to_string(),
+            serde_json::json!({ "AdminToken": "old-token" }),
+        );
+        let first = connect(&refused.address).await;
+        let opening = provider
+            .device_login(first, &old, &control(), SESSION_KEY)
+            .await
+            .map(|_| ())
+            .expect_err("the device refuses the first token");
+        assert!(opening.to_string().contains("ret 137"), "{opening}");
+        let mut fresh = entry(SERIAL);
+        fresh.extra.insert(
+            "deviceToken".to_string(),
+            serde_json::json!({ "AdminToken": "new-token" }),
+        );
+        let second = connect(&accepted.address).await;
+        let (connection, note) = provider
+            .device_login(second, &fresh, &control(), SESSION_KEY)
+            .await
+            .expect("a token the account issues after the refusal must still be tried");
+        assert!(note.contains("account device token ret 100"), "{note}");
+        assert_eq!(connection.session(), 0x3333_3333);
+        let events = accepted.events();
+        assert_eq!(counted(&events, ":token_login"), 1, "{events:?}");
+        drop(connection);
     }
 }

@@ -7,7 +7,6 @@ use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use super::client::{describe_ret, require_ok, Connection, DvrError};
-use super::crypto::sofia_hash;
 use super::frame::{FrameError, Header};
 
 pub const FILE_QUERY: u16 = 1440;
@@ -187,13 +186,6 @@ pub struct MediaFrame {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Login {
-    pub session: u32,
-    pub device_type: Option<String>,
-    pub channels: Option<u32>,
-}
-
 pub fn absorb(
     seen: &mut HashSet<String>,
     collected: &mut Vec<PlaybackFile>,
@@ -328,36 +320,6 @@ impl Session {
         self.await_json(REPLY_WAIT).await
     }
 
-    pub async fn login(&mut self, user: &str, password: &str) -> Result<Login, PlaybackError> {
-        let body = json!({
-            "EncryptType": "MD5",
-            "LoginType": "DVRIP-Web",
-            "PassWord": sofia_hash(password),
-            "UserName": user,
-        });
-        let reply = self.request(1000, body).await?;
-        require_ok(&reply)?;
-        if let Some(session) = reply
-            .get("SessionID")
-            .and_then(Value::as_str)
-            .and_then(parse_session)
-        {
-            self.set_session(session);
-        }
-        Ok(Login {
-            session: self.session(),
-            device_type: reply
-                .get("DeviceType ")
-                .or_else(|| reply.get("DeviceType"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            channels: reply
-                .get("ChannelNum")
-                .and_then(Value::as_u64)
-                .map(|value| value as u32),
-        })
-    }
-
     pub async fn files(
         &mut self,
         channel: u8,
@@ -481,17 +443,6 @@ impl Session {
 
 pub fn describe(response: i64) -> &'static str {
     describe_ret(response)
-}
-
-fn parse_session(raw: &str) -> Option<u32> {
-    let trimmed = raw.trim();
-    match trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => trimmed.parse().ok(),
-    }
 }
 
 pub const RECORD_INFO: u8 = 0xf9;

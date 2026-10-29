@@ -25,6 +25,8 @@ pub enum ProviderError {
     #[error("upstream error: {0}")]
     Upstream(String),
     #[error("{0}")]
+    LoginRefused(String),
+    #[error("{0}")]
     Misconfigured(String),
     #[error("device id unknown: {0}")]
     UnknownDevice(String),
