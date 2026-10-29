@@ -290,7 +290,11 @@ stability before 1.0.
   (`docs/protocol.md` 4C.27). A device the token store does not know now uses the
   token from the account's own device list, and a build with the opening removed
   fails the acceptance run at the live stage while the shipped one passes 300 s
-  with no `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS` set.
+  with no `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS` set. The decoder keeps the
+  native guard instead of a stricter one: a plaintext of 1 to 63 bytes is accepted
+  and no printable filter runs, so a name holding a byte outside the printable
+  range still reaches the camera, and a stored value the decoder cannot open is
+  offered exactly as the store holds it.
 - Recorded playback no longer stops after the primed frames when the device
   pauses mid-frame. `playback::Session::recv` read the header and the body with
   the same two exact reads, and the clip route stops priming on a 3 s read

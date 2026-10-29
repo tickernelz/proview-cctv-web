@@ -278,7 +278,7 @@ impl CloudProvider {
                 };
                 match stored.or_else(|| account_device_token(entry)) {
                     Some(device_token) => {
-                        let offered = crate::dvrip::crypto::login_token(&serial, &device_token)
+                        let offered = crate::dvrip::crypto::open_login_name(&serial, &device_token)
                             .unwrap_or_else(|| device_token.clone());
                         let note = match self.token_login(&mut connection, &offered, &control).await
                         {
@@ -2303,6 +2303,57 @@ mod login_tests {
         );
         assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(connection);
+    }
+
+    #[tokio::test]
+    async fn a_stored_value_that_does_not_open_is_offered_untouched() {
+        for (tag, stored) in [
+            ("already-opened", "PROBElogin000001"),
+            ("not-base64", "live-token"),
+        ] {
+            let peer = LoginPeer::start(100, Duration::from_millis(10)).await;
+            let dir = TokenDir::new(tag);
+            let provider = provider_with_store(&dir);
+            provider.tokens.put(SERIAL, stored).expect("stored token");
+            let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let reopen = {
+                let reopened = reopened.clone();
+                move || {
+                    reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    async move {
+                        Err::<crate::dvrip::client::Connection, ProviderError>(
+                            ProviderError::Upstream("the token tunnel must be kept".to_string()),
+                        )
+                    }
+                }
+            };
+            let first = connect(&peer.address).await;
+            let (connection, note) = provider
+                .device_login(first, &entry(SERIAL), device_credential(), reopen)
+                .await
+                .expect("a value the decoder refuses is still offered as it stands");
+            assert!(
+                note.contains("stored device token ret 100"),
+                "{tag}: {note}"
+            );
+            assert_eq!(connection.session(), 0x3333_3333, "{tag}");
+            let events = peer.events();
+            assert!(
+                events.contains(&format!("conn1:token_user={stored}")),
+                "{tag}: {events:?}"
+            );
+            assert_eq!(
+                provider.tokens.get(SERIAL).as_deref(),
+                Some(stored),
+                "{tag}: the store must not be rewritten"
+            );
+            assert_eq!(
+                reopened.load(std::sync::atomic::Ordering::Relaxed),
+                0,
+                "{tag}"
+            );
+            drop(connection);
+        }
     }
 
     #[tokio::test]
