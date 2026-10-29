@@ -1454,6 +1454,10 @@ verdict: pass · frames: 150 · bytes: 413,139,102 · longest gap: 2.943 s · 30
 run 89601875b59c-20261029T000544Z
 ```
 
+Re-measured on the clean commit `6ad7572`, binary built from it, same command:
+**pass**, 151 frames, 413,963,593 bytes, longest gap 2.638 s over 300.506 s
+(run `6ad7572e7514-20261029T004047Z`).
+
 The same source with only the opening removed (the raw 44-character token offered
 instead) stops at `Ret 137`, logged as `account device token ret 137, the device
 refuses it, token dropped; no camera user and password for 7f92970ddf5282743hrc`,
