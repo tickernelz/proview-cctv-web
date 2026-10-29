@@ -195,13 +195,14 @@ Reading the numbers:
    11 MiB for the same camera, because the H.265 bitstream is forwarded as
    access units instead of being decoded and re-encoded. It is also 8–11×
    cheaper on the wire (0.75–1.11 MB vs 8.6 MB per 8 s). The hub ring is sized
-   per transport — 8 fragments for transcode (each starts on a keyframe) and 96
-   access units for passthrough, about two GOPs at 12 fps — so a viewer that
-   jitters by half a second does not have to wait for the next IDR. A transcode
-   fragment now covers up to 10 access units (0.4 s at 25 fps) and the hub also
-   keeps a replay buffer of the fragments since the last keyframe (capped at 240
-   fragments / 8 MiB), so 8 ring slots absorb a 3.2 s stall and a viewer that
-   joins late receives the whole current GOP instead of a single fragment.
+   per transport — 8 packets for transcode and 96 access units for passthrough,
+   about two GOPs at 12 fps — so a viewer that jitters does not have to wait for
+   the next IDR. A transcode fragment holds a whole keyframe interval on the
+   ffmpeg path and up to 10 access units (0.4 s at 25 fps) on the H.264 remux
+   path, and the hub keeps a replay buffer of the fragments since the last
+   keyframe (capped at 240 fragments / 8 MiB): 8 ring slots absorb a 3.2 s
+   stall on the remux path, and a viewer that joins late receives the whole
+   current GOP instead of a single fragment.
 3. Cold start for the transcode transport is the sum of RTSP setup, the
    camera's IDR interval and ffmpeg's first output: `frag_keyframe` holds a
    fragment until it can start on a keyframe, so the first painted frame
@@ -210,7 +211,8 @@ Reading the numbers:
    a warm RTSP session — a different stopwatch, not a cheaper cold start.
    Warm starts are 111–240 ms because the hub replays the fragments since the
    last keyframe (transcode); passthrough has no replay and always waits for the
-   camera's next IDR.
+   camera's next IDR. On the H.264 remux path the first fragment also waits for
+   up to 10 access units after the first keyframe, 0.4 s at 25 fps.
 4. The frame really painted on this machine: Chromium reported `readyState 4`,
    `videoWidth 2304`, `videoHeight 2592` and an advancing `currentTime`, and a
    screenshot of that moment measured `YAVG 171.8`, `YMIN 16`, `YMAX 235` — a
