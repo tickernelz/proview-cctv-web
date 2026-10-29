@@ -20,8 +20,9 @@ stability before 1.0.
   rather than the only source.
 - `tools/acceptance/cloud_ptz.py`: one command that proves the claim with pixels.
   It refuses to run while the camera answers on the LAN, parks the lens at a
-  preset, moves it, and measures the shift per lens crop by phase correlation
-  against the noise floor between two frames taken before the move.
+  preset, moves it, and measures the shift on the busiest tiles of each lens
+  crop by phase correlation against the noise floor between two frames taken
+  before the move.
 
 ### Changed
 

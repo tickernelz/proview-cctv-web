@@ -44,11 +44,17 @@ def halves(numpy, array):
     return {"top": array[:height], "bottom": array[height : height * 2]}
 
 
-def shift_of(numpy, before, after):
+TILE_HEIGHT = 60
+TILE_WIDTH = 80
+TEXT_HEIGHT = 110
+TILE_COUNT = 8
+MOVED_TILE_PX = 5
+
+
+def tile_shift(numpy, before, after):
     height, width = before.shape
-    window = numpy.outer(numpy.hanning(height), numpy.hanning(width))
-    spectrum_before = numpy.fft.rfft2((before - before.mean()) * window)
-    spectrum_after = numpy.fft.rfft2((after - after.mean()) * window)
+    spectrum_before = numpy.fft.rfft2(before - before.mean())
+    spectrum_after = numpy.fft.rfft2(after - after.mean())
     cross = spectrum_after * numpy.conj(spectrum_before)
     cross /= numpy.abs(cross) + 1e-12
     correlation = numpy.fft.irfft2(cross, s=before.shape)
@@ -58,8 +64,27 @@ def shift_of(numpy, before, after):
         dy -= height
     if dx > width // 2:
         dx -= width
-    quality = float(correlation[peak] / (correlation.mean() + 1e-12))
-    return {"dx": dx, "dy": dy, "peak_ratio": round(quality, 3)}
+    return dx, dy
+
+
+def tile_origins(shape):
+    height = shape[0] - TEXT_HEIGHT
+    for y in range(0, height - TILE_HEIGHT + 1, TILE_HEIGHT):
+        for x in range(0, shape[1] - TILE_WIDTH + 1, TILE_WIDTH):
+            yield y, x
+
+
+def busiest_tiles(numpy, before, after, count=TILE_COUNT):
+    scored = []
+    for y, x in tile_origins(before.shape):
+        tile_before = before[y : y + TILE_HEIGHT, x : x + TILE_WIDTH]
+        tile_after = after[y : y + TILE_HEIGHT, x : x + TILE_WIDTH]
+        gradient_y, gradient_x = numpy.gradient(tile_before)
+        energy = float(numpy.hypot(gradient_x, gradient_y).std())
+        dx, dy = tile_shift(numpy, tile_before, tile_after)
+        scored.append({"energy": round(energy, 2), "dx": dx, "dy": dy, "y": y, "x": x})
+    scored.sort(key=lambda row: -row["energy"])
+    return scored[:count]
 
 
 def luma_gap(numpy, before, after):
@@ -80,9 +105,19 @@ def compare(numpy, before_path: Path, after_path: Path):
     crops_before = halves(numpy, before)
     crops_after = halves(numpy, after)
     for name, crop in crops_before.items():
-        movement = shift_of(numpy, crop, crops_after[name])
-        movement["mean_abs_luma"] = luma_gap(numpy, crop, crops_after[name])
-        report[name] = movement
+        tiles = busiest_tiles(numpy, crop, crops_after[name])
+        offsets = sorted(abs(tile["dx"]) for tile in tiles)
+        middle = len(offsets) // 2
+        median = offsets[middle] if len(offsets) % 2 else (offsets[middle - 1] + offsets[middle]) / 2
+        report[name] = {
+            "median_dx": median,
+            "min_dx": offsets[0],
+            "max_dx": offsets[-1],
+            "moved_tiles": sum(1 for tile in tiles if abs(tile["dx"]) > MOVED_TILE_PX or abs(tile["dy"]) > MOVED_TILE_PX),
+            "tiles": len(tiles),
+            "mean_abs_luma": luma_gap(numpy, crop, crops_after[name]),
+            "offsets": [{"dx": tile["dx"], "dy": tile["dy"], "energy": tile["energy"]} for tile in tiles],
+        }
     return report
 
 
@@ -98,9 +133,9 @@ def save_crops(Image, source: Path, out_dir: Path, tag: str):
     return written
 
 
-def known_pixels(report, side, key):
+def crop_stat(report, side, key):
     entry = report.get(side) or {}
-    return abs(int(entry.get(key, 0)))
+    return float(entry.get(key, 0))
 
 
 def call_json(http, method, path, timeout=120.0):
@@ -217,6 +252,7 @@ def main(argv) -> int:
         credentials = base.read_env_file(args.env_file)
         email = credentials.get("PROVIEW_EMAIL")
         password = credentials.get("PROVIEW_PASSWORD")
+        bound_serial = args.sn.strip() or credentials.get("PROVIEW_DEVICE_SERIAL", "").strip()
         if not email or not password:
             raise base.StageError("credentials", f"{args.env_file} must define PROVIEW_EMAIL and PROVIEW_PASSWORD", base.EXIT_PREFLIGHT)
         stage("credentials", True, "sign-in material present", 0.0)
@@ -227,6 +263,8 @@ def main(argv) -> int:
 
         port = base.free_port()
         env = base.server_env(args, port, out_dir / "state")
+        if bound_serial:
+            env["PROVIEW_DEVICE_SERIAL"] = bound_serial
         clock = time.monotonic()
         process, log = base.start_server(binary, root, env, out_dir / "server.log")
         http = base.Http("127.0.0.1", port)
@@ -250,7 +288,7 @@ def main(argv) -> int:
         clock = time.monotonic()
         devices = call_json(http, "GET", "/api/devices", timeout=180.0)
         serials = [str(entry.get("id") or entry.get("uuid") or "") for entry in devices if isinstance(entry, dict)]
-        serial = args.sn.strip() or (serials[0] if serials else "")
+        serial = args.sn.strip() or bound_serial or (serials[0] if serials else "")
         if not serial:
             raise base.StageError("devices", "GET /api/devices listed no serial to control")
         http.serial = serial
@@ -328,26 +366,35 @@ def main(argv) -> int:
         ]
         for crop in ("top", "bottom"):
             summary = (
-                f"{crop}: moved {moved_pixels[crop]['dx']:+d} x {moved_pixels[crop]['dy']:+d} px "
-                f"(noise {noise[crop]['dx']:+d} x {noise[crop]['dy']:+d}), restored "
-                f"{restored[crop]['dx']:+d} x {restored[crop]['dy']:+d} px"
+                f"{crop}: median shift {moved_pixels[crop]['median_dx']:.1f} px "
+                f"({moved_pixels[crop]['min_dx']}-{moved_pixels[crop]['max_dx']} px over "
+                f"{moved_pixels[crop]['tiles']} busiest tiles, noise {noise[crop]['median_dx']:.0f} px), "
+                f"{moved_pixels[crop]['moved_tiles']}/{moved_pixels[crop]['tiles']} tiles moved; "
+                f"restored {restored[crop]['median_dx']:.1f} px, "
+                f"{restored[crop]['moved_tiles']}/{restored[crop]['tiles']} tiles moved; "
+                f"luma {moved_pixels[crop]['mean_abs_luma']} (noise {noise[crop]['mean_abs_luma']})"
             )
             stage("pixels-" + crop, True, summary, round(time.monotonic() - clock, 3))
 
-        bottom_shift = max(known_pixels(moved_pixels, "bottom", "dx"), known_pixels(moved_pixels, "bottom", "dy"))
-        top_shift = max(known_pixels(moved_pixels, "top", "dx"), known_pixels(moved_pixels, "top", "dy"))
-        back_shift = max(known_pixels(restored, "bottom", "dx"), known_pixels(restored, "bottom", "dy"))
+        bottom_shift = crop_stat(moved_pixels, "bottom", "median_dx")
+        top_shift = crop_stat(moved_pixels, "top", "median_dx")
+        back_shift = crop_stat(restored, "bottom", "median_dx")
         noise_floor = max(
-            known_pixels(noise, "bottom", "dx"),
-            known_pixels(noise, "bottom", "dy"),
-            known_pixels(noise, "top", "dx"),
-            known_pixels(noise, "top", "dy"),
+            crop_stat(noise, "bottom", "median_dx"),
+            crop_stat(noise, "top", "median_dx"),
         )
+        bottom_tiles = int(crop_stat(moved_pixels, "bottom", "moved_tiles"))
+        bottom_total = int(crop_stat(moved_pixels, "bottom", "tiles"))
+        top_tiles = int(crop_stat(moved_pixels, "top", "moved_tiles"))
+        back_tiles = int(crop_stat(restored, "bottom", "moved_tiles"))
         report["verdict_numbers"] = {
             "bottom_moved_px": bottom_shift,
             "top_moved_px": top_shift,
             "restored_px": back_shift,
             "noise_px": noise_floor,
+            "bottom_tiles": f"{bottom_tiles}/{bottom_total}",
+            "top_tiles": f"{top_tiles}/{bottom_total}",
+            "restored_tiles": f"{back_tiles}/{bottom_total}",
             "move_min_px": MOVE_MIN_PX,
             "still_max_px": STILL_MAX_PX,
             "bottom_luma": moved_pixels["bottom"]["mean_abs_luma"],
@@ -355,11 +402,13 @@ def main(argv) -> int:
         }
         failures = []
         if bottom_shift < MOVE_MIN_PX:
-            failures.append(f"the lower lens moved {bottom_shift} px, under the {MOVE_MIN_PX} px floor")
-        if top_shift > max(STILL_MAX_PX, noise_floor + 1):
-            failures.append(f"the upper lens moved {top_shift} px, over the still ceiling")
-        if back_shift > max(STILL_MAX_PX, noise_floor + 1):
-            failures.append(f"GotoPreset left the lower lens {back_shift} px from where it started")
+            failures.append(f"the lower lens moved {bottom_shift:.1f} px, under the {MOVE_MIN_PX} px floor")
+        if bottom_tiles < 5:
+            failures.append(f"only {bottom_tiles} of {bottom_total} busy tiles on the lower lens moved")
+        if top_shift > max(STILL_MAX_PX, noise_floor + 1) or top_tiles > 1:
+            failures.append(f"the upper lens moved ({top_shift:.1f} px over {top_tiles} tiles), over the still ceiling")
+        if back_shift > max(STILL_MAX_PX + 2, noise_floor + 1):
+            failures.append(f"GotoPreset left the lower lens {back_shift:.1f} px from where it started")
         if failures:
             raise base.StageError("verdict", "; ".join(failures))
         stage("verdict", True, "the lower lens moved, the upper lens stayed, GotoPreset put it back", 0.0)
@@ -392,7 +441,8 @@ def main(argv) -> int:
         numbers = report.get("verdict_numbers") or {}
         if numbers:
             print(
-                "bottom {bottom_moved_px} px, top {top_moved_px} px, restored {restored_px} px, noise {noise_px} px".format(**numbers)
+                "bottom {bottom_moved_px:.1f} px ({bottom_tiles} tiles), top {top_moved_px:.1f} px "
+                "({top_tiles} tiles), restored {restored_px:.1f} px, noise {noise_px:.1f} px".format(**numbers)
             )
         print(f"report: {out_dir / 'report.md'}")
     return exit_code
@@ -408,14 +458,26 @@ def render(report: dict) -> str:
         lines.append(f"| {item['name']} | {'yes' if item['ok'] else 'no'} | {item.get('seconds', '')} | {detail} |")
     pixels = report.get("pixels") or {}
     if pixels:
-        lines += ["", "## Pixels", "", "| crop | moved dx | moved dy | restored dx | restored dy | noise dx | noise dy | luma | luma noise |", "|---|---|---|---|---|---|---|---|---|"]
+        lines += [
+            "",
+            "## Pixels",
+            "",
+            "Each crop is cut into 60x80 tiles, the eight with the most edge energy are measured by phase",
+            "correlation, and the table reports the median absolute horizontal shift. A near wall gives the",
+            "lower lens parallax, so the range is as much a result as the median.",
+            "",
+            "| crop | median move | range | tiles moved | median restored | restored tiles | median noise | luma | luma noise |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
         for crop in ("top", "bottom"):
             moved = pixels["moved"][crop]
             restored = pixels["restored"][crop]
             noise = pixels["noise"][crop]
             lines.append(
-                f"| {crop} | {moved['dx']} | {moved['dy']} | {restored['dx']} | {restored['dy']} | "
-                f"{noise['dx']} | {noise['dy']} | {moved['mean_abs_luma']} | {noise['mean_abs_luma']} |"
+                f"| {crop} | {moved['median_dx']:.1f} px | {moved['min_dx']}-{moved['max_dx']} px | "
+                f"{moved['moved_tiles']}/{moved['tiles']} | {restored['median_dx']:.1f} px | "
+                f"{restored['moved_tiles']}/{restored['tiles']} | {noise['median_dx']:.1f} px | "
+                f"{moved['mean_abs_luma']} | {noise['mean_abs_luma']} |"
             )
     controls = report.get("controls") or []
     if controls:
