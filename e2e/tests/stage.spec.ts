@@ -58,11 +58,19 @@ test('a 502 without stages points at the reason it shows, not at a tooltip', asy
 })
 
 test('an offline camera says when the picture comes back without repeating the banner', async ({ page }) => {
+  await page.route('**/api/devices', async (route) => {
+    const reply = await route.fetch()
+    const devices = (await reply.json()).map((device: { online: boolean }) =>
+      device.online ? device : { ...device, online_status: 'offline', online_detail: 'cloud status offline from 203.0.113.7 via 198.51.100.2:6510 (port 34567)' },
+    )
+    await route.fulfill({ response: reply, json: devices })
+  })
   await signIn(page, 'many')
   await playing(page)
   await page.keyboard.press('5')
   await expect(page.getByTestId('live-well')).toHaveAttribute('data-state', 'offline')
   await expect(page.getByTestId('live-title')).toHaveText('Camera offline')
+  await expect(page.getByTestId('live-banner')).toContainText('cloud status offline from 203.0.113.7')
   await expect(page.locator('#well-text')).toHaveText('The picture comes back once Shed answers and the list is refreshed.')
   await expect(page.locator('#well-msg')).not.toHaveAttribute('role', 'alert')
   await expect(page.getByTestId('live-frame')).toBeHidden()
