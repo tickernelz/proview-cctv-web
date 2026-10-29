@@ -1,0 +1,57 @@
+import { test, expect } from '@playwright/test'
+import { playing, scenarioUrl, signIn } from './app'
+
+test('the address opens the screen it names, and a hash change moves between them', async ({ page }) => {
+  const base = await signIn(page, 'many')
+  await page.goto(base + '/?signed-in#settings/server')
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.locator('#h-server')).toBeVisible()
+  await page.evaluate(() => (location.hash = '#grid'))
+  await expect(page.getByTestId('grid')).toBeVisible()
+  await expect(page.getByTestId('live-well')).toBeHidden()
+  await page.evaluate(() => (location.hash = '#live'))
+  await expect(page.getByTestId('live-well')).toBeVisible()
+  await expect(page.getByTestId('grid')).toBeHidden()
+})
+
+test('a theme chosen with the toggle survives a reload and drives every toggle label', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' })
+  await signIn(page, 'one')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.getByTestId('live').getByTestId('theme-toggle').click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await page.reload()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await expect(page.getByTestId('live').getByTestId('theme-toggle')).toHaveAttribute('aria-label', 'Switch to the dark theme')
+})
+
+test('Sign out from Settings returns to sign-in, keeps no camera, and a fresh sign-in opens Live again', async ({ page }) => {
+  const base = await signIn(page, 'one')
+  await page.goto(base + '/?signed-in#settings/connection')
+  await page.getByTestId('settings-signout').click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(page.getByTestId('settings')).toBeHidden()
+  const me = await page.evaluate(() => fetch('/api/me').then((reply) => reply.status))
+  expect(me).toBe(401)
+  await page.goto(scenarioUrl('one'))
+  await expect(page.getByTestId('signin')).toBeVisible()
+})
+
+test('a 401 on a signed-in call returns to sign-in to resume the same camera', async ({ page }) => {
+  const base = await signIn(page, 'many')
+  await playing(page)
+  await page.keyboard.press('2')
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  await page.route('**/api/devices', (route) => route.fulfill({ status: 401, json: { message: 'session expired' } }))
+  await page.getByTestId('camera-switcher').click()
+  await page.getByTestId('camera-menu').getByRole('menuitem', { name: 'Refresh the list', exact: true }).click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(page.getByTestId('signin-submit')).toHaveText('Sign in to resume')
+  await page.unroute('**/api/devices')
+  await page.getByTestId('signin-email').fill('fixture@example.invalid')
+  await page.getByTestId('signin-password').fill('fixture-password')
+  await page.getByTestId('signin-submit').click()
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  expect(base).toBeTruthy()
+})

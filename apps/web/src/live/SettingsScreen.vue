@@ -2,7 +2,9 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
-import { leaveSettings, setMode, setPref, showSection, signOut, toggleTheme, toggleWhiteLight } from '../legacy/app.js'
+import { leaveSettings, setMode, setPref, showSection, signOut } from '../app/shell'
+import { toggleTheme } from '../app/theme'
+import { toggleWhiteLight } from '../legacy/app.js'
 import { live, menuOpen, type Prefs } from './store'
 
 type Field = {

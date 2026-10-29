@@ -1,4 +1,5 @@
-import { renderCaption, setControlStatus, state } from '../legacy/app.js'
+import { state } from '../app/state'
+import { renderCaption, setControlStatus } from '../legacy/app.js'
 import { live } from './store'
 
 type Ready = { kind: 'ready'; path?: string; channel: number | null; claim_ms: number }

@@ -2,7 +2,8 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
-import { sessionLost, state as page } from '../legacy/app.js'
+import { sessionLost } from '../app/shell'
+import { state as page } from '../app/state'
 import { addLauncher, live } from './store'
 
 type Camera = { id: string; name?: string }

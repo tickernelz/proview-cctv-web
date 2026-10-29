@@ -3,7 +3,8 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import Icon from '../components/Icon.vue'
 import { api } from '../lib/api'
-import { hm, hms, openSettings, signedIn } from '../legacy/app.js'
+import { hm, hms } from '../app/format'
+import { openSettings, signedIn } from '../app/shell'
 import { live } from './store'
 
 type Probe = { host: string; session: number | string; device_type?: string; video_codec?: string; audio_codec?: string; framerate?: number }
