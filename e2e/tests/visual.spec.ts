@@ -60,6 +60,7 @@ const SCREENS: Record<string, Open> = {
     await signIn(page, 'one')
     await page.getByTestId('alarm-bell').click()
     await expect(page.getByTestId('alarm-row')).toHaveCount(2)
+    await page.getByTestId('alarm-camera').blur()
     return [page.getByTestId('live-frame'), page.getByTestId('live-state')]
   },
   recordings: async (page) => {
