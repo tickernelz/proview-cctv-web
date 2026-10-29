@@ -1461,6 +1461,13 @@ and the harness fails the run at the live stage after 6.3 s
 (run `89601875b59c-20261029T001337Z`). The opening is what makes the token login
 work, not the absence of a password.
 
+The share list of 10C is neither the source nor a data loss: `POST
+as-ams.jftechws.com/mdsharemylist/v3/<tsid>/<sig>.rs` answers `2000` with an empty
+`data` array on both accounts this program holds, with `shareUuid=`, without a body
+and with an empty body (`v1` answers a 73-byte non-JSON page). No row shape was
+observed, so the provider does not call it and the device list stays `msdlistCode`
+(4C.23).
+
 For the cloud path the device password is now optional: absent, live video still
 plays; present, `password_login` stays the fallback for a camera whose token the
 device refuses.
