@@ -153,11 +153,6 @@ async fn open_link(
     account: &TalkAccount,
 ) -> Result<(TalkLink, &'static str), TalkFailure> {
     let named = device.map(str::trim).filter(|name| !name.is_empty());
-    if let Some(name) = named {
-        if let Some(refusal) = account.refusal(name) {
-            return Err(refusal);
-        }
-    }
     let direct = cfg
         .device_host
         .clone()
@@ -167,6 +162,9 @@ async fn open_link(
     let mut direct_error = None;
     if let Some(address) = direct.as_deref() {
         if account.ready() {
+            if let Some(refusal) = named.and_then(|name| account.refusal(name)) {
+                return Err(refusal);
+            }
             direct_attempted = true;
             match direct_link(address, account).await {
                 Ok(link) => return Ok((link, "lan")),
@@ -442,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn the_credentials_never_travel_to_another_camera() {
         let mut cfg = Config::from_env();
-        cfg.device_host = None;
+        cfg.device_host = Some("127.0.0.1:1".to_string());
         let failure = failure_of(&cfg, Some("token"), Some("serial-two")).await;
         assert_eq!(failure.scope, "path");
         let text = message(failure);
@@ -453,9 +451,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_named_camera_needs_the_configured_serial() {
+    async fn a_direct_address_needs_the_configured_serial() {
         let mut cfg = Config::from_env();
-        cfg.device_host = None;
+        cfg.device_host = Some("127.0.0.1:1".to_string());
         let mut unbound = account();
         unbound.serial = String::new();
         let failure = failure_with(&cfg, Some("token"), Some("serial-one"), &unbound).await;
@@ -512,10 +510,5 @@ mod tests {
         assert_eq!(failure.scope, "path");
         let text = message(failure);
         assert!(text.contains("no camera was named"), "{text}");
-
-        let mut cfg = Config::from_env();
-        cfg.device_host = None;
-        let failure = failure_of(&cfg, Some("token"), Some("serial-two")).await;
-        assert_eq!(failure.scope, "path");
     }
 }

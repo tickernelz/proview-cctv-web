@@ -143,19 +143,21 @@ pub fn talk_route_with(
 ) -> TalkRoute {
     let blocked = |why: String| TalkRoute { ok: false, why };
     let named = device.map(str::trim).filter(|name| !name.is_empty());
-    if let Some(name) = named {
-        if let Some(refusal) = serial_refusal(serial, name) {
-            return blocked(refusal);
-        }
-    }
     let token = token.map(str::trim).unwrap_or("");
     let relay_ready = named.is_some() && !token.is_empty() && cloud_identity;
     if let Some(address) = cfg.device_host.as_deref() {
         if !cfg.device_pass.trim().is_empty() {
-            return TalkRoute {
-                ok: true,
-                why: format!("the camera is addressed directly at {address}"),
-            };
+            let refusal = named.and_then(|name| serial_refusal(serial, name));
+            if let Some(refusal) = refusal {
+                if !relay_ready {
+                    return blocked(refusal);
+                }
+            } else {
+                return TalkRoute {
+                    ok: true,
+                    why: format!("the camera is addressed directly at {address}"),
+                };
+            }
         }
         if relay_ready {
             return TalkRoute {
@@ -2050,8 +2052,8 @@ mod tests {
 
     #[test]
     fn the_credentials_do_not_cover_a_camera_that_is_not_the_bound_one() {
-        let config = test_config(None, None);
-        let route = talk_route_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        let config = test_config(None, Some("192.168.0.100:34567"));
+        let route = talk_route_with(&config, None, Some("ABC999"), "ABC123", true);
         assert!(!route.ok);
         assert!(
             route
@@ -2060,7 +2062,7 @@ mod tests {
             "{}",
             route.why
         );
-        let row = talk_capability_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        let row = talk_capability_with(&config, None, Some("ABC999"), "ABC123", true);
         assert_eq!(row.state, State::Blocked);
     }
 
@@ -2082,9 +2084,18 @@ mod tests {
     }
 
     #[test]
-    fn a_named_cloud_camera_needs_a_configured_serial() {
+    fn a_cloud_camera_reaches_two_way_audio_without_a_bound_serial() {
         let config = test_config(None, None);
         let route = talk_route_with(&config, Some("token"), Some("ABC123"), "", true);
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("vendor relay"), "{}", route.why);
+        assert!(!route.why.contains("credentials"), "{}", route.why);
+    }
+
+    #[test]
+    fn a_direct_address_still_refuses_an_unbound_camera() {
+        let config = test_config(None, Some("192.168.0.100:34567"));
+        let route = talk_route_with(&config, None, Some("ABC123"), "", true);
         assert!(!route.ok);
         assert!(
             route.why.contains("no camera serial is configured"),
