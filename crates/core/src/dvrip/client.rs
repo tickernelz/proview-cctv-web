@@ -174,7 +174,7 @@ pub fn require_ok(reply: &Value) -> Result<i64, DvrError> {
     })
 }
 
-fn parse_session_id(raw: &str) -> Option<u32> {
+pub(crate) fn parse_session_id(raw: &str) -> Option<u32> {
     let trimmed = raw.trim();
     match trimmed
         .strip_prefix("0x")
@@ -228,7 +228,7 @@ impl Connection {
         self.send_frame_on(0, true, id, body).await
     }
 
-    async fn send_frame_on(
+    pub async fn send_frame_on(
         &mut self,
         channel: u8,
         end: bool,

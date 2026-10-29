@@ -1480,9 +1480,33 @@ and with an empty body (`v1` answers a 73-byte non-JSON page). No row shape was
 observed, so the provider does not call it and the device list stays `msdlistCode`
 (4C.23).
 
-For the cloud path the device password is now optional: absent, live video still
-plays; present, `password_login` stays the fallback for a camera whose token the
-device refuses.
+The cloud path never falls back to a device password: the token the account
+issues is the only login it offers, and a device that refuses it answers with the
+Ret in the error. Camera credentials stay the local-network path (ZHA-4282).
+
+### 4C.28 After a token login the control frames are sealed with the session key,
+and the media start is not (2026-10-29, ZHA-4282)
+
+Measured on the test camera through the RPS tunnel, login
+`account device token ret 100`, session adopted from the login reply body:
+
+| Frame | Framing that the device answers |
+|---|---|
+| `OPFileQuery` (1440), `OPPlayBack` Claim (1424) | plain JSON ignored (no reply at all); AES-128-CBC, zero IV, under the 16-character session key from the token login, channel 0, end bit clear |
+| `OPPlayBack` Start (1420), `DownloadStart` | plain JSON, channel 0, end bit clear; sealing it earns silence |
+| Reply to a sealed frame | AES-128-CBC, zero IV, under the same session key, base64 text |
+| `OPMonitor` claim (1413) and start (1410) | unchanged from 4C.21 |
+
+The channel key (`dashoiahfarqdasr`) seals the token login only; every control
+frame after it uses the session key, and the two keys are not interchangeable:
+the first sealing attempt with the channel key answered `Ret 117` on 1440, and
+the plain attempt answered nothing. The token login reply also carries the
+session id in its **body** (`{"Ret":100,"SessionID":"0x000001a2"}`); a client that
+only reads the frame header queries under session 0 and gets silence.
+Playback numbers from that path on 2026-10-29 07:27-07:35 Jakarta time: 529 file
+rows for the day (10,253,928,448 bytes, 2.70 s), first media frame 3.9 s after the
+socket opened (2.4 s priming, 150 records, 5 keyframes), 75 decoded frames of
+HEVC 2304x2592 behind the fMP4 fragments.
 
 ### 4C.4 What that means for the implementation
 

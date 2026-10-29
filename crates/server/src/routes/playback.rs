@@ -1,18 +1,16 @@
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
-use proview_core::cloud::envelope::{EnvelopeClient, Identity};
-use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
-use proview_core::cloud::MISSING_CLOUD_IDENTITY;
-use proview_core::config::Config;
 use proview_core::dvrip::playback::{
     access_unit, codec_of, is_video, shift, snap_rate, FrameRate, MediaReader, PlaybackFile,
     RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
 use proview_core::media::Codec;
-use proview_core::provider::{p2p, rps, VendorSession};
+use proview_core::provider::cloud::CloudProvider;
+use proview_core::provider::{ProviderError, VendorSession};
 use proview_core::session::Store;
 use proview_core::source::{Fmp4Splitter, Piece};
 use rocket::http::{ContentType, CookieJar, Status};
@@ -25,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
-use crate::routes::{fail, restore, session_id, Failure};
+use crate::routes::{fail, restore, session_id, status_for, Failure};
 
 const PRIME_READ: Duration = Duration::from_secs(3);
 const PRIME_WAIT: Duration = Duration::from_secs(8);
@@ -65,7 +63,7 @@ pub async fn files(
     begin: Option<String>,
     end: Option<String>,
     kind: Option<String>,
-    cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<FilesBody>, Failure> {
@@ -93,13 +91,18 @@ pub async fn files(
     let channel = channel.unwrap_or(0);
     let kind = kind.unwrap_or_else(|| "h264".to_string());
     let started = Instant::now();
-    let mut session = open_tunnel(cfg, &vendor, &device)
+    let mut session = open_tunnel(cloud.inner(), &vendor, &device)
         .await
-        .map_err(|message| fail(Status::BadGateway, message))?;
+        .map_err(|error| fail(status_for(&error), error.to_string()))?;
     let found = session
         .files(channel, &begin, &end, &kind)
         .await
-        .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
+        .map_err(|error| {
+            fail(
+                Status::BadGateway,
+                format!("playback stage=file-query: {error}"),
+            )
+        })?;
     let _ = session.logout().await;
     let bytes = found.iter().map(|file| file.bytes).sum();
     Ok(Json(FilesBody {
@@ -194,7 +197,7 @@ pub async fn download(
     begin: String,
     end: String,
     bytes: Option<u64>,
-    cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Download, Failure> {
@@ -222,13 +225,13 @@ pub async fn download(
         bytes: 0,
         disk: None,
     };
-    let mut session = open_tunnel(cfg, &vendor, &device)
+    let mut session = open_tunnel(cloud.inner(), &vendor, &device)
         .await
-        .map_err(|message| fail(Status::BadGateway, message))?;
+        .map_err(|error| fail(status_for(&error), error.to_string()))?;
     session
         .claim(&file, channel)
         .await
-        .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
+        .map_err(|error| fail(Status::BadGateway, format!("playback stage=claim: {error}")))?;
     session
         .download_start(&file, channel)
         .await
@@ -264,72 +267,12 @@ fn download_name(name: &str) -> String {
 }
 
 async fn open_tunnel(
-    cfg: &Config,
+    cloud: &CloudProvider,
     vendor: &VendorSession,
     serial: &str,
-) -> Result<Session, String> {
-    let token = vendor
-        .token
-        .as_deref()
-        .ok_or("the session carries no cloud token; sign in again")?;
-    let identity = Identity::resolve();
-    if !identity.is_complete() {
-        return Err(MISSING_CLOUD_IDENTITY.to_string());
-    }
-    let client = EnvelopeClient::with_base(identity, cfg.cloud_base.clone());
-    let devices = client
-        .device_list(token)
-        .await
-        .map_err(|error| error.to_string())?;
-    let device = devices
-        .iter()
-        .find(|device| device.uuid == serial)
-        .ok_or("the device is not on this account")?;
-    let rps_id = device
-        .extra
-        .get("rps")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string();
-    if rps_id.is_empty() {
-        return Err("the account device carries no rps id".to_string());
-    }
-    let status = StatusClient::new(STATUS_HOST)
-        .query(serial, &auth_code_of(device))
-        .await
-        .map_err(|error| error.to_string())?;
-    let (access_host, access_port) = status
-        .access_server()
-        .ok_or("no status cluster reported an access server")?;
-    let session_id = rps::session_id();
-    let client_token = rps::client_token();
-    let body = p2p::agent_request(
-        &rps_id,
-        &client_token,
-        serial,
-        p2p::AGENT_SERVICE_MEDIA,
-        &session_id,
-        p2p::AGENT_STEP_MEDIA,
-    );
-    let agent = rps::AccessClient::new()
-        .assign(&access_host, access_port, &body)
-        .await
-        .map_err(|error| error.to_string())?;
-    let frame = p2p::handshake_frame(&rps_id, &client_token, serial, &session_id);
-    let tunnel = rps::open(&agent, &frame)
-        .await
-        .map_err(|error| error.to_string())?;
-    if !tunnel.reply.accepted() {
-        return Err(format!(
-            "the relay refused the tunnel with error {}",
-            tunnel.reply.error_num
-        ));
-    }
-    let mut session = Session::open(tunnel.stream);
-    session
-        .login(&cfg.device_user, &cfg.device_pass)
-        .await
-        .map_err(|error| error.to_string())?;
+) -> Result<Session, ProviderError> {
+    let (session, note) = cloud.open_playback(vendor, serial).await?;
+    tracing::debug!(device = %serial, %note, "playback device login");
     Ok(session)
 }
 
@@ -451,7 +394,7 @@ pub fn watch(
     end: String,
     start: Option<u32>,
     window: Option<u32>,
-    cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<ws::Channel<'static>, Failure> {
@@ -469,7 +412,7 @@ pub fn watch(
         start,
         window,
     };
-    let config = cfg.inner().clone();
+    let cloud = cloud.inner().clone();
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
             let channel = params.channel.unwrap_or(0);
@@ -492,13 +435,13 @@ pub fn watch(
                 })))
                 .await;
             let opened = Instant::now();
-            let mut session = match open_tunnel(&config, &vendor, &params.device).await {
+            let mut session = match open_tunnel(&cloud, &vendor, &params.device).await {
                 Ok(session) => session,
-                Err(message) => {
+                Err(error) => {
                     let _ = stream
                         .send(text_frame(serde_json::json!({
                             "type": "error",
-                            "message": message,
+                            "message": error.to_string(),
                         })))
                         .await;
                     return Ok(());
@@ -515,7 +458,8 @@ pub fn watch(
                 let _ = stream
                     .send(text_frame(serde_json::json!({
                         "type": "error",
-                        "message": error.to_string(),
+                        "message": format!("playback stage=claim: {error}"),
+                        "stage": "claim",
                     })))
                     .await;
                 return Ok(());
