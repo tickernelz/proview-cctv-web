@@ -479,6 +479,22 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Playback in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/PlaybackScreen.vue` replaces `legacy/playback.js`. Same method,
+baseline origin/main e299f4d:
+
+| File | main e299f4d | Playback in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 110,859 B | 111,354 B | +495 B |
+| CSS | 7,494 B | 7,703 B | +209 B |
+
+Opening Playback no longer sends its own `/api/devices` (one vendor status
+query per camera in cloud mode); it reads the list the app loaded. The 557-file
+day in `tests/web/ui.test.mjs` still draws every row and segment. e2e at this
+change: 209 passed, 1 skipped, 2.7 min locally on a busy box; node web tests
+46/46.
+
 ### Devices sheet in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/DevicesSheet.vue` replaces `legacy/device-admin.js`, with Reka UI
