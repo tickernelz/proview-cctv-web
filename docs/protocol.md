@@ -1526,7 +1526,8 @@ camera password on the wire.
 |---|---|
 | `OPTalk` Claim (1434) | plain JSON on channel 0, end bit clear - `Ret 100` in 105-111 ms, `SessionID` echoed |
 | the same claim sealed with the 16-character session key | `Ret 117` with an empty `Name`, on two separate token sessions (`0x00000256`, `0x0000025f`) |
-| `OPTalk` Start (1430), audio out (1432), `Stop` | plain; on a plain claim the device then streams its own audio back, so the plain opcodes are known to be accepted |
+| `OPTalk` Start (1430) | plain, no reply; the camera then streams `1433` back, which means it accepted the start |
+| audio out (1432) | plain, silent PCM; no reply of its own, so on the token session it is only known to leave and be accepted at the TCP level, not that the speaker played it |
 | audio back (1433) | plain 328-byte frames, 25 a second, no reply msgid |
 
 Only the sealed **claim** was measured: the probe stops when the claim is refused,

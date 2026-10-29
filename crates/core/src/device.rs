@@ -153,15 +153,16 @@ pub fn talk_route_with(
     let relay_ready = named.is_some() && !token.is_empty() && cloud_identity;
     if let Some(address) = cfg.device_host.as_deref() {
         if !cfg.device_pass.trim().is_empty() {
-            if let Some(name) = named {
-                if let Some(refusal) = serial_refusal(serial, name) {
-                    return blocked(refusal);
+            match named.and_then(|name| serial_refusal(serial, name)) {
+                None => {
+                    return TalkRoute {
+                        ok: true,
+                        why: format!("the camera is addressed directly at {address}"),
+                    }
                 }
+                Some(refusal) if !relay_ready => return blocked(refusal),
+                Some(_) => {}
             }
-            return TalkRoute {
-                ok: true,
-                why: format!("the camera is addressed directly at {address}"),
-            };
         }
         if relay_ready {
             return TalkRoute {
@@ -2050,9 +2051,20 @@ mod tests {
     }
 
     #[test]
-    fn the_credentials_do_not_cover_a_camera_that_is_not_the_bound_one() {
+    fn a_camera_that_is_not_the_bound_one_falls_back_to_the_relay() {
         let config = test_config(None, Some("192.168.0.100:34567"));
         let route = talk_route_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("vendor relay"), "{}", route.why);
+        assert!(!route.why.contains("credentials"), "{}", route.why);
+        let row = talk_capability_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        assert_eq!(row.state, State::Supported);
+    }
+
+    #[test]
+    fn the_credentials_do_not_cover_a_camera_that_is_not_the_bound_one() {
+        let config = test_config(None, Some("192.168.0.100:34567"));
+        let route = talk_route_with(&config, None, Some("ABC999"), "ABC123", true);
         assert!(!route.ok);
         assert!(
             route
@@ -2061,7 +2073,7 @@ mod tests {
             "{}",
             route.why
         );
-        let row = talk_capability_with(&config, Some("token"), Some("ABC999"), "ABC123", true);
+        let row = talk_capability_with(&config, None, Some("ABC999"), "ABC123", true);
         assert_eq!(row.state, State::Blocked);
     }
 

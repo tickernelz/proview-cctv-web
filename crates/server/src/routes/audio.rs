@@ -163,13 +163,16 @@ async fn open_link(
     let mut direct_error = None;
     if let Some(address) = direct.as_deref() {
         if account.ready() {
-            if let Some(refusal) = named.and_then(|name| account.refusal(name)) {
-                return Err(refusal);
-            }
-            direct_attempted = true;
-            match direct_link(address, account).await {
-                Ok(link) => return Ok((link, "lan")),
-                Err(error) => direct_error = Some(error),
+            match named.and_then(|name| account.refusal(name)) {
+                Some(refusal) if token.is_empty() => return Err(refusal),
+                Some(refusal) => direct_error = Some(format!("{address}: {}", refusal.message)),
+                None => {
+                    direct_attempted = true;
+                    match direct_link(address, account).await {
+                        Ok(link) => return Ok((link, "lan")),
+                        Err(error) => direct_error = Some(error),
+                    }
+                }
             }
         } else {
             direct_error = Some(format!(
@@ -476,7 +479,25 @@ mod tests {
     async fn the_credentials_never_travel_to_another_camera() {
         let mut cfg = Config::from_env();
         cfg.device_host = Some("127.0.0.1:1".to_string());
+        cfg.cloud_base = "http://127.0.0.1:1".to_string();
         let failure = failure_of(&cfg, Some("token"), Some("serial-two")).await;
+        let text = message(failure);
+        assert!(
+            text.contains(
+                "direct: 127.0.0.1:1: camera credentials belong to serial-one, not to serial-two"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("vendor relay:"), "{text}");
+        assert!(!text.contains("refused"), "{text}");
+        assert!(!text.contains("no answer"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_camera_that_is_not_the_bound_one_blocks_without_a_relay() {
+        let mut cfg = Config::from_env();
+        cfg.device_host = Some("127.0.0.1:1".to_string());
+        let failure = failure_of(&cfg, None, Some("serial-two")).await;
         assert_eq!(failure.scope, "path");
         let text = message(failure);
         assert!(
@@ -491,7 +512,7 @@ mod tests {
         cfg.device_host = Some("127.0.0.1:1".to_string());
         let mut unbound = account();
         unbound.serial = String::new();
-        let failure = failure_with(&cfg, Some("token"), Some("serial-one"), &unbound).await;
+        let failure = failure_with(&cfg, None, Some("serial-one"), &unbound).await;
         assert_eq!(failure.scope, "path");
         let text = message(failure);
         assert!(text.contains("no camera serial is configured"), "{text}");

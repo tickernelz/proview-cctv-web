@@ -34,8 +34,9 @@ stability before 1.0.
   cloud mode now answers `two-way audio: supported` over the relay instead of
   asking for `PROVIEW_DEVICE_PASS`. The camera password stays the direct-address
   path only. The session-key seal of the control channel is not applied to the talk
-  claim: sealed `1434` is refused with `Ret 117`, while plain `1434`/`1430`/`1432` are
-  answered (sealed `1430`/`1432` were not sent, so they are untested - 4C.29).
+  claim: sealed `1434` is refused with `Ret 117`, plain `1434` is answered, and plain
+  `1430`/`1432` are accepted (sealed `1430`/`1432` were not sent, so they are
+  untested - 4C.29).
 - `tools/acceptance/talk_acceptance.py`: one command that proves the talk path
   end to end. It refuses a camera that answers on the LAN, refuses to start the
   server with a camera credential in its environment, opens `/ws/talk` with
