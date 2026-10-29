@@ -22,7 +22,8 @@ function attach(element: HTMLCanvasElement, wanted: FisheyeRequest) {
   }
   dewarp.setMount(wanted.mount)
   dewarp.setView(wanted.view)
-  let lensSize = ''
+  let lensWidth = 0
+  let lensHeight = 0
   const tick = () => {
     const width = element.clientWidth || element.width
     const height = element.clientHeight || element.height
@@ -31,10 +32,10 @@ function attach(element: HTMLCanvasElement, wanted: FisheyeRequest) {
       element.height = height
     }
     if (video.readyState >= 2 && video.videoWidth > 0) {
-      const size = video.videoWidth + 'x' + video.videoHeight
-      if (size !== lensSize) {
+      if (video.videoWidth !== lensWidth || video.videoHeight !== lensHeight) {
         dewarp.setLens(lensFromVideo(video))
-        lensSize = size
+        lensWidth = video.videoWidth
+        lensHeight = video.videoHeight
       }
       dewarp.uploadFrame(video)
       dewarp.render()
