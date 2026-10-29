@@ -60,6 +60,15 @@ impl LivePacket {
         }
     }
 
+    pub fn media_fragment(bytes: Fragment, keyframe: bool) -> Self {
+        Self {
+            kind: PacketKind::Fragment,
+            bytes,
+            keyframe,
+            pts_us: 0,
+        }
+    }
+
     pub fn config(bytes: Fragment) -> Self {
         Self {
             kind: PacketKind::Config,
@@ -185,13 +194,36 @@ pub fn plan_clip(track: &TrackConfig, samples: &[Sample], per_fragment: usize) -
     }
 }
 
+#[derive(Default)]
+struct Replay {
+    fragments: Vec<Arc<LivePacket>>,
+    bytes: usize,
+}
+
+impl Replay {
+    fn record(&mut self, packet: Arc<LivePacket>) {
+        if packet.keyframe {
+            self.fragments.clear();
+            self.bytes = 0;
+        } else if self.fragments.is_empty() {
+            return;
+        }
+        self.bytes += packet.bytes.len();
+        self.fragments.push(packet);
+        if self.fragments.len() > REPLAY_FRAGMENTS || self.bytes > REPLAY_BYTES {
+            self.fragments.clear();
+            self.bytes = 0;
+        }
+    }
+}
+
 struct Channel {
     sender: broadcast::Sender<Arc<LivePacket>>,
     subscribers: usize,
     publishers: usize,
     init: Arc<Mutex<Option<Fragment>>>,
     config: Arc<Mutex<Option<Fragment>>>,
-    last: Arc<Mutex<Option<Arc<LivePacket>>>>,
+    replay: Mutex<Replay>,
     meta: Arc<Mutex<StreamMeta>>,
     counters: Arc<Counters>,
 }
@@ -205,7 +237,7 @@ impl Channel {
             publishers: 0,
             init: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(None)),
-            last: Arc::new(Mutex::new(None)),
+            replay: Mutex::new(Replay::default()),
             meta: Arc::new(Mutex::new(StreamMeta::default())),
             counters: Arc::new(Counters::default()),
         }
@@ -215,12 +247,14 @@ impl Channel {
 pub struct Subscription {
     pub init: Arc<Mutex<Option<Fragment>>>,
     pub config: Arc<Mutex<Option<Fragment>>>,
-    pub last: Arc<Mutex<Option<Arc<LivePacket>>>>,
+    pub replay: Vec<Arc<LivePacket>>,
     pub meta: Arc<Mutex<StreamMeta>>,
     pub receiver: broadcast::Receiver<Arc<LivePacket>>,
 }
 
 const PASSTHROUGH_CAPACITY: usize = 96;
+const REPLAY_FRAGMENTS: usize = 240;
+const REPLAY_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct LiveHub {
     channels: Mutex<HashMap<StreamKey, Channel>>,
@@ -255,10 +289,15 @@ impl LiveHub {
         let mut guard = self.channels.lock().expect("live hub poisoned");
         let channel = guard.entry(key).or_insert_with(|| Channel::new(capacity));
         channel.subscribers += 1;
+        let replay = channel
+            .replay
+            .lock()
+            .map(|replay| replay.fragments.clone())
+            .unwrap_or_default();
         Subscription {
             init: channel.init.clone(),
             config: channel.config.clone(),
-            last: channel.last.clone(),
+            replay,
             meta: channel.meta.clone(),
             receiver: channel.sender.subscribe(),
         }
@@ -311,9 +350,9 @@ impl LiveHub {
             PacketKind::Fragment | PacketKind::AccessUnit => {}
         }
         let shared = Arc::new(packet);
-        if shared.keyframe {
-            if let Ok(mut slot) = channel.last.lock() {
-                *slot = Some(shared.clone());
+        if shared.kind == PacketKind::Fragment {
+            if let Ok(mut replay) = channel.replay.lock() {
+                replay.record(shared.clone());
             }
         }
         let _ = channel.sender.send(shared);
@@ -321,6 +360,10 @@ impl LiveHub {
 
     pub fn publish(&self, key: &StreamKey, fragment: Fragment) {
         self.publish_packet(key, LivePacket::fragment(fragment));
+    }
+
+    pub fn publish_media(&self, key: &StreamKey, fragment: Fragment, keyframe: bool) {
+        self.publish_packet(key, LivePacket::media_fragment(fragment, keyframe));
     }
 
     pub fn meta(&self, key: &StreamKey) -> Option<StreamMeta> {
@@ -521,18 +564,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_keyframe_packets_are_replayed_to_a_new_viewer() {
+    async fn the_replay_snapshot_and_the_receiver_split_at_the_same_packet() {
         let hub = LiveHub::new(8);
-        let stream = key(LiveMode::Passthrough);
-        let subscription = hub.subscribe(stream.clone());
-        drop(subscription);
-        let delta = LivePacket::access_unit(Fragment::from_static(b"delta"), false, 1);
-        let idr = LivePacket::access_unit(Fragment::from_static(b"idr"), true, 2);
-        hub.publish_packet(&stream, delta.clone());
-        hub.publish_packet(&stream, idr.clone());
+        let stream = key(LiveMode::Transcode);
+        let _sender = hub.publisher(stream.clone());
+        hub.publish_media(&stream, Fragment::from_static(b"idr"), true);
+        hub.publish_media(&stream, Fragment::from_static(b"delta-one"), false);
+        hub.publish_media(&stream, Fragment::from_static(b"delta-two"), false);
+        let mut late = hub.subscribe(stream.clone());
+        let replayed: Vec<Vec<u8>> = late
+            .replay
+            .iter()
+            .map(|packet| packet.bytes.to_vec())
+            .collect();
+        assert_eq!(replayed.len(), 3);
+        hub.publish_media(&stream, Fragment::from_static(b"delta-three"), false);
+        let received = late.receiver.recv().await.expect("one live fragment");
+        assert_eq!(received.bytes.as_ref(), b"delta-three");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), late.receiver.recv())
+                .await
+                .is_err(),
+            "the replayed fragments must not arrive a second time"
+        );
+        hub.release(&stream);
+    }
+
+    #[tokio::test]
+    async fn the_replay_holds_only_the_fragments_since_the_last_keyframe() {
+        let hub = LiveHub::new(8);
+        let stream = key(LiveMode::Transcode);
+        let _sender = hub.publisher(stream.clone());
+        hub.publish_media(&stream, Fragment::from_static(b"idr"), true);
+        hub.publish_media(&stream, Fragment::from_static(b"delta-one"), false);
+        hub.publish_media(&stream, Fragment::from_static(b"delta-two"), false);
         let late = hub.subscribe(stream.clone());
-        let stored = late.last.lock().unwrap().clone().expect("stored keyframe");
-        assert_eq!(stored.as_ref(), &idr);
+        let replayed: Vec<Vec<u8>> = late
+            .replay
+            .iter()
+            .map(|packet| packet.bytes.to_vec())
+            .collect();
+        assert_eq!(
+            replayed,
+            vec![
+                b"idr".to_vec(),
+                b"delta-one".to_vec(),
+                b"delta-two".to_vec()
+            ]
+        );
+        hub.publish_media(&stream, Fragment::from_static(b"next-idr"), true);
+        let later = hub.subscribe(stream.clone());
+        let replayed: Vec<Vec<u8>> = later
+            .replay
+            .iter()
+            .map(|packet| packet.bytes.to_vec())
+            .collect();
+        assert_eq!(replayed, vec![b"next-idr".to_vec()]);
+        hub.release(&stream);
         hub.release(&stream);
         hub.release(&stream);
     }

@@ -40,7 +40,7 @@ jobs:
       - name: Web UI in headless Chrome (menus, shortcuts, talk, grid, snapshot, settings edits during boot, boot stream ownership, misconfigured headline)
         run: |
           cargo build -p proview-server
-          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/restart.test.mjs tests/web/settings-boot.test.mjs tests/web/desktop-settings.test.mjs tests/web/stream-orphan.test.mjs tests/web/stream-misconfigured.test.mjs
+          timeout 600 node --test tests/web/ui.test.mjs tests/web/grid.test.mjs tests/web/snapshot.test.mjs tests/web/device-settings.test.mjs tests/web/alarms-pictures.test.mjs tests/web/restart.test.mjs tests/web/settings-boot.test.mjs tests/web/desktop-settings.test.mjs tests/web/stream-orphan.test.mjs tests/web/stream-misconfigured.test.mjs tests/web/live-late-viewer.test.mjs
       - run: cargo build --release -p proview-server
 
   e2e:
@@ -135,3 +135,6 @@ jobs:
           "OPENSSL_SRC_PERL=C:\\Strawberry\\perl\\bin\\perl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Build desktop shell
         run: cargo build -p proview-desktop
+      - name: Test the core crate
+        if: runner.os == 'Windows'
+        run: cargo test -p proview-core --lib

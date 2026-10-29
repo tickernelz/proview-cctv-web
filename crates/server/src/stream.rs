@@ -113,7 +113,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
             let Subscription {
                 init,
                 config,
-                last,
+                replay,
                 meta,
                 mut receiver,
             } = subscription;
@@ -162,9 +162,9 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                 }
             }
             if !passthrough {
-                if let Some(packet) = last.lock().ok().and_then(|slot| slot.clone()) {
+                for packet in &replay {
                     if stream
-                        .send(ws::Message::Binary(frame(&packet)))
+                        .send(ws::Message::Binary(frame(packet)))
                         .await
                         .is_err()
                     {
@@ -173,7 +173,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                     }
                 }
             }
-            let mut waiting_keyframe = passthrough;
+            let mut waiting_keyframe = passthrough || replay.is_empty();
             loop {
                 match receiver.recv().await {
                     Ok(packet) => {
