@@ -1381,9 +1381,11 @@ shape of it: 15 fragments, 38,354,737 bytes in 30 s (10.2 Mbit/s), first frame a
 
 The acceptance harness grew one option for this: `--device-env-file`
 (default `~/re/proview-cctv/secrets/device.env`) forwards `PROVIEW_DEVICE_USER`
-and `PROVIEW_DEVICE_PASS` to the server it starts, because a cloud session still
-needs the device login of 4C.24 and the harness builds the server environment from
-scratch. The values never enter the repository, the report, or the command line.
+and `PROVIEW_DEVICE_PASS` to the server it starts, because the harness builds the
+server environment from scratch and `local` mode still needs the device login.
+The cloud session stopped needing it in 4C.28: since ZHA-4282 the cloud path logs
+in with the account device token only. The values never enter the repository, the
+report, or the command line.
 
 ### 4C.26 Cost of one cloud live stream, measured
 
@@ -1480,9 +1482,36 @@ and with an empty body (`v1` answers a 73-byte non-JSON page). No row shape was
 observed, so the provider does not call it and the device list stays `msdlistCode`
 (4C.23).
 
-For the cloud path the device password is now optional: absent, live video still
-plays; present, `password_login` stays the fallback for a camera whose token the
-device refuses.
+The cloud path never falls back to a device password: the token the account
+issues is the only login it offers, and a device that refuses it answers with the
+Ret in the error. Camera credentials stay the local-network path for playback,
+live and the walk diagnosis (ZHA-4282); talk over the relay still logs in with
+them until ZHA-4283 moves it to the account token.
+
+### 4C.28 After a token login the control frames are sealed with the session key,
+and the media start is not (2026-10-29, ZHA-4282)
+
+Measured on the test camera through the RPS tunnel, login
+`account device token ret 100`, session adopted from the login reply body:
+
+| Frame | Framing that the device answers |
+|---|---|
+| `OPFileQuery` (1440), `OPPlayBack` Claim (1424) | plain JSON ignored (no reply at all); AES-128-CBC, zero IV, under the 16-character session key from the token login, channel 0, end bit clear |
+| `OPPlayBack` Start (1420), `DownloadStart` | plain JSON, channel 0, end bit clear; sealing it earns silence |
+| Reply to a sealed frame | AES-128-CBC, zero IV, under the same session key, base64 text |
+| `OPMonitor` claim (1413) and start (1410) | unchanged from 4C.21 |
+
+The channel key (`dashoiahfarqdasr`) seals the token login only; every control
+frame after it uses the session key, and the two keys are not interchangeable:
+the first sealing attempt with the channel key answered `Ret 117` on 1440, and
+the plain attempt answered nothing. The token login reply also carries the
+session id in its **body** (`{"Ret":100,"SessionID":"0x000001a2"}`); a client that
+only reads the frame header queries under session 0 and gets silence.
+Playback numbers from that path on 2026-10-29 07:27-07:35 Jakarta time, two
+runs minutes apart: 529 file rows for the day (10,253,928,448 bytes in 2.70 s and
+10,265,135,104 bytes in 2.90 s), first media frame 3.9 s and 3.19 s after the
+socket opened (2.4-2.6 s priming, 150 records, 5 keyframes), and 75 decoded frames
+of HEVC 2304x2592 behind 8.17 MB of fMP4 in both.
 
 ### 4C.4 What that means for the implementation
 
@@ -1494,9 +1523,10 @@ device refuses.
    RpsAV`, and read `AgentServerIp`/`AgentServerPort` from the answer.
 3. `tcp <agent>:6611` → base64 `<rps>:<client token>:<serial>:<RpsAV SessionId>`
    plus `XXEE` → base64 JSON with `ErrorNum 200` and `MTU`.
-4. DVRIP over the tunnel: login with the device credentials and the `OPMonitor`
-   claim (4C.8). The `rps` id comes from `msdlistCode`, so no new account call is
-   needed; the media frames themselves still need the encrypted login of 4C.9.
+4. DVRIP over the tunnel: login with the account device token (4C.24, 4C.28) and
+   the `OPMonitor` claim (4C.8); a device password is the `local` mode path only,
+   with talk over the relay the one cloud caller still using it (ZHA-4283).
+   The `rps` id comes from `msdlistCode`, so no new account call is needed.
 
 ## 5. Open items
 

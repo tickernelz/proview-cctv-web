@@ -1,17 +1,13 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use bytes::BytesMut;
 use serde::Serialize;
 use serde_json::{json, Value};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
-use super::client::{describe_ret, require_ok, DvrError};
-use super::crypto::sofia_hash;
+use super::client::{describe_ret, require_ok, Connection, DvrError};
 use super::frame::{FrameError, Header};
-use super::HEADER_LEN;
 
 pub const FILE_QUERY: u16 = 1440;
 pub const PLAYBACK_CLAIM: u16 = 1424;
@@ -21,7 +17,6 @@ pub const DOWNLOAD_DATA: u16 = 0x0592;
 pub const PAGE_FILES: usize = 64;
 pub const MAX_FILES: usize = 2048;
 pub const REPLY_WAIT: Duration = Duration::from_secs(10);
-const READ_BUFFER: usize = 256 * 1024;
 
 #[derive(Debug)]
 pub enum PlaybackError {
@@ -191,13 +186,6 @@ pub struct MediaFrame {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Login {
-    pub session: u32,
-    pub device_type: Option<String>,
-    pub channels: Option<u32>,
-}
-
 pub fn absorb(
     seen: &mut HashSet<String>,
     collected: &mut Vec<PlaybackFile>,
@@ -218,30 +206,34 @@ pub fn absorb(
 }
 
 pub struct Session {
-    stream: TcpStream,
-    session: u32,
-    sequence: u32,
-    read_buf: BytesMut,
+    connection: Connection,
+    cipher: Option<crate::media::dhav::MediaCipher>,
 }
 
 impl Session {
     pub fn open(stream: TcpStream) -> Self {
-        stream.set_nodelay(true).ok();
         Self {
-            stream,
-            session: 0,
-            sequence: 0,
-            read_buf: BytesMut::with_capacity(READ_BUFFER),
+            connection: Connection::from_stream(stream),
+            cipher: None,
+        }
+    }
+
+    pub fn from_connection(
+        connection: Connection,
+        cipher: crate::media::dhav::MediaCipher,
+    ) -> Self {
+        Self {
+            connection,
+            cipher: Some(cipher),
         }
     }
 
     pub fn session(&self) -> u32 {
-        self.session
+        self.connection.session()
     }
 
-    fn next_sequence(&mut self) -> u32 {
-        self.sequence = self.sequence.wrapping_add(1);
-        self.sequence
+    pub fn set_session(&mut self, session: u32) {
+        self.connection.set_session(session);
     }
 
     async fn send_on(
@@ -251,50 +243,40 @@ impl Session {
         id: u16,
         body: &[u8],
     ) -> Result<(), PlaybackError> {
-        let sequence = self.next_sequence();
-        let header = Header {
-            session: self.session,
-            sequence,
-            channel,
-            end,
-            id,
-            length: body.len() as u32,
-        };
-        self.stream.write_all(&header.encode()).await?;
-        self.stream.write_all(body).await?;
-        self.stream.flush().await?;
-        Ok(())
+        Ok(self
+            .connection
+            .send_frame_on(channel, end, id, body)
+            .await?)
     }
 
     pub async fn send_json(&mut self, id: u16, body: &Value) -> Result<(), PlaybackError> {
+        let plain = serde_json::to_vec(body)
+            .map_err(|error| PlaybackError::Malformed(error.to_string()))?;
+        match &self.cipher {
+            Some(cipher) => {
+                let mut payload = cipher.encrypt_body(&plain).into_bytes();
+                payload.push(0);
+                self.send_on(0, false, id, &payload).await
+            }
+            None => {
+                let mut payload = plain;
+                payload.push(b'\n');
+                payload.push(0);
+                self.send_on(0, true, id, &payload).await
+            }
+        }
+    }
+
+    pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), PlaybackError> {
+        Ok(self.connection.recv().await?)
+    }
+
+    async fn send_json_plain(&mut self, id: u16, body: &Value) -> Result<(), PlaybackError> {
         let mut payload = serde_json::to_vec(body)
             .map_err(|error| PlaybackError::Malformed(error.to_string()))?;
         payload.push(b'\n');
         payload.push(0);
-        self.send_on(0, true, id, &payload).await
-    }
-
-    pub async fn recv(&mut self) -> Result<(Header, Vec<u8>), PlaybackError> {
-        loop {
-            if self.read_buf.len() >= HEADER_LEN {
-                let header = Header::decode(&self.read_buf[..HEADER_LEN])?;
-                let wanted = HEADER_LEN + header.length as usize;
-                if self.read_buf.len() >= wanted {
-                    let frame = self.read_buf.split_to(wanted);
-                    if header.session != 0 {
-                        self.session = header.session;
-                    }
-                    return Ok((header, frame[HEADER_LEN..].to_vec()));
-                }
-            }
-            let read = self.stream.read_buf(&mut self.read_buf).await?;
-            if read == 0 {
-                return Err(PlaybackError::Io(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "connection closed",
-                )));
-            }
-        }
+        self.send_on(0, false, id, &payload).await
     }
 
     async fn await_json(&mut self, wait: Duration) -> Result<Value, PlaybackError> {
@@ -318,42 +300,24 @@ impl Session {
                     return Ok(value);
                 }
             }
+            if let Some(cipher) = &self.cipher {
+                let opened = cipher.decrypt_body(&payload).and_then(|raw| {
+                    let mut end = raw.len();
+                    while end > 0 && matches!(raw[end - 1], 0 | b'\n' | b'\r') {
+                        end -= 1;
+                    }
+                    serde_json::from_slice::<Value>(&raw[..end]).ok()
+                });
+                if let Some(value) = opened.filter(Value::is_object) {
+                    return Ok(value);
+                }
+            }
         }
     }
 
     pub async fn request(&mut self, id: u16, body: Value) -> Result<Value, PlaybackError> {
         self.send_json(id, &body).await?;
         self.await_json(REPLY_WAIT).await
-    }
-
-    pub async fn login(&mut self, user: &str, password: &str) -> Result<Login, PlaybackError> {
-        let body = json!({
-            "EncryptType": "MD5",
-            "LoginType": "DVRIP-Web",
-            "PassWord": sofia_hash(password),
-            "UserName": user,
-        });
-        let reply = self.request(1000, body).await?;
-        require_ok(&reply)?;
-        if let Some(session) = reply
-            .get("SessionID")
-            .and_then(Value::as_str)
-            .and_then(parse_session)
-        {
-            self.session = session;
-        }
-        Ok(Login {
-            session: self.session,
-            device_type: reply
-                .get("DeviceType ")
-                .or_else(|| reply.get("DeviceType"))
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            channels: reply
-                .get("ChannelNum")
-                .and_then(Value::as_u64)
-                .map(|value| value as u32),
-        })
     }
 
     pub async fn files(
@@ -370,6 +334,14 @@ impl Session {
             let reply = self
                 .request(FILE_QUERY, file_query_body(channel, &cursor, end, kind))
                 .await?;
+            if let Some(ret) = reply.get("Ret").and_then(Value::as_i64) {
+                if ret != 100 && ret != 150 {
+                    return Err(PlaybackError::Rejected {
+                        ret,
+                        reason: describe_ret(ret),
+                    });
+                }
+            }
             let page = parse_files(&reply);
             if page.is_empty() {
                 break;
@@ -389,7 +361,7 @@ impl Session {
 
     pub async fn claim(&mut self, file: &PlaybackFile, channel: u8) -> Result<i64, PlaybackError> {
         let body = playback_body(
-            self.session,
+            self.session(),
             PlaybackAction::Claim,
             channel,
             &file.name,
@@ -402,14 +374,14 @@ impl Session {
 
     pub async fn start(&mut self, file: &PlaybackFile, channel: u8) -> Result<(), PlaybackError> {
         let body = playback_body(
-            self.session,
+            self.session(),
             PlaybackAction::Start,
             channel,
             &file.name,
             &file.begin,
             &file.end,
         );
-        self.send_json(PLAYBACK_CONTROL, &body).await
+        self.send_json_plain(PLAYBACK_CONTROL, &body).await
     }
 
     pub async fn download_start(
@@ -418,14 +390,14 @@ impl Session {
         channel: u8,
     ) -> Result<(), PlaybackError> {
         let body = playback_body(
-            self.session,
+            self.session(),
             PlaybackAction::DownloadStart,
             channel,
             &file.name,
             &file.begin,
             &file.end,
         );
-        self.send_json(PLAYBACK_CONTROL, &body).await
+        self.send_json_plain(PLAYBACK_CONTROL, &body).await
     }
 
     pub async fn download_stop(
@@ -434,7 +406,7 @@ impl Session {
         channel: u8,
     ) -> Result<(), PlaybackError> {
         let body = playback_body(
-            self.session,
+            self.session(),
             PlaybackAction::DownloadStop,
             channel,
             &file.name,
@@ -446,7 +418,7 @@ impl Session {
 
     pub async fn stop(&mut self, file: &PlaybackFile, channel: u8) -> Result<(), PlaybackError> {
         let body = playback_body(
-            self.session,
+            self.session(),
             PlaybackAction::Stop,
             channel,
             &file.name,
@@ -471,17 +443,6 @@ impl Session {
 
 pub fn describe(response: i64) -> &'static str {
     describe_ret(response)
-}
-
-fn parse_session(raw: &str) -> Option<u32> {
-    let trimmed = raw.trim();
-    match trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => trimmed.parse().ok(),
-    }
 }
 
 pub const RECORD_INFO: u8 = 0xf9;
@@ -668,10 +629,10 @@ impl Session {
     pub async fn logout(&mut self) -> Result<(), PlaybackError> {
         let body = json!({
             "Name": "",
-            "SessionID": format!("0x{:08X}", self.session),
+            "SessionID": format!("0x{:08X}", self.session()),
         });
         let _ = self.send_json(1001, &body).await;
-        self.session = 0;
+        self.set_session(0);
         Ok(())
     }
 }
@@ -872,6 +833,7 @@ impl FrameRate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn hex(text: &str) -> Vec<u8> {
         let digits: Vec<u8> = text
@@ -1237,7 +1199,7 @@ mod tests {
         (Session::open(stream), listener)
     }
 
-    fn sample_header() -> [u8; HEADER_LEN] {
+    fn sample_header() -> [u8; crate::dvrip::HEADER_LEN] {
         Header {
             session: 0x0000_2a2a,
             sequence: 7,
@@ -1296,5 +1258,150 @@ mod tests {
         assert_eq!(resumed.0.length, 5);
         assert_eq!(resumed.1, b"hello");
         peer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_logged_in_connection_carries_its_session_into_the_file_query() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(address).await.unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut header = [0u8; crate::dvrip::HEADER_LEN];
+            socket.read_exact(&mut header).await.unwrap();
+            let login = Header::decode(&header).expect("login header");
+            let mut body = vec![0u8; login.length as usize];
+            socket.read_exact(&mut body).await.unwrap();
+            let reply = b"{\"Ret\":100,\"SessionID\":\"0x44444444\"}\n\0";
+            let header = Header {
+                session: 0x4444_4444,
+                sequence: login.sequence,
+                channel: 0,
+                end: false,
+                id: crate::dvrip::msg::LOGIN_REPLY,
+                length: reply.len() as u32,
+            }
+            .encode();
+            socket.write_all(&header).await.unwrap();
+            socket.write_all(reply).await.unwrap();
+            socket.flush().await.unwrap();
+            let mut header = [0u8; crate::dvrip::HEADER_LEN];
+            socket.read_exact(&mut header).await.unwrap();
+            let asked = Header::decode(&header).expect("query header");
+            let mut body = vec![0u8; asked.length as usize];
+            socket.read_exact(&mut body).await.unwrap();
+            (asked.session, asked.id)
+        });
+        let mut connection = Connection::from_stream(stream);
+        connection.login("admin", "secret").await.expect("login");
+        let mut session =
+            Session::from_connection(connection, crate::media::dhav::MediaCipher::channel());
+        session
+            .send_json(
+                FILE_QUERY,
+                &file_query_body(0, "2026-10-24 00:00:00", "2026-10-25 00:00:00", "h264"),
+            )
+            .await
+            .expect("query");
+        let (asked, id) = peer.await.unwrap();
+        assert_eq!(asked, 0x4444_4444);
+        assert_eq!(id, FILE_QUERY);
+        assert_eq!(session.session(), 0x4444_4444);
+        drop(session);
+    }
+
+    async fn scripted_pair(
+        replies: Vec<Vec<u8>>,
+    ) -> (
+        Session,
+        tokio::task::JoinHandle<Vec<(u16, Vec<u8>)>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(address).await.unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bodies = Vec::new();
+            for reply in replies {
+                let mut header = [0u8; crate::dvrip::HEADER_LEN];
+                if socket.read_exact(&mut header).await.is_err() {
+                    break;
+                }
+                let asked = Header::decode(&header).expect("header");
+                let mut body = vec![0u8; asked.length as usize];
+                socket.read_exact(&mut body).await.unwrap();
+                bodies.push((asked.id, body));
+                let response = Header {
+                    session: asked.session,
+                    sequence: asked.sequence,
+                    channel: 0,
+                    end: false,
+                    id: asked.id + 1,
+                    length: reply.len() as u32,
+                }
+                .encode();
+                if socket.write_all(&response).await.is_err() {
+                    break;
+                }
+                let _ = socket.write_all(&reply).await;
+                let _ = socket.flush().await;
+            }
+            bodies
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let session = Session::from_connection(
+            Connection::from_stream(stream),
+            crate::media::dhav::MediaCipher::channel(),
+        );
+        (session, peer, tokio::spawn(async {}))
+    }
+
+    fn sample_file() -> PlaybackFile {
+        PlaybackFile {
+            name: "/idea0/2026-10-29/001/07.00.00-07.05.00[R][0].h264".to_string(),
+            begin: "2026-10-29 07:00:00".to_string(),
+            end: "2026-10-29 07:05:00".to_string(),
+            bytes: 0,
+            disk: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_claim_is_sealed_and_a_start_is_plain() {
+        let (mut session, peer, _) =
+            scripted_pair(vec![Vec::new(), b"{\"Ret\":100}\n\0".to_vec()]).await;
+        session.start(&sample_file(), 0).await.expect("start");
+        session.claim(&sample_file(), 0).await.expect("claim");
+        let frames = peer.await.unwrap();
+        assert_eq!(frames[0].0, PLAYBACK_CONTROL);
+        assert_eq!(
+            frames[0].1.first(),
+            Some(&b'{'),
+            "the start must reach the device as plain JSON"
+        );
+        assert_eq!(frames[1].0, PLAYBACK_CLAIM);
+        assert_ne!(
+            frames[1].1.first(),
+            Some(&b'{'),
+            "the claim must not travel as plain JSON"
+        );
+        let opened = crate::media::dhav::MediaCipher::channel()
+            .decrypt_body(&frames[1].1)
+            .expect("sealed claim");
+        let text = String::from_utf8_lossy(crate::media::dhav::trim_nul(&opened)).into_owned();
+        assert!(text.contains("OPPlayBack"), "{text}");
+        assert!(text.contains("Claim"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_file_query_that_is_refused_reports_the_ret() {
+        let (mut session, _peer, _) = scripted_pair(vec![b"{\"Ret\":117}\n\0".to_vec()]).await;
+        let error = session
+            .files(0, "2026-10-29 00:00:00", "2026-10-29 23:59:59", "h264")
+            .await
+            .expect_err("a refusal is not an empty list");
+        assert!(error.to_string().contains("ret 117"), "{error}");
+        assert!(error.to_string().contains("device error"), "{error}");
     }
 }
