@@ -274,6 +274,11 @@ impl Connection {
         Ok(())
     }
 
+    fn opened_bytes(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        let cipher = self.seal.as_ref()?;
+        cipher.decrypt_body(payload)
+    }
+
     fn opened_json(&self, payload: &[u8]) -> Option<Value> {
         let cipher = self.seal.as_ref()?;
         let raw = cipher.decrypt_body(payload)?;
@@ -544,6 +549,11 @@ impl Connection {
             let (_, payload) = self.recv().await?;
             if payload.len() > 3 && payload[0] == 0xff && payload[1] == 0xd8 && payload[2] == 0xff {
                 return Ok(payload);
+            }
+            if let Some(opened) = self.opened_bytes(&payload) {
+                if opened.len() > 3 && opened[0] == 0xff && opened[1] == 0xd8 && opened[2] == 0xff {
+                    return Ok(opened);
+                }
             }
             if let Ok(reply) = parse_json(&payload) {
                 if let Ok(ret) = ret_of(&reply) {
