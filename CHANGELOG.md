@@ -5,6 +5,31 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Added
+
+- Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
+  `/api/device/controls/ptz`, `/api/device/controls/presets`,
+  `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
+  DVRIP session over the same RPS relay the live stream uses, so none of them
+  needs the camera on the local network. The capability report in cloud mode is
+  read from the device (`Ptz.GunBallLocate` binds the motor to the lower lens,
+  `Uart.PTZPreset` lists the presets) instead of answering "unconfigured"; the
+  upper lens keeps its own refusal, and `PROVIEW_LENS_PTZ` stays an override
+  rather than the only source.
+- `tools/acceptance/cloud_ptz.py`: one command that proves the claim with pixels.
+  It refuses to run while the camera answers on the LAN, parks the lens at a
+  preset, moves it, and measures the shift per lens crop by phase correlation
+  against the noise floor between two frames taken before the move.
+
+### Changed
+
+- The Move button no longer greys out without a reason: while it is blocked the
+  caption names the device's own refusal, and the control panel asks the server
+  for the capability report of the camera on screen (`device`), which is what
+  lets a cloud camera report its motor at all.
+
 ## 0.3.6 — 2026-10-29
 
 ### Changed

@@ -11,7 +11,7 @@ const DEVICES = [
 ];
 const CLIPS = Object.fromEntries(DEVICES.flatMap((device) => [[device.id + '_ch1_main.h264', DUAL_LENS_CLIP], [device.id + '_ch1_sub.h264', DUAL_LENS_CLIP]]));
 const TALK_CAPS = {
-  patterns: [{ urlPattern: '*/api/device/controls' }],
+  patterns: [{ urlPattern: '*/api/device/controls*' }],
   respond: () => ({
     onvif: false,
     dvrip: true,
@@ -297,7 +297,7 @@ test('the pad starts and stops the device tour, and reports that the ack is not 
     await page.evaluate("document.getElementById('tour').click()");
     await page.wait("/Stopped tour 1/.test(document.getElementById('control-status').textContent)", 'the tour to stop');
     assert.equal(await page.evaluate("document.getElementById('tour').getAttribute('aria-pressed')"), 'false');
-    assert.deepEqual(tourCalls, ['/api/device/controls/tour/start?tour=1', '/api/device/controls/tour/stop?tour=1']);
+    assert.deepEqual(tourCalls, ['/api/device/controls/tour/start?tour=1&device=gate', '/api/device/controls/tour/stop?tour=1&device=gate']);
   } finally {
     await page.close();
   }

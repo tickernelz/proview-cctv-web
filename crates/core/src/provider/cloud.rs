@@ -550,6 +550,26 @@ impl CloudProvider {
         Ok(tunnel.into_connection())
     }
 
+    pub async fn open_control(
+        &self,
+        session: &VendorSession,
+        device: &str,
+    ) -> Result<crate::dvrip::client::Connection, ProviderError> {
+        let Some(entry) = self.entry_of(session, device).await? else {
+            return Err(ProviderError::UnknownDevice(device.to_string()));
+        };
+        let target = self.relay_target(&entry).await?;
+        let connection = self.dial(&entry, &target).await?;
+        let credential = device_credential_for(entry.uuid.trim(), &entry);
+        let (connection, login_note) = self
+            .device_login(connection, &entry, credential, || {
+                self.dial(&entry, &target)
+            })
+            .await?;
+        tracing::debug!(device = %entry.uuid, %login_note, "cloud control login");
+        Ok(connection)
+    }
+
     pub async fn open_media(
         &self,
         session: &VendorSession,
