@@ -32,41 +32,7 @@
 <div id="watch" data-testid="live" class="screen" hidden>
   <a class="skip" href="#controls">Skip to controls</a>
   <div id="live-top" class="live-top"></div>
-  <main id="main" class="viewer">
-    <div class="emptywrap" id="empty" data-testid="devices-empty" hidden>
-      <div class="empty">
-        <h2 id="empty-title" tabindex="-1">No cameras on this account yet</h2>
-        <p id="empty-text">Add the camera in the phone app with the same account, then refresh. If the camera is on your own network, set its address under Settings, Configuration instead.</p>
-        <div class="actions"><button class="btn btn-line" id="refresh" data-testid="devices-refresh" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-refresh"></use></svg>Refresh</button><button class="btn btn-text" id="empty-settings" type="button">Open Settings</button></div>
-      </div>
-    </div>
-    <section id="live" class="live" aria-label="Live">
-      <div class="well" id="well" data-testid="live-well" data-state="idle">
-        <div class="lens-crop" id="lens-crop" data-testid="live-frame" hidden><video id="video" data-testid="live-video" playsinline muted></video></div>
-        <div class="prog" id="prog" hidden></div>
-        <div class="well-msg" id="well-msg" hidden>
-          <h2 id="well-title" data-testid="live-title"></h2>
-          <p id="well-text"></p>
-          <p class="mono" id="well-code" hidden></p>
-          <div class="actions" id="well-actions" hidden>
-            <button class="btn btn-line inv" id="retry" type="button"><svg class="i i-16" aria-hidden="true"><use href="#i-refresh"></use></svg>Try again</button>
-            <button class="btn btn-text inv" id="check-password" type="button">Check the camera password</button>
-          </div>
-        </div>
-        <div class="pad" id="pad" data-testid="ptz-pad" role="group" aria-label="Pan and tilt" hidden>
-          <button class="pk up" type="button" data-act="up" data-requires="device" aria-label="Tilt up"><svg class="i" aria-hidden="true"><use href="#i-chevron-up"></use></svg></button>
-          <button class="pk left" type="button" data-act="left" data-requires="device" aria-label="Pan left"><svg class="i" aria-hidden="true"><use href="#i-chevron-left"></use></svg></button>
-          <button class="pk home" type="button" data-act="home" data-requires="device" aria-label="Stop"><svg class="i i-16" aria-hidden="true"><use href="#i-stop"></use></svg></button>
-          <button class="pk right" type="button" data-act="right" data-requires="device" aria-label="Pan right"><svg class="i" aria-hidden="true"><use href="#i-chevron-right"></use></svg></button>
-          <button class="pk down" type="button" data-act="down" data-requires="device" aria-label="Tilt down"><svg class="i" aria-hidden="true"><use href="#i-chevron-down"></use></svg></button>
-          <div class="pad-note"><span id="preset-label" data-testid="ptz-preset-label">Presets</span><span id="presets" data-testid="ptz-presets" class="presets"></span><button class="btn btn-text" id="tour" data-testid="ptz-tour" type="button" data-act="cruise" data-requires="device" aria-pressed="false">Tour</button><span id="control-status" data-testid="control-status" role="status"></span></div>
-        </div>
-        <div class="fs-line" id="fs-line" hidden><span id="fs-name"></span><span id="fs-time"></span></div>
-      </div>
-      <div id="live-bar" class="live-bar"></div>
-    </section>
-    <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" hidden></section>
-  </main>
+  <main id="main" class="viewer"></main>
 </div>
 
 <div id="settings" data-testid="settings" class="screen" hidden></div>

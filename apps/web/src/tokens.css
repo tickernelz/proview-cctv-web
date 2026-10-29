@@ -17,6 +17,7 @@
   --stage: #030405;
   --stage-ink: #cfd1d3;
   --stage-ink-2: #96989c;
+  --stage-warn: #edb95d;
   --accent: #74b4ff;
   --accent-ink: #061423;
   --accent-soft: rgb(116 180 255 / 0.14);
@@ -44,6 +45,7 @@
   --stage: #030405;
   --stage-ink: #d6d8da;
   --stage-ink-2: #9c9fa2;
+  --stage-warn: #edb95d;
   --accent: #0b5fbd;
   --accent-ink: #ffffff;
   --accent-soft: rgb(11 95 189 / 0.10);

@@ -479,6 +479,32 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Live picture area in TypeScript and Vue (measured 2026-10-29, ZHA-4181)
+
+Step 3 of 6. `src/live/LiveMain.vue` renders the empty state and the Live
+well; `src/app/stage.ts` (stream request, stage, full-screen line, clock),
+`src/app/view.ts` (device list, camera selection, Live/grid switch, quality,
+full screen), `src/app/media.ts` (mute, snapshot, recording),
+`src/app/keys.ts` (Live shortcuts) and `src/app/boot.ts` (start-up) replace
+that code in `legacy/app.js` (1,364 to 572 lines; lens, PTZ and control
+availability remain for step 4). Baseline ec030b9 (PR #94 head), Chromium
+1440×900, `many` fixture, 10 reloads per round, six alternating rounds per
+build (60 samples each; box load 3.9 to 10, so the earlier single-round
+median was not stable):
+
+| Measure | ec030b9 | Live picture in Vue |
+|---|---:|---:|
+| JS gzip | 119.87 kB | 121.27 kB |
+| CSS gzip | 8.16 kB | 8.19 kB |
+| HTML gzip | 3.21 kB | 2.43 kB |
+| Live screen shown, median (p25-p75) | 68.0 ms (58.8-74.0) | 69.5 ms (62.0-78.8) |
+| First frame, median (p25-p75) | 119.0 ms (107.0-135.0) | 122.5 ms (107.2-133.0) |
+| DOM elements (page / Live) | 771 / 219 | 771 / 219 |
+
+JS grows 1.4 kB gzip for the Vue render of the well and the typed modules;
+HTML loses the same markup. Both timings overlap within their quartiles. e2e
+305 passed, 9 skipped; node web tests 44/44; contrast 78/78.
+
 ### Live top bar in Vue (measured 2026-10-29, ZHA-4181)
 
 Step 2 of 6. `src/live/LiveTop.vue` with `src/app/chrome.ts` and

@@ -13,7 +13,8 @@ import {
 import { openSettings } from '../app/shell'
 import { state } from '../app/state'
 import { toggleTheme } from '../app/theme'
-import { loadDevices, openCamera, requestStream, setView } from '../legacy/app.js'
+import { requestStream } from '../app/stage'
+import { loadDevices, openCamera, setView } from '../app/view'
 import { live } from './store'
 
 const KEYS: [string[], string][] = [

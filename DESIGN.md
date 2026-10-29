@@ -195,6 +195,16 @@ that takes focus on its close button and returns it on close. Banner,
 switcher and caption text are computed in `src/app/chrome.ts` and
 `src/app/caption.ts`.
 
+**Live picture.** Vue (`src/live/LiveMain.vue`, mounted into `#main`): the
+empty state, the well (video, progress line, message, PTZ pad, full-screen
+line) and the empty `#live-bar`/`#grid` hosts. The stage state lives in
+`live.stage`, written only by `src/app/stage.ts`; which pane shows lives in
+`live.panes`, written only by `src/app/view.ts`. A failed stream is
+`role="alert"` with the `--stage-warn` warning icon in its title; offline uses
+the disconnect icon and stays a plain message, because the banner above already
+announces it. Message text never points at a tooltip: the server's reason is
+the mono line under the sentence.
+
 **Settings.** Vue (`src/live/SettingsScreen.vue`, mounted into `#settings`;
 Device settings stays its own app teleporting its link into the section nav).
 The save bar is the one place for the outcome of a save: "Unsaved changes ·

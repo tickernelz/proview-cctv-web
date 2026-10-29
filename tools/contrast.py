@@ -24,6 +24,7 @@ PAIRS = [
     ('stage-ink-2 on stage', 'stage-ink-2', 'stage', TEXT, 4.5),
     ('stage-ink on matte over a white frame', 'stage-ink', 'stage-matte@white', TEXT, 4.5),
     ('stage-ink-2 on matte over a white frame', 'stage-ink-2', 'stage-matte@white', TEXT, 4.5),
+    ('stage-warn icon on stage', 'stage-warn', 'stage', GRAPHIC, 3.0),
     ('live on page', 'live', 'bg', TEXT, 4.5),
     ('live on live-soft over page', 'live', 'live-soft@bg', TEXT, 4.5),
     ('ok on page', 'ok', 'bg', TEXT, 4.5),

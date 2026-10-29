@@ -1,14 +1,11 @@
 import { api } from '../lib/api';
-import { StreamPlayer } from '../lib/stream-player';
-import { live, menuOpen } from '../live/store';
-import { startTalk, stopTalk } from '../live/talk';
-import { savePrefs, state } from '../app/state';
-import { hms } from '../app/format';
-import { buildCameras, currentCamera, deviceStatus, selectedDevice, statusLine } from '../app/devices';
-import { applyTheme } from '../app/theme';
-import { closeFloating, renderBanner, renderCameraMenu, renderSwitcher, toggleKeys } from '../app/chrome';
-import { elapsed, renderCaption, renderFlag } from '../app/caption';
-import { modeName, openSettings, renderPrefsIntoForm, sessionLost, showSection, signedIn, sourceLabel } from '../app/shell';
+import { live } from '../live/store';
+import { state } from '../app/state';
+import { selectedDevice } from '../app/devices';
+import { renderSwitcher } from '../app/chrome';
+import { renderCaption } from '../app/caption';
+import { sessionLost } from '../app/shell';
+import { renderFsLine } from '../app/stage';
 
 export const el = (id) => document.getElementById(id);
 export const enc = encodeURIComponent;
@@ -21,308 +18,6 @@ export function make(tag, className, text) {
 }
 
 window.addEventListener('resize', () => layoutLensCrop());
-
-export function openCamera(index) {
-  const camera = state.cameras[index];
-  if (!camera) {
-    return;
-  }
-  if (state.view !== 'live') {
-    setView('live', { keepStream: true });
-  }
-  selectDevice(camera.device.id, { channel: camera.channel });
-}
-
-export async function loadDevices(options = {}) {
-  state.bannerError = '';
-  renderBanner();
-  try {
-    state.devices = await api('/api/devices');
-  } catch (error) {
-    if (sessionLost(error)) {
-      return;
-    }
-    state.bannerError = 'Could not load the cameras: ' + error.message;
-    renderBanner();
-    return;
-  }
-  buildCameras();
-  renderCameraMenu();
-  window.dispatchEvent(new Event('proview:devices'));
-  const keep = state.cameras.find((camera) => camera.key === state.selectedId + ':' + state.channel);
-  const resume = state.resume && state.cameras.find((camera) => camera.key === state.resume.id + ':' + state.resume.channel);
-  state.resume = null;
-  el('empty').hidden = state.cameras.length > 0;
-  el('live').hidden = state.cameras.length === 0 || state.view !== 'live';
-  el('grid').hidden = state.cameras.length === 0 || state.view !== 'grid';
-  if (!state.cameras.length) {
-    state.selectedId = null;
-    stopAll();
-    renderSwitcher();
-    renderCameraInfo();
-    return;
-  }
-  const target = resume || keep || state.cameras[0];
-  if (!keep || resume || options.keepScreen) {
-    state.selectedId = null;
-    await selectDevice(target.device.id, { channel: target.channel });
-  } else {
-    renderSwitcher();
-    if (state.view === 'grid') {
-      startGrid();
-    }
-  }
-}
-
-function setStage(name, detail = {}) {
-  const well = el('well');
-  const camera = currentCamera();
-  state.stage.name = name;
-  if (name === 'loading') {
-    state.stage.requestedAt = Date.now();
-    state.stage.error = null;
-  }
-  if (name === 'error') {
-    state.stage.failedAt = Date.now();
-    state.stage.error = detail;
-  }
-  if (name === 'playing' && !performance.getEntriesByName('first-frame').length) {
-    performance.mark('first-frame');
-  }
-  well.dataset.state = name;
-  const showing = name === 'playing' || name === 'stalled';
-  el('lens-crop').hidden = !showing;
-  el('prog').hidden = name !== 'loading';
-  const quality = state.prefs.quality === 'sub' ? 'SD' : 'HD';
-  let title = '';
-  let text = '';
-  if (name === 'loading' && camera) {
-    title = 'Requesting the stream';
-    text = camera.name + ', channel ' + camera.channel + ', ' + quality + '. The server is asking the camera for a ticket.';
-  } else if (name === 'error') {
-    title = 'No picture from ' + (camera ? camera.name : 'this camera');
-    text = detail.text || 'The stream stopped.';
-  } else if (name === 'offline') {
-    title = 'Camera offline';
-    text = camera ? statusLine(camera.device) + '. The picture comes back after it answers and the list is refreshed.' : 'The cloud reports it offline.';
-  }
-  el('well-msg').hidden = !title;
-  el('well-title').textContent = title;
-  el('well-text').textContent = text;
-  const code = name === 'error' && detail.code ? detail.code : '';
-  el('well-code').hidden = !code;
-  el('well-code').textContent = code;
-  renderStage(name === 'error' ? detail.stage : null);
-  el('well-actions').hidden = name !== 'error';
-  el('check-password').hidden = !(name === 'error' && /401|unauthori|password|auth|login/i.test((detail.code || '') + ' ' + (detail.text || '')));
-  live.record.disabled = name !== 'playing';
-  live.snapshotDisabled = !showing;
-  if (name !== 'playing' && name !== 'stalled') {
-    stopRecording();
-  }
-  renderCaption();
-  renderFsLine();
-  layoutLensCrop();
-  renderBanner();
-}
-
-export function renderFsLine() {
-  const camera = currentCamera();
-  const showing = state.stage.name === 'playing' || state.stage.name === 'stalled';
-  el('fs-line').hidden = !(document.fullscreenElement === el('well') && state.prefs.osd && showing && camera);
-  el('fs-name').textContent = camera ? camera.name + (lensEntries().length > 1 ? ' · ' + lensViewLabel().toLowerCase() : '') : '';
-  el('fs-time').textContent = (state.stage.name === 'playing' ? 'live' : state.stage.name) + ' · ' + hms(Date.now());
-}
-
-function tick() {
-  const now = hms(Date.now());
-  live.clock = now;
-  if (!el('fs-line').hidden) {
-    renderFsLine();
-  }
-  if (state.recorder) {
-    live.record.elapsed = elapsed(state.recordStart);
-  }
-  renderFlag();
-}
-
-window.setInterval(tick, 1000);
-
-const cloudPathWalks = new Set();
-
-async function cloudPathDetail(deviceId) {
-  if (cloudPathWalks.has(deviceId)) {
-    return '';
-  }
-  cloudPathWalks.add(deviceId);
-  try {
-    const path = await api('/api/cloud-path?device=' + encodeURIComponent(deviceId));
-    const parts = [];
-    if (path.access) {
-      parts.push('access server ' + path.access);
-    }
-    if (path.agent) {
-      parts.push('agent ' + path.agent);
-    }
-    if (path.relayAccepted) {
-      parts.push('relay accepted the session for ' + (path.destIp || 'the device'));
-    } else if (path.relayError) {
-      parts.push('relay ' + path.relayError);
-    }
-    if (!parts.length && path.detail) {
-      parts.push(path.detail);
-    }
-    return parts.join(', ');
-  } catch (error) {
-    return '';
-  } finally {
-    cloudPathWalks.delete(deviceId);
-  }
-}
-
-function stageLine(attempt) {
-  return 'Failed at ' + attempt.stage + ' after ' + attempt.elapsed_ms + ' ms: ' + attempt.detail;
-}
-
-function stageTrailInline(attempt) {
-  return (
-    'Stages: ' +
-    (attempt.stages || [])
-      .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' ' + entry.elapsed_ms + ' ms')
-      .join(' · ')
-  );
-}
-
-function stageTrail(attempt) {
-  return (attempt.stages || [])
-    .map((entry) => entry.stage + ' ' + (entry.ok ? 'ok' : 'failed') + ' in ' + entry.elapsed_ms + ' ms: ' + entry.detail)
-    .join('\n');
-}
-
-function stagePanel() {
-  let line = el('well-stage');
-  if (!line) {
-    line = document.createElement('p');
-    line.className = 'mono';
-    line.id = 'well-stage';
-    const code = el('well-code');
-    if (code && code.parentNode) {
-      code.parentNode.insertBefore(line, code.nextSibling);
-    }
-  }
-  if (!el('well-stage-copy')) {
-    const button = document.createElement('button');
-    button.className = 'btn btn-text inv';
-    button.id = 'well-stage-copy';
-    button.type = 'button';
-    button.textContent = 'Copy the stage detail';
-    button.addEventListener('click', copyStageDetail);
-    const actions = el('well-actions');
-    if (actions) {
-      actions.appendChild(button);
-    }
-  }
-  return line;
-}
-
-function renderStage(attempt) {
-  const line = stagePanel();
-  const button = el('well-stage-copy');
-  state.stage.attempt = attempt && attempt.stages && attempt.stages.length ? attempt : null;
-  line.textContent = state.stage.attempt ? stageTrailInline(state.stage.attempt) : '';
-  line.hidden = !attempt;
-  if (button) {
-    button.hidden = !state.stage.attempt;
-    button.textContent = 'Copy the stage detail';
-  }
-}
-
-async function copyStageDetail() {
-  const attempt = state.stage.attempt;
-  if (!attempt) {
-    return;
-  }
-  const head = attempt.stage
-    ? stageLine(attempt)
-    : 'No stage failed; the provider stopped: ' + (attempt.message || 'no message');
-  const text = head + '\n' + stageTrail(attempt);
-  const button = el('well-stage-copy');
-  try {
-    await navigator.clipboard.writeText(text);
-    if (button) {
-      button.textContent = 'Copied';
-      window.setTimeout(() => {
-        button.textContent = 'Copy the stage detail';
-      }, 2000);
-    }
-  } catch (error) {
-    setControlStatus('The browser refused the clipboard: ' + error.message);
-  }
-}
-
-function explainStreamError(error, attempt) {
-  if (error.code === 'misconfigured') {
-    return error.message;
-  }
-  if (attempt && attempt.stage) {
-    return stageLine(attempt);
-  }
-  if (error.status === 501) {
-    return 'Live video is not wired yet: the device transport is still being built, so there is no frame to show.';
-  }
-  if (error.status === 404) {
-    return 'The server has no playable stream for that channel: ' + error.message;
-  }
-  if (error.status === 401) {
-    return 'Session expired. Sign in again.';
-  }
-  if (error.status === 502) {
-    return 'The server has no playable stream for this channel. The camera or the recording did not answer; the exact reason is in this line\u2019s tooltip.';
-  }
-  if (error.status === 400) {
-    return 'The server rejected the request: ' + error.message;
-  }
-  return 'The stream could not be started: the server answered ' + error.status + '. The exact reason is in this line\u2019s tooltip.';
-}
-
-function stagePlayer() {
-  let player = state.players.get('stage');
-  if (!player) {
-    player = new StreamPlayer(el('video'), (name, message) => {
-      if (name === 'stalled') {
-        if (state.stage.name !== 'stalled') {
-          setStage('stalled');
-        }
-        return;
-      }
-      if (name === 'error') {
-        setStage('error', { text: message, code: '' });
-        return;
-      }
-      setStage(name);
-      renderCameraInfo();
-    }, () => state.muted);
-    state.players.set('stage', player);
-  }
-  return player;
-}
-
-function stopStagePlayer() {
-  const player = state.players.get('stage');
-  if (player) {
-    player.destroy();
-    state.players.delete('stage');
-  }
-  stopRecording();
-}
-
-export function stopAll() {
-  stopTalk();
-  stopStagePlayer();
-  stopGrid();
-  closePad();
-  state.ticket = null;
-}
 
 function normaliseCrop(crop, dims) {
   const safe = crop || {};
@@ -458,7 +153,7 @@ async function toggleTour() {
   }
 }
 
-function deriveLensFromFrame() {
+export function deriveLensFromFrame() {
   const video = el('video');
   const width = video.videoWidth;
   const height = video.videoHeight;
@@ -486,7 +181,7 @@ function deriveLensFromFrame() {
   );
 }
 
-async function loadLens(deviceId, channel) {
+export async function loadLens(deviceId, channel) {
   state.lens = null;
   renderLensPicker();
   if (state.lensSupport === 'absent') {
@@ -550,7 +245,7 @@ function lensSub(entry) {
   return entry.rawLabel === 'top' ? 'upper half of the frame' : entry.rawLabel === 'bottom' ? 'lower half of the frame' : 'one part of the frame';
 }
 
-function renderLensPicker() {
+export function renderLensPicker() {
   const entries = lensEntries();
   const pair = entries.length > 1;
   if (!pair && state.lensView !== 'combined') {
@@ -570,12 +265,12 @@ function renderLensPicker() {
   renderCaption();
 }
 
-function chooseLens(value) {
+export function chooseLens(value) {
   applyLensView(value);
   renderLensPicker();
 }
 
-function cycleLens() {
+export function cycleLens() {
   const entries = lensEntries();
   if (entries.length < 2) {
     return;
@@ -615,7 +310,7 @@ export function layoutLensCrop() {
   box.dataset.flipped = state.prefs.flip ? 'true' : 'false';
 }
 
-function applyLensView(value) {
+export function applyLensView(value) {
   state.lensView = value;
   const video = el('video');
   const crop = currentCrop();
@@ -628,7 +323,7 @@ function applyLensView(value) {
   renderFsLine();
 }
 
-function currentCrop() {
+export function currentCrop() {
   if (state.lensView === 'combined') {
     return { x: 0, y: 0, w: 1, h: 1 };
   }
@@ -740,7 +435,7 @@ function renderCapabilities() {
   live.settings.capabilities = rows.map((row) => row.map((cell) => (cell == null ? '' : String(cell))));
 }
 
-async function probeControlChannel(device) {
+export async function probeControlChannel(device) {
   if (state.control.checkedFor === device.id) {
     renderControlAvailability();
     return;
@@ -815,7 +510,7 @@ export async function toggleWhiteLight() {
   }
 }
 
-async function sendControl(action) {
+export async function sendControl(action) {
   if (controlBusy || !selectedDevice()) {
     return;
   }
@@ -855,7 +550,7 @@ function openPad() {
   renderCaption();
 }
 
-function closePad() {
+export function closePad() {
   if (!state.padOpen) {
     return;
   }
@@ -865,500 +560,10 @@ function closePad() {
   renderCaption();
 }
 
-function togglePad() {
+export function togglePad() {
   if (state.padOpen) {
     closePad();
   } else {
     openPad();
   }
 }
-
-async function selectDevice(deviceId, options = {}) {
-  const device = state.devices.find((entry) => entry.id === deviceId);
-  if (!device) {
-    return;
-  }
-  const channel = options.channel || 1;
-  const changed = state.selectedId !== deviceId || state.channel !== channel;
-  if (changed) {
-    stopTalk();
-    stopRecording();
-    closePad();
-    state.lensView = state.prefs.lens;
-  }
-  state.selectedId = deviceId;
-  state.channel = channel;
-  state.ticket = null;
-  state.stage.lastFrameAt = 0;
-  state.tour = null;
-  el('tour').setAttribute('aria-pressed', 'false');
-  renderSwitcher();
-  renderCameraMenu();
-  setControlStatus('');
-  live.settings.lightStatus = '';
-  if (state.view === 'grid') {
-    renderTileSelection();
-  }
-  if (deviceStatus(device).known && !device.online) {
-    stopStagePlayer();
-    state.lens = null;
-    renderLensPicker();
-    setStage('offline');
-    renderCameraInfo();
-    await probeControlChannel(device);
-    return;
-  }
-  setStage('loading');
-  await loadLens(device.id, channel);
-  if (state.view === 'live' && state.screen === 'watch') {
-    await requestStream();
-  }
-  await probeControlChannel(device);
-  renderCameraInfo();
-}
-
-export async function requestStream() {
-  const camera = currentCamera();
-  if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) {
-    return;
-  }
-  const previous = state.players.get('stage');
-  if (previous) {
-    previous.destroy();
-    state.players.delete('stage');
-  }
-  const player = stagePlayer();
-  state.ticket = null;
-  setStage('loading');
-  try {
-    const ticket = await api(
-      '/api/stream?device=' + enc(camera.device.id) + '&channel=' + enc(camera.channel) + '&quality=' + enc(state.prefs.quality),
-    );
-    if (currentCamera() !== camera || state.players.get('stage') !== player) {
-      return;
-    }
-    state.ticket = ticket;
-    renderCameraInfo();
-    await player.play(ticket);
-  } catch (error) {
-    if (sessionLost(error)) {
-      return;
-    }
-    const attempt =
-      error.body && Array.isArray(error.body.stages) && error.body.stages.length ? error.body : null;
-    const base = explainStreamError(error, attempt);
-    const misconfigured = error.code === 'misconfigured';
-    setStage('error', { text: base, code: misconfigured ? '' : error.message, stage: attempt });
-    console.error('stream request failed', error);
-    if (error.status === 501 && !misconfigured && camera.device) {
-      const deviceId = camera.device.id;
-      cloudPathDetail(deviceId).then((detail) => {
-        if (!detail || currentCamera() !== camera || state.stage.name !== 'error') {
-          return;
-        }
-        setStage('error', {
-          text: base + ' Cloud reach: ' + detail + '.',
-          code: error.message,
-          stage: attempt,
-        });
-      });
-    }
-  }
-}
-
-export function renderCameraInfo() {
-  const camera = currentCamera();
-  if (!camera) {
-    live.settings.camera = null;
-    return;
-  }
-  const device = camera.device;
-  const ticket = state.ticket;
-  live.settings.camera = {
-    name: camera.name,
-    id: device.id,
-    channel: String(camera.channel),
-    model: device.model || 'model not reported',
-    connection:
-      (state.mode ? modeName(state.mode.mode)[0].toUpperCase() + modeName(state.mode.mode).slice(1) + ' · answering ' + sourceLabel() : sourceLabel()) +
-      (device.lan_host ? ' · ' + device.lan_host : ''),
-    stream: ticket
-      ? 'Stream: ' + ticket.kind.toUpperCase() + ' · ' + (state.prefs.quality === 'sub' ? 'SD' : 'HD') + ' · ' + ticket.url + (ticket.expires_in ? ' · ticket expires in ' + ticket.expires_in + ' s' : '')
-      : 'No stream ticket yet.',
-  };
-}
-
-export function shortStreamError(error) {
-  if (error.code === 'misconfigured') {
-    return error.message;
-  }
-  if (error.status === 404) {
-    return 'This channel does not exist on the device.';
-  }
-  if (error.status === 401) {
-    return 'Session expired. Sign in again.';
-  }
-  if (error.status === 502) {
-    return 'No playable stream for this channel: the server answered 502.';
-  }
-  if (error.status === 501) {
-    return 'Live video is not wired for this channel yet.';
-  }
-  return 'The stream could not be started: the server answered ' + error.status + '.';
-}
-
-export function renderMute() {
-  const video = el('video');
-  video.muted = state.muted;
-  live.muted = state.muted;
-}
-
-function toggleMute() {
-  state.muted = !state.muted;
-  renderMute();
-}
-
-function download(blob, name) {
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = name;
-  link.click();
-  window.setTimeout(() => URL.revokeObjectURL(link.href), 4000);
-}
-
-function stamp() {
-  return new Date().toISOString().replace(/[:.]/g, '-');
-}
-
-function captureSnapshot() {
-  const video = el('video');
-  const device = selectedDevice();
-  if (!device || state.stage.name !== 'playing' || !video.videoWidth) {
-    return;
-  }
-  const crop = currentCrop();
-  const sx = Math.round(crop.x * video.videoWidth);
-  const sy = Math.round(crop.y * video.videoHeight);
-  const sw = Math.round(crop.w * video.videoWidth);
-  const sh = Math.round(crop.h * video.videoHeight);
-  const canvas = document.createElement('canvas');
-  canvas.width = sw;
-  canvas.height = sh;
-  const context = canvas.getContext('2d');
-  if (state.prefs.flip) {
-    context.translate(sw, sh);
-    context.rotate(Math.PI);
-  }
-  context.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
-  canvas.toBlob((blob) => {
-    if (blob) {
-      download(blob, device.id + '_ch' + state.channel + '_lens-' + state.lensView + '_' + stamp() + '.png');
-    }
-  }, 'image/png');
-}
-
-function stopRecording() {
-  if (state.recorder) {
-    state.recorder.stop();
-  }
-}
-
-function renderRecord() {
-  live.record.on = Boolean(state.recorder);
-  live.record.elapsed = live.record.on ? elapsed(state.recordStart) : '';
-  renderFlag();
-}
-
-function toggleRecord() {
-  const video = el('video');
-  if (state.recorder) {
-    state.recorder.stop();
-    return;
-  }
-  if (state.stage.name !== 'playing' || typeof video.captureStream !== 'function') {
-    setControlStatus('Recording needs a playing picture and a browser with captureStream.');
-    return;
-  }
-  const stream = video.captureStream();
-  if (!stream || stream.getVideoTracks().length === 0) {
-    return;
-  }
-  const candidates = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-  const mimeType = candidates.find((type) => window.MediaRecorder && MediaRecorder.isTypeSupported(type));
-  if (!mimeType) {
-    return;
-  }
-  state.recordChunks = [];
-  const recorder = new MediaRecorder(stream, { mimeType });
-  state.recorder = recorder;
-  state.recordStart = Date.now();
-  recorder.addEventListener('dataavailable', (event) => {
-    if (event.data && event.data.size) {
-      state.recordChunks.push(event.data);
-    }
-  });
-  recorder.addEventListener('stop', () => {
-    const device = selectedDevice();
-    const blob = new Blob(state.recordChunks, { type: mimeType });
-    state.recordChunks = [];
-    state.recorder = null;
-    renderRecord();
-    if (blob.size) {
-      download(blob, (device ? device.id : 'camera') + '_ch' + state.channel + '_' + stamp() + '.webm');
-    }
-    for (const track of stream.getTracks()) {
-      track.stop();
-    }
-  });
-  recorder.start();
-  renderRecord();
-}
-
-export async function toggleFullscreen() {
-  const target = state.view === 'grid' ? el('tiles') : el('well');
-  if (document.fullscreenElement) {
-    await document.exitFullscreen().catch(() => {});
-    return;
-  }
-  if (target.requestFullscreen) {
-    await target.requestFullscreen().catch(() => setControlStatus('Full screen was refused by the browser.'));
-  }
-}
-
-function startGrid() {
-  renderTileSelection();
-  live.grid.generation += 1;
-  live.grid.open = true;
-}
-
-function stopGrid() {
-  live.grid.open = false;
-}
-
-function renderTileSelection() {
-  live.grid.selected = state.selectedId + ':' + state.channel;
-}
-
-function moveTileFocus(key) {
-  live.grid.moveFocus(key);
-}
-
-export function setView(name, options = {}) {
-  const next = name === 'grid' && state.cameras.length > 0 ? 'grid' : 'live';
-  const changed = state.view !== next;
-  state.view = next;
-  if (location.hash !== '#' + next) {
-    history.replaceState(null, '', '#' + next);
-  }
-  const any = state.cameras.length > 0;
-  el('live').hidden = !any || next !== 'live';
-  el('grid').hidden = !any || next !== 'grid';
-  el('empty').hidden = any;
-  renderSwitcher();
-  renderBanner();
-  if (next === 'grid') {
-    stopTalk();
-    closePad();
-    stopStagePlayer();
-    startGrid();
-    return;
-  }
-  stopGrid();
-  if (any && (changed || !state.players.get('stage')) && !options.keepStream) {
-    const camera = currentCamera();
-    if (camera && (!deviceStatus(camera.device).known || camera.device.online)) {
-      requestStream();
-    } else if (camera) {
-      setStage('offline');
-    }
-  }
-}
-
-export function setQuality(quality) {
-  if (state.prefs.quality === quality) {
-    return;
-  }
-  state.prefs.quality = quality;
-  savePrefs();
-  renderPrefsIntoForm();
-  if (state.screen !== 'watch') {
-    return;
-  }
-  if (state.view === 'grid') {
-    startGrid();
-  } else {
-    requestStream();
-  }
-}
-
-function typing(target) {
-  return Boolean(target && target.closest && target.closest('input, textarea, select, [contenteditable="true"]'));
-}
-
-function onWatchKey(event) {
-  const key = event.key;
-  if (key === 'Escape') {
-    if (closeFloating(true)) {
-      event.preventDefault();
-    } else if (state.padOpen) {
-      event.preventDefault();
-      closePad();
-      el('move').focus();
-    } else if (document.fullscreenElement) {
-      event.preventDefault();
-      document.exitFullscreen().catch(() => {});
-    }
-    return;
-  }
-  if (event.ctrlKey || event.metaKey || event.altKey || typing(event.target)) {
-    return;
-  }
-  if (/^[1-9]$/.test(key)) {
-    event.preventDefault();
-    closeFloating(false);
-    openCamera(Number(key) - 1);
-    return;
-  }
-  if (key.startsWith('Arrow')) {
-    if (state.view === 'live' && state.padOpen) {
-      event.preventDefault();
-      const act = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[key];
-      if (!document.querySelector('.pk.' + act).disabled) {
-        sendControl(act);
-      }
-    } else if (state.view === 'grid') {
-      event.preventDefault();
-      moveTileFocus(key);
-    }
-    return;
-  }
-  if (key === ' ') {
-    if (state.padOpen && !event.target.closest('button')) {
-      event.preventDefault();
-      if (!el('pad').querySelector('.home').disabled) {
-        sendControl('home');
-      }
-    }
-    return;
-  }
-  const actions = {
-    g: () => (live.top.gridDisabled ? null : setView(state.view === 'grid' ? 'live' : 'grid')),
-    f: () => toggleFullscreen(),
-    m: () => toggleMute(),
-    r: () => (live.record.disabled ? null : toggleRecord()),
-    s: () => (live.snapshotDisabled ? null : captureSnapshot()),
-    l: () => cycleLens(),
-    q: () => setQuality(state.prefs.quality === 'sub' ? 'main' : 'sub'),
-    v: () => togglePad(),
-    t: () => (event.repeat ? null : startTalk()),
-    ',': () => openSettings(state.section),
-    '?': () => toggleKeys(),
-  };
-  const action = actions[key.length === 1 ? key.toLowerCase() : key];
-  if (action) {
-    event.preventDefault();
-    action();
-  }
-}
-
-document.addEventListener('keydown', (event) => {
-  if (event.defaultPrevented || menuOpen() || live.screen) {
-    return;
-  }
-  if (state.screen === 'watch') {
-    onWatchKey(event);
-  }
-});
-
-document.addEventListener('keyup', (event) => {
-  if (event.key.toLowerCase() === 't') {
-    stopTalk();
-  }
-});
-
-window.addEventListener('blur', () => stopTalk());
-
-el('empty-settings').addEventListener('click', () => openSettings('config', { focus: true }));
-el('refresh').addEventListener('click', () => loadDevices());
-el('retry').addEventListener('click', () => requestStream());
-el('check-password').addEventListener('click', () => {
-  live.settings.focusKey = 'PROVIEW_DEVICE_PASS';
-  openSettings('config');
-});
-for (const key of el('pad').querySelectorAll('.pk')) {
-  key.addEventListener('click', () => sendControl(key.dataset.act));
-}
-el('tour').addEventListener('click', () => sendControl('cruise'));
-document.querySelector('.skip').addEventListener('click', (event) => {
-  event.preventDefault();
-  const first = el('controls').querySelector('button:not(:disabled):not([hidden])');
-  (first || el('controls')).focus();
-});
-
-Object.assign(live.actions, {
-  startTalk,
-  stopTalk,
-  toggleMute,
-  toggleRecord,
-  captureSnapshot,
-  togglePad,
-  toggleFullscreen,
-  chooseLens,
-  setQuality,
-});
-
-window.addEventListener('offline', () => {
-  state.networkLostAt = Date.now();
-  renderBanner();
-  renderCaption();
-});
-
-window.addEventListener('online', () => {
-  state.networkLostAt = null;
-  renderBanner();
-  renderCaption();
-  if (state.screen === 'watch' && state.view === 'live' && state.stage.name !== 'playing') {
-    requestStream();
-  }
-});
-
-const video = el('video');
-video.addEventListener('loadedmetadata', () => {
-  if (!state.lens && state.selectedId) {
-    const derived = deriveLensFromFrame();
-    if (derived) {
-      state.lens = derived;
-      renderLensPicker();
-      applyLensView(state.lensView);
-    }
-  }
-  layoutLensCrop();
-});
-
-let lastVideoTime = -1;
-video.addEventListener('timeupdate', () => {
-  if (video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-    state.stage.lastFrameAt = Date.now();
-  }
-});
-
-if (typeof ResizeObserver === 'function') {
-  new ResizeObserver(() => layoutLensCrop()).observe(el('well'));
-}
-
-document.addEventListener('fullscreenchange', () => {
-  layoutLensCrop();
-  renderFsLine();
-});
-
-state.muted = state.prefs.muted;
-state.lensView = state.prefs.lens;
-renderMute();
-renderPrefsIntoForm();
-applyTheme();
-renderControlAvailability();
-tick();
-signedIn();
-
-Object.assign(window, { openSettings, showSection, state, signedIn, setQuality });

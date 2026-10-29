@@ -1,16 +1,9 @@
 import { api } from '../lib/api'
 import { live, type Prefs } from '../live/store'
-import {
-  layoutLensCrop,
-  loadDevices,
-  renderCameraInfo,
-  renderControlAvailability,
-  renderFsLine,
-  renderMute,
-  setQuality,
-  setView,
-  stopAll,
-} from '../legacy/app.js'
+import { layoutLensCrop, renderControlAvailability } from '../legacy/app.js'
+import { renderMute } from './media'
+import { renderCameraInfo, renderFsLine } from './stage'
+import { loadDevices, setQuality, setView, stopAll } from './view'
 import { closeFloating } from './chrome'
 import { savePrefs, SECTIONS, state } from './state'
 import { applyTheme } from './theme'
