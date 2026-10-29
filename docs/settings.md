@@ -19,18 +19,21 @@ Settings view and returned by `GET /api/settings`.
 
 ## Who may read or write it
 
-The route carries the camera credentials, the cloud
-address and the cookie secret, so both calls are gated. The desktop build answers
-only on the authority the shell bound (`127.0.0.1:<port>`) and only to a request
-that holds a live sign-in or the per-run page token from
-`window.__PROVIEW_DESKTOP__`; anything else gets `403` (another `Host`) or `401`
-(no session and no token). The standalone server answers only a request that
-**arrived from this machine** - the TCP peer is loopback, which a client on the
-network cannot forge - on a loopback `Host` (`127.0.0.1`, `localhost`, `[::1]`, with
-or without a port); every other request gets `403`, so neither the network nor a
-name that resolves to this machine through DNS rebinding can read or write it,
-while a browser page on this machine keeps the pre-sign-in path the sign-in screen
-needs. A request that carries an `Origin` must carry this server's own origin.
+The route carries the camera credentials, the cloud address and the cookie secret,
+so both calls are gated. The desktop build answers only on the authority the shell
+bound (`127.0.0.1:<port>`) and only to a request that holds a live sign-in or the
+per-run page token from `window.__PROVIEW_DESKTOP__`; anything else gets `403`
+(another `Host`) or `401` (no session and no token). The standalone server answers
+only a request that **arrived from this machine** - a loopback TCP peer, read from
+the socket rather than from a header - on a loopback `Host` (`127.0.0.1`,
+`localhost`, `[::1]`, with or without a port), and refuses every other peer or
+`Host` with `403`, so neither the network nor a name that resolves to this machine
+through DNS rebinding can read or write it, while a browser page on this machine
+keeps the pre-sign-in path the sign-in screen needs. Over a direct connection that
+peer cannot be forged by a client on the network; a forwarder on this machine (a
+reverse proxy, `ssh -L`, `socat`) gives every client it carries a loopback peer, so
+keep `/api/settings` out of such a forwarder. A request that carries an `Origin`
+must carry this server's own origin.
 
 ## How it applies
 

@@ -17,9 +17,10 @@ stability before 1.0.
   authority its shell bound (`127.0.0.1:<port>`) and only to a request holding a live
   sign-in or the per-run page token the shell writes into the page; anything else is
   `403` for another `Host` and `401` without a credential. The standalone server answers
-  only a request that arrived from this machine (a loopback TCP peer, which a client on
-  the network cannot forge) on a loopback `Host`; every other peer, `Host`, or an
-  `Origin` that is not this server's own, is `403`. The sign-in screen keeps its
+  only a request that arrived from this machine (a loopback TCP peer; over a direct
+  connection a client on the network cannot forge it, though a forwarder on this
+  machine gives every client it carries that peer) on a loopback `Host`; every other
+  peer, `Host`, or an `Origin` that is not this server's own, is `403`. The sign-in screen keeps its
   settings on this machine, so a wrong camera address can still be fixed before
   signing in.
 - AP-mode provisioning is pinned to the camera's own network (ZHA-4026). The route has
