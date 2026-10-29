@@ -1524,16 +1524,19 @@ camera password on the wire.
 
 | Frame | Framing that the device answers |
 |---|---|
-| `OPTalk` Claim (1434) | plain JSON on channel 0, end bit clear - `Ret 100` in 111 ms, `SessionID` echoed |
-| the same claim sealed with the 16-character session key | `Ret 117`, twice on two tunnels |
-| `OPTalk` Start (1430) and `Stop` | plain JSON on channel 0 |
-| audio out (1432): 8-byte media header + 320 G.711 A-law bytes | plain; sealed frames earn silence |
+| `OPTalk` Claim (1434) | plain JSON on channel 0, end bit clear - `Ret 100` in 105-111 ms, `SessionID` echoed |
+| the same claim sealed with the 16-character session key | `Ret 117` with an empty `Name`, on two separate token sessions (`0x00000256`, `0x0000025f`) |
+| `OPTalk` Start (1430), audio out (1432), `Stop` | plain; on a plain claim the device then streams its own audio back, so the plain opcodes are known to be accepted |
 | audio back (1433) | plain 328-byte frames, 25 a second, no reply msgid |
 
-So the seal that 4C.28 requires for `OPFileQuery`/`OPPlayBack` claim does not apply
-to the talk opcodes: the device reads `1430`, `1432` and `1434` before it decrypts,
-and a sealed claim is what a caller gets `Ret 117` for. The talk path therefore
-reuses the token session for its credentials and keeps the frame bodies plain.
+Only the sealed **claim** was measured: the probe stops when the claim is refused,
+so a sealed `1430` or `1432` was never sent and nothing here says how the device
+would take one. Sealed and plain ran on **separate** token sessions (`0x256` and
+`0x25f` sealed, `0x257` and `0x25e` plain); a fresh claim is answered `Ret 100` on
+its own session every time, so "the first claim of a session always fails" is ruled
+out as an explanation for the `Ret 117`, and an empty `Name` in that refusal reads
+as a body the device did not decrypt. The talk path therefore reuses the token
+session for its credentials and keeps the claim and the audio frames plain.
 
 The token path sends no camera credential, so it can reach any camera on the account,
 the same rule live and PTZ already follow; the `PROVIEW_DEVICE_SERIAL` guard now runs
