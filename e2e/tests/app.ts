@@ -50,7 +50,7 @@ export async function fakeDeviceControls(page: Page) {
       return json({
         onvif: false,
         dvrip: true,
-        capabilities: [supported('ptz move', 'bottom'), supported('ptz preset', 'bottom'), supported('white light', 'device')],
+        capabilities: [supported('ptz move', 'bottom'), supported('ptz preset', 'bottom'), supported('white light', 'device'), supported('two-way audio', 'device')],
       })
     }
     if (url.pathname.endsWith('/presets')) return json([{ token: '1', name: 'Gate' }, { token: '2', name: 'Driveway' }])

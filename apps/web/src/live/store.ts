@@ -17,6 +17,7 @@ export type ModeReport = { mode?: string; source?: string; notice?: { message?: 
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type Preset = { token: string; name: string }
 export type CameraInfo = { name: string; id: string; channel: string; model: string; connection: string; stream: string }
+export type TalkPhase = 'idle' | 'asking' | 'opening' | 'sending' | 'error'
 
 const noop = () => {}
 
@@ -92,7 +93,7 @@ export const live = reactive({
     lightStatus: '',
   },
   grid: { open: false, generation: 0, selected: '', moveFocus: noop as (key: string) => void },
-  talk: { on: false, level: 0 },
+  talk: { on: false, level: 0, phase: 'idle' as TalkPhase, note: '' },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',
   launchers: [] as Launcher[],

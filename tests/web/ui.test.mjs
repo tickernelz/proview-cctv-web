@@ -11,7 +11,7 @@ const DEVICES = [
 ];
 const CLIPS = Object.fromEntries(DEVICES.flatMap((device) => [[device.id + '_ch1_main.h264', DUAL_LENS_CLIP], [device.id + '_ch1_sub.h264', DUAL_LENS_CLIP]]));
 const TALK_CAPS = {
-  patterns: [{ urlPattern: '*/api/device/controls' }],
+  patterns: [{ urlPattern: '*/api/device/controls*' }],
   respond: () => ({
     onvif: false,
     dvrip: true,
@@ -133,7 +133,7 @@ test('holding T carries the microphone to the camera speaker', async () => {
   const device = await fakeTalkDevice();
   const talking = await startServer(DEVICES, {
     clips: CLIPS,
-    env: { PROVIEW_DEVICE_HOST: '127.0.0.1:' + device.port, PROVIEW_DEVICE_PASS: 'hunter2' },
+    env: { PROVIEW_DEVICE_HOST: '127.0.0.1:' + device.port, PROVIEW_DEVICE_PASS: 'hunter2', PROVIEW_DEVICE_SERIAL: 'gate' },
   });
   const page = await browser.page({ intercept: TALK_CAPS });
   try {
@@ -145,10 +145,18 @@ test('holding T carries the microphone to the camera speaker', async () => {
     assert.match(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone is open/);
     await page.wait("Number(document.getElementById('level').dataset.level) > 0", 'the microphone level to move');
     await page.wait("window.proviewTalk.state().chunks >= 25", 'a second of microphone audio to go up', 15000);
+    await page.wait("window.proviewTalk.state().mic === 1", 'the microphone track to be live');
+    await page.wait(
+      "/^sending · \\d+ frames · \\d+ G\\.711 bytes · /.test(document.getElementById('talk-note').textContent)",
+      'the byte and latency report to reach the page',
+      8000,
+    );
     await page.key('t', 'up');
     await page.wait("!document.getElementById('talk').classList.contains('talk-on')", 'talk to stop');
     assert.equal(await page.evaluate("document.getElementById('level').hidden"), true);
     assert.doesNotMatch(await page.evaluate("document.getElementById('caption-state').textContent"), /microphone/);
+    await page.wait("window.proviewTalk.state().mic === 0", 'the microphone track to be released');
+    assert.match(await page.evaluate("document.getElementById('talk-note').textContent"), /^talk closed · the direct address · \d+ chunks · \d+ PCM16 bytes/);
     const frames = device.frames();
     assert.ok(frames.length > 15, 'frames reached the camera: ' + frames.length);
     assert.equal(frames[0].id, 1432);
@@ -167,7 +175,7 @@ test('Talk says why it cannot open when the camera is not reachable', async () =
     await page.wait("!document.getElementById('talk').disabled", 'the Talk button to enable');
     await page.key('t', 'down');
     await page.wait(
-      "(() => { const text = document.getElementById('control-status').textContent; return text.includes('no path to the camera') || text.includes('PROVIEW_DEVICE_PASS is empty'); })()",
+      "(() => { const note = document.getElementById('talk-note'); return Boolean(note) && /talk failed: (no path to the camera|the camera password is not set|no camera serial is configured)/.test(note.textContent); })()",
       'the server reason to reach the page',
     );
     assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);
@@ -183,6 +191,9 @@ test('Talk stays disabled with the server reason when two-way audio is not repor
   try {
     assert.equal(await page.evaluate("document.getElementById('talk').disabled"), true);
     assert.notEqual(await page.evaluate("document.getElementById('talk').title"), '');
+    const reason = await page.evaluate("document.getElementById('talk-note').textContent");
+    assert.ok(reason.length > 20, 'the reason is on screen, not only in the tooltip: ' + reason);
+    assert.equal(reason, await page.evaluate("document.getElementById('talk').title"));
     await page.key('t', 'down');
     assert.equal(await page.evaluate("document.getElementById('talk').classList.contains('talk-on')"), false);
     await page.key('t', 'up');

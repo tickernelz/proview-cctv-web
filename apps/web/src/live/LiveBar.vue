@@ -15,6 +15,7 @@ import { live } from './store'
 const start = computed(() => live.launchers.filter((item) => item.slot === 'start'))
 const end = computed(() => live.launchers.filter((item) => item.slot === 'end'))
 const qualityLabel = computed(() => 'Quality ' + (live.quality === 'sub' ? 'SD' : 'HD'))
+const talkNote = computed(() => live.talk.note || (live.gate.intercom.ok ? '' : live.gate.intercom.why))
 const QUALITIES = [
   { value: 'main', name: 'HD', sub: 'the main stream' },
   { value: 'sub', name: 'SD', sub: 'the sub stream, lighter on the network' },
@@ -167,4 +168,5 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       <Icon name="expand" />
     </button>
   </div>
+  <p v-if="talkNote" id="talk-note" data-testid="talk-note" :class="['talk-note', live.talk.phase === 'error' ? 'bad' : live.talk.phase === 'sending' ? 'live' : '']" role="status">{{ talkNote }}</p>
 </template>

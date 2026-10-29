@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use proview_core::config::Config;
-use proview_core::device::{Backend, ControlError, Controls, DeviceControl, Lens};
+use proview_core::device::{talk_capability, Backend, ControlError, Controls, DeviceControl, Lens};
 use proview_core::dvrip::control::{PresetEntry, PtzLocate, TourLine};
 use proview_core::dvrip::control::{RecordMode, WhiteLightMode};
 use proview_core::session::Store;
@@ -11,7 +11,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
 
-use super::{fail, fail_code, session_id, Failure};
+use super::{fail, fail_code, restore, session_id, Failure};
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
@@ -98,15 +98,24 @@ pub struct CapabilityBody {
     pub capabilities: Vec<CapabilityRow>,
 }
 
-#[get("/device/controls")]
+#[get("/device/controls?<device>")]
 async fn capability_report(
+    device: Option<String>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<CapabilityBody>, Failure> {
-    signed_in(store, cookies)?;
+    let id = session_id(cookies)?;
+    let vendor = restore(store, &id)?;
     let controls = controls(cfg);
-    let rows = controls.capability_report().await;
+    let mut rows = controls.capability_report().await;
+    if !rows.iter().any(|row| row.feature == "two-way audio") {
+        rows.push(talk_capability(
+            cfg,
+            vendor.token.as_deref(),
+            device.as_deref(),
+        ));
+    }
     Ok(Json(CapabilityBody {
         ok: true,
         onvif: controls.onvif.is_some(),
