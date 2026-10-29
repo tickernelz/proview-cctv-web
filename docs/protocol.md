@@ -1426,7 +1426,9 @@ disassembly:
   byte order (`DEVAPI::StrReverseOrder`, 0xbd0798);
 - `XAES::AES_ECB_Decrypt128_FixedKey_Base64(base64(token), key)` (0xacbd78), with
   that reversed serial as the AES-128 key;
-- return the plaintext, accepted for lengths 1 to 63.
+- return the plaintext when its length is 1 to 63 bytes: `bd091c` refuses 0
+  and `bd0928` refuses 64 and above, and the copy into the caller's buffer is a
+  plain `memcpy`, so no printable or encoding test runs on the bytes.
 
 So the login name is `AES-128-ECB-decrypt(base64(AdminToken), key = reverse(serial[:16]))`.
 
@@ -1437,9 +1439,15 @@ for byte the `UserName` of frame 1000 in the phone capture
 (`secrets/phone-login-body.json`), an artifact the derivation never saw. The value is
 not device-side state: it is the account token, opened.
 
-`crates/core/src/dvrip/crypto.rs::login_token` reproduces the decode (base64,
-AES-128-ECB, PKCS#7 unpad, printable guard) and `provider/cloud.rs` offers its result
-as the `TOKEN` login name. The store keeps the 44-character form
+`crates/core/src/dvrip/crypto.rs::open_login_name` reproduces the decode (base64,
+AES-128-ECB, PKCS#7 unpad, the 1..63-byte bound above, no byte-class filter) and
+`provider/cloud.rs` offers its result as the `TOKEN` login name. Three guards stay
+Rust-side because the value is returned as a `String` where the native writes a byte
+buffer, and they are the only difference from the disassembly: the serial needs 16
+bytes, the ciphertext a whole number of 16-byte blocks, the padding must satisfy
+PKCS#7, and the plaintext must be valid UTF-8. A stored value the decoder refuses — already
+opened, or not base64 — is offered exactly as the store holds it, which is what the
+code did for every token before this section. The store keeps the 44-character form
 (`cloud/device_tokens.rs` unchanged), and a device the store does not know uses the
 token from the account's own device list, so a fresh install needs no device
 password.
