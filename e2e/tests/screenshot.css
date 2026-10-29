@@ -4,3 +4,8 @@
 [data-testid="alarm-status"] {
   visibility: hidden !important;
 }
+
+:focus,
+:focus-visible {
+  outline: none !important;
+}
