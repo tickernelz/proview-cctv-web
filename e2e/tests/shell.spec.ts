@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { playing, scenarioUrl, signIn } from './app'
 
 test('the address opens the screen it names, and a hash change moves between them', async ({ page }) => {
@@ -55,6 +55,41 @@ test('a 401 on a signed-in call returns to sign-in to resume the same camera', a
   await expect(page.getByTestId('camera-name')).toHaveText('Porch')
   expect(base).toBeTruthy()
 })
+
+const CLIP = { name: '/idea0/2026-10-27/001/01.10.00-01.15.00[R][@1][0].h264', begin: '2026-10-27 01:10:00', end: '2026-10-27 01:15:00', bytes: 15000000, disk: null }
+
+async function playingClip(page: Page) {
+  const socket = { opened: 0, closed: 0 }
+  await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: { ok: true, files: [CLIP], truncated: false, cap: 2048, elapsed_ms: 3 } }))
+  await page.routeWebSocket(/\/ws\/playback/, (ws) => {
+    socket.opened += 1
+    ws.onClose(() => {
+      socket.closed += 1
+    })
+  })
+  const base = await signIn(page, 'many')
+  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await expect(page.getByTestId('playback')).toBeVisible()
+  await page.getByTestId('pb-day').fill('2026-10-27')
+  await page.locator('.pb-row').first().click()
+  await expect.poll(() => socket.opened).toBe(1)
+  return socket
+}
+
+const LEAVE: [string, (page: Page) => Promise<unknown>][] = [
+  ['the desktop tray Live item', (page) => page.evaluate(() => window.dispatchEvent(new CustomEvent('desktop-live')))],
+  ['the Settings address', (page) => page.evaluate(() => (location.hash = '#settings/server'))],
+  ['the grid address', (page) => page.evaluate(() => (location.hash = '#grid'))],
+]
+
+for (const [label, leave] of LEAVE) {
+  test('leaving a playing clip through ' + label + ' closes its playback socket', async ({ page }) => {
+    const socket = await playingClip(page)
+    await leave(page)
+    await expect(page.getByTestId('playback')).toBeHidden()
+    await expect.poll(() => socket.closed).toBe(1)
+  })
+}
 
 test('the address of another screen closes the Playback overlay', async ({ page }) => {
   const base = await signIn(page, 'many')

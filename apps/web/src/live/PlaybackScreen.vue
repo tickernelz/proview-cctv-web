@@ -280,11 +280,14 @@ async function opened() {
   if (list.phase === 'idle' || list.asked.device !== query.device || list.asked.day !== query.day) loadFiles()
 }
 
-function close(returnFocus = true) {
-  if (!open.value) return
+function release() {
   stop()
   ticket += 1
   if (list.phase === 'loading') list.phase = 'idle'
+}
+
+function close(returnFocus = true) {
+  if (!open.value) return
   live.screen = ''
   if (location.hash === '#playback') history.replaceState(null, '', '#' + (page.view === 'grid' ? 'grid' : 'live'))
   if (returnFocus) document.getElementById('pb-open')?.focus()
@@ -303,6 +306,7 @@ watch(() => [query.device, query.day], () => {
 watch(open, (shown) => {
   launcher.pressed = shown
   if (shown) opened()
+  else release()
 })
 
 onMounted(() => {
