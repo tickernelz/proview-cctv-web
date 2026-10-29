@@ -94,7 +94,6 @@ for (const [name, open] of Object.entries(SCREENS)) {
         const mask = await open(page)
         expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(theme)
         await page.evaluate(() => document.fonts.ready.then(() => true))
-        await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
         await expect(page).toHaveScreenshot(shot + '.png', {
           mask,
         })
