@@ -130,7 +130,7 @@ export async function setMode(mode: string) {
 }
 
 export async function signOut() {
-  await api('/api/logout', { method: 'POST' }).catch(() => null)
+  await Promise.all([api('/api/logout', { method: 'POST' }).catch(() => null), api('/api/account/signout', { method: 'POST' }).catch(() => null)])
   state.stage.lastFrameAt = 0
   live.settings.reset += 1
   showSignin()

@@ -37,6 +37,7 @@ export const ICONS: Record<string, string> = {
   download: 'download',
   cloud: 'cloud',
   cctv: 'cctv',
+  plus: 'plus',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

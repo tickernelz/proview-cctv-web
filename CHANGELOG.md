@@ -39,6 +39,16 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- `apps/web/src/legacy/` is gone (ZHA-4181): the add-a-camera panel on the
+  empty Live screen is Vue (`src/live/AddCamera.vue`). It is shown open with a
+  heading instead of hidden behind a disclosure triangle; an empty serial or
+  code is caught before any request and names what to type; the button says
+  "Adding…" and ignores a second press while the bind runs; a refused bind is
+  a red alert with the warning icon and the cloud's reason; a bound camera
+  opens in Live at once. Sign out from Settings now also clears the
+  remembered token (`/api/account/signout`), which the old panel script did
+  from a listener on the Settings button; the switcher no longer shows a green
+  status dot when there is no camera.
 - `apps/web/src/legacy/app.js` is gone (ZHA-4181): the lens picker, lens
   crop, pan-and-tilt pad, presets, tour and the device-control gates moved to
   `src/app/lens.ts` and `src/app/controls.ts`, and the pad is rendered by

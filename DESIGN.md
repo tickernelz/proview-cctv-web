@@ -207,7 +207,11 @@ the mono line under the sentence. The pan-and-tilt pad, its presets and Tour
 render from `live.pad` and `live.gate` (one gate per action, written only by
 `src/app/controls.ts`), and the lens crop from `live.stage.crop`/`view`
 (written only by `src/app/lens.ts`); no module outside Vue touches the Live
-DOM.
+DOM. The empty state carries the add-a-camera panel (`src/live/AddCamera.vue`)
+open below a hairline: one heading, two small forms (serial with username and
+password side by side above 480 px, QR text or share link), outlined buttons
+with the plus icon, and one result line under both forms (`--bad` alert with
+the warning icon, or the `--ok` check). There is no `src/legacy/` any more.
 
 **Settings.** Vue (`src/live/SettingsScreen.vue`, mounted into `#settings`;
 Device settings stays its own app teleporting its link into the section nav).
