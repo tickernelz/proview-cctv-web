@@ -39,6 +39,19 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Settings is Vue (ZHA-4181): a save the server refuses shows its reason as a
+  red alert in the save bar and keeps focus on Save (it used to land only in a
+  grey line at the top of Configuration while the bar still said "Unsaved
+  changes"); leaving with unsaved edits is an alert that says "Save or discard
+  1 changed field before leaving." instead of "field(s)"; a field that needs a
+  restart carries a Restart tag next to its label instead of a grey sentence,
+  and a changed field keeps an accent outline until it is saved; Run checks
+  shows "Checking…" and keeps focus, and each check is a sentence with a check
+  or warning icon and the HTTP status after the reason instead of a monospace
+  "400 …" line; a provider switch the server refuses stays on screen as an
+  alert and the radio returns to the provider that still answers (the error
+  used to be overwritten at once); the capability table uses check and cross
+  icons in its pills, and the white light button says why it is disabled.
 - Sign-in is Vue (ZHA-4181): the cursor starts in Email; a wrong password is
   an alert with the warning icon in our own words, and the password stays
   selected; Sign in shows "Signing in…" while it works and a second press sends

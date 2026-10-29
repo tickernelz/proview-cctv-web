@@ -12,6 +12,9 @@ export type Launcher = {
   onClick: () => void
 }
 export type LensOption = { value: string; name: string; sub: string }
+export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean }
+export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
+export type CameraInfo = { name: string; id: string; channel: string; model: string; connection: string; stream: string }
 
 const noop = () => {}
 
@@ -31,6 +34,29 @@ export const live = reactive({
   sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
   screen: '' as '' | 'playback',
   signin: { expired: false, expiredAt: 0, lastFrameAt: 0, generation: 0, focus: 0, mode: null as { mode?: string; source?: string } | null },
+  theme: 'dark',
+  settings: {
+    shown: false,
+    section: 'playback',
+    focusHeading: 0,
+    focusBack: 0,
+    load: 0,
+    reset: 0,
+    focusKey: '',
+    signedIn: false,
+    account: '',
+    prefs: { theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: false } as Prefs,
+    mode: null as ModeReport | null,
+    modeError: '',
+    camera: null as CameraInfo | null,
+    lensNote: 'Waiting for the first frame.',
+    lensTitle: '',
+    lensRolesKnown: false,
+    controlNote: 'Device controls have not been checked yet.',
+    capabilities: [] as string[][],
+    light: { ok: false, why: 'Device controls have not been checked yet.' } as Gate,
+    lightStatus: '',
+  },
   grid: { open: false, generation: 0, selected: '', moveFocus: noop as (key: string) => void },
   talk: { on: false, level: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
