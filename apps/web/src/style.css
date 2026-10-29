@@ -319,6 +319,9 @@ select.text-input { background: var(--bg-2); }
 .presets { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
 .presets button { color: var(--stage-ink); font-family: var(--f-sans); font-size: var(--t-13); text-decoration: underline; text-underline-offset: 3px; }
 #control-status { font-family: var(--f-sans); font-size: var(--t-11); color: var(--stage-ink-2); }
+#talk-note { flex: none; margin: 0; padding: var(--s1) var(--s1) var(--s2); font-family: var(--f-sans); font-size: var(--t-11); color: var(--ink-3); line-height: 1.43; }
+#talk-note.live { color: var(--ok); }
+#talk-note.bad { color: var(--bad); }
 #tour { align-self: flex-start; min-height: 0; font-family: var(--f-sans); font-size: var(--t-13); color: var(--stage-ink); text-decoration: underline; text-underline-offset: 3px; }
 #tour:hover { color: var(--stage-ink); }
 #tour[aria-pressed="true"] { color: var(--ok); text-decoration: none; }

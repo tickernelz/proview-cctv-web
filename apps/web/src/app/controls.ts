@@ -96,7 +96,7 @@ export async function probeControlChannel(device: Device) {
     return
   }
   try {
-    const payload = await api('/api/device/controls' + deviceQuery('?'))
+    const payload = await api('/api/device/controls?device=' + encodeURIComponent(device.id))
     state.control = {
       rows: Array.isArray(payload.capabilities) ? payload.capabilities : [],
       onvif: payload.onvif === true,

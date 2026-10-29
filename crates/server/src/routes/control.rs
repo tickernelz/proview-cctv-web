@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proview_core::config::{Config, ProviderKind};
-use proview_core::device::{Backend, CloudLink, ControlError, Controls, DeviceControl, Lens};
+use proview_core::device::{
+    talk_capability, Backend, CloudLink, ControlError, Controls, DeviceControl, Lens,
+};
 use proview_core::dvrip::control::{PresetEntry, PtzLocate, TourLine};
 use proview_core::dvrip::control::{RecordMode, WhiteLightMode};
 use proview_core::provider::cloud::CloudProvider;
@@ -13,7 +15,7 @@ use rocket::serde::json::Json;
 use rocket::State;
 use serde::Serialize;
 
-use super::{fail, fail_code, session_id, Failure};
+use super::{fail, fail_code, restore, session_id, Failure};
 use crate::config::ModeStore;
 use proview_core::provider::local::LocalProvider;
 use proview_core::provider::Mode;
@@ -150,7 +152,16 @@ async fn capability_report(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<CapabilityBody>, Failure> {
     let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
-    let rows = controls.capability_report().await;
+    let mut rows = controls.capability_report().await;
+    if !rows.iter().any(|row| row.feature == "two-way audio") {
+        let id = session_id(cookies)?;
+        let vendor = restore(store, &id)?;
+        rows.push(talk_capability(
+            cfg,
+            vendor.token.as_deref(),
+            device.as_deref(),
+        ));
+    }
     Ok(Json(CapabilityBody {
         ok: true,
         onvif: controls.onvif.is_some(),

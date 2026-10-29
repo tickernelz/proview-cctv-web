@@ -1,15 +1,26 @@
 import { state } from '../app/state'
 import { renderCaption } from '../app/caption'
-import { setControlStatus } from '../app/controls'
 import { live } from './store'
 
 type Ready = { kind: 'ready'; path?: string; channel: number | null; claim_ms: number }
 type Report = {
   kind: 'report'
   frames: number
+  bytes: number
+  chunks: number
+  dropped: number
   frames_per_second: number
   claim_ms: number
   write_ms_mean: number
+  write_ms_max: number
+}
+
+type Session = {
+  socket: WebSocket | null
+  context: AudioContext | null
+  stream: MediaStream | null
+  source: MediaStreamAudioSourceNode | null
+  node: AudioWorkletNode | null
 }
 
 const TALK_RATE = 8000
@@ -40,19 +51,26 @@ class TalkTap extends AudioWorkletProcessor {
 registerProcessor('talk-tap', TalkTap);
 `
 
+let attempt = 0
+
 const uplink = {
-  socket: null as WebSocket | null,
-  context: null as AudioContext | null,
-  stream: null as MediaStream | null,
-  source: null as MediaStreamAudioSourceNode | null,
-  node: null as AudioWorkletNode | null,
-  moduleUrl: null as string | null,
   chunks: 0,
   frames: 0,
   bytes: 0,
   ready: null as Ready | null,
   startedAt: 0,
   report: null as Report | null,
+  opened: [] as MediaStream[],
+  live: null as Session | null,
+}
+
+class StalePress extends Error {}
+
+function liveMicrophoneTracks() {
+  return uplink.opened.reduce(
+    (total, stream) => total + stream.getTracks().filter((track) => track.readyState === 'live').length,
+    0,
+  )
 }
 
 function talkSocketUrl() {
@@ -78,51 +96,101 @@ function paintLevel(samples: Float32Array) {
   live.talk.level = Math.min(5, Math.round(rms * 20))
 }
 
-function pushChunk(samples: Float32Array) {
-  if (!uplink.socket || uplink.socket.readyState !== WebSocket.OPEN) return
+function pushChunk(session: Session, samples: Float32Array) {
+  if (!session.socket || session.socket.readyState !== WebSocket.OPEN) return
   const pcm = toPcm16(samples)
-  uplink.socket.send(pcm)
+  session.socket.send(pcm)
   uplink.chunks += 1
   uplink.bytes += pcm.byteLength
   paintLevel(samples)
 }
 
-async function startWorkletTap(context: AudioContext, stream: MediaStream) {
-  uplink.moduleUrl = URL.createObjectURL(new Blob([TALK_WORKLET], { type: 'application/javascript' }))
-  await context.audioWorklet.addModule(uplink.moduleUrl)
+async function startWorkletTap(session: Session, mine: number) {
+  const context = session.context
+  const stream = session.stream
+  if (!context || !stream) return
+  const url = URL.createObjectURL(new Blob([TALK_WORKLET], { type: 'application/javascript' }))
+  try {
+    await context.audioWorklet.addModule(url)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
   const source = context.createMediaStreamSource(stream)
   const node = new AudioWorkletNode(context, 'talk-tap', {
     numberOfInputs: 1,
     numberOfOutputs: 0,
     channelCount: 1,
   })
-  node.port.onmessage = (event: MessageEvent<Float32Array>) => pushChunk(event.data)
+  node.port.onmessage = (event: MessageEvent<Float32Array>) => {
+    if (mine !== attempt) return
+    pushChunk(session, event.data)
+  }
   source.connect(node)
-  uplink.source = source
-  uplink.node = node
+  session.source = source
+  session.node = node
 }
 
 function reportText(report: Report) {
   return (
+    'sending \u00b7 ' +
     report.frames +
     ' frames \u00b7 ' +
+    report.bytes +
+    ' G.711 bytes \u00b7 ' +
     report.frames_per_second.toFixed(1) +
-    ' fps \u00b7 claim ' +
-    report.claim_ms +
-    ' ms \u00b7 write ' +
+    ' fps \u00b7 write ' +
     report.write_ms_mean.toFixed(2) +
-    ' ms mean'
+    ' ms mean, ' +
+    report.write_ms_max.toFixed(1) +
+    ' ms max'
   )
 }
 
-function openSocket() {
+function pathLabel(path?: string) {
+  if (path === 'relay') return 'the cloud relay'
+  if (path === 'lan') return 'the direct address'
+  return path || 'the device'
+}
+
+function failTalk(message: string, scope?: string) {
+  stopTalk()
+  live.talk.phase = 'error'
+  live.talk.note = 'talk failed: ' + message
+  if (scope === 'path') {
+    live.gate.intercom = { ok: false, why: 'two-way audio is unavailable: ' + message }
+  }
+  renderCaption()
+}
+
+function closeSession(session: Session) {
+  if (session.socket && session.socket.readyState === WebSocket.OPEN) {
+    session.socket.send(JSON.stringify({ type: 'stop' }))
+  }
+  if (session.node) {
+    session.node.port.onmessage = null
+    session.node.disconnect()
+  }
+  if (session.source) session.source.disconnect()
+  if (session.stream) session.stream.getTracks().forEach((track) => track.stop())
+  if (session.context) session.context.close().catch(() => {})
+  if (session.socket && session.socket.readyState <= WebSocket.OPEN) session.socket.close()
+  session.node = null
+  session.source = null
+  session.socket = null
+  session.stream = null
+  session.context = null
+}
+
+function openSocket(session: Session, mine: number) {
   return new Promise<Ready>((resolve, reject) => {
     const socket = new WebSocket(talkSocketUrl())
     socket.binaryType = 'arraybuffer'
-    uplink.socket = socket
+    session.socket = socket
     let settled = false
+    const stale = () => mine !== attempt
     socket.addEventListener('message', (event) => {
       if (typeof event.data !== 'string') return
+      if (stale()) return
       let payload = null
       try {
         payload = JSON.parse(event.data)
@@ -140,49 +208,65 @@ function openSocket() {
       if (payload.kind === 'report') {
         uplink.report = payload
         uplink.frames = payload.frames
-        setControlStatus(reportText(payload))
+        live.talk.phase = 'sending'
+        live.talk.note = reportText(payload)
         return
       }
       if (payload.kind === 'error') {
         if (!settled) {
           settled = true
-          reject(new Error(payload.message))
+          reject(Object.assign(new Error(payload.message), { scope: payload.scope }))
         } else {
-          setControlStatus(payload.message)
-          stopTalk()
+          failTalk(payload.message, payload.scope)
         }
       }
     })
     socket.addEventListener('error', () => {
       if (!settled) {
         settled = true
-        reject(new Error('the talk socket failed to open'))
+        reject(stale() ? new StalePress() : new Error('the talk socket failed to open'))
       }
     })
     socket.addEventListener('close', () => {
       if (!settled) {
         settled = true
-        reject(new Error('the talk socket closed before the camera answered'))
+        reject(
+          stale()
+            ? new StalePress()
+            : new Error('the talk socket closed before the camera answered'),
+        )
+        return
       }
-      if (live.talk.on) stopTalk()
+      if (!stale() && uplink.live === session && live.talk.on) stopTalk()
     })
   })
 }
 
 export async function startTalk() {
   if (live.talk.on || !live.gate.intercom.ok || state.view !== 'live') return
+  const mine = ++attempt
+  const session: Session = {
+    socket: null,
+    context: null,
+    stream: null,
+    source: null,
+    node: null,
+  }
+  uplink.live = session
   live.talk.on = true
+  live.talk.phase = 'asking'
+  live.talk.note = 'asking for the microphone'
   renderCaption()
   uplink.chunks = 0
   uplink.frames = 0
   uplink.bytes = 0
+  uplink.ready = null
   uplink.report = null
   uplink.startedAt = performance.now()
   try {
-    const ready = await openSocket()
     const Context = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     const context = new Context({ sampleRate: TALK_RATE })
-    uplink.context = context
+    session.context = context
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -191,66 +275,72 @@ export async function startTalk() {
         autoGainControl: true,
       },
     })
-    if (!live.talk.on) {
+    if (mine !== attempt) {
       stream.getTracks().forEach((track) => track.stop())
+      context.close().catch(() => {})
       return
     }
-    uplink.stream = stream
+    session.stream = stream
+    uplink.opened.push(stream)
+    if (uplink.opened.length > 4) uplink.opened.shift()
     if (!context.audioWorklet || typeof AudioWorkletNode !== 'function') {
       throw new Error('this browser has no AudioWorklet, so the microphone cannot be sampled at 8 kHz')
     }
-    await startWorkletTap(context, stream)
-    setControlStatus(
-      'talk open over ' +
-        (ready.path || 'the device') +
-        ' \u00b7 channel ' +
-        (ready.channel === null ? 'device' : ready.channel) +
-        ' \u00b7 claim ' +
-        ready.claim_ms +
-        ' ms',
-    )
+    live.talk.phase = 'opening'
+    live.talk.note = 'microphone open, opening the talk channel'
+    const ready = await openSocket(session, mine)
+    if (mine !== attempt) {
+      closeSession(session)
+      return
+    }
+    await startWorkletTap(session, mine)
+    if (mine !== attempt) {
+      closeSession(session)
+      return
+    }
+    live.talk.phase = 'sending'
+    live.talk.note =
+      'sending over ' +
+      pathLabel(ready.path) +
+      ' \u00b7 channel ' +
+      (ready.channel === null ? 'device' : ready.channel) +
+      ' \u00b7 claim ' +
+      ready.claim_ms +
+      ' ms'
   } catch (error) {
-    stopTalk()
-    setControlStatus('The talk channel did not open: ' + (error as Error).message)
+    if (mine !== attempt || error instanceof StalePress) {
+      closeSession(session)
+      return
+    }
+    const typed = error as Error & { scope?: string }
+    failTalk(typed.message, typed.scope)
   }
 }
 
 export function stopTalk() {
-  const wasActive = live.talk.on || uplink.socket !== null
-  if (uplink.socket && uplink.socket.readyState === WebSocket.OPEN) {
-    uplink.socket.send(JSON.stringify({ type: 'stop' }))
-  }
-  if (uplink.node) {
-    uplink.node.disconnect()
-    uplink.node.port.onmessage = null
-  }
-  if (uplink.source) uplink.source.disconnect()
-  if (uplink.moduleUrl) {
-    URL.revokeObjectURL(uplink.moduleUrl)
-    uplink.moduleUrl = null
-  }
-  if (uplink.stream) uplink.stream.getTracks().forEach((track) => track.stop())
-  if (uplink.context) uplink.context.close().catch(() => {})
-  if (uplink.socket && uplink.socket.readyState <= WebSocket.OPEN) uplink.socket.close()
+  attempt += 1
+  const session = uplink.live
+  const wasActive = live.talk.on || session !== null
+  if (session) closeSession(session)
+  uplink.live = null
   const seconds = uplink.startedAt ? (performance.now() - uplink.startedAt) / 1000 : 0
   if (wasActive && uplink.chunks > 0 && seconds > 0) {
-    setControlStatus(
+    live.talk.note =
       'talk closed \u00b7 ' +
-        uplink.chunks +
-        ' chunks \u00b7 ' +
-        uplink.bytes +
-        ' PCM bytes \u00b7 ' +
-        seconds.toFixed(1) +
-        ' s \u00b7 ' +
-        (uplink.chunks / seconds).toFixed(1) +
-        ' chunks/s',
-    )
+      pathLabel(uplink.ready?.path) +
+      ' \u00b7 ' +
+      uplink.chunks +
+      ' chunks \u00b7 ' +
+      uplink.bytes +
+      ' PCM16 bytes \u00b7 ' +
+      seconds.toFixed(1) +
+      ' s \u00b7 ' +
+      (uplink.chunks / seconds).toFixed(1) +
+      ' chunks/s'
+  } else if (live.talk.phase !== 'error') {
+    live.talk.note = ''
   }
-  uplink.socket = null
-  uplink.context = null
-  uplink.stream = null
-  uplink.source = null
-  uplink.node = null
+  if (live.talk.phase !== 'error') live.talk.phase = 'idle'
   live.talk.on = false
   live.talk.level = 0
   renderCaption()
@@ -262,7 +352,10 @@ Object.assign(window, {
     stop: stopTalk,
     state: () => ({
       active: live.talk.on,
-      open: uplink.socket !== null && uplink.socket.readyState === WebSocket.OPEN,
+      phase: live.talk.phase,
+      note: live.talk.note,
+      mic: liveMicrophoneTracks(),
+      open: uplink.live?.socket !== null && uplink.live?.socket?.readyState === WebSocket.OPEN,
       chunks: uplink.chunks,
       bytes: uplink.bytes,
       frames: uplink.frames,

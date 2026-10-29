@@ -2388,6 +2388,10 @@ mod login_tests {
             "a refused token is dropped"
         );
         assert!(
+            !super::open_is_worth_retrying(&error),
+            "a device refusal is not a dead tunnel: {message}"
+        );
+        assert!(
             provider.token_refusal(SERIAL).is_none(),
             "an ip lock is the device's state, not a property of the token"
         );

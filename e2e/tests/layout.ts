@@ -174,14 +174,17 @@ export async function walkScreens(page: Page, check: Check) {
   await check('sign-in, this network')
 
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))
-  await page.route(/\/api\/device\/controls(\/presets)?(\?.*)?$/, (route) =>
+  await page.route(/\/api\/device\/controls(\/presets)?(\?|$)/, (route) =>
     route.fulfill({
       json: new URL(route.request().url()).pathname.endsWith('/presets')
         ? [{ token: '1', name: 'Gate' }, { token: '2', name: 'Driveway' }]
         : {
             onvif: false,
             dvrip: true,
-            capabilities: ['ptz move', 'ptz preset'].map((feature) => ({ feature, lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'layout fixture' })),
+            capabilities: [
+              ...['ptz move', 'ptz preset'].map((feature) => ({ feature, lens: 'bottom', backend: 'dvrip', state: 'supported', evidence: 'layout fixture' })),
+              { feature: 'two-way audio', lens: 'device', backend: 'dvrip', state: 'supported', evidence: 'layout fixture' },
+            ],
           },
     }),
   )
