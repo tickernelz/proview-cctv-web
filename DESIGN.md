@@ -206,8 +206,9 @@ announces it. Message text never points at a tooltip: the server's reason is
 the mono line under the sentence. The pan-and-tilt pad, its presets and Tour
 render from `live.pad` and `live.gate` (one gate per action, written only by
 `src/app/controls.ts`), and the lens crop from `live.stage.crop`/`view`
-(written only by `src/app/lens.ts`); no module outside Vue touches the Live
-DOM. The empty state carries the add-a-camera panel (`src/live/AddCamera.vue`)
+(written only by `src/app/lens.ts`). The one DOM write left outside Vue is
+`video.muted`, set by `src/app/media.ts` on the element the stream player
+also drives. The empty state carries the add-a-camera panel (`src/live/AddCamera.vue`)
 open below a hairline: one heading, two small forms (serial with username and
 password side by side above 480 px, QR text or share link), outlined buttons
 with the plus icon, and one result line under both forms (`--bad` alert with

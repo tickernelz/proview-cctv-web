@@ -503,29 +503,25 @@ on 3a27e01 and passes 8/8 here; the e2e suite runs in CI.
 Step 4 of 6. `src/app/lens.ts` and `src/app/controls.ts` take the last of
 `legacy/app.js` (572 lines, file deleted); the pad, presets and Tour render
 from `live.pad`/`live.gate` in `LiveMain.vue`, the lens crop from
-`live.stage.crop`/`view`. Baseline 6d1b3d3 (PR #95 head), Chromium 1440×900,
-`many` fixture. The box ran at load 7 to 14 from other jobs, so wall-clock
-times moved with it: six alternating rounds of 10 reloads gave first frame
-153.5 ms (137.0-193.0) on the baseline and 183.5 ms (160.0-212.5) here, and
-the next three rounds of a request timeline gave the opposite (baseline
-222.6-285.2 ms, here 170.1-210.4 ms). CPU time per load, read from the
-DevTools Performance domain (fresh context per load, median of 12, two
-rounds each), does not depend on scheduling and is the number to trust:
+`live.stage.crop`/`view`. No measurable change in load cost. The reviewer's
+paired A/B (24 interleaved loads, fresh context each, Chromium 1440×900,
+`many` fixture, both servers up at once, DevTools `Performance.getMetrics`)
+against main 587640e:
 
-| Measure | 6d1b3d3 | lens + controls in TS |
-|---|---:|---:|
-| JS gzip | 121.27 kB | 121.35 kB |
-| CSS gzip | 8.19 kB | 8.19 kB |
-| HTML gzip | 2.42 kB | 2.42 kB |
-| Script time to first frame | 104.7 / 122.2 ms | 85.0 / 75.7 ms |
-| Task time to first frame | 257.9 / 296.2 ms | 220.2 / 199.5 ms |
-| Style recalc + layout | 17.7 / 21.3 ms | 15.6 / 14.5 ms |
-| JS heap used | 5.60 / 5.61 MB | 5.67 / 5.65 MB |
-| DOM elements (page / Live) | 771 / 219 | 771 / 219 |
+| Measure | main 587640e | lens + controls in TS | paired difference |
+|---|---:|---:|---:|
+| JS gzip | 119,775 B | 119,823 B | +48 B |
+| Script time | 63.4 (60.5-67.3) ms | 64.2 (59.4-68.2) ms | -0.6 (-4.0..+5.1) ms |
+| Task time | 154.3 (147.6-168.7) ms | 154.8 (148.3-167.6) ms | 0 (-10.1..+12.9) ms |
+| Style recalc + layout | 11.0 ms | 10.9 ms | -0.4 ms |
+| First frame | 162 (155-173) ms | 163.5 (154-182) ms | -1 (-10.5..+15.3) ms |
+| DOM elements (page / Live) | 771 / 219 | 771 / 219 | 0 |
 
-Script time drops because the control gates no longer walk
-`[data-requires]` buttons and the presets no longer rebuild DOM by hand. e2e
-311 passed, 9 skipped; node web tests 44/44; contrast 78/78.
+Every interval crosses zero. Earlier unpaired rounds taken while the box ran
+at load 7 to 14 showed differences of 20 to 45 ms in both directions; they
+measured the box, not the change, and are not kept. The presets load only
+when the pad opens, so they are not on this path. e2e 311 passed, 9 skipped;
+node web tests 44/44; contrast 78/78.
 
 ### Live picture area in TypeScript and Vue (measured 2026-10-29, ZHA-4181)
 

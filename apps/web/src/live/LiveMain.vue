@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import AddCamera from './AddCamera.vue'
 import { gotoPreset, sendControl } from '../app/controls'
@@ -54,8 +54,6 @@ function onFullscreen() {
   renderFsLine()
 }
 
-watch(showing, () => layoutLensCrop(), { flush: 'post' })
-
 onMounted(() => {
   document.addEventListener('fullscreenchange', onFullscreen)
   if (typeof ResizeObserver === 'function' && well.value) {
@@ -100,7 +98,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div id="pad" class="pad" data-testid="ptz-pad" role="group" aria-label="Pan and tilt" :hidden="!live.padOpen">
-        <button v-for="key in PAD" :key="key.act" :class="['pk', key.act]" type="button" :data-act="key.act" :aria-label="key.label" :disabled="!live.gate[key.act].ok" :title="live.gate[key.act].why" @click="sendControl(key.act)">
+        <button v-for="key in PAD" :key="key.act" :class="['pk', key.act]" type="button" :aria-label="key.label" :disabled="!live.gate[key.act].ok" :title="live.gate[key.act].why" @click="sendControl(key.act)">
           <Icon :name="key.icon" :small="key.act === 'home'" />
         </button>
         <div class="pad-note">
@@ -108,7 +106,7 @@ onBeforeUnmount(() => {
           <span id="presets" data-testid="ptz-presets" class="presets">
             <button v-for="preset in pad.presets" :key="preset.token" type="button" data-testid="ptz-preset" :title="'GotoPreset ' + preset.token" @click="gotoPreset(preset.token, preset.name)">{{ preset.name }}</button>
           </span>
-          <button id="tour" class="btn btn-text" data-testid="ptz-tour" type="button" data-act="cruise" :aria-pressed="pad.tour ? 'true' : 'false'" :disabled="!live.gate.cruise.ok" :title="live.gate.cruise.why" @click="sendControl('cruise')">Tour</button>
+          <button id="tour" class="btn btn-text" data-testid="ptz-tour" type="button" :aria-pressed="pad.tour ? 'true' : 'false'" :disabled="!live.gate.cruise.ok" :title="live.gate.cruise.why" @click="sendControl('cruise')">Tour</button>
           <span id="control-status" data-testid="control-status" role="status">{{ pad.status }}</span>
         </div>
       </div>
