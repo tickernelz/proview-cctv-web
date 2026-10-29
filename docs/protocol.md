@@ -1535,6 +1535,10 @@ to the talk opcodes: the device reads `1430`, `1432` and `1434` before it decryp
 and a sealed claim is what a caller gets `Ret 117` for. The talk path therefore
 reuses the token session for its credentials and keeps the frame bodies plain.
 
+The token path sends no camera credential, so it can reach any camera on the account,
+the same rule live and PTZ already follow; the `PROVIEW_DEVICE_SERIAL` guard now runs
+only before a direct-address login.
+
 `/ws/talk` with silent PCM through the relay, 2026-10-30: claim 111 ms, 75 frames /
 24,000 bytes out in 3.00 s (25.0 frames/s, 0 dropped), write 0.026 ms mean /
 0.062 ms max, camera inbound 25,752 bytes / 74 frames, and
