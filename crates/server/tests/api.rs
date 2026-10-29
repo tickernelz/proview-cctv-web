@@ -37,6 +37,27 @@ fn local_client() -> Client {
     .expect("valid rocket instance")
 }
 
+fn host_client(host: &str) -> Client {
+    let mut cfg = config(false);
+    cfg.device_host = Some(host.to_string());
+    Client::tracked(proview_server::build_with_modes(
+        figment(),
+        cfg,
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .expect("valid rocket instance")
+}
+
+fn talk_row(report: &serde_json::Value) -> serde_json::Value {
+    report["capabilities"]
+        .as_array()
+        .expect("capability rows")
+        .iter()
+        .find(|row| row["feature"] == "two-way audio")
+        .cloned()
+        .expect("a two-way audio row")
+}
+
 fn figment() -> rocket::figment::Figment {
     rocket::Config::figment()
         .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
@@ -402,6 +423,33 @@ fn an_empty_ssid_or_an_unknown_mode_is_refused_before_any_socket_is_opened() {
         .body(json!({ "ssid": "CAM", "password": "", "mode": "carrier-pigeon" }).to_string())
         .dispatch();
     assert_eq!(mode.status(), Status::BadRequest);
+}
+
+#[test]
+fn a_cloud_session_without_a_direct_address_reports_why_talk_is_unavailable() {
+    let client = client();
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client
+        .get("/api/device/controls?device=fixture-dev-0001")
+        .dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let row = talk_row(&body(response));
+    assert_eq!(row["state"], "blocked");
+    let reason = row["evidence"].as_str().unwrap_or_default();
+    assert!(reason.contains("cloud token"), "{reason}");
+    assert!(reason.contains("fixture-dev-0001"), "{reason}");
+}
+
+#[test]
+fn a_configured_camera_address_makes_two_way_audio_ready() {
+    let client = host_client("127.0.0.1:1");
+    assert_eq!(sign_in(&client), Status::Ok);
+    let response = client.get("/api/device/controls").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let row = talk_row(&body(response));
+    assert_eq!(row["state"], "supported");
+    let reason = row["evidence"].as_str().unwrap_or_default();
+    assert!(reason.contains("127.0.0.1:1"), "{reason}");
 }
 
 #[test]

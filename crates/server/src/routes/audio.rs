@@ -184,6 +184,7 @@ async fn ws_talk(
             if password.trim().is_empty() {
                 let _ = stream
                     .send(ws::Message::Text(json_error(
+                        "path",
                         "PROVIEW_DEVICE_PASS is empty, so the camera login would fail and the device locks the source IP after repeated attempts; set the camera password first",
                     )))
                     .await;
@@ -194,7 +195,7 @@ async fn ws_talk(
                 Ok(pair) => pair,
                 Err((_, body)) => {
                     let _ = stream
-                        .send(ws::Message::Text(json_error(&body.into_inner().message)))
+                        .send(ws::Message::Text(json_error("path", &body.into_inner().message)))
                         .await;
                     let _ = stream.send(ws::Message::Close(None)).await;
                     return Ok(());
@@ -202,9 +203,10 @@ async fn ws_talk(
             };
             if let Err(error) = link.login(&user, &password).await {
                 let _ = stream
-                    .send(ws::Message::Text(json_error(&format!(
-                        "the camera refused the talk login: {error}"
-                    ))))
+                    .send(ws::Message::Text(json_error(
+                        "device",
+                        &format!("the camera refused the talk login: {error}"),
+                    )))
                     .await;
                 link.close().await;
                 let _ = stream.send(ws::Message::Close(None)).await;
@@ -214,9 +216,10 @@ async fn ws_talk(
                 Ok(talk) => talk,
                 Err(error) => {
                     let _ = stream
-                        .send(ws::Message::Text(json_error(&format!(
-                            "the camera refused the talk channel: {error}"
-                        ))))
+                        .send(ws::Message::Text(json_error(
+                            "device",
+                            &format!("the camera refused the talk channel: {error}"),
+                        )))
                         .await;
                     let _ = stream.send(ws::Message::Close(None)).await;
                     return Ok(());
@@ -262,9 +265,10 @@ async fn ws_talk(
                             }
                             Err(error) => {
                                 let _ = stream
-                                    .send(ws::Message::Text(json_error(&format!(
-                                        "the camera stopped accepting audio: {error}"
-                                    ))))
+                                    .send(ws::Message::Text(json_error(
+                                        "device",
+                                        &format!("the camera stopped accepting audio: {error}"),
+                                    )))
                                     .await;
                                 break;
                             }
@@ -337,8 +341,8 @@ fn report(talk: &TalkSession, meter: &Meter) -> TalkReport {
     }
 }
 
-fn json_error(message: &str) -> String {
-    serde_json::json!({ "kind": "error", "message": message }).to_string()
+fn json_error(scope: &str, message: &str) -> String {
+    serde_json::json!({ "kind": "error", "scope": scope, "message": message }).to_string()
 }
 
 #[cfg(test)]

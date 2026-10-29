@@ -75,6 +75,85 @@ impl LensCapability {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TalkRoute {
+    pub ok: bool,
+    pub why: String,
+}
+
+pub fn talk_route(cfg: &Config, token: Option<&str>, device: Option<&str>) -> TalkRoute {
+    talk_route_with(
+        cfg,
+        token,
+        device,
+        crate::cloud::envelope::Identity::resolve().is_complete(),
+    )
+}
+
+pub fn talk_route_with(
+    cfg: &Config,
+    token: Option<&str>,
+    device: Option<&str>,
+    cloud_identity: bool,
+) -> TalkRoute {
+    let blocked = |why: String| TalkRoute { ok: false, why };
+    if cfg.device_pass.trim().is_empty() {
+        return blocked(
+            "the camera password (PROVIEW_DEVICE_PASS) is not set, the talk login would fail and the device locks the source IP after repeated attempts".to_string(),
+        );
+    }
+    if let Some(address) = cfg.device_host.as_deref() {
+        return TalkRoute {
+            ok: true,
+            why: format!("the camera is addressed directly at {address}"),
+        };
+    }
+    let Some(device) = device.map(str::trim).filter(|name| !name.is_empty()) else {
+        return blocked(
+            "no camera was named, no direct address is set and the relay needs a camera"
+                .to_string(),
+        );
+    };
+    if token.map(str::trim).unwrap_or("").is_empty() {
+        return blocked(format!(
+            "{device} has no cloud token in this session, so the relay cannot be claimed; sign in through the cloud or set PROVIEW_DEVICE_HOST"
+        ));
+    }
+    if !cloud_identity {
+        return blocked(format!(
+            "{device} needs the relay and {}",
+            crate::cloud::envelope::MISSING_CLOUD_IDENTITY
+        ));
+    }
+    TalkRoute {
+        ok: true,
+        why: format!("{device} carries two-way audio over the vendor relay, the same access server the live stream uses"),
+    }
+}
+
+pub fn talk_capability(cfg: &Config, token: Option<&str>, device: Option<&str>) -> LensCapability {
+    talk_capability_with(
+        cfg,
+        token,
+        device,
+        crate::cloud::envelope::Identity::resolve().is_complete(),
+    )
+}
+
+pub fn talk_capability_with(
+    cfg: &Config,
+    token: Option<&str>,
+    device: Option<&str>,
+    cloud_identity: bool,
+) -> LensCapability {
+    let route = talk_route_with(cfg, token, device, cloud_identity);
+    if route.ok {
+        LensCapability::supported(Lens::Device, "two-way audio", Backend::Dvrip, route.why)
+    } else {
+        LensCapability::blocked(Lens::Device, "two-way audio", Backend::Dvrip, route.why)
+    }
+}
+
 #[derive(Debug)]
 pub enum ControlError {
     Unsupported {
@@ -816,15 +895,6 @@ impl DeviceControl for DvripControl {
                 Backend::Dvrip,
                 reported.record_mode.evidence,
             ),
-            LensCapability::blocked(
-                Lens::Device,
-                "two-way audio",
-                Backend::Dvrip,
-                format!(
-                    "{} but the server has no capture path to feed the talk channel",
-                    reported.talk.evidence
-                ),
-            ),
             if ptz_motion.supported {
                 LensCapability::supported(
                     Lens::Bottom,
@@ -1521,5 +1591,67 @@ mod tests {
             device_onvif: onvif.map(str::to_string),
             session_ttl_secs: 3600,
         }
+    }
+
+    #[test]
+    fn talk_needs_the_camera_password_before_any_path() {
+        let mut config = test_config(None, Some("192.168.0.100:34567"));
+        config.device_pass = "  ".to_string();
+        let route = talk_route_with(&config, Some("token"), Some("serial"), true);
+        assert!(!route.ok);
+        assert!(route.why.contains("PROVIEW_DEVICE_PASS"), "{}", route.why);
+    }
+
+    #[test]
+    fn a_direct_address_makes_two_way_audio_available_without_the_cloud() {
+        let config = test_config(None, Some("192.168.0.100:34567"));
+        let route = talk_route_with(&config, None, None, false);
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("192.168.0.100:34567"), "{}", route.why);
+        let row = talk_capability_with(&config, None, None, false);
+        assert_eq!(row.feature, "two-way audio");
+        assert_eq!(row.state, State::Supported);
+    }
+
+    #[test]
+    fn the_relay_names_the_missing_camera_before_anything_else() {
+        let config = test_config(None, None);
+        let route = talk_route_with(&config, Some("token"), None, true);
+        assert!(!route.ok);
+        assert!(route.why.contains("no camera was named"), "{}", route.why);
+    }
+
+    #[test]
+    fn the_relay_needs_a_cloud_token_in_the_session() {
+        let config = test_config(None, None);
+        let route = talk_route_with(&config, None, Some("ABC123"), true);
+        assert!(!route.ok);
+        assert!(route.why.contains("no cloud token"), "{}", route.why);
+        assert!(route.why.contains("ABC123"), "{}", route.why);
+        let row = talk_capability_with(&config, None, Some("ABC123"), true);
+        assert_eq!(row.state, State::Blocked);
+    }
+
+    #[test]
+    fn the_relay_needs_the_cloud_identity_to_claim_a_session() {
+        let config = test_config(None, None);
+        let route = talk_route_with(&config, Some("token"), Some("ABC123"), false);
+        assert!(!route.ok);
+        assert!(
+            route
+                .why
+                .contains(crate::cloud::envelope::MISSING_CLOUD_IDENTITY),
+            "{}",
+            route.why
+        );
+    }
+
+    #[test]
+    fn a_signed_in_cloud_session_with_identity_reports_two_way_audio_over_the_relay() {
+        let config = test_config(None, None);
+        let row = talk_capability_with(&config, Some("token"), Some("ABC123"), true);
+        assert_eq!(row.state, State::Supported);
+        assert!(row.evidence.contains("vendor relay"), "{}", row.evidence);
+        assert!(row.evidence.contains("ABC123"), "{}", row.evidence);
     }
 }

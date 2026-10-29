@@ -1,15 +1,18 @@
 import { state } from '../app/state'
 import { renderCaption } from '../app/caption'
-import { setControlStatus } from '../app/controls'
 import { live } from './store'
 
 type Ready = { kind: 'ready'; path?: string; channel: number | null; claim_ms: number }
 type Report = {
   kind: 'report'
   frames: number
+  bytes: number
+  chunks: number
+  dropped: number
   frames_per_second: number
   claim_ms: number
   write_ms_mean: number
+  write_ms_max: number
 }
 
 const TALK_RATE = 8000
@@ -53,6 +56,14 @@ const uplink = {
   ready: null as Ready | null,
   startedAt: 0,
   report: null as Report | null,
+  opened: [] as MediaStream[],
+}
+
+function liveMicrophoneTracks() {
+  return uplink.opened.reduce(
+    (total, stream) => total + stream.getTracks().filter((track) => track.readyState === 'live').length,
+    0,
+  )
 }
 
 function talkSocketUrl() {
@@ -104,15 +115,34 @@ async function startWorkletTap(context: AudioContext, stream: MediaStream) {
 
 function reportText(report: Report) {
   return (
+    'sending \u00b7 ' +
     report.frames +
     ' frames \u00b7 ' +
+    report.bytes +
+    ' PCM bytes \u00b7 ' +
     report.frames_per_second.toFixed(1) +
-    ' fps \u00b7 claim ' +
-    report.claim_ms +
-    ' ms \u00b7 write ' +
+    ' fps \u00b7 write ' +
     report.write_ms_mean.toFixed(2) +
-    ' ms mean'
+    ' ms mean, ' +
+    report.write_ms_max.toFixed(1) +
+    ' ms max'
   )
+}
+
+function pathLabel(path?: string) {
+  if (path === 'relay') return 'the cloud relay'
+  if (path === 'lan') return 'the direct address'
+  return path || 'the device'
+}
+
+function failTalk(message: string, scope?: string) {
+  stopTalk()
+  live.talk.phase = 'error'
+  live.talk.note = 'talk failed: ' + message
+  if (scope === 'path') {
+    live.gate.intercom = { ok: false, why: 'two-way audio is unavailable: ' + message }
+  }
+  renderCaption()
 }
 
 function openSocket() {
@@ -140,16 +170,16 @@ function openSocket() {
       if (payload.kind === 'report') {
         uplink.report = payload
         uplink.frames = payload.frames
-        setControlStatus(reportText(payload))
+        live.talk.phase = 'sending'
+        live.talk.note = reportText(payload)
         return
       }
       if (payload.kind === 'error') {
         if (!settled) {
           settled = true
-          reject(new Error(payload.message))
+          reject(Object.assign(new Error(payload.message), { scope: payload.scope }))
         } else {
-          setControlStatus(payload.message)
-          stopTalk()
+          failTalk(payload.message, payload.scope)
         }
       }
     })
@@ -172,6 +202,8 @@ function openSocket() {
 export async function startTalk() {
   if (live.talk.on || !live.gate.intercom.ok || state.view !== 'live') return
   live.talk.on = true
+  live.talk.phase = 'asking'
+  live.talk.note = 'asking for the microphone'
   renderCaption()
   uplink.chunks = 0
   uplink.frames = 0
@@ -179,7 +211,6 @@ export async function startTalk() {
   uplink.report = null
   uplink.startedAt = performance.now()
   try {
-    const ready = await openSocket()
     const Context = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     const context = new Context({ sampleRate: TALK_RATE })
     uplink.context = context
@@ -193,25 +224,33 @@ export async function startTalk() {
     })
     if (!live.talk.on) {
       stream.getTracks().forEach((track) => track.stop())
+      live.talk.phase = 'idle'
+      live.talk.note = ''
+      renderCaption()
       return
     }
     uplink.stream = stream
+    uplink.opened.push(stream)
+    if (uplink.opened.length > 4) uplink.opened.shift()
     if (!context.audioWorklet || typeof AudioWorkletNode !== 'function') {
       throw new Error('this browser has no AudioWorklet, so the microphone cannot be sampled at 8 kHz')
     }
+    live.talk.phase = 'opening'
+    live.talk.note = 'microphone open, opening the talk channel'
+    const ready = await openSocket()
     await startWorkletTap(context, stream)
-    setControlStatus(
-      'talk open over ' +
-        (ready.path || 'the device') +
-        ' \u00b7 channel ' +
-        (ready.channel === null ? 'device' : ready.channel) +
-        ' \u00b7 claim ' +
-        ready.claim_ms +
-        ' ms',
-    )
+    live.talk.phase = 'sending'
+    live.talk.note =
+      'sending over ' +
+      pathLabel(ready.path) +
+      ' \u00b7 channel ' +
+      (ready.channel === null ? 'device' : ready.channel) +
+      ' \u00b7 claim ' +
+      ready.claim_ms +
+      ' ms'
   } catch (error) {
-    stopTalk()
-    setControlStatus('The talk channel did not open: ' + (error as Error).message)
+    const typed = error as Error & { scope?: string }
+    failTalk(typed.message, typed.scope)
   }
 }
 
@@ -234,18 +273,22 @@ export function stopTalk() {
   if (uplink.socket && uplink.socket.readyState <= WebSocket.OPEN) uplink.socket.close()
   const seconds = uplink.startedAt ? (performance.now() - uplink.startedAt) / 1000 : 0
   if (wasActive && uplink.chunks > 0 && seconds > 0) {
-    setControlStatus(
+    live.talk.note =
       'talk closed \u00b7 ' +
-        uplink.chunks +
-        ' chunks \u00b7 ' +
-        uplink.bytes +
-        ' PCM bytes \u00b7 ' +
-        seconds.toFixed(1) +
-        ' s \u00b7 ' +
-        (uplink.chunks / seconds).toFixed(1) +
-        ' chunks/s',
-    )
+      pathLabel(uplink.ready?.path) +
+      ' \u00b7 ' +
+      uplink.chunks +
+      ' chunks \u00b7 ' +
+      uplink.bytes +
+      ' PCM bytes \u00b7 ' +
+      seconds.toFixed(1) +
+      ' s \u00b7 ' +
+      (uplink.chunks / seconds).toFixed(1) +
+      ' chunks/s'
+  } else if (live.talk.phase !== 'error') {
+    live.talk.note = ''
   }
+  if (live.talk.phase !== 'error') live.talk.phase = 'idle'
   uplink.socket = null
   uplink.context = null
   uplink.stream = null
@@ -262,6 +305,9 @@ Object.assign(window, {
     stop: stopTalk,
     state: () => ({
       active: live.talk.on,
+      phase: live.talk.phase,
+      note: live.talk.note,
+      mic: liveMicrophoneTracks(),
       open: uplink.socket !== null && uplink.socket.readyState === WebSocket.OPEN,
       chunks: uplink.chunks,
       bytes: uplink.bytes,
