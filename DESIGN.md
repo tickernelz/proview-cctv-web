@@ -218,6 +218,17 @@ account gets its first camera that way. The sheet closes when Live is left for
 Settings or sign-in, signing out clears every typed field, and its height stops
 below the top bar.
 
+**Device settings.** A Settings section (Vue, `src/live/DeviceSettings.vue`,
+mounted into `#set-body` with its link added to the section nav). It reads
+encode, network and storage together each time it is shown. One status line
+(`#device-status`) says what is happening; a write's outcome stays there after
+the read-back reload, in `--warn` for a revert, a failed revert or a refusal.
+The write report sits above the forms: per field before, asked for, after and
+state, then the fields put back from the saved copy. The address is read only;
+DHCP, gateway and submask stay editable so the server's 409 refusal names what
+would have moved the camera. A save button that is working says so with
+`aria-busy` and ignores a second press.
+
 **Alarm messages.** The bell in the top bar (Vue, `src/live/AlarmCenter.vue`)
 counts alarms from the first check after sign-in, without opening anything. The
 sheet sits in the same corner as Cloud recordings and replaces it: one corner

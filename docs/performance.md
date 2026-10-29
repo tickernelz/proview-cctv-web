@@ -531,3 +531,5 @@ Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
 budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.
+
+Device settings in Vue (ZHA-4212, measured 2026-10-29, same method, baseline origin/main 4bdbd7e): JS 129,768 B -> 130,948 B (+1,180 B), CSS 7,701 B -> 7,701 B (0 B); no new dependency, the encoder fields reuse `.field` instead of the legacy nested 200 px label grid that made `#set-body` scroll sideways at 768 px once the forms loaded (650 px in 552 px), and `e2e/tests/device-settings.spec.ts` checks the loaded page at 320-1920 px.
