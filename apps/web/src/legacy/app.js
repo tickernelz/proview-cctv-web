@@ -1,7 +1,7 @@
 import { api } from '../lib/api';
 import { StreamPlayer } from '../lib/stream-player';
 import { live, menuOpen } from '../live/store';
-import { startTalk, stopTalk } from './talk.js';
+import { startTalk, stopTalk } from '../live/talk';
 
 export const el = (id) => document.getElementById(id);
 export const enc = encodeURIComponent;
@@ -757,7 +757,7 @@ function captionText() {
   if (state.networkLostAt && state.stage.lastFrameAt) {
     return 'not updating — last frame ' + hms(state.stage.lastFrameAt);
   }
-  if (talk.active) {
+  if (live.talk.on) {
     return 'live — the microphone is open';
   }
   if (name === 'loading') {
@@ -794,7 +794,7 @@ function renderFlag() {
   if (state.recorder) {
     text = 'Recording ' + elapsed(state.recordStart);
     tone = 'rec';
-  } else if (talk.active) {
+  } else if (live.talk.on) {
     text = 'release to stop';
   } else if (state.networkLostAt) {
     text = 'stale';
@@ -1833,8 +1833,6 @@ function toggleRecord() {
   recorder.start();
   renderRecord();
 }
-
-export const talk = { active: false, stream: null, context: null, frame: 0 };
 
 export async function toggleFullscreen() {
   const target = state.view === 'grid' ? el('tiles') : el('well');
