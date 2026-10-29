@@ -165,9 +165,7 @@ struct TalkAccount {
 impl TalkAccount {
     fn from_config(cfg: &Config) -> Self {
         Self {
-            serial: std::env::var("PROVIEW_DEVICE_SERIAL")
-                .map(|value| value.trim().to_string())
-                .unwrap_or_default(),
+            serial: proview_core::device::configured_serial(),
             user: cfg.device_user.clone(),
             pass: cfg.device_pass.clone(),
         }
@@ -217,16 +215,17 @@ async fn open_link(
             Err(failure) => (failure.message, failure.scope),
         },
         (Some(_), None) => (
-            "the session carries no cloud session; sign in through the cloud, or set a direct camera address".to_string(),
+            "this sign-in has no cloud session; sign in through the cloud, or set a direct camera address".to_string(),
             "path",
         ),
     };
+    let tried_direct = direct_error.is_some();
     let direct_reason = match direct_error {
         Some(error) => format!("direct: {error}"),
         None => "direct: no camera address is set".to_string(),
     };
     let message = format!("no path to the camera ({direct_reason}; vendor relay: {relay_reason})");
-    if relay_scope == "path" {
+    if relay_scope == "path" && !tried_direct {
         Err(TalkFailure::path(message))
     } else {
         Err(TalkFailure::device(message))
@@ -476,6 +475,10 @@ mod tests {
         let mut cfg = Config::from_env();
         cfg.device_host = Some("127.0.0.1:1".to_string());
         let failure = failure_of(&cfg, None, Some("serial-one")).await;
+        assert_eq!(
+            failure.scope, "device",
+            "a camera that is briefly unreachable must not disable the button"
+        );
         let text = message(failure);
         assert!(text.contains("direct: 127.0.0.1:1"), "{text}");
         assert!(text.contains("vendor relay:"), "{text}");
@@ -525,8 +528,24 @@ mod tests {
         let mut cfg = Config::from_env();
         cfg.device_host = Some("127.0.0.1:1".to_string());
         let failure = failure_of(&cfg, None, Some(proview_core::device::LOCAL_DEVICE)).await;
+        assert_eq!(failure.scope, "device");
         let text = message(failure);
         assert!(text.contains("direct: 127.0.0.1:1"), "{text}");
         assert!(!text.contains("camera credentials belong"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_static_refusal_still_scopes_as_path_without_a_direct_attempt() {
+        let mut cfg = Config::from_env();
+        cfg.device_host = None;
+        let failure = failure_of(&cfg, Some("token"), None).await;
+        assert_eq!(failure.scope, "path");
+        let text = message(failure);
+        assert!(text.contains("no camera was named"), "{text}");
+
+        let mut cfg = Config::from_env();
+        cfg.device_host = None;
+        let failure = failure_of(&cfg, Some("token"), Some("serial-two")).await;
+        assert_eq!(failure.scope, "path");
     }
 }

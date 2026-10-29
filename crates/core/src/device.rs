@@ -116,7 +116,7 @@ pub fn reported_talk_capability(
     ))
 }
 
-fn configured_serial() -> String {
+pub fn configured_serial() -> String {
     std::env::var("PROVIEW_DEVICE_SERIAL")
         .map(|value| value.trim().to_string())
         .unwrap_or_default()
