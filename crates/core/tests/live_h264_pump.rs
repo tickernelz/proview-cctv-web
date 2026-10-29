@@ -144,18 +144,16 @@ fn sequence_number(fragment: &[u8]) -> u32 {
     ])
 }
 
-async fn wait_for_replay(
-    subscription: &proview_core::live::Subscription,
-) -> Vec<Arc<proview_core::live::LivePacket>> {
+async fn subscribe_when_fragments_exist(
+    hub: &Arc<LiveHub>,
+    key: &StreamKey,
+) -> proview_core::live::Subscription {
     for _ in 0..500 {
-        let held = subscription
-            .replay
-            .lock()
-            .map(|fragments| fragments.clone())
-            .unwrap_or_default();
-        if !held.is_empty() {
-            return held;
+        let candidate = hub.subscribe(key.clone());
+        if !candidate.replay.is_empty() {
+            return candidate;
         }
+        hub.release(key);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("no fragments were published");
@@ -173,7 +171,6 @@ async fn a_late_viewer_gets_the_gop_and_then_an_unbroken_stream() {
 
     let hub = Arc::new(LiveHub::default());
     let key = StreamKey::new("cam-0001", 1, false, LiveMode::Transcode);
-    let mut subscription = hub.subscribe(key.clone());
     let stop = Arc::new(AtomicBool::new(false));
     let target = RtspTarget::from_host_port(&addr.ip().to_string(), addr.port())
         .with_credentials("admin", "secret");
@@ -182,9 +179,13 @@ async fn a_late_viewer_gets_the_gop_and_then_an_unbroken_stream() {
     tokio::time::timeout(Duration::from_secs(10), sent.notified())
         .await
         .expect("the camera reached the pause");
-    let replayed = tokio::time::timeout(Duration::from_secs(10), wait_for_replay(&subscription))
-        .await
-        .expect("a fragment reaches the hub");
+    let mut subscription = tokio::time::timeout(
+        Duration::from_secs(10),
+        subscribe_when_fragments_exist(&hub, &key),
+    )
+    .await
+    .expect("a fragment reaches the hub");
+    let replayed = subscription.replay.clone();
     assert!(
         subscription.init.lock().expect("init slot").is_some(),
         "the init segment must be published before the first fragment"
@@ -197,23 +198,10 @@ async fn a_late_viewer_gets_the_gop_and_then_an_unbroken_stream() {
     let last_replayed = sequence_number(&replayed.last().expect("fragment").bytes);
 
     resume.notify_one();
-    let target = replayed.last().cloned().expect("fragment");
-    let next = tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            match subscription.receiver.recv().await {
-                Ok(packet) => {
-                    if Arc::ptr_eq(&packet, &target) {
-                        continue;
-                    }
-                    break packet;
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => panic!("the live stream stopped"),
-            }
-        }
-    })
-    .await
-    .expect("the live stream continues");
+    let next = tokio::time::timeout(Duration::from_secs(10), subscription.receiver.recv())
+        .await
+        .expect("the live stream continues")
+        .expect("a fragment");
     assert_eq!(
         sequence_number(&next.bytes),
         last_replayed + 1,
