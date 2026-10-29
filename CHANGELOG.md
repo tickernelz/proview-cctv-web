@@ -282,6 +282,15 @@ stability before 1.0.
   now keeps what arrived in a buffer that survives a cancelled read and hands a
   frame out only once its header and declared body have both arrived, which also
   covers the settings and control reads that share the type.
+- Cloud live video logs in as the phone app does, so it no longer needs the
+  camera's user and password. `DEVAPI::DecLoginToken` (0xbd0858) opens the
+  44-character account token with the device serial as the AES-128 key, and that
+  16-character plaintext is the `TOKEN` login name; the old code offered the
+  44-character value raw and the camera answered `Ret 137` every time
+  (`docs/protocol.md` 4C.27). A device the token store does not know now uses the
+  token from the account's own device list, and a build with the opening removed
+  fails the acceptance run at the live stage while the shipped one passes 300 s
+  with no `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS` set.
 - Recorded playback no longer stops after the primed frames when the device
   pauses mid-frame. `playback::Session::recv` read the header and the body with
   the same two exact reads, and the clip route stops priming on a 3 s read
