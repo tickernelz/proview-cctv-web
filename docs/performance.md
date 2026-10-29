@@ -479,6 +479,25 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Every camera in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/GridView.vue` and `GridTile.vue` replace `legacy/grid.js`. Same
+method, baseline origin/main 4bdbd7e:
+
+| File | main 4bdbd7e | Grid in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,609 B | 111,891 B | +282 B |
+| CSS | 7,696 B | 7,753 B | +57 B |
+
+The per-second tile clock is one shared ref read by the playing tiles, instead
+of `querySelectorAll('.tile[data-state="playing"] .tile-meta .right')` in the
+page tick. Stream requests per tile are unchanged (one `/api/stream` per tile
+on open, one per HD/SD toggle or Try again). After merging main 192f434 (the
+fisheye and Talk port) the built bundle is JS 111,779 B and CSS 7,794 B gzip.
+e2e at this change: 237 passed, 9 skipped (WebKit-only skips of the fisheye,
+Talk and notification specs), 5.1 min locally on a loaded box; node web tests
+46/46.
+
 ### Playback in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/PlaybackScreen.vue` replaces `legacy/playback.js`; the day strip and
