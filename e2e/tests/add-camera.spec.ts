@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './app'
+import { ACCOUNT, signIn } from './app'
 
 const CAMERA = { id: 'NEWCAM0001', name: 'Side door', model: 'XM-IPC', online: true, channels: 1 }
 
@@ -66,16 +66,46 @@ test('a code that is not a PROVIEW code says so, and a bound camera opens in Liv
   await expect(page.locator('#switcher-dot')).toBeVisible()
 })
 
-test('Sign out from Settings ends the session here and forgets the remembered token', async ({ page }) => {
+test('Sign out forgets the remembered token before it ends the session', async ({ page }) => {
   const calls: string[] = []
-  page.on('request', (request) => {
-    const path = new URL(request.url()).pathname
-    if (request.method() === 'POST' && (path === '/api/logout' || path === '/api/account/signout')) calls.push(path)
+  let signoutAnswered = false
+  let logoutAfterAnswer: boolean | null = null
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/api/account/signout') signoutAnswered = true
   })
-  await page.route('**/api/account/signout', (route) => route.fulfill({ json: { ok: true, message: 'signed out here', email: '', vendor: { http_status: 0, code: null, message: 'nothing to revoke', revoked: false } } }))
+  await page.route('**/api/account/signout', async (route) => {
+    calls.push('/api/account/signout')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await route.fallback()
+  })
+  await page.route('**/api/logout', async (route) => {
+    calls.push('/api/logout')
+    logoutAfterAnswer = signoutAnswered
+    await route.fallback()
+  })
   const base = await signIn(page, 'empty')
   await page.goto(base + '/?signed-in&boot=connection#settings/connection')
   await page.getByTestId('settings-signout').click()
   await expect(page.getByTestId('signin')).toBeVisible()
-  expect(calls.sort()).toEqual(['/api/account/signout', '/api/logout'])
+  await expect.poll(() => calls).toEqual(['/api/account/signout', '/api/logout'])
+  expect(logoutAfterAnswer).toBe(true)
+})
+
+test('a serial and camera password typed before sign-out are gone for the next account', async ({ page }) => {
+  const base = await signIn(page, 'empty')
+  await page.goto(base + '/?signed-in&boot=connection#settings/connection')
+  await page.evaluate(() => (location.hash = '#live'))
+  await page.locator('#add-sn').fill('SN-9')
+  await page.locator('#add-pass').fill('typed-secret')
+  await page.evaluate(() => (location.hash = '#settings/connection'))
+  await page.getByTestId('settings-signout').click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await page.getByTestId('signin-email').fill(ACCOUNT.email)
+  await page.getByTestId('signin-password').fill(ACCOUNT.password)
+  await page.getByTestId('signin-submit').click()
+  await expect(page.getByTestId('signin')).toBeHidden()
+  await page.evaluate(() => (location.hash = '#live'))
+  await expect(page.getByTestId('devices-empty')).toBeVisible()
+  await expect(page.locator('#add-sn')).toHaveValue('')
+  await expect(page.locator('#add-pass')).toHaveValue('')
 })

@@ -504,6 +504,8 @@ pub struct VendorReply {
 async fn sign_out(
     accounts: &State<AccountStore>,
     store: &State<Store>,
+    modes: &State<crate::config::ModeStore>,
+    cloud: &State<crate::routes::cloud::CloudState>,
     cfg: &State<Config>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<SignOutBody>, Failure> {
@@ -529,6 +531,8 @@ async fn sign_out(
     let token = session_token.unwrap_or_else(|| saved.access_token.clone());
     if let Some(cookie) = cookies.get_private(COOKIE) {
         store.remove(cookie.value());
+        modes.forget(cookie.value());
+        cloud.forget_devices(cookie.value());
         cookies.remove_private(cookie);
     }
     if !token.trim().is_empty() {

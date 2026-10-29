@@ -45,10 +45,14 @@ stability before 1.0.
   code is caught before any request and names what to type; the button says
   "Adding…" and ignores a second press while the bind runs; a refused bind is
   a red alert with the warning icon and the cloud's reason; a bound camera
-  opens in Live at once. Sign out from Settings now also clears the
-  remembered token (`/api/account/signout`), which the old panel script did
-  from a listener on the Settings button; the switcher no longer shows a green
-  status dot when there is no camera.
+  opens in Live at once, and a serial or camera password typed there is
+  cleared on sign-out instead of being sent for the next account. Sign out
+  forgets the remembered account again: since Settings moved to Vue the old
+  panel script's listener on the Settings button was never attached, so a
+  reload after sign-out restored the session without a password. Sign out now
+  asks the server to forget the stored token first and ends the session after
+  that answer, so the two requests no longer race for the same session. The
+  switcher no longer shows a green status dot when there is no camera.
 - `apps/web/src/legacy/app.js` is gone (ZHA-4181): the lens picker, lens
   crop, pan-and-tilt pad, presets, tour and the device-control gates moved to
   `src/app/lens.ts` and `src/app/controls.ts`, and the pad is rendered by
