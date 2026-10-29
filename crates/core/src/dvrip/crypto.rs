@@ -146,10 +146,22 @@ mod tests {
     #[test]
     fn the_login_token_is_the_device_token_opened_with_the_serial() {
         let serial = "0123456789abcdefghij";
-        let token = "F0+7ghjHWzNsktOE";
+        let token = "PROBElogin000001";
         let sealed = seal_login_token(serial, token);
         assert_eq!(sealed.len(), 44);
         assert_eq!(login_token(serial, &sealed).as_deref(), Some(token));
+    }
+
+    #[test]
+    fn a_frozen_sealed_token_opens_only_with_the_reversed_serial_key() {
+        let serial = "0123456789abcdefghij";
+        let sealed = "+xs49Ws16XTSQHzPYN1F5Jet090Hk8duEXLYgdGOcwc=";
+        assert_eq!(sealed.len(), 44);
+        assert_eq!(
+            login_token(serial, sealed).as_deref(),
+            Some("PROBElogin000001")
+        );
+        assert!(login_token("fedcba9876543210ghij", sealed).is_none());
     }
 
     #[test]

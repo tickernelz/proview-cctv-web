@@ -2228,7 +2228,7 @@ mod login_tests {
         let dir = TokenDir::new("account-token");
         let provider = provider_with_store(&dir);
         let serial = "0123456789abcdefghij";
-        let token = "F0+7ghjHWzNsktOE";
+        let token = "PROBElogin000001";
         let sealed = sealed_login_token(serial, token);
         let mut device = entry(serial);
         device.extra.insert(
@@ -2274,7 +2274,7 @@ mod login_tests {
         let dir = TokenDir::new("opened-stored");
         let provider = provider_with_store(&dir);
         let serial = "0123456789abcdefghij";
-        let token = "F0+7ghjHWzNsktOE";
+        let token = "PROBElogin000001";
         let sealed = sealed_login_token(serial, token);
         provider.tokens.put(serial, &sealed).expect("stored token");
         let device = entry(serial);
