@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type Page } from '@playwright/test'
 import { signIn } from './app'
 
 test('a field that needs a restart is saved and the bar asks for the restart', async ({ page }) => {
@@ -43,4 +43,79 @@ test('the desktop build restarts through its local route after the save', async 
   await page.getByTestId('settings-restart').click()
   await expect(page.getByTestId('settings-restart')).toHaveText('Restarting…')
   await expect.poll(() => restarts).toEqual(['POST e2e-desktop-token'])
+})
+
+async function openSection(page: Page, name: string) {
+  await signIn(page, 'one')
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings').getByRole('link', { name, exact: true }).click()
+}
+
+test('a save the server refuses is an alert in the save bar with its reason, and focus stays on Save', async ({ page }) => {
+  await page.route('**/api/settings', (route) =>
+    route.request().method() === 'POST'
+      ? route.fulfill({ status: 400, json: { message: 'PROVIEW_LISTEN is not a socket address' } })
+      : route.continue(),
+  )
+  await openSection(page, 'Configuration')
+  await page.getByTestId('setting-PROVIEW_LISTEN').fill('nope')
+  await page.getByTestId('settings-save').click()
+  const bar = page.getByTestId('save-state')
+  await expect(bar).toHaveText('Not saved: PROVIEW_LISTEN is not a socket address')
+  await expect(bar).toHaveAttribute('role', 'alert')
+  await expect(page.getByTestId('settings-save')).toBeFocused()
+})
+
+test('leaving with unsaved changes is an alert that counts the fields in plain words', async ({ page }) => {
+  await openSection(page, 'Configuration')
+  await page.getByTestId('setting-PROVIEW_LISTEN').fill('127.0.0.1:9999')
+  await page.getByTestId('settings-back').click()
+  const bar = page.getByTestId('save-state')
+  await expect(bar).toHaveText('Save or discard 1 changed field before leaving.')
+  await expect(bar).toHaveAttribute('role', 'alert')
+  await expect(page.getByTestId('settings-save')).toBeFocused()
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
+  await expect(bar).toHaveText('Everything saved')
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+})
+
+test('a field that needs a restart carries a Restart tag next to its label', async ({ page }) => {
+  await openSection(page, 'Configuration')
+  const label = page.locator('label[for="setting-proview-listen"]')
+  await expect(label.locator('.tag-restart')).toHaveText('Restart')
+  await expect(label).not.toContainText('Needs a restart.')
+})
+
+test('Run checks says it is working, keeps focus, and a failed check carries a warning icon and the HTTP status', async ({ page }) => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  await page.route('**/api/health', async (route) => {
+    await held
+    await route.continue()
+  })
+  await openSection(page, 'Server')
+  const run = page.getByTestId('run-checks')
+  await run.click()
+  await expect(run).toHaveAttribute('aria-busy', 'true')
+  await expect(run).toHaveText('Checking…')
+  release()
+  const probe = page.locator('#check-probe')
+  await expect(probe).toHaveAttribute('data-ok', 'false')
+  await expect(probe).toContainText(/\(HTTP \d{3}\)$/)
+  await expect(probe.locator('svg use')).toHaveAttribute('href', '#i-warning')
+  await expect(page.locator('#check-health')).toHaveText(/^Up · /)
+  await expect(run).toBeFocused()
+})
+
+test('a provider switch the server refuses stays on screen as an alert', async ({ page }) => {
+  await page.route('**/api/config/mode', (route) =>
+    route.request().method() === 'POST' ? route.fulfill({ status: 500, json: { message: 'the provider is busy' } }) : route.continue(),
+  )
+  await openSection(page, 'Connection')
+  await page.getByRole('radio', { name: 'This network', exact: true }).check()
+  const error = page.getByTestId('mode-error')
+  await expect(error).toHaveAttribute('role', 'alert')
+  await expect(error).toContainText('the provider is busy')
+  await expect(page.getByRole('radio', { name: 'Cloud account', exact: true })).toBeChecked()
 })

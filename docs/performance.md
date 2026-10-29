@@ -479,6 +479,26 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Settings in Vue (measured 2026-10-29, ZHA-4181)
+
+`src/live/SettingsScreen.vue` replaces the Settings markup in `index.html`
+and the Settings rendering, save bar, server checks and preference handlers in
+`legacy/app.js` (app.js 2,555 to 2,226 lines). Same method, baseline
+origin/main 1621d21:
+
+| File | main 1621d21 | Settings in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 115,250 B | 119,110 B | +3,860 B |
+| CSS | 7,900 B | 8,160 B | +260 B |
+| HTML | 5,850 B | 3,880 B | -1,970 B |
+
+The JS grows because the Configuration form is now a template with typed
+state instead of DOM building; the HTML loses the static Settings markup.
+Requests are unchanged: one `GET /api/settings` per open, one `POST` per save
+with only the changed keys, `POST /api/desktop/restart` only from the restart
+button, and the same four calls for Run checks. e2e at this change: 269
+passed, 9 skipped (both browsers); node web tests 46/46; contrast 76/76.
+
 ### Sign-in in Vue (measured 2026-10-29, ZHA-4181)
 
 `src/live/SignInScreen.vue` replaces the sign-in markup in `index.html`, the

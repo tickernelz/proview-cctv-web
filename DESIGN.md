@@ -183,6 +183,19 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Settings.** Vue (`src/live/SettingsScreen.vue`, mounted into `#settings`;
+Device settings stays its own app teleporting its link into the section nav).
+The save bar is the one place for the outcome of a save: "Unsaved changes ·
+N fields", a refused save as a `--bad` alert with the warning icon and the
+server reason (focus stays on Save), and the restart prompt after a save. Back
+with unsaved edits turns the bar into the same alert and moves focus to Save.
+Fields that need a restart carry a small outlined Restart tag with the refresh
+icon; a changed field keeps a 1.5 px accent outline until it is saved or
+discarded. Server checks are a definition list of sentences with a check or
+warning icon and "(HTTP n)" after a failure. A refused provider switch is an
+alert under the radios and the radios return to the answering provider.
+Capability pills read supported/blocked/unavailable with a check or cross.
+
 **Sign-in.** Vue (`src/live/SignInScreen.vue`, mounted into `#signin-main`;
 the top bar stays static). Account and This network are Reka tabs. Email has
 focus on open; after an expired session the password has it when the email is

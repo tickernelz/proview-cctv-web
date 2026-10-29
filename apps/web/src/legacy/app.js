@@ -98,21 +98,6 @@ export function make(tag, className, text) {
   return node;
 }
 
-function setBusy(button, busy, label) {
-  button.setAttribute('aria-busy', busy ? 'true' : 'false');
-  button.disabled = busy;
-  if (label !== undefined) {
-    if (busy) {
-      button.dataset.label = button.textContent;
-      button.style.minWidth = button.offsetWidth + 'px';
-      button.textContent = label;
-    } else if (button.dataset.label) {
-      button.textContent = button.dataset.label;
-      delete button.dataset.label;
-    }
-  }
-}
-
 
 export function sessionLost(error) {
   if (!error || error.status !== 401 || !state.signedIn) {
@@ -290,6 +275,7 @@ function showScreen(name) {
     el(id).hidden = id !== name;
   }
   document.body.dataset.screen = name;
+  live.settings.shown = name === 'settings';
 }
 
 function resolveTheme() {
@@ -303,13 +289,18 @@ function resolveTheme() {
 function applyTheme() {
   const theme = resolveTheme();
   document.documentElement.dataset.theme = theme;
+  live.theme = theme;
+  live.settings.prefs.theme = state.prefs.theme;
   for (const button of document.querySelectorAll('[data-theme-toggle]')) {
     button.setAttribute('aria-label', theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme');
     button.querySelector('use').setAttribute('href', theme === 'dark' ? '#i-sun' : '#i-moon');
   }
-  for (const radio of document.querySelectorAll('input[name="theme"]')) {
-    radio.checked = radio.value === state.prefs.theme;
-  }
+}
+
+export function toggleTheme() {
+  state.prefs.theme = resolveTheme() === 'dark' ? 'light' : 'dark';
+  savePrefs();
+  applyTheme();
 }
 
 function showSignin(options = {}) {
@@ -318,6 +309,7 @@ function showSignin(options = {}) {
   state.devices = [];
   state.cameras = [];
   state.selectedId = null;
+  live.settings.signedIn = false;
   showScreen('signin');
   const signin = live.signin;
   signin.expired = Boolean(options.expired);
@@ -340,7 +332,8 @@ export async function signedIn() {
   }
   state.signedIn = true;
   state.account = me.account || null;
-  el('account').textContent = state.account || 'Signed in';
+  live.settings.signedIn = true;
+  live.settings.account = state.account || '';
   if (state.screen !== 'settings') {
     showScreen('watch');
   }
@@ -404,38 +397,16 @@ async function loadMode() {
 }
 
 function renderMode() {
-  const status = el('mode-status');
-  const notice = el('mode-notice');
-  for (const radio of document.querySelectorAll('input[name="mode"]')) {
-    radio.disabled = !state.signedIn;
-    radio.checked = Boolean(state.mode) && radio.value === state.mode.mode;
-  }
-  el('account-row').hidden = !state.signedIn;
   live.signin.mode = state.mode;
-  if (!state.mode) {
-    status.textContent = 'The server did not report a provider mode.';
-    notice.hidden = true;
-    return;
+  live.settings.mode = state.mode;
+  live.settings.signedIn = state.signedIn;
+  if (state.mode) {
+    renderCameraInfo();
   }
-  status.textContent =
-    'Mode: ' +
-    modeName(state.mode.mode) +
-    ' · answering: ' +
-    state.mode.source +
-    (state.signedIn ? '' : '. Sign in to switch the provider.');
-  if (state.mode.notice) {
-    notice.textContent =
-      'Fallback: ' +
-      (state.mode.notice.message || 'this network is not reachable, so the other provider answered.') +
-      (state.mode.notice.to ? ' Answering provider: ' + state.mode.notice.to + '.' : '');
-    notice.hidden = false;
-  } else {
-    notice.hidden = true;
-  }
-  renderCameraInfo();
 }
 
-async function setMode(mode) {
+export async function setMode(mode) {
+  live.settings.modeError = '';
   try {
     state.mode = await api('/api/config/mode', { method: 'POST', body: JSON.stringify({ mode }) });
     state.control = { rows: [], onvif: false, dvrip: false, error: null, checkedFor: null };
@@ -446,8 +417,8 @@ async function setMode(mode) {
     if (sessionLost(error)) {
       return;
     }
-    el('mode-status').textContent = 'The server did not change provider: ' + error.message;
     await loadMode();
+    live.settings.modeError = 'The server did not change the provider: ' + error.message;
   }
 }
 
@@ -1163,7 +1134,7 @@ async function loadLens(deviceId, channel) {
       return;
     }
     console.error('lens contract failed', error);
-    el('lens-source').textContent = 'The server answered ' + error.status + ' for GET /api/lens.';
+    live.settings.lensNote = 'The server answered ' + error.status + ' for GET /api/lens.';
   }
 }
 
@@ -1213,9 +1184,9 @@ function renderLensPicker() {
   }
   live.lens.shown = pair;
   live.lens.label = lensViewLabel();
-  el('lens-source').textContent = lensNote();
-  el('lens-source').title = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : '';
-  el('lens-roles-note').hidden = entries.some((entry) => entry.role !== 'unknown');
+  live.settings.lensNote = lensNote();
+  live.settings.lensTitle = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : '';
+  live.settings.lensRolesKnown = entries.some((entry) => entry.role !== 'unknown');
   live.lens.options = [{ value: 'combined', name: 'Both lenses', sub: 'the frame as the camera sends it' }].concat(
     entries.map((entry) => ({ value: String(entry.index), name: entry.label, sub: lensSub(entry) })),
   );
@@ -1293,17 +1264,17 @@ function currentCrop() {
 
 function renderControlAvailability() {
   const rows = state.control.rows;
-  const note = el('device-note');
   if (state.control.error) {
-    note.textContent = 'Device controls could not be read: ' + state.control.error;
+    live.settings.controlNote = 'Device controls could not be read: ' + state.control.error;
   } else if (!rows.length) {
-    note.textContent = 'Device controls have not been checked yet.';
+    live.settings.controlNote = 'Device controls have not been checked yet.';
   } else {
     const supported = rows.filter((row) => row.state === 'supported').length;
     const backends = [state.control.onvif ? 'ONVIF' : null, state.control.dvrip ? 'DVRIP' : null].filter(Boolean);
-    note.textContent =
+    live.settings.controlNote =
       supported + ' of ' + rows.length + ' rows are usable' + (backends.length ? ' over ' + backends.join(' and ') : '') + '. Blocked rows keep the device\u2019s own reason.';
   }
+  live.settings.light = buttonVerdict({ dataset: { act: 'strobe' } });
   for (const button of document.querySelectorAll('[data-requires="device"]')) {
     const verdict = buttonVerdict(button);
     if (button.closest('#controls') && live.gate[button.dataset.act]) {
@@ -1380,8 +1351,6 @@ function buttonVerdict(button) {
 }
 
 function renderCapabilities() {
-  const body = el('capability-rows');
-  body.replaceChildren();
   const rows = state.control.rows.map((row) => [row.feature, row.lens, row.backend, row.state, row.evidence]);
   const absent = [
     ['auto-tracking', 'tracking'],
@@ -1394,20 +1363,7 @@ function renderCapabilities() {
       rows.push([feature, '—', 'none', 'unavailable', CONTROL_ABSENT[act]]);
     }
   }
-  for (const row of rows) {
-    const tr = document.createElement('tr');
-    ['feature', 'lens', 'backend', 'state', 'evidence'].forEach((name, index) => {
-      const cell = make('td', name);
-      const text = row[index] == null ? '' : String(row[index]);
-      if (name === 'state') {
-        cell.append(make('span', 'pill ' + (text === 'supported' ? 'ok' : 'no'), text === 'supported' ? 'supported' : text || 'unavailable'));
-      } else {
-        cell.textContent = text;
-      }
-      tr.append(cell);
-    });
-    body.append(tr);
-  }
+  live.settings.capabilities = rows.map((row) => row.map((cell) => (cell == null ? '' : String(cell))));
 }
 
 async function probeControlChannel(device) {
@@ -1472,16 +1428,15 @@ async function loadPresets() {
   }
 }
 
-async function toggleWhiteLight() {
-  const status = el('light-status');
+export async function toggleWhiteLight() {
   try {
     const current = await api('/api/device/controls/light');
     const next = current.mode === 'always' ? 'off' : 'always';
     const applied = await api('/api/device/controls/light?mode=' + enc(next), { method: 'POST' });
-    status.textContent = 'White light: ' + (applied.mode || next) + ' (it was ' + (current.mode || 'not reported') + ').';
+    live.settings.lightStatus = 'White light: ' + (applied.mode || next) + ' (it was ' + (current.mode || 'not reported') + ').';
   } catch (error) {
     if (!sessionLost(error)) {
-      status.textContent = 'The camera refused the white light: ' + error.status + ' ' + error.message;
+      live.settings.lightStatus = 'The camera refused the white light: ' + error.status + ' ' + error.message;
     }
   }
 }
@@ -1566,7 +1521,7 @@ async function selectDevice(deviceId, options = {}) {
   renderSwitcher();
   renderCameraMenu();
   setControlStatus('');
-  el('light-status').textContent = '';
+  live.settings.lightStatus = '';
   if (state.view === 'grid') {
     renderTileSelection();
   }
@@ -1639,23 +1594,24 @@ async function requestStream() {
 
 function renderCameraInfo() {
   const camera = currentCamera();
-  el('camera-none').hidden = Boolean(camera);
-  el('camera-rows').hidden = !camera;
   if (!camera) {
+    live.settings.camera = null;
     return;
   }
   const device = camera.device;
-  el('cam-name').textContent = camera.name;
-  el('cam-id').textContent = device.id;
-  el('cam-channel').textContent = 'channel ' + camera.channel;
-  el('cam-model').textContent = device.model || 'model not reported';
-  el('cam-connection').textContent =
-    (state.mode ? modeName(state.mode.mode)[0].toUpperCase() + modeName(state.mode.mode).slice(1) + ' · answering ' + sourceLabel() : sourceLabel()) +
-    (device.lan_host ? ' · ' + device.lan_host : '');
   const ticket = state.ticket;
-  el('cam-stream').textContent = ticket
-    ? 'Stream: ' + ticket.kind.toUpperCase() + ' · ' + (state.prefs.quality === 'sub' ? 'SD' : 'HD') + ' · ' + ticket.url + (ticket.expires_in ? ' · ticket expires in ' + ticket.expires_in + ' s' : '')
-    : 'No stream ticket yet.';
+  live.settings.camera = {
+    name: camera.name,
+    id: device.id,
+    channel: String(camera.channel),
+    model: device.model || 'model not reported',
+    connection:
+      (state.mode ? modeName(state.mode.mode)[0].toUpperCase() + modeName(state.mode.mode).slice(1) + ' · answering ' + sourceLabel() : sourceLabel()) +
+      (device.lan_host ? ' · ' + device.lan_host : ''),
+    stream: ticket
+      ? 'Stream: ' + ticket.kind.toUpperCase() + ' · ' + (state.prefs.quality === 'sub' ? 'SD' : 'HD') + ' · ' + ticket.url + (ticket.expires_in ? ' · ticket expires in ' + ticket.expires_in + ' s' : '')
+      : 'No stream ticket yet.',
+  };
 }
 
 export function shortStreamError(error) {
@@ -1844,284 +1800,16 @@ function setView(name, options = {}) {
   }
 }
 
-const OPTION_LABELS = {
-  proview: 'Vendor cloud',
-  cloud: 'Cloud account',
-  local: 'This network',
-  fixture: 'Built-in sample data',
-};
-
-const MONO_KEY = /addr|host|base|listen|dir|rtsp|onvif|ffmpeg|url|port|profile/i;
-
-let settingsView = null;
-let settingsInitial = new Map();
-let settingsRestartKeys = new Set();
-let pendingRestart = 0;
-let focusAfterSettings = null;
-
-function settingsInputId(key) {
-  return 'setting-' + key.replace(/[^a-z0-9]+/gi, '-').toLowerCase();
-}
-
-function setSettingsStatus(message, bad = false) {
-  const box = el('settings-status');
-  box.textContent = message || '';
-  box.classList.toggle('warn-text', bad);
-}
-
-function settingsCaret() {
-  const active = document.activeElement;
-  if (!active || !active.dataset || !active.dataset.key || !active.closest('#settings-fields')) {
-    return null;
-  }
-  const caret =
-    typeof active.selectionStart === 'number' ? { start: active.selectionStart, end: active.selectionEnd } : null;
-  return { key: active.dataset.key, caret };
-}
-
-function restoreSettingsCaret(focus) {
-  const input = document.querySelector('#settings-fields [data-key="' + focus.key + '"]');
-  if (!input) {
-    return;
-  }
-  input.focus();
-  if (!focus.caret) {
-    return;
-  }
-  try {
-    input.setSelectionRange(focus.caret.start, focus.caret.end);
-  } catch {}
-}
-
-function renderSettings(view, options = {}) {
-  settingsView = view;
-  const host = el('settings-fields');
-  const typed = options.reset ? new Map() : new Map(Object.entries(settingsPayload()));
-  const focus = options.reset ? null : settingsCaret();
-  host.replaceChildren();
-  settingsInitial = new Map();
-  settingsRestartKeys = new Set(view.fields.filter((field) => field.restart).map((field) => field.key));
-  const inDesktop = Boolean(window.__TAURI__);
-  const groups = new Map();
-  for (const field of view.fields) {
-    if (field.group === 'Desktop' && !inDesktop) continue;
-    if (!groups.has(field.group)) groups.set(field.group, []);
-    groups.get(field.group).push(field);
-  }
-  for (const [group, fields] of groups) {
-    host.append(make('h3', 'set-group', group));
-    for (const field of fields) {
-      const id = settingsInputId(field.key);
-      const row = make('div', 'row');
-      if (field.kind === 'toggle') {
-        const label = make('div', 'lab', field.label);
-        if (field.hint) {
-          const hint = make('span', 'hint', field.hint);
-          hint.style.display = 'block';
-          label.append(hint);
-        }
-        const box = make('label', 'switchrow');
-        const box_input = make('input', '');
-        box_input.type = 'checkbox';
-        box_input.id = id;
-        box_input.dataset.key = field.key;
-        box_input.dataset.testid = 'setting-' + field.key;
-        box_input.dataset.secret = 'false';
-        box_input.checked = (field.value || field.default || 'off') === 'on';
-        const state = make('span', '', box_input.checked ? 'On' : 'Off');
-        box_input.addEventListener('change', () => {
-          state.textContent = box_input.checked ? 'On' : 'Off';
-          renderSaveBar();
-        });
-        box.append(box_input, state);
-        const column = make('div', 'ctl-col');
-        column.append(box);
-        row.append(label, column);
-        host.append(row);
-        settingsInitial.set(field.key, {
-          secret: false,
-          set: field.set,
-          value: box_input.checked ? 'on' : 'off',
-        });
-        continue;
-      }
-      const label = make('label', 'lab', field.label);
-      label.setAttribute('for', id);
-      if (field.restart) {
-        label.append(make('span', 'hint', 'Needs a restart.'));
-      }
-      if (field.hint) {
-        label.append(make('span', 'hint', field.hint));
-      }
-      for (const hint of label.querySelectorAll('.hint')) {
-        hint.style.display = 'block';
-      }
-      const column = make('div', 'ctl-col');
-      let input;
-      if (field.kind === 'select') {
-        input = make('select', 'text-input');
-        for (const option of field.options) {
-          const item = make('option', '', OPTION_LABELS[option] || option);
-          item.value = option;
-          input.append(item);
-        }
-        input.value = field.value || field.options[0] || '';
-      } else {
-        input = make('input', 'text-input' + (field.kind !== 'secret' && MONO_KEY.test(field.key) ? ' mono-input' : ''));
-        input.type = field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text';
-        if (field.kind === 'number') {
-          if (field.min !== null && field.min !== undefined) input.min = String(field.min);
-          if (field.max !== null && field.max !== undefined) input.max = String(field.max);
-          if (field.default) input.placeholder = field.default;
-        }
-        if (field.kind === 'secret') {
-          input.placeholder = field.set ? 'stored, type to replace' : 'not set';
-          input.autocomplete = 'new-password';
-          input.value = '';
-        } else {
-          input.value = field.value || '';
-        }
-      }
-      input.id = id;
-      input.spellcheck = false;
-      input.dataset.key = field.key;
-      input.dataset.testid = 'setting-' + field.key;
-      input.dataset.secret = field.secret ? 'true' : 'false';
-      column.append(input);
-      row.append(label, column);
-      host.append(row);
-      settingsInitial.set(field.key, { secret: field.secret, set: field.set, value: input.value });
-    }
-  }
-  for (const [key, value] of typed) {
-    const input = host.querySelector('[data-key="' + key + '"]');
-    if (input) {
-      input.value = value;
-    }
-  }
-  if (focus) {
-    restoreSettingsCaret(focus);
-  }
-  renderSaveBar();
-}
-
-function settingsPayload() {
-  const payload = {};
-  for (const input of document.querySelectorAll('#settings-fields input, #settings-fields select')) {
-    const key = input.dataset.key;
-    const secret = input.dataset.secret === 'true';
-    const initial = settingsInitial.get(key) || { secret, set: false, value: '' };
-    const value = input.type === 'checkbox' ? (input.checked ? 'on' : 'off') : input.value;
-    if (secret && value === '') continue;
-    if (!secret && value === initial.value) continue;
-    payload[key] = value;
-  }
-  return payload;
-}
-
-function desktopControl() {
-  const control = window.__PROVIEW_DESKTOP__;
-  return control && typeof control.token === 'string' && control.token ? control : null;
-}
-
-function renderSaveBar() {
-  const changed = Object.keys(settingsPayload()).length;
-  const restart = Boolean(desktopControl());
-  el('settings-discard').hidden = changed === 0;
-  el('settings-save').hidden = changed === 0;
-  el('settings-restart').hidden = !(changed === 0 && pendingRestart > 0 && restart);
-  let text = 'Everything saved';
-  if (changed) {
-    text = 'Unsaved changes · ' + changed + ' field' + (changed === 1 ? '' : 's');
-  } else if (pendingRestart) {
-    text =
-      'Saved. ' +
-      (restart ? 'Restart the app' : 'Restart the server process') +
-      ' to apply ' +
-      pendingRestart +
-      ' field' +
-      (pendingRestart === 1 ? '' : 's');
-  }
-  if (el('save-state').textContent !== text) {
-    el('save-state').textContent = text;
-  }
-}
-
-function settingsDirty() {
-  return Object.keys(settingsPayload()).length > 0;
-}
-
-async function loadSettings() {
-  setSettingsStatus('Loading…');
-  try {
-    const view = await api('/api/settings');
-    renderSettings(view);
-    if (view.exists) {
-      setSettingsStatus('Saved values come from ' + view.path + '.');
-    } else if (view.path) {
-      setSettingsStatus('Nothing saved yet. Saving writes ' + view.path + '.');
-    } else {
-      setSettingsStatus('No data folder is set, so saved values apply to this run only.');
-    }
-    if (focusAfterSettings) {
-      const target = document.querySelector('#settings-fields [data-key="' + focusAfterSettings + '"]');
-      focusAfterSettings = null;
-      if (target) {
-        target.focus();
-      }
-    }
-  } catch (error) {
-    setSettingsStatus('Could not read the settings: ' + error.message, true);
-  }
-}
-
-async function saveSettings() {
-  const payload = settingsPayload();
-  const keys = Object.keys(payload);
-  if (!keys.length) {
-    return;
-  }
-  const button = el('settings-save');
-  setBusy(button, true, 'Saving…');
-  try {
-    const view = await api('/api/settings', { method: 'POST', body: JSON.stringify({ values: payload }) });
-    pendingRestart += keys.filter((key) => settingsRestartKeys.has(key)).length;
-    renderSettings(view, { reset: true });
-    setSettingsStatus('Saved ' + keys.length + ' field' + (keys.length === 1 ? '' : 's') + ' to ' + (view.path || 'this run') + '.');
-  } catch (error) {
-    setSettingsStatus('Could not save: ' + error.message, true);
-  } finally {
-    setBusy(button, false, '');
-    renderSaveBar();
-  }
-}
-
-function showSection(name, focus) {
+export function showSection(name, focus) {
   const section = SECTIONS.includes(name) ? name : 'playback';
   state.section = section;
-  for (const link of document.querySelectorAll('.set-nav a')) {
-    if (link.dataset.section === section) {
-      link.setAttribute('aria-current', 'page');
-      link.tabIndex = 0;
-    } else {
-      link.removeAttribute('aria-current');
-      link.tabIndex = -1;
-    }
-  }
-  for (const node of document.querySelectorAll('#set-body > section')) {
-    node.hidden = node.dataset.section !== section;
-  }
-  el('set-body').scrollTop = 0;
-  if (location.hash !== '#settings/' + section) {
-    history.replaceState(null, '', '#settings/' + section);
-  }
+  live.settings.section = section;
   if (focus) {
-    el('h-' + section).focus();
+    live.settings.focusHeading += 1;
   }
 }
 
 function renderSettingsChrome() {
-  el('settings-back-label').textContent = state.signedIn ? 'Live' : 'Sign in';
   renderMode();
   renderCameraInfo();
   renderControlAvailability();
@@ -2131,20 +1819,18 @@ export function openSettings(section, options = {}) {
   stopAll();
   showScreen('settings');
   showSection(section || state.section, options.focus);
+  if (location.hash !== '#settings/' + state.section) {
+    history.replaceState(null, '', '#settings/' + state.section);
+  }
   renderPrefsIntoForm();
   renderSettingsChrome();
-  loadSettings();
+  live.settings.load += 1;
   if (!options.focus) {
-    el('settings-back').focus();
+    live.settings.focusBack += 1;
   }
 }
 
-function leaveSettings() {
-  if (settingsDirty()) {
-    el('save-state').textContent = 'Save or discard the ' + Object.keys(settingsPayload()).length + ' changed field(s) first';
-    el('settings-save').focus();
-    return;
-  }
+export function leaveSettings() {
   if (!state.signedIn) {
     showSignin();
     return;
@@ -2157,15 +1843,28 @@ function leaveSettings() {
 }
 
 function renderPrefsIntoForm() {
-  for (const name of ['theme', 'quality', 'lens']) {
-    for (const radio of document.querySelectorAll('input[name="' + name + '"]')) {
-      radio.checked = radio.value === state.prefs[name];
-    }
-  }
-  el('set-osd').checked = state.prefs.osd;
-  el('set-muted').checked = state.prefs.muted;
-  el('set-flip').checked = state.prefs.flip;
+  Object.assign(live.settings.prefs, state.prefs);
   live.quality = state.prefs.quality;
+}
+
+export function setPref(name, value) {
+  if (name === 'quality') {
+    setQuality(value);
+    return;
+  }
+  state.prefs[name] = value;
+  savePrefs();
+  renderPrefsIntoForm();
+  if (name === 'theme') {
+    applyTheme();
+  } else if (name === 'osd') {
+    renderFsLine();
+  } else if (name === 'muted') {
+    state.muted = value;
+    renderMute();
+  } else if (name === 'flip') {
+    layoutLensCrop();
+  }
 }
 
 function setQuality(quality) {
@@ -2183,49 +1882,6 @@ function setQuality(quality) {
   } else {
     requestStream();
   }
-}
-
-async function runChecks() {
-  const button = el('run-checks');
-  setBusy(button, true);
-  const write = (id, text, ok) => {
-    const cell = el(id);
-    cell.textContent = text;
-    cell.dataset.ok = ok === undefined ? '' : String(ok);
-  };
-  for (const id of ['check-health', 'check-account', 'check-probe', 'check-ticket']) {
-    write(id, 'Checking…');
-  }
-  try {
-    const health = await api('/api/health');
-    write('check-health', health.ok ? 'ok · ' + health.service : 'unexpected: ' + JSON.stringify(health), Boolean(health.ok));
-  } catch (error) {
-    write('check-health', error.status + ' ' + error.message, false);
-  }
-  try {
-    const me = await api('/api/me');
-    write('check-account', me.account, true);
-  } catch (error) {
-    write('check-account', error.status + ' ' + error.message, false);
-  }
-  try {
-    const probe = await api('/api/device/rtsp', { method: 'POST' });
-    write('check-probe', 'ok · ' + probe.host + ' · ' + (probe.video_codec || 'codec unknown'), true);
-  } catch (error) {
-    write('check-probe', error.status + ' ' + error.message, false);
-  }
-  const camera = currentCamera();
-  if (!camera) {
-    write('check-ticket', 'no camera open', undefined);
-  } else {
-    try {
-      const ticket = await api('/api/stream?device=' + enc(camera.device.id) + '&channel=' + enc(camera.channel) + '&quality=' + enc(state.prefs.quality));
-      write('check-ticket', ticket.kind + ' · ' + ticket.url, true);
-    } catch (error) {
-      write('check-ticket', error.status + ' ' + error.message, false);
-    }
-  }
-  setBusy(button, false);
 }
 
 function typing(target) {
@@ -2312,16 +1968,6 @@ document.addEventListener('keydown', (event) => {
   }
   if (state.screen === 'watch') {
     onWatchKey(event);
-    return;
-  }
-  if (state.screen === 'settings') {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      saveSettings();
-    } else if (event.key === 'Escape' && !typing(event.target) && !settingsDirty()) {
-      event.preventDefault();
-      leaveSettings();
-    }
   }
 });
 
@@ -2333,72 +1979,18 @@ document.addEventListener('keyup', (event) => {
 
 window.addEventListener('blur', () => stopTalk());
 
-for (const radio of document.querySelectorAll('input[name="mode"]')) {
-  radio.addEventListener('change', () => {
-    if (radio.checked) {
-      setMode(radio.value);
-    }
-  });
-}
-
-el('signout').addEventListener('click', async () => {
+export async function signOut() {
   try {
     await api('/api/logout', { method: 'POST' });
   } catch {}
   state.stage.lastFrameAt = 0;
-  if (settingsView) {
-    renderSettings(settingsView, { reset: true });
-  }
+  live.settings.reset += 1;
   showSignin();
   await loadMode();
-});
+}
 
 el('empty-settings').addEventListener('click', () => openSettings('config', { focus: true }));
 el('open-settings').addEventListener('click', () => openSettings(state.section));
-el('settings-back').addEventListener('click', () => leaveSettings());
-el('settings-save').addEventListener('click', () => saveSettings());
-el('settings-discard').addEventListener('click', () => {
-  if (settingsView) {
-    renderSettings(settingsView, { reset: true });
-  }
-});
-el('settings-fields').addEventListener('input', () => renderSaveBar());
-el('settings-fields').addEventListener('change', () => renderSaveBar());
-el('settings-restart').addEventListener('click', async () => {
-  const button = el('settings-restart');
-  setBusy(button, true, 'Restarting…');
-  try {
-    await api('/api/desktop/restart', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-proview-desktop-token': desktopControl().token,
-      },
-    });
-  } catch (error) {
-    setSettingsStatus('Could not restart: ' + error.message, true);
-    setBusy(button, false, '');
-  }
-});
-
-const navLinks = [...document.querySelectorAll('.set-nav a')];
-for (const link of navLinks) {
-  link.addEventListener('click', (event) => {
-    event.preventDefault();
-    showSection(link.dataset.section, true);
-  });
-  link.addEventListener('keydown', (event) => {
-    const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
-    if (!step) {
-      return;
-    }
-    event.preventDefault();
-    const next = navLinks[(navLinks.indexOf(link) + step + navLinks.length) % navLinks.length];
-    showSection(next.dataset.section, false);
-    next.focus();
-  });
-}
-
 el('refresh').addEventListener('click', () => loadDevices());
 el('banner-action').addEventListener('click', () => {
   if (bannerAction) {
@@ -2407,14 +1999,12 @@ el('banner-action').addEventListener('click', () => {
 });
 el('retry').addEventListener('click', () => requestStream());
 el('check-password').addEventListener('click', () => {
-  focusAfterSettings = (settingsView && settingsView.fields.find((field) => /DEVICE_PASS/i.test(field.key)) || { key: 'PROVIEW_DEVICE_PASS' }).key;
+  live.settings.focusKey = 'PROVIEW_DEVICE_PASS';
   openSettings('config');
 });
 el('switcher').addEventListener('click', () => toggleFloating(el('camera-menu'), el('switcher'), renderCameraMenu));
 el('grid-toggle').addEventListener('click', () => setView(state.view === 'grid' ? 'live' : 'grid'));
 el('keys-close').addEventListener('click', () => closeFloating(false));
-el('light').addEventListener('click', toggleWhiteLight);
-el('run-checks').addEventListener('click', runChecks);
 for (const key of el('pad').querySelectorAll('.pk')) {
   key.addEventListener('click', () => sendControl(key.dataset.act));
 }
@@ -2438,50 +2028,8 @@ Object.assign(live.actions, {
 });
 
 for (const button of document.querySelectorAll('[data-theme-toggle]')) {
-  button.addEventListener('click', () => {
-    state.prefs.theme = resolveTheme() === 'dark' ? 'light' : 'dark';
-    savePrefs();
-    applyTheme();
-  });
+  button.addEventListener('click', toggleTheme);
 }
-
-for (const name of ['theme', 'quality', 'lens']) {
-  for (const radio of document.querySelectorAll('input[name="' + name + '"]')) {
-    radio.addEventListener('change', () => {
-      if (!radio.checked) {
-        return;
-      }
-      if (name === 'quality') {
-        setQuality(radio.value);
-        return;
-      }
-      state.prefs[name] = radio.value;
-      savePrefs();
-      if (name === 'theme') {
-        applyTheme();
-      }
-    });
-  }
-}
-
-el('set-osd').addEventListener('change', () => {
-  state.prefs.osd = el('set-osd').checked;
-  savePrefs();
-  renderFsLine();
-});
-
-el('set-muted').addEventListener('change', () => {
-  state.prefs.muted = el('set-muted').checked;
-  savePrefs();
-  state.muted = state.prefs.muted;
-  renderMute();
-});
-
-el('set-flip').addEventListener('change', () => {
-  state.prefs.flip = el('set-flip').checked;
-  savePrefs();
-  layoutLensCrop();
-});
 
 window.addEventListener('hashchange', () => route(location.hash, true));
 
@@ -2552,4 +2100,4 @@ renderControlAvailability();
 tick();
 signedIn();
 
-Object.assign(window, { openSettings, showSection, state, signedIn, loadSettings, setQuality });
+Object.assign(window, { openSettings, showSection, state, signedIn, setQuality });
