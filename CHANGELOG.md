@@ -79,6 +79,15 @@ stability before 1.0.
   filling the window and covering Settings; it closes on Settings and sign-in,
   and signing out clears the typed account password, which stayed in the page
   before; Indonesian placeholder names are English like the rest of the page.
+- Device settings is Vue (ZHA-4212, `src/live/DeviceSettings.vue`): the
+  result of a write (kept, reverted, or a failed revert) stays in the status
+  line after the read-back reload instead of being replaced at once by "Read
+  from the device just now.", so a 409 revert is still on screen; a save button
+  reads "Saving main…" with `aria-busy` and ignores a second press until the
+  read-back is in; every field label is tied to its input; the page reloads
+  whenever it is shown, including through the keyboard and `#settings/device`,
+  and a 401 returns to sign-in. Ids, fields, the writes sent and the
+  DNS-only network rule are unchanged.
 - Alarm messages is a Vue sheet (ZHA-4181): the bell counts alarms right after
   sign-in instead of after the first 20 s poll or the first open, opening it
   puts focus on Camera and Escape or Close hands it back to the bell (Escape
@@ -325,7 +334,11 @@ stability before 1.0.
   (`docs/protocol.md` 4C.27). A device the token store does not know now uses the
   token from the account's own device list, and a build with the opening removed
   fails the acceptance run at the live stage while the shipped one passes 300 s
-  with no `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS` set.
+  with no `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS` set. The decoder keeps the
+  native guard instead of a stricter one: a plaintext of 1 to 63 bytes is accepted
+  and no printable filter runs, so a name holding a byte outside the printable
+  range still reaches the camera, and a stored value the decoder cannot open is
+  offered exactly as the store holds it.
 - Recorded playback no longer stops after the primed frames when the device
   pauses mid-frame. `playback::Session::recv` read the header and the body with
   the same two exact reads, and the clip route stops priming on a 3 s read

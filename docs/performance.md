@@ -600,3 +600,21 @@ mutant that shifts the bearing by 3.6 deg fails at 15.9 px. The live overlay pai
 peer: 49 chunks of 640 B in about 2 s (legacy/talk.js: 48), stop message and
 closed socket the same. e2e at this change: 223 passed, 9 skipped (CI run
 40803589907).
+
+### Device settings in Vue (measured 2026-10-29, ZHA-4212)
+
+`src/live/DeviceSettings.vue` replaces `legacy/device-settings.js`. Same method,
+production build (`grep -c 'Vue warn'` = 0 in both bundles), baseline origin/main
+192f434:
+
+| File | main 192f434 | Device settings in Vue | Delta |
+|---|---:|---:|---:|
+| JS | 111,524 B | 112,512 B | +988 B |
+| CSS | 7,738 B | 7,738 B | 0 B |
+
+No new dependency and no new CSS: the encoder fields reuse `.field` instead of the
+legacy nested 200 px label grid, which made `#set-body` scroll sideways at 768 px
+once the forms loaded (650 px in 552 px); `e2e/tests/device-settings.spec.ts`
+checks the loaded page at 320-1920 px. e2e at this change: 232 passed, 9 skipped,
+1 flaky (signin.spec.ts:26, passed on retry), 5.1 min (CI run 40807831475); node
+web tests `device-settings` and `ui` 16/16.
