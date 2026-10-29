@@ -257,10 +257,6 @@ impl TalkLink {
         Ok(())
     }
 
-    pub async fn close(mut self) {
-        let _ = self.stream.shutdown().await;
-    }
-
     fn into_parts(self) -> (OwnedReadHalf, OwnedWriteHalf, u32, u32, Vec<u8>) {
         let (reader, writer) = self.stream.into_split();
         (reader, writer, self.session, self.sequence, self.pending)
