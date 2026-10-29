@@ -142,39 +142,52 @@ pub fn talk_route_with(
     cloud_identity: bool,
 ) -> TalkRoute {
     let blocked = |why: String| TalkRoute { ok: false, why };
-    if cfg.device_pass.trim().is_empty() {
-        return blocked(
-            "two-way audio needs the camera password, which is not set; add it under Settings, Configuration, Local network".to_string(),
-        );
-    }
     let named = device.map(str::trim).filter(|name| !name.is_empty());
     if let Some(name) = named {
         if let Some(refusal) = serial_refusal(serial, name) {
             return blocked(refusal);
         }
     }
+    let token = token.map(str::trim).unwrap_or("");
+    let relay_ready = named.is_some() && !token.is_empty() && cloud_identity;
     if let Some(address) = cfg.device_host.as_deref() {
-        return TalkRoute {
-            ok: true,
-            why: format!("the camera is addressed directly at {address}"),
-        };
+        if !cfg.device_pass.trim().is_empty() {
+            return TalkRoute {
+                ok: true,
+                why: format!("the camera is addressed directly at {address}"),
+            };
+        }
+        if relay_ready {
+            return TalkRoute {
+                ok: true,
+                why: format!(
+                    "{} carries two-way audio over the vendor relay, the same access server the live stream uses",
+                    named.unwrap_or_default()
+                ),
+            };
+        }
+        return blocked(
+            "two-way audio needs the camera user and password for the direct address, which is not set; add them under Settings, Configuration, Local network".to_string(),
+        );
     }
-    let Some(device) = named else {
+    let Some(name) = named else {
         return blocked("no camera was named, so there is no path to open".to_string());
     };
-    if token.map(str::trim).unwrap_or("").is_empty() {
+    if token.is_empty() {
         return blocked(format!(
-            "{device} has no cloud session, so the vendor relay cannot be claimed; sign in through the cloud, or set a direct camera address"
+            "{name} has no cloud session, so the vendor relay cannot be claimed; sign in through the cloud, or set a direct camera address"
         ));
     }
     if !cloud_identity {
         return blocked(format!(
-            "{device} needs the vendor relay, and this build was made without a cloud identity"
+            "{name} needs the vendor relay, and this build was made without a cloud identity"
         ));
     }
     TalkRoute {
         ok: true,
-        why: format!("{device} carries two-way audio over the vendor relay, the same access server the live stream uses"),
+        why: format!(
+            "{name} carries two-way audio over the vendor relay, the same access server the live stream uses"
+        ),
     }
 }
 
@@ -1943,8 +1956,8 @@ mod tests {
     }
 
     #[test]
-    fn talk_needs_the_camera_password_before_any_path() {
-        let mut config = test_config(None, Some("192.168.0.100:34567"));
+    fn a_signed_in_cloud_camera_needs_no_camera_password() {
+        let mut config = test_config(None, None);
         config.device_pass = "  ".to_string();
         let route = talk_route_with(
             &config,
@@ -1953,8 +1966,30 @@ mod tests {
             "serial-one",
             true,
         );
+        assert!(route.ok, "{}", route.why);
+        assert!(route.why.contains("vendor relay"), "{}", route.why);
+        let row = talk_capability_with(
+            &config,
+            Some("token"),
+            Some("serial-one"),
+            "serial-one",
+            true,
+        );
+        assert_eq!(row.state, State::Supported);
+        assert!(!row.evidence.contains("password"), "{}", row.evidence);
+    }
+
+    #[test]
+    fn a_direct_address_without_credentials_needs_the_camera_password() {
+        let mut config = test_config(None, Some("192.168.0.100:34567"));
+        config.device_pass = "  ".to_string();
+        let route = talk_route_with(&config, None, Some("serial-one"), "serial-one", true);
         assert!(!route.ok);
-        assert!(route.why.contains("camera password"), "{}", route.why);
+        assert!(
+            route.why.contains("camera user and password"),
+            "{}",
+            route.why
+        );
         assert!(!route.why.contains("PROVIEW_"), "{}", route.why);
     }
 

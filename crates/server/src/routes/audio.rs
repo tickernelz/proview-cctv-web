@@ -4,6 +4,8 @@ use futures_util::{SinkExt, StreamExt};
 use proview_core::config::Config;
 use proview_core::dvrip::talk::{TalkLink, TalkSession};
 use proview_core::media::audio;
+use proview_core::provider::cloud::CloudProvider;
+use proview_core::provider::{ProviderError, VendorSession};
 use proview_core::session::Store;
 use rocket::http::CookieJar;
 use rocket::State;
@@ -80,80 +82,32 @@ impl TalkFailure {
     }
 }
 
-async fn relay_link(cfg: &Config, token: &str, device: &str) -> Result<TalkLink, TalkFailure> {
-    use proview_core::cloud::envelope::{EnvelopeClient, Identity, MISSING_CLOUD_IDENTITY};
-    use proview_core::cloud::status::{auth_code_of, StatusClient, STATUS_HOST};
-    use proview_core::provider::{p2p, rps};
+async fn relay_link(
+    cfg: &Config,
+    vendor: &VendorSession,
+    device: &str,
+) -> Result<TalkLink, TalkFailure> {
+    let provider = CloudProvider::new(cfg);
+    match provider.open_talk(vendor, device).await {
+        Ok(connection) => Ok(TalkLink::from_connection(connection)),
+        Err(error) => Err(relay_failure(device, error)),
+    }
+}
 
-    let identity = Identity::resolve();
-    if !identity.is_complete() {
-        return Err(TalkFailure::path(MISSING_CLOUD_IDENTITY));
+fn relay_failure(device: &str, error: ProviderError) -> TalkFailure {
+    match error {
+        ProviderError::UnknownDevice(_) => TalkFailure::path(format!(
+            "{device} is not on this account; pick a camera this sign-in owns"
+        )),
+        ProviderError::Misconfigured(message) => TalkFailure::path(message),
+        ProviderError::Upstream(message) if message.contains("no rps id") => TalkFailure::path(
+            format!("{device} carries no relay id in the device list, so the vendor relay cannot be claimed"),
+        ),
+        ProviderError::Upstream(message) => {
+            TalkFailure::device(format!("the vendor relay did not answer: {message}"))
+        }
+        other => TalkFailure::device(format!("the vendor relay did not answer: {other}")),
     }
-    let client = EnvelopeClient::with_base(identity, cfg.cloud_base.clone());
-    let devices = client
-        .device_list(token)
-        .await
-        .map_err(|error| TalkFailure::device(format!("device list failed: {error}")))?;
-    let found = devices
-        .iter()
-        .find(|entry| entry.uuid == device)
-        .ok_or_else(|| {
-            TalkFailure::path(format!(
-                "{device} is not on this account; pick a camera this sign-in owns"
-            ))
-        })?;
-    let serial = found.uuid.clone();
-    let rps_id = found
-        .extra
-        .get("rps")
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string();
-    if rps_id.is_empty() {
-        return Err(TalkFailure::path(format!(
-            "{serial} carries no relay id in the device list, so the vendor relay cannot be claimed"
-        )));
-    }
-    let status = StatusClient::new(STATUS_HOST)
-        .query(&serial, &auth_code_of(found))
-        .await
-        .map_err(|error| TalkFailure::device(format!("device status failed: {error}")))?;
-    if !status.online {
-        return Err(TalkFailure::device(format!(
-            "{serial} is offline in the vendor cloud"
-        )));
-    }
-    let (host, port) = status
-        .access_server()
-        .ok_or_else(|| TalkFailure::device("no status cluster reported an access server"))?;
-    let session = rps::session_id();
-    let client_token = rps::client_token();
-    let body = p2p::agent_request(
-        &rps_id,
-        &client_token,
-        &serial,
-        p2p::AGENT_SERVICE_MEDIA,
-        &session,
-        p2p::AGENT_STEP_MEDIA,
-    );
-    let agent = rps::AccessClient::new()
-        .assign(&host, port, &body)
-        .await
-        .map_err(|error| {
-            TalkFailure::device(format!("the access server refused the relay: {error}"))
-        })?;
-    let frame = p2p::handshake_frame(&rps_id, &client_token, &serial, &session);
-    let tunnel = rps::open(&agent, &frame).await.map_err(|error| {
-        TalkFailure::device(format!("the vendor relay did not accept: {error}"))
-    })?;
-    if !tunnel.reply.accepted() {
-        return Err(TalkFailure::device(format!(
-            "the vendor relay answered {}",
-            tunnel.reply.error_num
-        )));
-    }
-    Ok(TalkLink::from_stream(tunnel.stream))
 }
 
 struct TalkAccount {
@@ -171,24 +125,35 @@ impl TalkAccount {
         }
     }
 
+    fn ready(&self) -> bool {
+        !self.user.trim().is_empty() && !self.pass.trim().is_empty()
+    }
+
     fn refusal(&self, device: &str) -> Option<TalkFailure> {
-        if self.user.trim().is_empty() || self.pass.trim().is_empty() {
-            return Some(TalkFailure::path(format!(
-                "no camera user and password for {}: set them under Settings, Configuration, Local network",
-                device.trim()
-            )));
-        }
         proview_core::device::serial_refusal(&self.serial, device).map(TalkFailure::path)
+    }
+}
+
+async fn direct_link(address: &str, account: &TalkAccount) -> Result<TalkLink, String> {
+    let mut link = match tokio::time::timeout(DIRECT_WAIT, TalkLink::connect(address)).await {
+        Ok(Ok(link)) => link,
+        Ok(Err(error)) => return Err(format!("{address}: {error}")),
+        Err(_) => return Err(format!("{address}: no answer in {DIRECT_WAIT:?}")),
+    };
+    match link.login(&account.user, &account.pass).await {
+        Ok(()) => Ok(link),
+        Err(error) => Err(format!("{address}: {error}")),
     }
 }
 
 async fn open_link(
     cfg: &Config,
-    token: Option<&str>,
+    vendor: &VendorSession,
     device: Option<&str>,
     account: &TalkAccount,
 ) -> Result<(TalkLink, &'static str), TalkFailure> {
-    if let Some(name) = device {
+    let named = device.map(str::trim).filter(|name| !name.is_empty());
+    if let Some(name) = named {
         if let Some(refusal) = account.refusal(name) {
             return Err(refusal);
         }
@@ -197,35 +162,42 @@ async fn open_link(
         .device_host
         .clone()
         .filter(|host| !host.trim().is_empty());
+    let token = vendor.token.as_deref().map(str::trim).unwrap_or("");
+    let mut direct_attempted = false;
     let mut direct_error = None;
-    if let Some(address) = direct {
-        match tokio::time::timeout(DIRECT_WAIT, TalkLink::connect(&address)).await {
-            Ok(Ok(link)) => return Ok((link, "lan")),
-            Ok(Err(error)) => direct_error = Some(format!("{address}: {error}")),
-            Err(_) => direct_error = Some(format!("{address}: no answer in {DIRECT_WAIT:?}")),
+    if let Some(address) = direct.as_deref() {
+        if account.ready() {
+            direct_attempted = true;
+            match direct_link(address, account).await {
+                Ok(link) => return Ok((link, "lan")),
+                Err(error) => direct_error = Some(error),
+            }
+        } else {
+            direct_error = Some(format!(
+                "{address}: no camera user and password; set them under Settings, Configuration, Local network"
+            ));
         }
     }
-    let (relay_reason, relay_scope) = match (device, token) {
-        (None, _) => (
-            "no camera was named in the request".to_string(),
-            "path",
-        ),
-        (Some(device), Some(token)) => match relay_link(cfg, token, device).await {
+    let relay_failure = match named {
+        Some(name) if !token.is_empty() => match relay_link(cfg, vendor, name).await {
             Ok(link) => return Ok((link, "relay")),
-            Err(failure) => (failure.message, failure.scope),
+            Err(failure) => failure,
         },
-        (Some(_), None) => (
-            "this sign-in has no cloud session; sign in through the cloud, or set a direct camera address".to_string(),
-            "path",
+        Some(_) => TalkFailure::path(
+            "this sign-in has no cloud session; sign in through the cloud, or set a direct camera address"
+                .to_string(),
         ),
+        None => TalkFailure::path("no camera was named in the request".to_string()),
     };
-    let tried_direct = direct_error.is_some();
     let direct_reason = match direct_error {
         Some(error) => format!("direct: {error}"),
         None => "direct: no camera address is set".to_string(),
     };
-    let message = format!("no path to the camera ({direct_reason}; vendor relay: {relay_reason})");
-    if relay_scope == "path" && !tried_direct {
+    let message = format!(
+        "no path to the camera ({direct_reason}; vendor relay: {})",
+        relay_failure.message
+    );
+    if relay_failure.scope == "path" && !direct_attempted {
         Err(TalkFailure::path(message))
     } else {
         Err(TalkFailure::device(message))
@@ -243,46 +215,25 @@ async fn ws_talk(
 ) -> Result<ws::Channel<'static>, Failure> {
     let id = session_id(cookies)?;
     let vendor = restore(store, &id)?;
-    let token = vendor.token.clone();
     let config = cfg.inner().clone();
-    let user = config.device_user.clone();
-    let password = config.device_pass.clone();
 
     Ok(ws.channel(move |mut stream| {
         Box::pin(async move {
-            if password.trim().is_empty() {
-                let _ = stream
-                    .send(ws::Message::Text(json_error(
-                        "path",
-                        "the camera password is not set, so the talk login would fail and the device locks the source IP after repeated attempts; set it under Settings, Configuration, Local network",
-                    )))
-                    .await;
-                let _ = stream.send(ws::Message::Close(None)).await;
-                return Ok(());
-            }
             let account = TalkAccount::from_config(&config);
-            let (mut link, path) =
-                match open_link(&config, token.as_deref(), device.as_deref(), &account).await {
+            let (link, path) = match open_link(&config, &vendor, device.as_deref(), &account).await
+            {
                 Ok(pair) => pair,
                 Err(failure) => {
                     let _ = stream
-                        .send(ws::Message::Text(json_error(failure.scope, &failure.message)))
+                        .send(ws::Message::Text(json_error(
+                            failure.scope,
+                            &failure.message,
+                        )))
                         .await;
                     let _ = stream.send(ws::Message::Close(None)).await;
                     return Ok(());
                 }
             };
-            if let Err(error) = link.login(&user, &password).await {
-                let _ = stream
-                    .send(ws::Message::Text(json_error(
-                        "device",
-                        &format!("the camera refused the talk login: {error}"),
-                    )))
-                    .await;
-                link.close().await;
-                let _ = stream.send(ws::Message::Close(None)).await;
-                return Ok(());
-            }
             let mut talk = match TalkSession::open(link, channel).await {
                 Ok(talk) => talk,
                 Err(error) => {
@@ -438,7 +389,11 @@ mod tests {
         device: Option<&str>,
         account: &TalkAccount,
     ) -> TalkFailure {
-        match open_link(cfg, token, device, account).await {
+        let vendor = VendorSession {
+            account: "tester".to_string(),
+            token: token.map(str::to_string),
+        };
+        match open_link(cfg, &vendor, device, account).await {
             Ok(_) => panic!("a path was found"),
             Err(failure) => failure,
         }
@@ -512,15 +467,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_named_camera_needs_a_user_and_password() {
+    async fn a_direct_address_without_credentials_names_the_missing_password() {
         let mut cfg = Config::from_env();
-        cfg.device_host = None;
+        cfg.device_host = Some("127.0.0.1:1".to_string());
         let mut blank = account();
         blank.pass = String::new();
-        let failure = failure_with(&cfg, Some("token"), Some("serial-one"), &blank).await;
+        let failure = failure_with(&cfg, None, Some("serial-one"), &blank).await;
         assert_eq!(failure.scope, "path");
         let text = message(failure);
         assert!(text.contains("no camera user and password"), "{text}");
+        assert!(text.contains("no cloud session"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn the_cloud_path_never_reads_the_camera_password() {
+        let mut cfg = Config::from_env();
+        cfg.device_host = None;
+        cfg.cloud_base = "http://127.0.0.1:1".to_string();
+        let mut blank = account();
+        blank.user = String::new();
+        blank.pass = String::new();
+        let failure = failure_with(&cfg, Some("token"), Some("serial-one"), &blank).await;
+        let text = message(failure);
+        assert!(!text.contains("camera user and password"), "{text}");
+        assert!(text.contains("vendor relay"), "{text}");
     }
 
     #[tokio::test]
