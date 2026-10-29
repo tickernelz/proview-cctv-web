@@ -1296,18 +1296,14 @@ reply keeps the info shape (`AliveInterval`, `ChannelNum`, `DeviceType `, `Extra
 with every field zeroed and no `SessionID`, while a `Ret 100` reply carries
 `"AliveInterval":30,"ChannelNum":1,"DeviceType ":"IPC"`.
 
-#### Where the 16-character value must come from
+#### The 16-character value is the account token, opened (answered in 4C.27)
 
-The remaining server-side path is the message service, not the REST platform:
-`Fun_SysGetDevEncToken` (0xbe8db8) allocates an `XMSG` and pushes **msgid 5094**
-(`0x13e6`) through the data centre's server object, which is the same transport
-the online-status query uses. That is the only call in the library that returns a
-`DevEncToken` without a client-supplied one, so the next measurement is a harness
-run that calls it after a cloud login with a host-side capture, and reads the
-cached value back through `FUN_DevGetLocalEncToken`.
-
-Until that answer exists, the cloud `stream()` path stops at `Ret 137` and the
-LAN-free live row stays `partial` in `docs/parity.md`.
+`FUN_DevGetLocalEncToken` returns the stored token untouched, but the media path does
+not send it untouched: `CDeviceV2::AssemblyGWMMediaControlParam` (0xbb45e8) opens it
+with `DEVAPI::DecLoginToken` (0xbd0858) before it builds the `TOKEN` login. 4C.27
+carries the derivation, the two artifacts it was checked against and the acceptance
+run. The message-service path (`Fun_SysGetDevEncToken`, msgid 5094) is therefore not
+needed for this camera, and the LAN-free live row is no longer `partial`.
 
 ### 4C.24 Media flows through the cloud provider, and the frame id was the gate
 
@@ -1338,20 +1334,16 @@ Sequence that works, in order, on one relay tunnel:
    `StreamType` from the quality, `TransMode TCP`.
 5. Media arrives as msgid 1412 on channel 0 and feeds `media::live::LiveDemux`.
 
-#### The device token the device issues does not work as a TOKEN login
+#### The stored token is opened before it is offered (4C.27)
 
-The registration reply of step 1 is the only place a fresh client can obtain a
-device token, and it is the same 44-character shape as the cloud row of 4C.23. Using
-it for the app's `EncryptType:"TOKEN"` login answers `Ret 137`, measured twice, on
-the same device that answers `Ret 100` to the password login. The 16-character token
-the phone app uses is therefore device-side state that no API in the SDK or the
-account cloud issues; the app received it once, at bind time.
-
-Consequence, stated plainly: for this camera, the account-issued token path cannot
-replace the password login. The provider keeps the registered token in an encrypted
-per-device store (`cloud/device_tokens.rs`: AES-256-GCM, key file 0600, serial bound
-as associated data, `forget` to revoke) and uses it first, but the working session
-comes from the password login the app itself performs at bind.
+The registration reply of step 1 hands the client a 44-character `AdminToken`, and
+the account row of 4C.23 carries the same shape. Sent raw as the `TOKEN` login name
+it answers `Ret 137`; opened the way the app opens it, it answers `Ret 100`. 4C.27
+names the native call and the derivation, and the provider now performs it. The token
+stays in the encrypted per-device store (`cloud/device_tokens.rs`: AES-256-GCM, key
+file 0600, serial bound as associated data, `forget` to revoke) in its 44-character
+form, and a device the store does not know uses the token from the account's own
+device list, so the cloud session no longer needs a device password.
 
 ### 4C.25 The media reaches the browser, and what the acceptance run measures
 
@@ -1420,6 +1412,58 @@ So the per-stream cost sits in the transcoder, not in the relay or the demuxer: 
 server side of a cloud stream is under one CPU second per five minutes, while
 libx264 at veryfast on 2304×2592 holds most of a core for the duration. A viewer
 that asks for `codec=hevc` skips that entirely (section 11).
+
+### 4C.27 The 16-character login name is opened from the account token
+
+The missing step sat in the media path itself, not in a server call.
+`CDeviceV2::AssemblyGWMMediaControlParam` (0xbb45e8) asks
+`CDataCenter::GetDevLoginEncToken` for the stored token, and when that token is not
+empty it passes the device serial and the token to `DEVAPI::DecLoginToken` (0xbd0858)
+before the `TOKEN` login body is built (0xbb46dc). The decoder, read from the
+disassembly:
+
+- copy the first 16 bytes of the serial into a zeroed 64-byte buffer and reverse the
+  byte order (`DEVAPI::StrReverseOrder`, 0xbd0798);
+- `XAES::AES_ECB_Decrypt128_FixedKey_Base64(base64(token), key)` (0xacbd78), with
+  that reversed serial as the AES-128 key;
+- return the plaintext, accepted for lengths 1 to 63.
+
+So the login name is `AES-128-ECB-decrypt(base64(AdminToken), key = reverse(serial[:16]))`.
+
+The two artifacts agree. Opened this way, the account row's 44-character
+`deviceToken.AdminToken` (4C.23) gives a 32-byte plaintext whose first 16 bytes are
+the login name and whose last 16 are `0x10` PKCS#7 padding; those 16 bytes are byte
+for byte the `UserName` of frame 1000 in the phone capture
+(`secrets/phone-login-body.json`), an artifact the derivation never saw. The value is
+not device-side state: it is the account token, opened.
+
+`crates/core/src/dvrip/crypto.rs::login_token` reproduces the decode (base64,
+AES-128-ECB, PKCS#7 unpad, printable guard) and `provider/cloud.rs` offers its result
+as the `TOKEN` login name. The store keeps the 44-character form
+(`cloud/device_tokens.rs` unchanged), and a device the store does not know uses the
+token from the account's own device list, so a fresh install needs no device
+password.
+
+Measured 2026-10-29 on `zha4199/token-login`, camera unreachable on the LAN, with no
+`PROVIEW_DEVICE_USER` or `PROVIEW_DEVICE_PASS` in the server environment
+(`--device-env-file /dev/null`, so the harness sets `PROVIEW_DEVICE_SERIAL` only):
+
+```
+tools/acceptance/live_acceptance.py --mode cloud --duration 300 --device-env-file /dev/null
+verdict: pass · frames: 150 · bytes: 413,139,102 · longest gap: 2.943 s · 300.394 s
+run 89601875b59c-20261029T000544Z
+```
+
+The same source with only the opening removed (the raw 44-character token offered
+instead) stops at `Ret 137`, logged as `account device token ret 137, the device
+refuses it, token dropped; no camera user and password for 7f92970ddf5282743hrc`,
+and the harness fails the run at the live stage after 6.3 s
+(run `89601875b59c-20261029T001337Z`). The opening is what makes the token login
+work, not the absence of a password.
+
+For the cloud path the device password is now optional: absent, live video still
+plays; present, `password_login` stays the fallback for a camera whose token the
+device refuses.
 
 ### 4C.4 What that means for the implementation
 

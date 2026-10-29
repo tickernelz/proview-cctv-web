@@ -270,45 +270,58 @@ impl CloudProvider {
                 }
                 format!("the device refused a token login (ret {ret}), no token is offered")
             }
-            None => match self.tokens.get(&serial) {
-                Some(token) => {
-                    let note = match self.token_login(&mut connection, &token, &control).await {
-                        Ok(100) => {
-                            let note = format!(
-                                "stored device token ret 100, session 0x{:08x}",
-                                connection.session()
-                            );
-                            self.forget_token_refusal(&serial);
-                            return Ok((connection, note));
-                        }
-                        Ok(ret) => {
-                            let _ = self.tokens.forget(&serial);
-                            if self.remember_token_refusal(&serial, ret) {
-                                format!(
-                                    "stored device token ret {ret}, the device refuses it, token dropped"
-                                )
-                            } else {
-                                format!("stored device token ret {ret}, token dropped")
+            None => {
+                let stored = self.tokens.get(&serial);
+                let source = match stored {
+                    Some(_) => "stored device token",
+                    None => "account device token",
+                };
+                match stored.or_else(|| account_device_token(entry)) {
+                    Some(device_token) => {
+                        let offered = crate::dvrip::crypto::login_token(&serial, &device_token)
+                            .unwrap_or_else(|| device_token.clone());
+                        let note = match self.token_login(&mut connection, &offered, &control).await
+                        {
+                            Ok(100) => {
+                                if self.tokens.get(&serial).is_none() {
+                                    let _ = self.tokens.put(&serial, &device_token);
+                                }
+                                self.forget_token_refusal(&serial);
+                                let note = format!(
+                                    "{source} ret 100, session 0x{:08x}",
+                                    connection.session()
+                                );
+                                return Ok((connection, note));
                             }
-                        }
-                        Err(error) => {
-                            let _ = self.tokens.forget(&serial);
-                            format!("stored device token failed: {error}, token dropped")
-                        }
-                    };
-                    let (user, pass) = credential_pair(&credential, &note)?;
-                    drop(connection);
-                    connection = reopen().await.map_err(|error| {
-                        ProviderError::Upstream(format!(
-                            "{note}, the second tunnel failed: {error}"
-                        ))
-                    })?;
-                    return self
-                        .password_login(connection, &serial, &user, &pass, note)
-                        .await;
+                            Ok(ret) => {
+                                let _ = self.tokens.forget(&serial);
+                                if self.remember_token_refusal(&serial, ret) {
+                                    format!(
+                                        "{source} ret {ret}, the device refuses it, token dropped"
+                                    )
+                                } else {
+                                    format!("{source} ret {ret}, token dropped")
+                                }
+                            }
+                            Err(error) => {
+                                let _ = self.tokens.forget(&serial);
+                                format!("{source} failed: {error}, token dropped")
+                            }
+                        };
+                        let (user, pass) = credential_pair(&credential, &note)?;
+                        drop(connection);
+                        connection = reopen().await.map_err(|error| {
+                            ProviderError::Upstream(format!(
+                                "{note}, the second tunnel failed: {error}"
+                            ))
+                        })?;
+                        return self
+                            .password_login(connection, &serial, &user, &pass, note)
+                            .await;
+                    }
+                    None => String::from("no stored device token"),
                 }
-                None => String::from("no stored device token"),
-            },
+            }
         };
         let (user, pass) = credential_pair(&credential, &note)?;
         self.password_login(connection, &serial, &user, &pass, note)
@@ -806,6 +819,17 @@ fn unready_reason(stored_token: bool, credential: &DeviceCredential) -> Option<S
     }
 }
 
+fn account_device_token(entry: &crate::cloud::types::CloudDevice) -> Option<String> {
+    entry
+        .extra
+        .get("deviceToken")
+        .and_then(|token| token.get("AdminToken"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
 fn credential_pair(
     credential: &DeviceCredential,
     note: &str,
@@ -1039,7 +1063,8 @@ impl Provider for CloudProvider {
             )));
         };
         let credential = device_credential_for(device.trim(), &entry);
-        let stored = self.tokens.get(device.trim()).is_some();
+        let stored =
+            self.tokens.get(device.trim()).is_some() || account_device_token(&entry).is_some();
         if let Some(reason) = unready_reason(stored, &credential) {
             return Err(ProviderError::Misconfigured(reason));
         }
@@ -2007,6 +2032,17 @@ mod login_tests {
                 continue;
             }
             if token_channel && request.id == msg::LOGIN {
+                if let Some(plain) = crate::media::dhav::MediaCipher::channel().decrypt_body(&body)
+                {
+                    let plain = crate::media::dhav::trim_nul(&plain);
+                    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(plain) {
+                        if let Some(user) =
+                            value.get("UserName").and_then(serde_json::Value::as_str)
+                        {
+                            note(&events, format!("conn{index}:token_user={user}"));
+                        }
+                    }
+                }
                 if token_ret == 100 {
                     let payload = json_reply(serde_json::json!({
                         "Ret": 100,
@@ -2165,6 +2201,107 @@ mod login_tests {
             .events()
             .iter()
             .any(|event| event.contains("password_login")));
+        drop(connection);
+    }
+
+    fn sealed_login_token(serial: &str, token: &str) -> String {
+        use aes::cipher::{BlockEncrypt, KeyInit};
+        use aes::{Aes128, Block};
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&serial.as_bytes()[..16]);
+        key.reverse();
+        let cipher = Aes128::new_from_slice(&key).expect("aes-128 key");
+        let mut buffer = token.as_bytes().to_vec();
+        let pad = 16 - buffer.len() % 16;
+        buffer.extend(std::iter::repeat_n(pad as u8, pad));
+        for block in buffer.chunks_mut(16) {
+            cipher.encrypt_block(Block::from_mut_slice(block));
+        }
+        STANDARD.encode(buffer)
+    }
+
+    #[tokio::test]
+    async fn the_account_device_token_is_opened_before_the_token_login() {
+        let peer = LoginPeer::start(100, Duration::from_millis(10)).await;
+        let dir = TokenDir::new("account-token");
+        let provider = provider_with_store(&dir);
+        let serial = "0123456789abcdefghij";
+        let token = "F0+7ghjHWzNsktOE";
+        let sealed = sealed_login_token(serial, token);
+        let mut device = entry(serial);
+        device.extra.insert(
+            "deviceToken".to_string(),
+            serde_json::json!({ "AdminToken": sealed }),
+        );
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "the token tunnel must be kept".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(first, &device, device_credential(), reopen)
+            .await
+            .expect("the account token opens the session");
+        assert!(note.contains("account device token ret 100"), "{note}");
+        assert_eq!(connection.session(), 0x3333_3333);
+        let events = peer.events();
+        assert!(
+            events.contains(&format!("conn1:token_user={token}")),
+            "{events:?}"
+        );
+        assert_eq!(
+            provider.tokens.get(serial).as_deref(),
+            Some(sealed.as_str()),
+            "the raw account token is kept for the next session"
+        );
+        assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
+        drop(connection);
+    }
+
+    #[tokio::test]
+    async fn a_stored_device_token_is_opened_before_the_token_login() {
+        let peer = LoginPeer::start(100, Duration::from_millis(10)).await;
+        let dir = TokenDir::new("opened-stored");
+        let provider = provider_with_store(&dir);
+        let serial = "0123456789abcdefghij";
+        let token = "F0+7ghjHWzNsktOE";
+        let sealed = sealed_login_token(serial, token);
+        provider.tokens.put(serial, &sealed).expect("stored token");
+        let device = entry(serial);
+        let reopened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let reopen = {
+            let reopened = reopened.clone();
+            move || {
+                reopened.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async move {
+                    Err::<crate::dvrip::client::Connection, ProviderError>(ProviderError::Upstream(
+                        "the token tunnel must be kept".to_string(),
+                    ))
+                }
+            }
+        };
+        let first = connect(&peer.address).await;
+        let (connection, note) = provider
+            .device_login(first, &device, device_credential(), reopen)
+            .await
+            .expect("the stored token opens the session");
+        assert!(note.contains("stored device token ret 100"), "{note}");
+        let events = peer.events();
+        assert!(
+            events.contains(&format!("conn1:token_user={token}")),
+            "{events:?}"
+        );
+        assert_eq!(reopened.load(std::sync::atomic::Ordering::Relaxed), 0);
         drop(connection);
     }
 
