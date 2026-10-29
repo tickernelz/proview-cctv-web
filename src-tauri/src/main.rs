@@ -5,6 +5,7 @@ mod desktop_state;
 mod keychain;
 mod notify;
 mod shell;
+mod status;
 mod tray;
 mod watcher;
 
@@ -280,6 +281,7 @@ fn main() {
                     if settings.close_to_tray && shell.tray_ready() {
                         api.prevent_close();
                         let _ = window.hide();
+                        shell.refresh_status(window.app_handle(), settings.alarm_notify);
                         if !tray_pause(window.app_handle(), &shell, settings.alarm_notify) {
                             tray::hint_once(window.app_handle(), &shell);
                         }
@@ -291,6 +293,7 @@ fn main() {
                         && window.is_minimized().unwrap_or(false) =>
                 {
                     let _ = window.hide();
+                    shell.refresh_status(window.app_handle(), settings.alarm_notify);
                     tray_pause(window.app_handle(), &shell, settings.alarm_notify);
                 }
                 _ => {}
