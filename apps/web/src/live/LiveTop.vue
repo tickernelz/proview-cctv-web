@@ -116,7 +116,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside, true)
   <header class="topbar">
     <DropdownMenu v-model:open="top.menuOpen" :modal="false">
       <DropdownMenuTrigger id="switcher" :class="['switcher', { static: !top.several }]" data-testid="camera-switcher" :disabled="!top.several">
-        <span id="switcher-dot" :class="['dot', { off: top.dotOff }]" role="img" :aria-label="top.dotLabel" />
+        <span v-if="top.dotShown" id="switcher-dot" :class="['dot', { off: top.dotOff }]" role="img" :aria-label="top.dotLabel" />
         <span id="switcher-name" class="name" data-testid="camera-name">{{ top.name }}</span>
         <span id="switcher-meta" class="meta">{{ top.meta }}</span>
         <Icon name="chevron-down" small class="chev" />

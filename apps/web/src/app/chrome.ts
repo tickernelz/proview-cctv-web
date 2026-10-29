@@ -37,6 +37,7 @@ export function renderSwitcher() {
   const top = live.top
   top.several = state.cameras.length > 1
   top.name = camera ? camera.name : 'No camera'
+  top.dotShown = Boolean(camera)
   top.dotOff = Boolean(camera) && status.known && !status.online
   top.dotLabel = statusLine(camera ? camera.device : null)
   top.meta = camera ? ['channel ' + camera.channel, lensMeta()].filter(Boolean).join(' · ') : 'nothing selected'

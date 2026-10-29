@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import AddCamera from './AddCamera.vue'
 import { gotoPreset, sendControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
 import { openSettings } from '../app/shell'
@@ -76,6 +77,7 @@ onBeforeUnmount(() => {
         <button id="refresh" class="btn btn-line" data-testid="devices-refresh" type="button" @click="loadDevices()"><Icon name="refresh" small />Refresh</button>
         <button id="empty-settings" class="btn btn-text" type="button" @click="openSettings('config', { focus: true })">Open Settings</button>
       </div>
+      <AddCamera v-if="live.panes.empty" :key="live.signin.generation" />
     </div>
   </div>
   <section id="live" class="live" aria-label="Live" :hidden="!live.panes.live">

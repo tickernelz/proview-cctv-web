@@ -130,6 +130,7 @@ export async function setMode(mode: string) {
 }
 
 export async function signOut() {
+  await api('/api/account/signout', { method: 'POST' }).catch(() => null)
   await api('/api/logout', { method: 'POST' }).catch(() => null)
   state.stage.lastFrameAt = 0
   live.settings.reset += 1

@@ -479,6 +479,25 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
+### Add-a-camera panel in Vue, src/legacy removed (measured 2026-10-29, ZHA-4181)
+
+Steps 5 and 6 of 6. `src/live/AddCamera.vue` replaces `legacy/account.js`
+(163 lines, an IIFE that injected the panel with `innerHTML` and a
+MutationObserver on `#empty`); `src/legacy/` no longer exists. Baseline
+3a27e01 (PR #96 head), production Vite build:
+
+| Measure | 3a27e01 | add-a-camera in Vue |
+|---|---:|---:|
+| JS gzip | 121.35 kB | 121.62 kB |
+| CSS gzip | 8.19 kB | 8.29 kB |
+| HTML gzip | 2.42 kB | 2.45 kB |
+
+The panel renders only while the empty state shows, so the Live screen with
+cameras is unchanged. No timing was taken: the owner moved heavy runs off
+this box on 2026-10-29 (load 14 to 17 on 16 cores), and the panel is not on
+the path to the first frame. Contrast 78/78; `add-camera.spec.ts` fails 8/8
+on 3a27e01 and passes 8/8 here; the e2e suite runs in CI.
+
 ### Lens, pan-and-tilt and device controls in TypeScript (measured 2026-10-29, ZHA-4181)
 
 Step 4 of 6. `src/app/lens.ts` and `src/app/controls.ts` take the last of

@@ -56,6 +56,7 @@ export const live = reactive({
   top: {
     name: 'No camera',
     meta: 'nothing selected',
+    dotShown: false,
     dotOff: false,
     dotLabel: 'cloud status not read',
     several: false,
