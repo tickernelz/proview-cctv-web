@@ -484,7 +484,7 @@ e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 Step 2 of 6. `src/live/LiveTop.vue` with `src/app/chrome.ts` and
 `src/app/caption.ts` replace the top bar, camera menu, banner and keyboard
 list markup and the floating-menu, banner, caption and flag code in
-`legacy/app.js` (1,733 to 1,362 lines). Same method, baseline origin/main
+`legacy/app.js` (1,733 to 1,364 lines). Same method, baseline origin/main
 c82f7ac, Chromium 1440×900, `many` fixture, median of 10 reloads (box load
 2 to 5):
 
