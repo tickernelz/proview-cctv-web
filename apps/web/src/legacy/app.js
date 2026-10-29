@@ -847,9 +847,6 @@ function tick() {
     live.record.elapsed = elapsed(state.recordStart);
   }
   renderFlag();
-  for (const tile of document.querySelectorAll('.tile[data-state="playing"] .tile-meta .right')) {
-    tile.textContent = now;
-  }
 }
 
 window.setInterval(tick, 1000);
@@ -1839,7 +1836,7 @@ function toggleRecord() {
 
 export const talk = { active: false, stream: null, context: null, frame: 0 };
 
-async function toggleFullscreen() {
+export async function toggleFullscreen() {
   const target = state.view === 'grid' ? el('tiles') : el('well');
   if (document.fullscreenElement) {
     await document.exitFullscreen().catch(() => {});
@@ -1851,19 +1848,20 @@ async function toggleFullscreen() {
 }
 
 function startGrid() {
-  ProviewGrid.open();
+  live.grid.generation += 1;
+  live.grid.open = true;
 }
 
 function stopGrid() {
-  ProviewGrid.close();
+  live.grid.open = false;
 }
 
 function renderTileSelection() {
-  ProviewGrid.syncSelection();
+  live.grid.selected = state.selectedId + ':' + state.channel;
 }
 
 function moveTileFocus(key) {
-  ProviewGrid.moveFocus(key);
+  live.grid.moveFocus(key);
 }
 
 function setView(name, options = {}) {
@@ -2549,7 +2547,6 @@ el('check-password').addEventListener('click', () => {
 el('switcher').addEventListener('click', () => toggleFloating(el('camera-menu'), el('switcher'), renderCameraMenu));
 el('grid-toggle').addEventListener('click', () => setView(state.view === 'grid' ? 'live' : 'grid'));
 el('keys-close').addEventListener('click', () => closeFloating(false));
-el('grid-fullscreen').addEventListener('click', toggleFullscreen);
 el('light').addEventListener('click', toggleWhiteLight);
 el('run-checks').addEventListener('click', runChecks);
 for (const key of el('pad').querySelectorAll('.pk')) {

@@ -183,6 +183,19 @@ press does nothing). An empty day names the camera and the day; a failed load is
 a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
 that ended goes back to sign-in.
 
+**Every camera (grid).** Vue (`src/live/GridView.vue`, one `GridTile.vue` per
+camera, mounted into `#grid`). Columns: Auto / 1 / 2 / 3 as a labelled segment;
+below 641 px wide every layout is one column (a saved 3-column layout no longer
+squeezes tiles to 111 px on a phone), and rows size to the picture so the
+caption of one tile never lands on the next. Each tile is a 16:9 well with the
+name, state word, an outlined HD/SD toggle and the clock (tabular, hidden while
+there is nothing to time). Connecting says so inside the picture; a failed or
+offline tile centres its reason, and a failed one offers Try again as a button.
+A layout the server refuses to save is a `--bad` alert with the warning icon.
+Arrow keys move focus between tiles and the focused tile shows the 2 px ring.
+The count line names cameras and states only; the layout lives on the segment.
+One shared 1 s clock drives every tile instead of a DOM query per second.
+
 **Playback.** A full screen (Vue, `src/live/PlaybackScreen.vue`) over Live,
 opened by Playback or `#playback` (`live.screen` in the store; leaving it sets
 `#live` again). It opens on the camera on screen with focus on the title. While

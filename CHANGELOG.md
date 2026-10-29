@@ -39,6 +39,14 @@ stability before 1.0.
   the camera and day when a day is empty, shows a failed load in red with the
   warning icon instead of grey text, and returns to sign-in when the session
   ended. The title reads "Cloud recordings".
+- Every camera (the grid) is Vue (ZHA-4181): on a phone the tiles no longer
+  overlap (a tile's HD/SD and caption sat on the next tile's picture) and a
+  saved 2- or 3-column layout falls back to one column below 641 px; a tile
+  that is connecting says so, a failed tile centres its reason with a Try
+  again button instead of a left-aligned underlined link, an offline tile says
+  "offline" once instead of twice; HD/SD is an outlined button; a layout the
+  server refuses to save is a red alert with the warning icon; the count line
+  drops the repeated "layout auto".
 - Playback is a Vue screen (ZHA-4181): it opens on the camera on screen
   instead of the first in the list, focus moves to it and Escape returns to
   Live (Escape did nothing, and number keys switched the camera behind it, also
