@@ -70,7 +70,6 @@ function clock(seconds: number) {
   return String(Math.floor(whole / 60)).padStart(2, '0') + ':' + String(whole % 60).padStart(2, '0')
 }
 
-
 function say(text: string, bad = false) {
   status.text = text ? text.charAt(0).toUpperCase() + text.slice(1) : ''
   status.bad = bad
@@ -286,7 +285,7 @@ function close(returnFocus = true) {
   ticket += 1
   if (list.phase === 'loading') list.phase = 'idle'
   live.screen = ''
-  if (location.hash === '#playback') history.replaceState(null, '', '#live')
+  if (location.hash === '#playback') history.replaceState(null, '', '#' + (page.view === 'grid' ? 'grid' : 'live'))
   if (returnFocus) document.getElementById('pb-open')?.focus()
 }
 
