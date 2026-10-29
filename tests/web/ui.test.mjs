@@ -469,10 +469,10 @@ test('the playback overlay draws the whole day and plays the file under the poin
 
     const before = await page.evaluate("document.getElementById('pb-day').value");
     await page.evaluate("document.querySelector('#pb button[aria-label=\"Next day\"]').click()");
-    await page.wait("document.getElementById('pb-day').value === '2026-10-25'", 'the next day');
-    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the next day rows');
+    const loaded = "document.querySelector('[data-testid=pb-refresh]').getAttribute('aria-busy') !== 'true' && document.querySelectorAll('.pb-row').length === 557";
+    await page.wait("document.getElementById('pb-day').value === '2026-10-25' && " + loaded, 'the next day rows');
     await page.evaluate("document.querySelector('#pb button[aria-label=\"Previous day\"]').click()");
-    await page.wait("document.getElementById('pb-day').value === '2026-10-24'", 'the day before');
+    await page.wait("document.getElementById('pb-day').value === '2026-10-24' && " + loaded, 'the rows of the day before');
 
     await page.evaluate("(() => { const row = Array.from(document.querySelectorAll('.pb-row')).find((node) => node.textContent.indexOf('00:00:00') === 0); row.click(); })()");
     await page.wait("/00:00:00 → /.test(document.getElementById('pb-playing').textContent)", 'the first clip');
