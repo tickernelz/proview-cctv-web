@@ -83,6 +83,25 @@ pub struct TalkRoute {
 
 pub const LOCAL_DEVICE: &str = "local";
 
+pub fn serial_refusal(serial: &str, device: &str) -> Option<String> {
+    let name = device.trim();
+    if name.is_empty() || name == LOCAL_DEVICE {
+        return None;
+    }
+    let bound = serial.trim();
+    if bound.is_empty() {
+        return Some(format!(
+            "no camera serial is configured, so the camera credentials are not sent to {name}; add the serial under Settings, Configuration, Local network"
+        ));
+    }
+    if bound != name {
+        return Some(format!(
+            "camera credentials belong to {bound}, not to {name}"
+        ));
+    }
+    None
+}
+
 pub fn reported_talk_capability(
     talk: &crate::dvrip::control::Capability,
 ) -> Option<LensCapability> {
@@ -97,12 +116,18 @@ pub fn reported_talk_capability(
     ))
 }
 
+fn configured_serial() -> String {
+    std::env::var("PROVIEW_DEVICE_SERIAL")
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
 pub fn talk_route(cfg: &Config, token: Option<&str>, device: Option<&str>) -> TalkRoute {
     talk_route_with(
         cfg,
         token,
         device,
-        &crate::provider::cloud::configured_serial(),
+        &configured_serial(),
         crate::cloud::envelope::Identity::resolve().is_complete(),
     )
 }
@@ -121,19 +146,9 @@ pub fn talk_route_with(
         );
     }
     let named = device.map(str::trim).filter(|name| !name.is_empty());
-    let bound = serial.trim();
     if let Some(name) = named {
-        if name != LOCAL_DEVICE {
-            if bound.is_empty() {
-                return blocked(format!(
-                    "no camera serial is configured, so the camera credentials are not sent to {name}; add the serial under Settings, Configuration, Local network"
-                ));
-            }
-            if bound != name {
-                return blocked(format!(
-                    "camera credentials belong to {bound}, not to {name}"
-                ));
-            }
+        if let Some(refusal) = serial_refusal(serial, name) {
+            return blocked(refusal);
         }
     }
     if let Some(address) = cfg.device_host.as_deref() {
@@ -166,7 +181,7 @@ pub fn talk_capability(cfg: &Config, token: Option<&str>, device: Option<&str>) 
         cfg,
         token,
         device,
-        &crate::provider::cloud::configured_serial(),
+        &configured_serial(),
         crate::cloud::envelope::Identity::resolve().is_complete(),
     )
 }

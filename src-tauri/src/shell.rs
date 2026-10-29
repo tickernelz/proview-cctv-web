@@ -15,6 +15,8 @@ pub struct DesktopShell {
     pub alarm: Mutex<Run>,
     pub state_path: Option<PathBuf>,
     tray_ready: AtomicBool,
+    line: crate::status::Tracker,
+    pushed: Mutex<String>,
 }
 
 impl DesktopShell {
@@ -30,6 +32,8 @@ impl DesktopShell {
             alarm: Mutex::new(Run::new(now_seconds())),
             state_path,
             tray_ready: AtomicBool::new(false),
+            line: crate::status::Tracker::default(),
+            pushed: Mutex::new(String::new()),
         }
     }
 
@@ -57,6 +61,26 @@ impl DesktopShell {
             Ok(mut alarm) => alarm.tray_pause_notice(signed_in),
             Err(_) => false,
         }
+    }
+
+    pub fn tray_status(&self, notify_on: bool) -> String {
+        self.line.text(
+            notify_on,
+            self.sessions.latest_remaining(),
+            chrono::Local::now(),
+        )
+    }
+
+    pub fn refresh_status(&self, app: &tauri::AppHandle, notify_on: bool) {
+        let text = self.tray_status(notify_on);
+        let Ok(mut known) = self.pushed.lock() else {
+            return;
+        };
+        if *known == text {
+            return;
+        }
+        *known = text.clone();
+        crate::tray::set_status(app, &text);
     }
 
     pub fn save(&self) {
@@ -99,6 +123,41 @@ mod tests {
         );
         shell.restart_alarm_run(0);
         assert!(shell.take_tray_pause_notice(), "a new run may speak again");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_sign_out_moves_the_tray_line_to_the_hour_it_happened() {
+        let (shell, dir) = shell("status");
+        shell.sessions.put(
+            "test".to_string(),
+            VendorSession {
+                account: "gate".to_string(),
+                token: None,
+            },
+            std::time::Duration::from_secs(600),
+        );
+        let live = shell.tray_status(true);
+        assert!(
+            live.starts_with("Alarm notifications on · session ends "),
+            "{live}"
+        );
+        let before = chrono::Local::now().format("%H:%M").to_string();
+        shell.sessions.remove("test");
+        let lapsed = shell.tray_status(true);
+        let after = chrono::Local::now().format("%H:%M").to_string();
+        assert!(
+            lapsed == format!("Alarm notifications paused · session ended {before}")
+                || lapsed == format!("Alarm notifications paused · session ended {after}"),
+            "a sign-out ends the session now, not at the hour it would have expired: {lapsed}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_switched_off_feature_says_so_in_the_tray() {
+        let (shell, dir) = shell("status-off");
+        assert_eq!(shell.tray_status(false), "Alarm notifications off");
         let _ = std::fs::remove_dir_all(dir);
     }
 

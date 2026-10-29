@@ -165,22 +165,22 @@ struct TalkAccount {
 impl TalkAccount {
     fn from_config(cfg: &Config) -> Self {
         Self {
-            serial: proview_core::provider::cloud::configured_serial(),
+            serial: std::env::var("PROVIEW_DEVICE_SERIAL")
+                .map(|value| value.trim().to_string())
+                .unwrap_or_default(),
             user: cfg.device_user.clone(),
             pass: cfg.device_pass.clone(),
         }
     }
 
     fn refusal(&self, device: &str) -> Option<TalkFailure> {
-        use proview_core::provider::cloud::{credential_decision, DeviceCredential};
-
-        if device.trim().is_empty() || device.trim() == proview_core::device::LOCAL_DEVICE {
-            return None;
+        if self.user.trim().is_empty() || self.pass.trim().is_empty() {
+            return Some(TalkFailure::path(format!(
+                "no camera user and password for {}: set them under Settings, Configuration, Local network",
+                device.trim()
+            )));
         }
-        match credential_decision(&self.serial, device.trim(), &self.user, &self.pass) {
-            DeviceCredential::Allowed { .. } => None,
-            DeviceCredential::Refused(reason) => Some(TalkFailure::path(reason)),
-        }
+        proview_core::device::serial_refusal(&self.serial, device).map(TalkFailure::path)
     }
 }
 
@@ -504,7 +504,20 @@ mod tests {
         assert_eq!(failure.scope, "path");
         let text = message(failure);
         assert!(text.contains("no camera serial is configured"), "{text}");
-        assert!(text.contains("Settings"), "{text}");
+        assert!(text.contains("serial-one"), "{text}");
+        assert!(!text.contains("PROVIEW_"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_named_camera_needs_a_user_and_password() {
+        let mut cfg = Config::from_env();
+        cfg.device_host = None;
+        let mut blank = account();
+        blank.pass = String::new();
+        let failure = failure_with(&cfg, Some("token"), Some("serial-one"), &blank).await;
+        assert_eq!(failure.scope, "path");
+        let text = message(failure);
+        assert!(text.contains("no camera user and password"), "{text}");
     }
 
     #[tokio::test]

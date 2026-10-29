@@ -338,6 +338,11 @@ pub fn parse_tracks(sdp: &str) -> Vec<Track> {
                         "sprop-vps" => track.vps = decode_parameter(value),
                         "sprop-sps" => track.sps = decode_parameter(value),
                         "sprop-pps" => track.pps = decode_parameter(value),
+                        "sprop-parameter-sets" => {
+                            let mut sets = value.split(',').filter_map(decode_parameter);
+                            track.sps = sets.next();
+                            track.pps = sets.next();
+                        }
                         _ => {}
                     }
                 }
@@ -718,6 +723,24 @@ mod tests {
         assert_eq!(info.audio_codec.as_deref(), Some("PCMA"));
         assert_eq!(info.framerate, Some(25));
         assert_eq!(info.control.as_deref(), Some("trackID=3"));
+    }
+
+    const H264_SDP: &str = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=RTSP Server\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;profile-level-id=42e01e;sprop-parameter-sets=Z0IAH5WoFAFuQwA=,aM48gA==\r\na=control:trackID=1\r\n";
+
+    #[test]
+    fn h264_parameter_sets_come_from_sprop_parameter_sets() {
+        let tracks = crate::rtsp::parse_tracks(H264_SDP);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].codec, "H264");
+        assert!(tracks[0].vps.is_none());
+        assert_eq!(
+            crate::media::h264::nal_type(&tracks[0].sps.clone().unwrap()),
+            Some(7)
+        );
+        assert_eq!(
+            crate::media::h264::nal_type(&tracks[0].pps.clone().unwrap()),
+            Some(8)
+        );
     }
 
     const DEVICE_SDP: &str = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=RTSP Server\r\na=control:*\r\nm=video 0 RTP/AVP 98\r\na=rtpmap:98 H265/90000 \r\na=fmtp:98 profile-id=010101;sprop-pps=RAHA88DhRSQ=;sprop-sps=QgEBAWAAAAMAAAMAAAMAAAMAP6ABICACiH+curwS4IA=;sprop-vps=QAEMAf//AWAAAAMAAAMAAAMAAAMAPywMAAAPoAAAu4FA;\r\na=framerate:25\r\na=control:trackID=3\r\nm=audio 0 RTP/AVP 8\r\na=rtpmap:8 PCMA/8000\r\na=control:trackID=4\r\n";

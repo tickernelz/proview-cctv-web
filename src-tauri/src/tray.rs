@@ -45,12 +45,26 @@ pub fn install(app: &AppHandle) -> Result<(), String> {
 }
 
 fn build(app: &AppHandle) -> tauri::Result<()> {
+    let status = MenuItem::with_id(
+        app,
+        "status",
+        "Alarm notifications off",
+        false,
+        None::<&str>,
+    )?;
     let open = MenuItem::with_id(app, "open", "Open", true, None::<&str>)?;
     let live = MenuItem::with_id(app, "live", "Live", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&open, &live, &PredefinedMenuItem::separator(app)?, &quit],
+        &[
+            &status,
+            &PredefinedMenuItem::separator(app)?,
+            &open,
+            &live,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
     )?;
     let mut builder = TrayIconBuilder::with_id("main")
         .tooltip("PROVIEW CCTV")
@@ -79,7 +93,24 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon);
     }
     builder.build(app)?;
+    app.manage(StatusLine(status.clone()));
     Ok(())
+}
+
+pub struct StatusLine(MenuItem<tauri::Wry>);
+
+pub fn set_status(app: &AppHandle, text: &str) {
+    if let Some(line) = app.try_state::<StatusLine>() {
+        if let Err(error) = line.0.set_text(text) {
+            tracing::warn!(%error, "the tray status line did not take the text");
+        }
+    }
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+    if let Err(error) = tray.set_tooltip(Some(format!("PROVIEW CCTV — {text}"))) {
+        tracing::warn!(%error, "the tray tooltip did not take the text");
+    }
 }
 
 pub fn focus_main(app: &AppHandle) {

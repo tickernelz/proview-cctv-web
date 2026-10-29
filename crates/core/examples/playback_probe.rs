@@ -1,9 +1,10 @@
 use std::time::{Duration, Instant};
 
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
-use proview_core::cloud::status::{auth_code_of, StatusClient};
-use proview_core::dvrip::playback::{shift, FrameRate, MediaReader, Session};
-use proview_core::provider::{p2p, rps};
+use proview_core::config::Config;
+use proview_core::dvrip::playback::{shift, FrameRate, MediaReader};
+use proview_core::provider::cloud::CloudProvider;
+use proview_core::provider::VendorSession;
 
 fn env(key: &str) -> String {
     std::env::var(key).unwrap_or_default().trim().to_string()
@@ -14,8 +15,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let account = env("PROVIEW_EMAIL");
     let password = env("PROVIEW_PASSWORD");
     let serial = env("PROVIEW_DEVICE_SERIAL");
-    let device_user = env("PROVIEW_DEVICE_USER");
-    let device_pass = env("PROVIEW_DEVICE_PASS");
     let begin = env("PROVIEW_BEGIN");
     let end = env("PROVIEW_END");
     let dump = env("PROVIEW_DUMP");
@@ -41,69 +40,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = EnvelopeClient::new(identity);
     let started = Instant::now();
     let tokens = client.login_envelope(&account, &password).await?;
-    let devices = client.device_list(&tokens.access).await?;
-    let device = devices
-        .iter()
-        .find(|device| device.uuid == serial)
-        .ok_or("the serial is not on this account")?;
-    let rps_id = device
-        .extra
-        .get("rps")
-        .and_then(|value| value.as_str())
-        .unwrap_or("")
-        .to_string();
-    eprintln!(
-        "cloud    {:.2}s name={} rps={rps_id}",
-        started.elapsed().as_secs_f64(),
-        device.display_name()
-    );
+    eprintln!("cloud    {:.2}s", started.elapsed().as_secs_f64());
+    let vendor = VendorSession {
+        account,
+        token: Some(tokens.access),
+    };
 
+    let provider = CloudProvider::new(&Config::from_env());
     let started = Instant::now();
-    let status = StatusClient::new("pub-status.secu100.net")
-        .query(&serial, &auth_code_of(device))
-        .await?;
-    let (access_host, access_port) = status
-        .access_server()
-        .ok_or("no status cluster reported an access server")?;
+    let (mut connection, note) = provider.open_playback(&vendor, &serial).await?;
     eprintln!(
-        "status   {:.2}s online={} access={access_host}:{access_port}",
+        "login    {:.2}s session=0x{:08x} {note}",
         started.elapsed().as_secs_f64(),
-        status.online
-    );
-
-    let session = rps::session_id();
-    let token = rps::client_token();
-    let body = p2p::agent_request(
-        &rps_id,
-        &token,
-        &serial,
-        p2p::AGENT_SERVICE_MEDIA,
-        &session,
-        p2p::AGENT_STEP_MEDIA,
-    );
-    let started = Instant::now();
-    let agent = rps::AccessClient::new()
-        .assign(&access_host, access_port, &body)
-        .await?;
-    let frame = p2p::handshake_frame(&rps_id, &token, &serial, &session);
-    let tunnel = rps::open(&agent, &frame).await?;
-    eprintln!(
-        "tunnel   {:.2}s error={} dest={} mtu={} accepted={}",
-        started.elapsed().as_secs_f64(),
-        tunnel.reply.error_num,
-        tunnel.reply.dest_ip,
-        tunnel.reply.mtu,
-        tunnel.reply.accepted()
-    );
-    let mut connection = Session::open(tunnel.stream);
-    let started = Instant::now();
-    let login = connection.login(&device_user, &device_pass).await?;
-    eprintln!(
-        "login    {:.2}s session={} type={:?} channels={:?}",
-        started.elapsed().as_secs_f64(),
-        login.session,
-        login.device_type,
-        login.channels
+        connection.session()
     );
 
     let started = Instant::now();

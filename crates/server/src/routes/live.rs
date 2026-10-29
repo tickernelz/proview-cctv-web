@@ -246,15 +246,14 @@ struct Wire {
 struct Entry {
     device: CloudDevice,
     rps: String,
-    device_token: String,
 }
 
 struct Walk<'a> {
     cfg: &'a Config,
+    cloud: &'a CloudProvider,
     session: &'a VendorSession,
     device: &'a str,
     channel: u32,
-    high: bool,
     status_host: String,
     started: Instant,
 }
@@ -262,17 +261,17 @@ struct Walk<'a> {
 impl<'a> Walk<'a> {
     fn new(
         cfg: &'a Config,
+        cloud: &'a CloudProvider,
         session: &'a VendorSession,
         device: &'a str,
         channel: u32,
-        high: bool,
     ) -> Self {
         Self {
             cfg,
+            cloud,
             session,
             device,
             channel,
-            high,
             status_host: STATUS_HOST.to_string(),
             started: Instant::now(),
         }
@@ -445,14 +444,6 @@ impl<'a> Walk<'a> {
                 "the device list carries no rps id, so the relay cannot be asked".to_string(),
             );
         }
-        let device_token = found
-            .extra
-            .get("deviceToken")
-            .and_then(|value| value.get("AdminToken"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
         let detail = format!(
             "{} devices listed, {} carries rps {}",
             devices.len(),
@@ -463,7 +454,6 @@ impl<'a> Walk<'a> {
             Entry {
                 device: found.clone(),
                 rps,
-                device_token,
             },
             detail,
         ))
@@ -536,28 +526,12 @@ impl<'a> Walk<'a> {
         entry: &Entry,
         tunnel: Tunnel,
     ) -> Result<(Connection, String), String> {
-        let mut connection = tunnel.into_connection();
-        let detail = if entry.device_token.is_empty() {
-            let login = connection
-                .login(&self.cfg.device_user, &self.cfg.device_pass)
-                .await
-                .map_err(|error| format!("the device login was refused: {error}"))?;
-            format!("password login answered with session {}", login.session)
-        } else {
-            let reply = connection
-                .login_token(&entry.device_token, "")
-                .await
-                .map_err(|error| format!("the token login was refused: {error}"))?;
-            format!(
-                "token login answered with ret {}",
-                reply
-                    .get("Ret")
-                    .map(|value| value.to_string())
-                    .unwrap_or_default()
-            )
-        };
-        let _ = self.high;
-        Ok((connection, detail))
+        let connection = tunnel.into_connection();
+        let session_key = rps::session_key();
+        self.cloud
+            .log_in(connection, &entry.device, &session_key)
+            .await
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -569,16 +543,17 @@ fn worth_walking(error: &ProviderError) -> bool {
             | ProviderError::UnknownDevice(_)
             | ProviderError::NotImplemented(_)
             | ProviderError::Misconfigured(_)
+            | ProviderError::LoginRefused(_)
     )
 }
 
 async fn diagnose(
     cfg: &Config,
+    cloud: &CloudProvider,
     session: &str,
     vendor: &VendorSession,
     device: &str,
     channel: u32,
-    high: bool,
 ) -> Attempt {
     let gate = ledger().gate(device);
     let _held = gate.lock().await;
@@ -586,7 +561,7 @@ async fn diagnose(
         ledger().record(session, previous.clone());
         return previous;
     }
-    let attempt = Walk::new(cfg, vendor, device, channel, high).run().await;
+    let attempt = Walk::new(cfg, cloud, vendor, device, channel).run().await;
     ledger().record(session, attempt.clone());
     attempt
 }
@@ -653,7 +628,7 @@ pub async fn stream(
         && router.source() == ProviderSource::Cloud
         && worth_walking(&error)
     {
-        Some(diagnose(cfg, &id, &vendor, &device, channel, high).await)
+        Some(diagnose(cfg, cloud.inner().as_ref(), &id, &vendor, &device, channel).await)
     } else {
         None
     };
@@ -917,7 +892,16 @@ mod tests {
             let cfg = cfg.clone();
             let session = session.clone();
             handles.push(tokio::spawn(async move {
-                diagnose(&cfg, "parallel-session", &session, "parallel-cam", 4, true).await
+                let cloud = CloudProvider::new(&cfg);
+                diagnose(
+                    &cfg,
+                    &cloud,
+                    "parallel-session",
+                    &session,
+                    "parallel-cam",
+                    4,
+                )
+                .await
             }));
         }
         let mut stages = Vec::new();
@@ -959,7 +943,10 @@ mod tests {
             account: "rps@example.invalid".to_string(),
             token: Some("token".to_string()),
         };
-        let attempt = Walk::new(&cfg, &session, "no-rps-cam", 1, true).run().await;
+        let cloud = CloudProvider::new(&cfg);
+        let attempt = Walk::new(&cfg, &cloud, &session, "no-rps-cam", 1)
+            .run()
+            .await;
         assert_eq!(attempt.stage, Some("device_list"));
         assert!(attempt.detail.contains("no rps id"), "{}", attempt.detail);
         assert_eq!(attempt.stages.len(), 2);
@@ -995,7 +982,8 @@ mod tests {
             let cfg = cfg.clone();
             let session = session.clone();
             handles.push(tokio::spawn(async move {
-                diagnose(&cfg, "grid-session", &session, "grid-cam", channel, true).await
+                let cloud = CloudProvider::new(&cfg);
+                diagnose(&cfg, &cloud, "grid-session", &session, "grid-cam", channel).await
             }));
         }
         let mut channels = Vec::new();
@@ -1032,7 +1020,8 @@ mod tests {
             account: "walk@example.invalid".to_string(),
             token: Some("token".to_string()),
         };
-        let attempt = Walk::new(&cfg, &session, "fixture-dev-0001", 1, true)
+        let cloud = CloudProvider::new(&cfg);
+        let attempt = Walk::new(&cfg, &cloud, &session, "fixture-dev-0001", 1)
             .run()
             .await;
         assert_eq!(attempt.stage, Some("device_list"));
@@ -1061,7 +1050,8 @@ mod tests {
             account: "walk@example.invalid".to_string(),
             token: None,
         };
-        let attempt = Walk::new(&cfg, &session, "fixture-dev-0001", 1, true)
+        let cloud = CloudProvider::new(&cfg);
+        let attempt = Walk::new(&cfg, &cloud, &session, "fixture-dev-0001", 1)
             .run()
             .await;
         assert_eq!(attempt.stage, Some("cloud_login"));

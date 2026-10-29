@@ -96,7 +96,7 @@ pub fn build_with_state_and_accounts(
     )
 }
 
-fn build_with_control(
+pub(crate) fn build_with_control(
     figment: Figment,
     config: Config,
     modes: ModeStore,

@@ -5,6 +5,62 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Fixed
+
+- Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
+  every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
+  only its own window.
+- H.264 cameras no longer start ffmpeg for the copy remux. The live path
+  depacketizes the RTP stream itself (single NAL, STAP-A and FU-A) and muxes
+  fMP4 in process, so ffmpeg runs only when a stream must be transcoded, such as
+  HEVC turned into H.264 for a browser without HEVC support.
+- The hub now replays the fragments since the last keyframe instead of a single
+  fragment, and transcode fragments carry up to 10 access units with their real
+  keyframe flag. A viewer that joins late receives the whole current GOP, and one
+  that falls behind resumes on the next keyframe-start fragment with no gap.
+
+## 0.3.7 — 2026-10-29
+
+### Security
+
+- The settings route answers only the machine it serves, and only a page it served
+  (ZHA-4132). `GET` and `POST /api/settings` carry the camera user and password, the
+  cloud address and the cookie secret, and answered any request that reached the port,
+  so a name that resolved to this machine through DNS rebinding, or a request from the
+  network, could read and rewrite them. The desktop build now answers only the
+  authority its shell bound (`127.0.0.1:<port>`) and only to a request holding a live
+  sign-in or the per-run page token the shell writes into the page; anything else is
+  `403` for another `Host` and `401` without a credential. The standalone server answers
+  only a request that arrived from this machine (a loopback TCP peer; over a direct
+  connection a client on the network cannot forge it, though a forwarder on this
+  machine gives every client it carries that peer) on a loopback `Host`; every other
+  peer, `Host`, or an `Origin` that is not this server's own, is `403`. The sign-in screen keeps its
+  settings on this machine, so a wrong camera address can still be fixed before
+  signing in.
+- AP-mode provisioning is pinned to the camera's own network (ZHA-4026). The route has
+  read no network target from the body since PR #20; it dials two constants, and those
+  two are now held to an allowlist by a test — private (`10/8`, `172.16/12`,
+  `192.168/16`), link-local or limited broadcast, never a public, loopback,
+  unspecified or multicast address — so a later edit that moves either constant out of
+  the camera's network fails the build. The TCP login uses `admin` with only the
+  password typed in the form, never `PROVIEW_DEVICE_USER` / `PROVIEW_DEVICE_PASS`,
+  which stay with the host the app was configured for.
+
+### Changed
+
+- The tray says why the alarms are quiet (ZHA-4154). Its first line now reads
+  `Alarm notifications on · session ends 21:14` while the shared session is live and
+  `Alarm notifications paused · session ended 21:14` once the session has gone, in
+  local time, so the hour is visible without opening the window — and an explicit sign
+  out records the moment it happened rather than the hour the session would have
+  expired. Off reads
+  `Alarm notifications off` and a run that never had a session says it is waiting for
+  one. The pause notification still posts once per loss, and the session lifetime
+  itself is unchanged: the store stays the only source of truth and no vendor token
+  is kept anywhere else.
+
 ## 0.3.6 — 2026-10-29
 
 ### Changed
