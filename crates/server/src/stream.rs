@@ -176,6 +176,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                 }
             }
             let mut waiting_keyframe = replay.is_empty();
+            audio = audio.resubscribe();
             let mut sound = false;
             loop {
                 tokio::select! {

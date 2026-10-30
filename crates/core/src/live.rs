@@ -370,7 +370,7 @@ impl LiveHub {
             .audio_packets
             .fetch_add(1, Ordering::Relaxed);
         if let Ok(mut meta) = channel.meta.lock() {
-            if meta.audio_codec.as_deref() != Some(audio.codec) {
+            if meta.audio_codec.is_none() {
                 meta.audio_codec = Some(audio.codec.to_string());
                 meta.audio_clock = Some(audio.rate);
             }
@@ -546,6 +546,27 @@ mod tests {
         let snapshot = &hub.snapshots()[0];
         assert_eq!(snapshot.audio_packets, 40);
         assert_eq!(snapshot.packets, 0);
+        hub.release(&stream);
+    }
+
+    #[tokio::test]
+    async fn a_resubscribed_viewer_skips_the_audio_queued_while_it_waited() {
+        let hub = LiveHub::new(8);
+        let stream = key(LiveMode::Transcode);
+        let subscription = hub.subscribe(stream.clone());
+        let record = |frame| LiveAudio {
+            codec: "alaw",
+            rate: 8000,
+            frame,
+            bytes: vec![0xd5; 320],
+        };
+        for frame in 0..30 {
+            hub.publish_audio(&stream, record(frame));
+        }
+        let mut audio = subscription.audio.resubscribe();
+        assert!(audio.try_recv().is_err(), "nothing stale is delivered");
+        hub.publish_audio(&stream, record(30));
+        assert_eq!(audio.recv().await.expect("fresh").frame, 30);
         hub.release(&stream);
     }
 
