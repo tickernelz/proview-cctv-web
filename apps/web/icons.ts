@@ -62,7 +62,6 @@ export const ICONS: Record<string, string> = {
   motion: 'person-standing',
   human: 'scan-face',
   siren: 'siren',
-  trash: 'trash-2',
   eye: 'eye',
   'eye-off': 'eye-off',
   lock: 'lock',
