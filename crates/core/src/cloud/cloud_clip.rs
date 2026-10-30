@@ -9,6 +9,8 @@ use super::css::{CssClient, SignRequest, SignedFile, API_VERSION, HLS_REQUEST, V
 
 pub const WINDOW_ENV: &str = "PROVIEW_CLOUD_CLIP_WINDOW_MS";
 pub const DEFAULT_WINDOW: Duration = Duration::from_millis(7_000);
+pub const TOTAL_ENV: &str = "PROVIEW_CLOUD_CLIP_TOTAL_MS";
+pub const DEFAULT_TOTAL: Duration = Duration::from_secs(120);
 pub const SIGN_BATCH: usize = 32;
 pub const MAX_SEGMENTS: usize = 2_048;
 pub const MAX_CLIP_BYTES: usize = 512 * 1024 * 1024;
@@ -21,6 +23,30 @@ pub fn window() -> Duration {
         .filter(|value| *value >= 50)
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_WINDOW)
+}
+
+pub fn total() -> Duration {
+    std::env::var(TOTAL_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value >= 50)
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_TOTAL)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub window: Duration,
+    pub total: Duration,
+}
+
+impl Limits {
+    pub fn from_env() -> Self {
+        Self {
+            window: window(),
+            total: total(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -369,6 +395,13 @@ impl std::fmt::Display for Stage {
 pub enum ClipError {
     #[error("the cloud clip {stage} stage did not answer within {millis} ms")]
     Timeout { stage: Stage, millis: u128 },
+    #[error("the cloud clip took longer than {millis} ms in total; it was at the {stage} stage, {done} of {segments} segments fetched")]
+    Overall {
+        stage: Stage,
+        millis: u128,
+        done: usize,
+        segments: usize,
+    },
     #[error("the cloud clip {stage} stage failed: {error}")]
     Cloud { stage: Stage, error: CloudError },
     #[error("{0}")]
@@ -377,42 +410,83 @@ pub enum ClipError {
     TooLarge,
 }
 
-async fn staged<T>(
-    stage: Stage,
+struct Budget {
     window: Duration,
-    work: impl Future<Output = Result<T, CloudError>>,
-) -> Result<T, ClipError> {
-    match tokio::time::timeout(window, work).await {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(error)) => Err(ClipError::Cloud { stage, error }),
-        Err(_) => Err(ClipError::Timeout {
+    total: Duration,
+    deadline: tokio::time::Instant,
+    done: usize,
+    segments: usize,
+}
+
+impl Budget {
+    fn new(limits: Limits) -> Self {
+        Self {
+            window: limits.window,
+            total: limits.total,
+            deadline: tokio::time::Instant::now() + limits.total,
+            done: 0,
+            segments: 0,
+        }
+    }
+
+    fn overall(&self, stage: Stage) -> ClipError {
+        ClipError::Overall {
             stage,
-            millis: window.as_millis(),
-        }),
+            millis: self.total.as_millis(),
+            done: self.done,
+            segments: self.segments,
+        }
+    }
+
+    async fn staged<T>(
+        &self,
+        stage: Stage,
+        work: impl Future<Output = Result<T, CloudError>>,
+    ) -> Result<T, ClipError> {
+        let left = self
+            .deadline
+            .saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(self.overall(stage));
+        }
+        let limit = left.min(self.window);
+        match tokio::time::timeout(limit, work).await {
+            Ok(Ok(value)) => Ok(value),
+            Ok(Err(error)) => Err(ClipError::Cloud { stage, error }),
+            Err(_) if left <= self.window => Err(self.overall(stage)),
+            Err(_) => Err(ClipError::Timeout {
+                stage,
+                millis: self.window.as_millis(),
+            }),
+        }
     }
 }
 
 pub async fn fetch_clip(
     css: &CssClient,
     request: &SignRequest,
-    window: Duration,
+    limits: Limits,
 ) -> Result<Vec<u8>, ClipError> {
-    let index = staged(
-        Stage::Sign,
-        window,
-        css.sign_objects(
-            request,
-            VIDEO_OBJECT_TYPE,
-            std::slice::from_ref(&request.object),
-        ),
-    )
-    .await?
-    .into_iter()
-    .next()
-    .ok_or_else(|| ClipError::Playlist("the clip index was not signed".to_string()))?;
-    let playlist = staged(Stage::Playlist, window, css.fetch_object(&index)).await?;
+    let mut budget = Budget::new(limits);
+    let index = budget
+        .staged(
+            Stage::Sign,
+            css.sign_objects(
+                request,
+                VIDEO_OBJECT_TYPE,
+                std::slice::from_ref(&request.object),
+            ),
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| ClipError::Playlist("the clip index was not signed".to_string()))?;
+    let playlist = budget
+        .staged(Stage::Playlist, css.fetch_object(&index))
+        .await?;
     let segments = parse_playlist(&String::from_utf8_lossy(&playlist), &request.object)
         .map_err(ClipError::Playlist)?;
+    budget.segments = segments.len();
     let objects: Vec<String> = segments
         .iter()
         .filter_map(|segment| match segment {
@@ -422,12 +496,12 @@ pub async fn fetch_clip(
         .collect();
     let mut signed: Vec<(String, SignedFile)> = Vec::with_capacity(objects.len());
     for batch in objects.chunks(SIGN_BATCH) {
-        let files = staged(
-            Stage::Sign,
-            window,
-            css.sign_objects(request, VIDEO_OBJECT_TYPE, batch),
-        )
-        .await?;
+        let files = budget
+            .staged(
+                Stage::Sign,
+                css.sign_objects(request, VIDEO_OBJECT_TYPE, batch),
+            )
+            .await?;
         signed.extend(pair_signed(batch, files));
     }
     let mut clip = Vec::new();
@@ -440,7 +514,9 @@ pub async fn fetch_clip(
                 .map(|(_, file)| file.clone())
                 .ok_or_else(|| ClipError::Playlist(format!("segment {name} was not signed")))?,
         };
-        let bytes = staged(Stage::Segment, window, css.fetch_object(&file)).await?;
+        let bytes = budget
+            .staged(Stage::Segment, css.fetch_object(&file))
+            .await?;
         if bytes.first() != Some(&TS_SYNC) {
             return Err(ClipError::Cloud {
                 stage: Stage::Segment,
@@ -451,6 +527,7 @@ pub async fn fetch_clip(
             return Err(ClipError::TooLarge);
         }
         clip.extend_from_slice(&bytes);
+        budget.done += 1;
     }
     Ok(clip)
 }
@@ -657,6 +734,149 @@ mod tests {
         assert!(file.authorization.is_empty());
     }
 
+    fn slow_cloud(segments: usize, pause: Duration) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                std::thread::spawn(move || {
+                    let mut buffer = Vec::new();
+                    let mut chunk = [0u8; 8192];
+                    loop {
+                        let read = stream.read(&mut chunk).unwrap_or(0);
+                        if read == 0 {
+                            return;
+                        }
+                        buffer.extend_from_slice(&chunk[..read]);
+                        let text = String::from_utf8_lossy(&buffer).to_string();
+                        let Some(split) = text.find("\r\n\r\n") else {
+                            continue;
+                        };
+                        let length = text[..split]
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if buffer.len() < split + 4 + length {
+                            continue;
+                        }
+                        let path = text.split(' ').nth(1).unwrap_or("/").to_string();
+                        let (kind, body): (&str, Vec<u8>) = if text.starts_with("POST") {
+                            let request: Value =
+                                serde_json::from_str(&text[split + 4..split + 4 + length])
+                                    .unwrap_or_default();
+                            let info: Vec<Value> = request["CssCenter"]["Body"]["ObjInfo"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default()
+                                .iter()
+                                .map(|entry| {
+                                    let name = entry["ObjName"].as_str().unwrap_or_default();
+                                    json!({"Schema":"http","Host":format!("127.0.0.1:{port}"),"URL":format!("/{name}"),"ReqHeader":{"Date":"d","Authorization":"a"}})
+                                })
+                                .collect();
+                            (
+                                "application/json",
+                                json!({"CssCenter":{"Header":{"ErrorNum":"200","MessageType":"MSG_DOWNLOAD_SIGN_RSP"},"Body":{"Method":"GET","ObjInfo":info}}})
+                                    .to_string()
+                                    .into_bytes(),
+                            )
+                        } else if path.ends_with(".m3u8") {
+                            let lines: String = (0..segments)
+                                .map(|index| format!("#EXTINF:2.0,\ns{index}.ts\n"))
+                                .collect();
+                            (
+                                "application/vnd.apple.mpegurl",
+                                format!(
+                                    "#EXTM3U\n#EXT-X-TARGETDURATION:2\n{lines}#EXT-X-ENDLIST\n"
+                                )
+                                .into_bytes(),
+                            )
+                        } else {
+                            std::thread::sleep(pause);
+                            ("video/mp2t", vec![TS_SYNC; 188])
+                        };
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.write_all(&body);
+                        return;
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    fn slow_request() -> SignRequest {
+        SignRequest {
+            serial: "SN0001".into(),
+            object: "SN0001/day/index.m3u8".into(),
+            bucket: "OSS_v".into(),
+            ..SignRequest::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cloud_that_answers_each_call_inside_the_window_still_meets_the_total_deadline() {
+        let port = slow_cloud(40, Duration::from_millis(120));
+        let css = CssClient::new(format!("127.0.0.1:{port}"));
+        let started = std::time::Instant::now();
+        let error = fetch_clip(
+            &css,
+            &slow_request(),
+            Limits {
+                window: Duration::from_millis(400),
+                total: Duration::from_millis(900),
+            },
+        )
+        .await
+        .unwrap_err();
+        let elapsed = started.elapsed();
+        match &error {
+            ClipError::Overall {
+                stage,
+                millis,
+                done,
+                segments,
+            } => {
+                assert_eq!(*stage, Stage::Segment);
+                assert_eq!(*millis, 900);
+                assert_eq!(*segments, 40);
+                assert!(*done > 0 && *done < 40, "{done}");
+            }
+            other => panic!("expected the total deadline, got {other}"),
+        }
+        assert!(elapsed >= Duration::from_millis(850), "{elapsed:?}");
+        assert!(elapsed < Duration::from_millis(1600), "{elapsed:?}");
+        assert!(error.to_string().contains("segment stage"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_same_slow_cloud_finishes_when_the_total_allows_it() {
+        let port = slow_cloud(3, Duration::from_millis(120));
+        let css = CssClient::new(format!("127.0.0.1:{port}"));
+        let clip = fetch_clip(
+            &css,
+            &slow_request(),
+            Limits {
+                window: Duration::from_millis(400),
+                total: Duration::from_secs(10),
+            },
+        )
+        .await
+        .expect("clip");
+        assert_eq!(clip.len(), 3 * 188);
+    }
+
     #[tokio::test]
     async fn a_silent_sign_centre_is_a_sign_timeout() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -674,9 +894,16 @@ mod tests {
             ..SignRequest::default()
         };
         let started = std::time::Instant::now();
-        let error = fetch_clip(&css, &request, Duration::from_millis(300))
-            .await
-            .unwrap_err();
+        let error = fetch_clip(
+            &css,
+            &request,
+            Limits {
+                window: Duration::from_millis(300),
+                total: Duration::from_secs(30),
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(
             matches!(
                 error,

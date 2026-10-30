@@ -214,3 +214,31 @@ test('Devices, Cloud and Alarms share one corner and replace each other', async 
   await expect(page.getByTestId('alarm-center')).toBeVisible()
   await expect(sheet).toBeHidden()
 })
+
+test('transferring a camera has its own field and asks before ownership moves', async ({ page }) => {
+  const calls = await fakeCloud(page)
+  await signIn(page, 'one')
+  await playing(page)
+  const sheet = await openSheet(page)
+  await sheet.getByRole('tab', { name: 'Sharing' }).click()
+  await page.locator('#device-admin-permit-to').fill('friend@example.invalid')
+  await expect(page.locator('#device-admin-accept')).toHaveValue('')
+  await expect(sheet.getByTestId('transfer-ask')).toBeDisabled()
+  await expect(sheet.getByTestId('transfer-reason')).toHaveText('Type the account that will own this camera')
+  await expect(sheet.getByText('Transfer to account', { exact: true })).toBeVisible()
+  await page.locator('#device-admin-accept').fill('heir@example.invalid')
+  await expect(page.locator('#device-admin-permit-to')).toHaveValue('friend@example.invalid')
+  await sheet.getByTestId('transfer-ask').click()
+  await expect(sheet.getByTestId('transfer-confirm-panel')).toContainText('heir@example.invalid')
+  expect(calls.filter((call) => call.path === '/api/cloud/device/share')).toEqual([])
+  await sheet.getByTestId('transfer-cancel').click()
+  await expect(sheet.getByTestId('transfer-confirm')).toHaveCount(0)
+  expect(calls.filter((call) => call.path === '/api/cloud/device/share')).toEqual([])
+  await sheet.getByTestId('transfer-ask').click()
+  await sheet.getByTestId('transfer-confirm').click()
+  await expect(page.getByTestId('device-admin-status')).toContainText('invitation')
+  expect(calls.filter((call) => call.path === '/api/cloud/device/share')).toEqual([
+    { path: '/api/cloud/device/share', body: { uuids: ['7f92970ddf5282743hrc'], account: 'heir@example.invalid' } },
+  ])
+})
+

@@ -24,6 +24,7 @@ fn prepare_env() {
         std::env::set_var("PROVIEW_APP_UUID", UUID);
         std::env::set_var("PROVIEW_APP_KEY", APP_KEY);
         std::env::set_var("PROVIEW_APP_SECRET", APP_SECRET);
+        std::env::set_var("PROVIEW_DEVICE_SERIAL", CONFIGURED);
     });
 }
 
@@ -537,6 +538,90 @@ fn percent(text: &str) -> String {
 }
 
 const SHAREABLE: &str = "SN00000001";
+const CONFIGURED: &str = "SNCONFIGURED01";
+const DEVICE_PASSWORD: &str = "device-password";
+
+fn powers_plain(form: &str) -> String {
+    let powers: Value = serde_json::from_str(&field(form, "powers")).expect("powers json");
+    let blob = powers["devInfo"].as_str().expect("devInfo");
+    proview_core::cloud::bind::decode_qr_blob(blob).expect("decodes")
+}
+
+async fn permitted_share(uuid: &str, tag: &str) -> (Calls, Value) {
+    let (cloud, calls) = cloud_stub(|method, _| match method {
+        "loginExist" => login_reply(),
+        _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+    });
+    let running = start(&data_dir(tag), &cloud).await;
+    let mut browser = Browser::new();
+    assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+    let (status, body) = browser
+        .post(
+            &running.base,
+            "/api/cloud/device/share/permitted",
+            json!({ "uuid": uuid, "acceptId": "wanted-id", "permissions": ["DP_PTZ"] }),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    running.shutdown.notify();
+    (calls, body)
+}
+
+async fn qr_share(uuid: &str, tag: &str) -> String {
+    let (cloud, calls) = cloud_stub(|method, _| match method {
+        "loginExist" => login_reply(),
+        "appInfoSave" => {
+            json!({ "code": 2000, "msg": "SUCCESS", "data": { "key": "key-1", "expireTime": 1 } })
+        }
+        _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+    });
+    let running = start(&data_dir(tag), &cloud).await;
+    let mut browser = Browser::new();
+    assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+    let (status, body) = browser
+        .post(
+            &running.base,
+            "/api/cloud/device/share/qr",
+            json!({ "uuid": uuid, "permissions": ["DP_PTZ"] }),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+    running.shutdown.notify();
+    let saved = forms(&calls, "appInfoSave");
+    assert_eq!(saved.len(), 1);
+    assert!(!saved[0].contains(DEVICE_PASSWORD), "{}", saved[0]);
+    proview_core::cloud::bind::decode_qr_blob(&field(&saved[0], "info")).expect("blob")
+}
+
+#[test]
+fn another_cameras_share_never_carries_the_configured_camera_password() {
+    block_on(async {
+        let (calls, _) = permitted_share(SHAREABLE, "other-cam").await;
+        let sent = forms(&calls, "mdshareadd");
+        assert_eq!(sent.len(), 1);
+        assert!(!sent[0].contains(DEVICE_PASSWORD), "{}", sent[0]);
+        let plain = powers_plain(&sent[0]);
+        assert!(!plain.contains(DEVICE_PASSWORD), "{plain}");
+        let parts: Vec<&str> = plain.split(',').collect();
+        assert_eq!(parts[0], SHAREABLE);
+        assert_eq!(parts[2], "");
+        let qr = qr_share(SHAREABLE, "other-qr").await;
+        assert!(!qr.contains(DEVICE_PASSWORD), "{qr}");
+        let info: Value = serde_json::from_str(&qr).expect("info json");
+        assert_eq!(info["pwd"], "");
+        assert_eq!(info["devId"], SHAREABLE);
+    });
+}
+
+#[test]
+fn the_configured_camera_shares_its_own_password_whatever_the_letter_case() {
+    block_on(async {
+        let lower = CONFIGURED.to_lowercase();
+        let (calls, _) = permitted_share(&lower, "own-cam").await;
+        let plain = powers_plain(&forms(&calls, "mdshareadd")[0]);
+        assert_eq!(plain.split(',').nth(2), Some(DEVICE_PASSWORD), "{plain}");
+    });
+}
 
 #[test]
 fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_rights() {
@@ -574,7 +659,10 @@ fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_righ
         let parts: Vec<&str> = plain.split(',').collect();
         assert_eq!(parts[0], SHAREABLE);
         assert_eq!(parts[1], "", "the native encoder blanks the admin user");
-        assert_eq!(parts[2], "device-password");
+        assert_eq!(
+            parts[2], "",
+            "another camera never gets the configured password"
+        );
         assert_eq!(parts[3], "0");
         assert!(parts[4].parse::<i64>().expect("time") > 1_700_000_000);
         running.shutdown.notify();

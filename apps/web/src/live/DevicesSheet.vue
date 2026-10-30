@@ -46,7 +46,8 @@ const rows: (HTMLButtonElement | null)[] = []
 const list = reactive({ phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error', devices: [] as Device[], groups: [] as string[], error: '' })
 const chosen = ref('')
 const tab = ref('name')
-const form = reactive({ name: '', group: '', favourite: false, shareTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+const form = reactive({ name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+const transfer = reactive({ confirming: false })
 const action = reactive({ busy: '' as Action | '', message: '', kind: '' as '' | 'ok' | 'bad' })
 const permissions = ref<Permission[]>(FALLBACK_PERMISSIONS)
 const granted = reactive(new Set<string>(FALLBACK_PERMISSIONS.filter((item) => item.default).map((item) => item.id)))
@@ -198,10 +199,19 @@ const save = () =>
     return sentence(favourite?.message || group?.message || 'saved on this server')
   })
 
+const transferReason = computed(() => (!form.transferTo.trim() ? 'Type the account that will own this camera' : ''))
+
+function askTransfer() {
+  if (transferReason.value) return
+  transfer.confirming = true
+}
+
 const share = () =>
   run('share', async (uuid) => {
-    const target = form.shareTo.trim()
+    const target = form.transferTo.trim()
     if (!target) throw new Error('the receiving account is empty')
+    if (!transfer.confirming) throw new Error('confirm the transfer first')
+    transfer.confirming = false
     const body = target.includes('@') ? { uuids: [uuid], account: target } : { uuids: [uuid], acceptId: target }
     const reply = await post('/api/cloud/device/share', body)
     const data = reply?.data
@@ -335,7 +345,8 @@ const makeQr = () =>
 const label = (name: Action, idle: string) => (action.busy === name ? BUSY[name] : idle)
 
 function forgetForm() {
-  Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+  Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+  transfer.confirming = false
   Object.assign(action, { busy: '', message: '', kind: '' })
   Object.assign(list, { phase: 'idle', devices: [], groups: [], error: '' })
   Object.assign(shares, { mine: [], received: [], loaded: false, qr: null })
@@ -491,12 +502,18 @@ onMounted(() => {
           <section v-if="device" class="devices-group">
             <h3>Transfer this camera</h3>
             <label class="field">
-              <span class="lab">Share to account</span>
-              <input id="device-admin-accept" v-model="form.shareTo" type="text" placeholder="the other account email or its account id">
-              <span class="hint">An email resolves to its account id first.</span>
+              <span class="lab">Transfer to account</span>
+              <input id="device-admin-accept" v-model="form.transferTo" type="text" placeholder="the account that will own this camera" @input="transfer.confirming = false">
+              <span class="hint">Ownership moves to that account once it accepts; this account loses the camera. An email resolves to its account id first.</span>
             </label>
-            <div class="sheet-actions">
-              <button class="btn btn-fill" type="button" :aria-busy="action.busy === 'share'" @click="share">{{ label('share', 'Send the invitation') }}</button>
+            <div v-if="!transfer.confirming" class="sheet-actions">
+              <button class="btn btn-line danger" type="button" data-testid="transfer-ask" :disabled="Boolean(transferReason)" @click="askTransfer">Transfer ownership…</button>
+              <span v-if="transferReason" class="hint" data-testid="transfer-reason">{{ transferReason }}</span>
+            </div>
+            <div v-else class="sheet-actions" role="alertdialog" aria-labelledby="transfer-ask-text" data-testid="transfer-confirm-panel">
+              <span id="transfer-ask-text" class="hint">Give {{ device.nickname }} to {{ form.transferTo.trim() }}? This account stops owning it when they accept.</span>
+              <button class="btn btn-fill" type="button" data-testid="transfer-confirm" :aria-busy="action.busy === 'share'" @click="share">{{ label('share', 'Yes, transfer ownership') }}</button>
+              <button class="btn-text" type="button" data-testid="transfer-cancel" @click="transfer.confirming = false">Keep it</button>
             </div>
             <label class="field"><span class="lab">Invitation key</span><input id="device-admin-key" v-model="form.key" type="text" placeholder="transKey from the invitation"></label>
             <div class="sheet-actions">

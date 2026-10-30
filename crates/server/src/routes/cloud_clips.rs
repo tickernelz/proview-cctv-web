@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use proview_core::cloud::cloud_clip::{
     decide, fetch_clip, hls_body, owned_object, plan_from_caps, plan_from_css, window, ClipError,
-    Evidence, Plan, PlanState,
+    Evidence, Limits, Plan, PlanState,
 };
 use proview_core::cloud::{
     claims, CapsClient, CloudDevice, CloudError, EnvelopeClient, Identity, SignRequest,
@@ -259,7 +259,7 @@ impl<'r> Responder<'r, 'r> for Clip {
 fn clip_failure(error: &ClipError) -> Failure {
     tracing::warn!(%error, "cloud clip fetch failed");
     let status = match error {
-        ClipError::Timeout { .. } => Status::GatewayTimeout,
+        ClipError::Timeout { .. } | ClipError::Overall { .. } => Status::GatewayTimeout,
         ClipError::Cloud { error, .. } => vendor_status(error),
         ClipError::Playlist(_) | ClipError::TooLarge => Status::BadGateway,
     };
@@ -290,7 +290,7 @@ async fn clip_bytes(
         object: object.to_string(),
         bucket: bucket_name(bucket)?,
     };
-    let bytes = fetch_clip(cloud.css(), &request, window())
+    let bytes = fetch_clip(cloud.css(), &request, Limits::from_env())
         .await
         .map_err(|error| clip_failure(&error))?;
     let stem = object

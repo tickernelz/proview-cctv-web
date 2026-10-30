@@ -88,6 +88,19 @@ fn blob_offset() -> u32 {
     nanos % 699 + 1
 }
 
+pub fn share_credentials(cfg: &Config, uuid: &str, configured: &str) -> (String, String) {
+    let configured = configured.trim();
+    if !configured.is_empty() && configured.eq_ignore_ascii_case(uuid.trim()) {
+        let user = if cfg.device_user.trim().is_empty() {
+            "admin".to_string()
+        } else {
+            cfg.device_user.trim().to_string()
+        };
+        return (user, cfg.device_pass.clone());
+    }
+    ("admin".to_string(), String::new())
+}
+
 fn picked_permissions(wanted: &[String]) -> Result<String, Failure> {
     permission_list(wanted).map_err(|error| fail(Status::BadRequest, error.to_string()))
 }
@@ -722,7 +735,9 @@ async fn share_permitted(
             ))
         }
     };
-    let plain = dev_info_plain(&uuid, &cfg.device_user, &cfg.device_pass, 0, now_secs());
+    let (user, password) =
+        share_credentials(cfg, &uuid, &proview_core::device::configured_serial());
+    let plain = dev_info_plain(&uuid, &user, &password, 0, now_secs());
     let powers = share_powers(&encode_qr_blob(&plain, blob_offset()));
     let vendor = within(
         "share",
@@ -876,20 +891,17 @@ pub struct ShareQrReply {
 pub fn share_qr_info(
     uuid: &str,
     user_id: &str,
-    cfg: &Config,
+    credentials: (String, String),
     permissions: &str,
     now: i64,
 ) -> ShareQrInfo {
+    let (login_name, pwd) = credentials;
     ShareQrInfo {
         dev_id: uuid.to_string(),
         dev_type: 0,
         user_id: user_id.to_string(),
-        login_name: if cfg.device_user.trim().is_empty() {
-            "admin".to_string()
-        } else {
-            cfg.device_user.clone()
-        },
-        pwd: cfg.device_pass.clone(),
+        login_name,
+        pwd,
         share_times: now,
         permissions: permissions.to_string(),
     }
@@ -923,7 +935,8 @@ async fn share_qr(
         .and_then(|claims| claims.account)
         .unwrap_or_default();
     let now = now_secs();
-    let info = share_qr_info(&uuid, &user_id, cfg, &permissions, now);
+    let credentials = share_credentials(cfg, &uuid, &proview_core::device::configured_serial());
+    let info = share_qr_info(&uuid, &user_id, credentials, &permissions, now);
     let plain = serde_json::to_string(&info).map_err(|error| {
         fail(
             Status::InternalServerError,

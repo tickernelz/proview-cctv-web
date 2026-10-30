@@ -6,7 +6,7 @@ import { live } from './store'
 
 type Picture = { object?: string; bucket?: string }
 type Alarm = { id: string; name?: string; event?: string; time?: string; utcTime?: number; channel?: string; picture?: Picture }
-type Listing = { entries?: Alarm[]; total?: number; finished?: boolean; pollSeconds?: number; latencyMs?: number; message?: string }
+type Listing = { entries?: Alarm[]; total?: number; finished?: boolean; pollSeconds?: number; latencyMs?: number; message?: string; canDelete?: boolean; deleteReason?: string }
 type Device = { id: string; name?: string; channels?: number }
 type Query = { serial: string; hours: number; event: string; day: string }
 type Day = { day: string; count: number }
@@ -37,6 +37,7 @@ const tools = reactive({
   busy: false,
   note: '',
   push: '',
+  refused: '',
 })
 const view = reactive({
   phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error',
@@ -89,6 +90,7 @@ const monthCells = computed(() => {
   return cells
 })
 const deleteReason = computed(() => {
+  if (tools.refused) return tools.refused
   if (tools.busy) return 'Deleting…'
   if (!tools.selected.size) return 'Select alarms to delete'
   return ''
@@ -215,6 +217,7 @@ async function poll() {
     if (!first) notify(entries)
     for (const entry of entries) seen.add(entry.id)
     view.entries = entries
+    tools.refused = body.canDelete === false ? body.deleteReason || 'This account may not delete alarms of this camera' : ''
     view.total = body.total || entries.length
     view.finished = body.finished !== false
     view.checked = clock(new Date())
@@ -257,6 +260,7 @@ function forget() {
   tools.confirmAll = false
   tools.note = ''
   tools.push = ''
+  tools.refused = ''
   tools.days = []
   tools.monthPhase = 'idle'
 }
@@ -322,7 +326,7 @@ async function loadPush() {
       tools.push = 'Push subscription unknown: ' + String(body.message || reply.status)
       return
     }
-    const tokens = Array.isArray(body.tokens) ? body.tokens.length : 0
+    const tokens = Number(body.count) || 0
     tools.push = tokens ? 'The alarm centre pushes this camera to ' + tokens + (tokens === 1 ? ' phone' : ' phones') + '. This app checks every ' + pollSeconds + ' s instead.' : 'No phone is subscribed to push alarms for this camera. This app checks every ' + pollSeconds + ' s instead.'
   } catch {
     if (serial === query.serial) tools.push = 'Push subscription unknown: the alarm centre could not be reached'
@@ -620,7 +624,7 @@ onMounted(() => {
         <p class="alarm-push" data-testid="alarm-push">{{ tools.push }}</p>
         <div v-if="!tools.confirmAll" class="alarm-manage-row">
           <button class="btn btn-line" type="button" data-testid="alarm-delete" :disabled="Boolean(deleteReason)" :aria-busy="tools.busy" @click="remove(false)">Delete selected ({{ tools.selected.size }})</button>
-          <button class="btn-text danger" type="button" data-testid="alarm-clear" :disabled="tools.busy || !query.serial" @click="tools.confirmAll = true">Clear all…</button>
+          <button class="btn-text danger" type="button" data-testid="alarm-clear" :disabled="tools.busy || !query.serial || Boolean(tools.refused)" @click="tools.confirmAll = true">Clear all…</button>
           <span v-if="deleteReason && !tools.busy" class="alarm-reason" data-testid="alarm-delete-reason">{{ deleteReason }}</span>
         </div>
         <div v-else class="alarm-manage-row" role="alertdialog" aria-labelledby="alarm-clear-ask">

@@ -28,6 +28,9 @@ pub struct AlarmList {
     pub latency_ms: u64,
     pub queried_at: u64,
     pub poll_seconds: u64,
+    pub can_delete: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delete_reason: Option<String>,
 }
 
 pub fn routes() -> Vec<rocket::route::Route> {
@@ -114,6 +117,55 @@ pub struct DeleteReply {
     pub latency_ms: u64,
 }
 
+pub const DELETE_PERMISSION: &str = "DP_DeleteAlarmInfo";
+
+fn field_text(device: &CloudDevice, key: &str) -> String {
+    match device.extra.get(key) {
+        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+pub fn received_share(device: &CloudDevice) -> bool {
+    ["shareId", "deviceOwnerId", "shareAuthToken"]
+        .iter()
+        .any(|key| !field_text(device, key).is_empty())
+        || device.extra.contains_key("devPermissions")
+        || device.extra.contains_key("permissions")
+}
+
+fn granted(device: &CloudDevice, permission: &str) -> bool {
+    let listed = field_text(device, "devPermissions");
+    if listed.split(',').any(|item| item.trim() == permission) {
+        return true;
+    }
+    device
+        .extra
+        .get("permissions")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items.iter().any(|item| {
+                item.get("label").and_then(serde_json::Value::as_str) == Some(permission)
+                    && item
+                        .get("enabled")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+pub fn delete_refusal(device: &CloudDevice) -> Option<String> {
+    if !received_share(device) || granted(device, DELETE_PERMISSION) {
+        return None;
+    }
+    Some(format!(
+        "{} was shared with this account without the right to delete alarm messages; only its owner can delete them",
+        device.display_name()
+    ))
+}
+
 pub fn delete_scope(body: &DeleteBody) -> Result<DeleteScope, Failure> {
     let ids: Vec<String> = body
         .ids
@@ -162,6 +214,9 @@ pub async fn delete(
         lookup(state, &session_id, &token, body.sn.trim()),
     )
     .await?;
+    if let Some(reason) = delete_refusal(&device) {
+        return Err(fail(Status::Forbidden, reason));
+    }
     let user = account_of(&token);
     within("delete", async {
         with_codes(&device, |code| {
@@ -245,7 +300,7 @@ pub async fn calendar(
 pub struct SubscriptionReply {
     pub serial: String,
     pub subscribed: bool,
-    pub tokens: Vec<String>,
+    pub count: usize,
     pub asked: usize,
     pub note: String,
     pub latency_ms: u64,
@@ -288,13 +343,9 @@ pub async fn subscription(
         .await
     })
     .await?;
-    let subscribed = if asked.is_empty() {
-        !found.is_empty()
-    } else {
-        asked.iter().all(|wanted| found.contains(wanted))
-    };
+    let subscribed = !asked.is_empty() && asked.iter().all(|wanted| found.contains(wanted));
     let note = if asked.is_empty() {
-        "no push token was given, so this lists every token the alarm centre pushes this camera to; the desktop app reads alarms by polling and registers no push token".to_string()
+        "no push token was given, so this only counts the phones the alarm centre pushes this camera to; the desktop app reads alarms by polling and registers no push token".to_string()
     } else if subscribed {
         "every given push token is subscribed to this camera".to_string()
     } else {
@@ -303,7 +354,7 @@ pub async fn subscription(
     Ok(Json(SubscriptionReply {
         serial: device.uuid.clone(),
         subscribed,
-        tokens: found,
+        count: found.len(),
         asked: asked.len(),
         note,
         latency_ms: started.elapsed().as_millis() as u64,
@@ -366,6 +417,8 @@ pub async fn list(
         latency_ms: page.latency_ms,
         queried_at: page.queried_at,
         poll_seconds: poll_seconds(),
+        can_delete: delete_refusal(&device).is_none(),
+        delete_reason: delete_refusal(&device),
     }))
 }
 
@@ -695,6 +748,8 @@ mod tests {
             latency_ms: 104,
             queried_at: 7,
             poll_seconds: 20,
+            can_delete: true,
+            delete_reason: None,
         };
         let json = serde_json::to_value(&body).expect("alarm list json");
         for key in [
@@ -1129,6 +1184,17 @@ mod tests {
     }
 
     async fn rigged(port: u16) -> rocket::local::asynchronous::Client {
+        rigged_with(
+            port,
+            serde_json::json!({ "uuid": "serial-one", "nickname": "Gate", "pms": "pms-code-one" }),
+        )
+        .await
+    }
+
+    async fn rigged_with(
+        port: u16,
+        record: serde_json::Value,
+    ) -> rocket::local::asynchronous::Client {
         use proview_core::provider::VendorSession;
 
         let rig = rocket::custom(
@@ -1157,12 +1223,7 @@ mod tests {
                 },
                 std::time::Duration::from_secs(600),
             );
-        let device: CloudDevice = serde_json::from_value(serde_json::json!({
-            "uuid": "serial-one",
-            "nickname": "Gate",
-            "pms": "pms-code-one"
-        }))
-        .expect("device");
+        let device: CloudDevice = serde_json::from_value(record).expect("device");
         client
             .rocket()
             .state::<CloudState>()
@@ -1239,6 +1300,60 @@ mod tests {
         assert!(sent[0]["AlarmCenter"]["Body"].get("AlarmId").is_none());
     }
 
+    fn shared_record(permissions: &str) -> serde_json::Value {
+        serde_json::json!({
+            "uuid": "serial-one",
+            "nickname": "Gate",
+            "pms": "pms-code-one",
+            "shareId": "share-7",
+            "deviceOwnerId": "owner-one",
+            "devPermissions": permissions
+        })
+    }
+
+    #[rocket::async_test]
+    async fn a_camera_shared_without_the_delete_right_refuses_delete_and_clear_all() {
+        let (port, seen) = alarm_center(vec![OK_EMPTY, OK_EMPTY]);
+        let client = rigged_with(port, shared_record("DP_PTZ,DP_Intercom,DP_AlarmPush")).await;
+        for body in [
+            serde_json::json!({ "sn": "serial-one", "ids": ["261028205437"] }),
+            serde_json::json!({ "sn": "serial-one", "all": true }),
+        ] {
+            let (status, reply) = post_delete(&client, body).await;
+            assert_eq!(status, Status::Forbidden, "{reply}");
+            assert!(
+                reply
+                    .to_string()
+                    .contains("without the right to delete alarm messages"),
+                "{reply}"
+            );
+        }
+        assert!(seen.lock().expect("seen").is_empty());
+    }
+
+    #[rocket::async_test]
+    async fn a_camera_shared_with_the_delete_right_and_an_owned_one_may_delete() {
+        let (port, seen) = alarm_center(vec![OK_EMPTY]);
+        let client = rigged_with(port, shared_record("DP_PTZ,DP_DeleteAlarmInfo")).await;
+        let (status, reply) = post_delete(
+            &client,
+            serde_json::json!({ "sn": "serial-one", "all": true }),
+        )
+        .await;
+        assert_eq!(status, Status::Ok, "{reply}");
+        assert_eq!(seen.lock().expect("seen").len(), 1);
+        let listed = serde_json::json!({ "uuid": "x", "shareId": "s", "permissions": [
+            { "label": "DP_DeleteAlarmInfo", "enabled": true }
+        ]});
+        assert!(delete_refusal(&serde_json::from_value(listed).expect("device")).is_none());
+        let disabled = serde_json::json!({ "uuid": "x", "shareId": "s", "permissions": [
+            { "label": "DP_DeleteAlarmInfo", "enabled": false }
+        ]});
+        assert!(delete_refusal(&serde_json::from_value(disabled).expect("device")).is_some());
+        let owned = serde_json::json!({ "uuid": "x", "mAccount": true });
+        assert!(delete_refusal(&serde_json::from_value(owned).expect("device")).is_none());
+    }
+
     #[rocket::async_test]
     async fn a_refused_delete_is_reported_with_the_vendor_reason() {
         let (port, _) = alarm_center(vec![
@@ -1294,6 +1409,7 @@ mod tests {
     async fn the_subscription_route_reports_the_tokens_the_centre_pushes_to() {
         let (port, seen) = alarm_center(vec![
             r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":[{"Token":["phone-a"]}]}}"#,
+            r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":[{"Token":["other-phone-token","phone-b"]}]}}"#,
         ]);
         let client = rigged(port).await;
         let reply = client
@@ -1305,7 +1421,18 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(&reply.into_string().await.unwrap_or_default()).expect("json");
         assert_eq!(body["subscribed"], true);
-        assert_eq!(body["tokens"], serde_json::json!(["phone-a"]));
+        assert_eq!(body["count"], 1);
+        assert!(body.get("tokens").is_none(), "{body}");
+        let bare = client
+            .get("/api/cloud/alarms/subscription?sn=serial-one")
+            .private_cookie(rocket::http::Cookie::new("pvw_session", "s1"))
+            .dispatch()
+            .await;
+        let text = bare.into_string().await.unwrap_or_default();
+        assert!(!text.contains("other-phone-token"), "{text}");
+        let bare: serde_json::Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(bare["count"], 2);
+        assert_eq!(bare["subscribed"], false);
         let sent = seen.lock().expect("seen").clone();
         assert_eq!(
             sent[0]["AlarmCenter"]["Body"]["Token"],
