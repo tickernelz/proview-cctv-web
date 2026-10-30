@@ -3,9 +3,10 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { api, type ApiError } from '../lib/api'
-import { sessionLost } from '../app/shell'
+import { openSettings, sessionLost } from '../app/shell'
 import { loadDevices } from '../app/view'
 import { addLauncher, live, menuOpen } from './store'
+import { settingsUi } from '../settings/ui'
 
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
 type Attributes = { devices?: Device[]; groups?: string[] }
@@ -46,6 +47,8 @@ const open = computed(() => live.sheet === 'devices')
 const sheet = ref<HTMLElement>()
 const closeButton = ref<HTMLButtonElement>()
 const rows: (HTMLButtonElement | null)[] = []
+let opener: HTMLElement | null = null
+let origin = 'watch'
 const list = reactive({ phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error', devices: [] as Device[], groups: [] as string[], error: '' })
 const chosen = ref('')
 const tab = ref('name')
@@ -141,6 +144,9 @@ async function refresh() {
 }
 
 async function show() {
+  const from = document.activeElement
+  opener = from instanceof HTMLElement && from !== document.body && from.id !== 'device-admin-open' && !sheet.value?.contains(from) ? from : null
+  origin = live.settings.shown ? 'settings' : 'watch'
   live.sheet = 'devices'
   const loading = refresh()
   await nextTick()
@@ -154,8 +160,22 @@ async function show() {
 
 function close(returnFocus = true) {
   if (live.sheet === 'devices') live.sheet = ''
-  if (returnFocus) document.getElementById('device-admin-open')?.focus()
+  const back = opener
+  opener = null
+  if (!returnFocus) return
+  if (back?.isConnected && back.getClientRects().length) back.focus()
+  else document.getElementById('device-admin-open')?.focus()
 }
+
+function addCamera() {
+  close(false)
+  openSettings('config', { focus: true })
+}
+
+watch(
+  () => settingsUi.devices,
+  () => show(),
+)
 
 function onEscape(event: KeyboardEvent) {
   if (event.key !== 'Escape' || event.defaultPrevented || !open.value || menuOpen()) return
@@ -379,8 +399,8 @@ function forgetForm() {
 
 function syncScreen() {
   if (!open.value) return
-  const watchView = document.getElementById('watch')
-  if (watchView && !watchView.hidden) return
+  const screen = document.getElementById(origin)
+  if (screen && !screen.hidden) return
   close(false)
 }
 
@@ -390,11 +410,11 @@ onMounted(() => {
     const signin = document.getElementById('signin')
     if (signin && !signin.hidden) forgetForm()
   })
-  for (const id of ['watch', 'signin']) {
+  for (const id of ['watch', 'settings', 'signin']) {
     const screen = document.getElementById(id)
     if (screen) screens.observe(screen, { attributes: true, attributeFilter: ['hidden'] })
   }
-  document.addEventListener('keydown', onEscape)
+  document.addEventListener('keydown', onEscape, true)
   ;(window as unknown as { proviewDeviceAdmin: unknown }).proviewDeviceAdmin = { open: show, close, refresh }
 })
 </script>
@@ -419,7 +439,7 @@ onMounted(() => {
       <p v-if="list.phase === 'error'" class="err" role="alert" data-testid="device-admin-error">
         <Icon name="warning" small /><span>{{ list.error }}</span>
       </p>
-      <button v-if="list.phase === 'error'" class="btn btn-line" type="button" data-testid="device-admin-retry" @click="refresh">Try again</button>
+      <button v-if="list.phase === 'error'" class="btn" type="button" data-testid="device-admin-retry" @click="refresh"><Icon name="refresh" small />Try again</button>
       <p v-else-if="list.phase === 'loading' && !list.devices.length" class="hint" data-testid="device-admin-loading">Loading the cameras on this account…</p>
       <p v-else-if="list.phase === 'ok' && !list.devices.length" class="hint" data-testid="device-admin-empty">No camera on this account yet.</p>
       <div v-if="list.devices.length" id="device-admin-list" class="devices-list" role="radiogroup" aria-label="Camera">
@@ -436,12 +456,16 @@ onMounted(() => {
           @click="choose(entry.uuid)"
           @keydown="onRowKey($event, index)"
         >
+          <Icon name="cctv" small />
           <span class="col">
             <span class="name">{{ entry.nickname }}</span>
             <span class="sub">{{ tags(entry) }}</span>
           </span>
           <Icon name="check" small />
         </button>
+      </div>
+      <div class="devices-tools">
+        <button class="btn" type="button" data-testid="device-admin-add" @click="addCamera"><Icon name="plus" small />Add a camera</button>
       </div>
       <Tabs v-if="list.phase !== 'loading' || list.devices.length" :model-value="shownTab" @update:model-value="(value) => (tab = String(value))">
         <TabsList aria-label="What to change">
@@ -466,18 +490,21 @@ onMounted(() => {
             </label>
             <label class="switchrow"><input id="device-admin-favourite" v-model="form.favourite" type="checkbox" role="switch">Favourite</label>
             <div class="sheet-actions">
-              <button class="btn btn-line" type="button" :aria-busy="action.busy === 'save'" @click="save">{{ label('save', 'Save group and favourite') }}</button>
+              <button class="btn" type="button" :aria-busy="action.busy === 'save'" @click="save">{{ label('save', 'Save group and favourite') }}</button>
             </div>
           </section>
-          <section v-if="device" class="devices-group" data-testid="unbind">
-            <h3>Remove from this account</h3>
-            <label class="field">
-              <span class="lab">Type {{ device.nickname || device.uuid }} or its serial</span>
-              <input id="device-admin-unbind" v-model="form.unbindConfirm" type="text" autocomplete="off" data-testid="unbind-confirm" :placeholder="device.uuid">
-              <span class="hint">The cloud account stops listing this camera; add it again by serial to get it back.</span>
-            </label>
-            <div class="sheet-actions">
-              <button class="btn btn-line danger" type="button" data-testid="unbind-submit" :disabled="!form.unbindConfirm.trim()" :aria-busy="action.busy === 'unbind'" @click="unbind">{{ label('unbind', 'Remove from this account') }}</button>
+          <section v-if="device" class="devices-group danger" aria-labelledby="device-admin-danger-name">
+            <h3 id="device-admin-danger-name"><Icon name="warning" small />Danger zone</h3>
+            <div class="danger-item" data-testid="unbind">
+              <h4>Remove from this account</h4>
+              <label class="field">
+                <span class="lab">Type {{ device.nickname || device.uuid }} or its serial</span>
+                <input id="device-admin-unbind" v-model="form.unbindConfirm" type="text" autocomplete="off" data-testid="unbind-confirm" :placeholder="device.uuid">
+                <span class="hint">The cloud account stops listing this camera; add it again by serial to get it back.</span>
+              </label>
+              <div class="sheet-actions">
+                <button class="btn btn-fill danger" type="button" data-testid="unbind-submit" :disabled="!form.unbindConfirm.trim()" :aria-busy="action.busy === 'unbind'" @click="unbind">{{ label('unbind', 'Remove from this account') }}</button>
+              </div>
             </div>
           </section>
         </TabsContent>
@@ -490,13 +517,13 @@ onMounted(() => {
             </label>
             <fieldset class="share-perms">
               <legend class="lab">What the other account may do</legend>
-              <label v-for="item in permissions" :key="item.id" class="switchrow">
-                <input type="checkbox" :data-perm="item.id" :checked="granted.has(item.id)" @change="toggleGrant(item.id)">{{ item.label }}
+              <label v-for="item in permissions" :key="item.id" class="perm">
+                <input type="checkbox" :data-perm="item.id" :checked="granted.has(item.id)" @change="toggleGrant(item.id)"><span>{{ item.label }}</span>
               </label>
             </fieldset>
             <div class="sheet-actions">
               <button class="btn btn-fill" type="button" data-testid="share-permit" :disabled="Boolean(permitReason)" :aria-busy="action.busy === 'permit'" @click="permit">{{ label('permit', 'Share with these permissions') }}</button>
-              <button class="btn btn-line" type="button" data-testid="share-qr" :aria-busy="action.busy === 'qr'" @click="makeQr">{{ label('qr', 'Share by QR code') }}</button>
+              <button class="btn" type="button" data-testid="share-qr" :aria-busy="action.busy === 'qr'" @click="makeQr"><Icon name="qr" small />{{ label('qr', 'Share by QR code') }}</button>
             </div>
             <span v-if="permitReason" class="hint" data-testid="share-permit-reason">{{ permitReason }}</span>
             <figure v-if="shares.qr" class="share-qr" data-testid="share-qr-code">
@@ -504,7 +531,7 @@ onMounted(() => {
               <figcaption class="hint">Scan it in the PROVIEW app, or paste the link into Add camera. It expires {{ new Date(shares.qr.expiresAt).toLocaleTimeString() }}.<br><code>{{ shares.qr.link }}</code></figcaption>
             </figure>
             <div class="sheet-actions">
-              <button class="btn btn-line" type="button" data-testid="share-list" :aria-busy="action.busy === 'shares'" @click="listShares">{{ label('shares', 'Show who has it') }}</button>
+              <button class="btn" type="button" data-testid="share-list" :aria-busy="action.busy === 'shares'" @click="listShares">{{ label('shares', 'Show who has it') }}</button>
             </div>
             <ul v-if="shares.loaded" class="share-rows" data-testid="share-rows">
               <li v-if="!shares.mine.length" class="hint">No account has this camera through a share.</li>
@@ -512,11 +539,11 @@ onMounted(() => {
                 <strong>{{ row.account || row.userId }}</strong>
                 <span class="hint">{{ row.state ? stateOf(row.state) + ' · ' : '' }}{{ row.permissions.map(labelOf).join(', ') || 'no permissions' }}</span>
                 <span class="share-row-perms">
-                  <label v-for="item in permissions" :key="item.id"><input type="checkbox" :checked="row.permissions.includes(item.id)" @change="toggleRowPermission(row, item.id)">{{ item.label }}</label>
+                  <label v-for="item in permissions" :key="item.id" class="perm"><input type="checkbox" :checked="row.permissions.includes(item.id)" @change="toggleRowPermission(row, item.id)"><span>{{ item.label }}</span></label>
                 </span>
                 <span class="sheet-actions">
-                  <button class="btn btn-line" type="button" :aria-busy="action.busy === 'perm'" @click="savePermissions(row)">{{ label('perm', 'Save permissions') }}</button>
-                  <button class="btn-text danger" type="button" :aria-busy="action.busy === 'revoke'" @click="revoke(row)">{{ label('revoke', 'Stop sharing') }}</button>
+                  <button class="btn" type="button" :aria-busy="action.busy === 'perm'" @click="savePermissions(row)">{{ label('perm', 'Save permissions') }}</button>
+                  <button class="btn danger" type="button" :aria-busy="action.busy === 'revoke'" @click="revoke(row)">{{ label('revoke', 'Stop sharing') }}</button>
                 </span>
               </li>
             </ul>
@@ -528,33 +555,11 @@ onMounted(() => {
                 <strong>{{ row.deviceName || row.serial }}</strong>
                 <span class="hint">{{ row.account }}{{ row.state ? ' · ' + stateOf(row.state) : '' }}{{ row.permissions.length ? ' · ' + row.permissions.map(labelOf).join(', ') : '' }}</span>
                 <span class="sheet-actions">
-                  <button class="btn btn-line" type="button" :aria-busy="action.busy === 'answer'" @click="answer(row, true)">Accept</button>
-                  <button class="btn-text" type="button" @click="answer(row, false)">Refuse</button>
+                  <button class="btn" type="button" :aria-busy="action.busy === 'answer'" @click="answer(row, true)">Accept</button>
+                  <button class="btn" type="button" @click="answer(row, false)">Refuse</button>
                 </span>
               </li>
             </ul>
-          </section>
-          <section v-if="device" class="devices-group">
-            <h3>Transfer this camera</h3>
-            <label class="field">
-              <span class="lab">Transfer to account</span>
-              <input id="device-admin-accept" v-model="form.transferTo" type="text" placeholder="the account that will own this camera" @input="transfer.confirming = false">
-              <span class="hint">Ownership moves to that account once it accepts; this account loses the camera. An email resolves to its account id first.</span>
-            </label>
-            <div v-if="!transfer.confirming" class="sheet-actions">
-              <button class="btn btn-line danger" type="button" data-testid="transfer-ask" :disabled="Boolean(transferReason)" @click="askTransfer">Transfer ownership…</button>
-              <span v-if="transferReason" class="hint" data-testid="transfer-reason">{{ transferReason }}</span>
-            </div>
-            <div v-else class="sheet-actions" role="alertdialog" aria-labelledby="transfer-ask-text" data-testid="transfer-confirm-panel">
-              <span id="transfer-ask-text" class="hint">Give {{ device.nickname }} to {{ form.transferTo.trim() }}? This account stops owning it when they accept.</span>
-              <button class="btn btn-fill" type="button" data-testid="transfer-confirm" :aria-busy="action.busy === 'share'" @click="share">{{ label('share', 'Yes, transfer ownership') }}</button>
-              <button class="btn-text" type="button" data-testid="transfer-cancel" @click="transfer.confirming = false">Keep it</button>
-            </div>
-            <label class="field"><span class="lab">Invitation key</span><input id="device-admin-key" v-model="form.key" type="text" placeholder="transKey from the invitation"></label>
-            <div class="sheet-actions">
-              <button class="btn btn-line" type="button" :aria-busy="action.busy === 'check'" @click="check">{{ label('check', 'Check this camera') }}</button>
-              <button class="btn btn-line" type="button" :aria-busy="action.busy === 'cancel'" @click="cancel">{{ label('cancel', 'Cancel invitation') }}</button>
-            </div>
           </section>
           <section class="devices-group">
             <h3>Accept a shared camera</h3>
@@ -569,7 +574,32 @@ onMounted(() => {
               <span class="hint">Sent once inside the sealed body; the share service checks it.</span>
             </label>
             <div class="sheet-actions">
-              <button class="btn btn-line" type="button" :aria-busy="action.busy === 'accept'" @click="accept">{{ label('accept', 'Accept') }}</button>
+              <button class="btn" type="button" :aria-busy="action.busy === 'accept'" @click="accept">{{ label('accept', 'Accept') }}</button>
+            </div>
+          </section>
+          <section v-if="device" class="devices-group danger" aria-labelledby="device-admin-danger-share">
+            <h3 id="device-admin-danger-share"><Icon name="warning" small />Danger zone</h3>
+            <div class="danger-item">
+              <h4>Transfer this camera</h4>
+              <label class="field">
+                <span class="lab">Transfer to account</span>
+                <input id="device-admin-accept" v-model="form.transferTo" type="text" placeholder="the account that will own this camera" @input="transfer.confirming = false">
+                <span class="hint">Ownership moves to that account once it accepts; this account loses the camera. An email resolves to its account id first.</span>
+              </label>
+              <div v-if="!transfer.confirming" class="sheet-actions">
+                <button class="btn danger" type="button" data-testid="transfer-ask" :disabled="Boolean(transferReason)" @click="askTransfer">Transfer ownership…</button>
+                <span v-if="transferReason" class="hint" data-testid="transfer-reason">{{ transferReason }}</span>
+              </div>
+              <div v-else class="sheet-actions confirm" role="alertdialog" aria-labelledby="transfer-ask-text" data-testid="transfer-confirm-panel">
+                <span id="transfer-ask-text" class="hint">Give {{ device.nickname }} to {{ form.transferTo.trim() }}? This account stops owning it when they accept.</span>
+                <button class="btn btn-fill danger" type="button" data-testid="transfer-confirm" :aria-busy="action.busy === 'share'" @click="share">{{ label('share', 'Yes, transfer ownership') }}</button>
+                <button class="btn" type="button" data-testid="transfer-cancel" @click="transfer.confirming = false">Keep it</button>
+              </div>
+              <label class="field"><span class="lab">Invitation key</span><input id="device-admin-key" v-model="form.key" type="text" placeholder="transKey from the invitation"></label>
+              <div class="sheet-actions">
+                <button class="btn" type="button" :aria-busy="action.busy === 'check'" @click="check">{{ label('check', 'Check this camera') }}</button>
+                <button class="btn" type="button" :aria-busy="action.busy === 'cancel'" @click="cancel">{{ label('cancel', 'Cancel invitation') }}</button>
+              </div>
             </div>
           </section>
         </TabsContent>
@@ -594,3 +624,37 @@ onMounted(() => {
     ><template v-if="action.message"><Icon :name="action.kind === 'bad' ? 'warning' : 'check'" small /><span>{{ action.message }}</span></template></p>
   </section>
 </template>
+
+<style scoped>
+#device-admin .devices-body > .btn { margin-bottom: var(--s3); }
+#device-admin .devices-list { gap: var(--s1); margin: 0 0 var(--s2); }
+#device-admin .devices-list .menu-row { gap: var(--s3); min-height: 52px; padding: var(--s2) var(--s3); border: 1px solid var(--line-soft); border-radius: var(--r-md); background: transparent; }
+#device-admin .devices-list .menu-row:hover { background: var(--bg-3); }
+#device-admin .devices-list .menu-row[aria-checked="true"] { border-color: var(--accent); background: var(--accent-soft); }
+#device-admin .devices-list .menu-row > .i-16:first-child { visibility: visible; margin: 0; color: var(--ink-3); }
+#device-admin .devices-list .menu-row[aria-checked="true"] > .i-16:first-child { color: var(--accent); }
+#device-admin .devices-list .menu-row .col { flex: 1; min-width: 0; }
+#device-admin .devices-list .menu-row .name { font-size: var(--t-14); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#device-admin .devices-list .menu-row .sub { overflow-wrap: anywhere; }
+#device-admin .devices-tools { display: flex; justify-content: flex-end; margin: 0 0 var(--s3); }
+#device-admin .tabs-list { margin-bottom: var(--s3); }
+#device-admin .devices-group { margin: 0 0 var(--s3); padding: var(--s3); border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--bg); }
+#device-admin .devices-group:last-child { margin-bottom: 0; }
+#device-admin .devices-group h3 { display: flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s3); font-size: var(--t-13); font-weight: 500; color: var(--ink-2); }
+#device-admin .devices-group .sheet-actions { margin-bottom: var(--s3); }
+#device-admin .devices-group .sheet-actions:last-child { margin-bottom: 0; }
+#device-admin .devices-group.danger { border-color: var(--bad); }
+#device-admin .devices-group.danger h3 { color: var(--bad); }
+#device-admin .danger-item h4 { margin: 0 0 var(--s2); font-size: var(--t-14); font-weight: 500; color: var(--ink); }
+#device-admin .sheet-actions.confirm { padding: var(--s2); border: 1px solid var(--bad); border-radius: var(--r-sm); }
+#device-admin .sheet-actions.confirm .hint { flex: 1 1 100%; color: var(--ink); }
+#device-admin .share-perms { margin-bottom: var(--s3); }
+#device-admin .share-perms .lab { margin-bottom: var(--s1); font-size: var(--t-13); color: var(--ink-2); }
+#device-admin .perm { display: flex; align-items: center; gap: var(--s2); min-height: 32px; font-size: var(--t-14); color: var(--ink); cursor: pointer; }
+#device-admin .share-row-perms { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0 var(--s3); }
+#device-admin .share-rows { margin-top: var(--s3); }
+#device-admin .share-rows li { padding: var(--s2) 0; }
+@media (pointer: coarse) {
+  #device-admin .perm { min-height: var(--hit); }
+}
+</style>

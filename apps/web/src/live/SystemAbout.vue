@@ -3,6 +3,8 @@ import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { baseOffsetMinutes, dstRule } from '../app/dst'
 import { state } from '../app/state'
+import { settingsUi } from '../settings/ui'
+import Icon from '../components/Icon.vue'
 
 type Reply = { ok: boolean; status: number; body: any }
 type Ping = { url: string; reachable: boolean; average_ms?: number | null; lost_percent?: number | null; sent: number }
@@ -248,19 +250,6 @@ function pickFile(event: Event) {
   firmware.file = input.files && input.files[0] ? input.files[0] : null
 }
 
-function open() {
-  const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
-  if (typeof page.openSettings === 'function') page.openSettings('system')
-  else if (typeof page.showSection === 'function') page.showSection('system', true)
-  else location.hash = '#/settings/system'
-}
-
-function openFromNav() {
-  const shown = props.shown
-  open()
-  if (shown) load()
-}
-
 watch(
   () => props.shown,
   (shown) => {
@@ -268,199 +257,251 @@ watch(
   },
 )
 
+watch(
+  () => settingsUi.reload.system,
+  () => {
+    if (props.shown) load()
+  },
+)
 </script>
 
 <template>
-  <Teleport defer to=".set-nav">
-    <a href="#/settings/system" data-section="system" data-testid="system-link" @click.prevent="openFromNav">About device</a>
+  <header class="set-head">
+    <div>
+      <h2 id="h-system" class="set-h" tabindex="-1">System</h2>
+      <p class="set-sub">Identity, clock, language, firmware, network health and users as the camera reports them.</p>
+    </div>
+  </header>
+  <Teleport defer to="#savebar-note">
+    <p v-show="shown" :class="['set-status', { 'warn-text': status.bad }]" data-testid="system-status" role="status">
+      <Icon v-if="status.bad" name="warning" small /><span>{{ status.text }}</span>
+    </p>
   </Teleport>
-  <h2 id="h-system" class="set-h" tabindex="-1">About device</h2>
-  <p class="set-sub">Identity, clock, language, firmware, network health and users as the camera reports them over DVRIP.</p>
-  <div class="sys-body">
-  <p :class="['hint', { 'warn-text': status.bad }]" data-testid="system-status" role="status">{{ status.text }}</p>
 
-  <div data-testid="system-about">
-    <p v-if="about.error" class="hint warn-text">{{ about.error }}</p>
-    <div v-else-if="about.data">
-      <h3 class="set-h">Device</h3>
-      <div class="row"><div class="lab">Model</div><div class="ctl-col"><p class="val">{{ about.data.summary.model || 'unknown' }}</p></div></div>
-      <div class="row"><div class="lab">Serial</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.serial || 'unknown' }}</span></p></div></div>
-      <div class="row"><div class="lab">Firmware</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.firmware || 'unknown' }}</span></p></div></div>
-      <div class="row"><div class="lab">Build time</div><div class="ctl-col"><p class="val">{{ about.data.summary.build_time || 'unknown' }}</p></div></div>
-      <div class="row"><div class="lab">Hardware</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.hardware || 'unknown' }}</span></p></div></div>
-      <div class="row"><div class="lab">Run time</div><div class="ctl-col"><p class="val">{{ runTime(about.data.summary.uptime_minutes) }}</p></div></div>
+  <div class="set-cols">
+    <div class="set-col">
+      <div class="set-card" data-testid="system-about">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Device</h3></div>
+        </div>
+        <p v-if="about.error" class="hint warn-text">{{ about.error }}</p>
+        <template v-else-if="about.data">
+          <div class="row"><div class="lab">Model</div><div class="ctl-col"><p class="val">{{ about.data.summary.model || 'unknown' }}</p></div></div>
+          <div class="row"><div class="lab">Serial</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.serial || 'unknown' }}</span></p></div></div>
+          <div class="row"><div class="lab">Firmware</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.firmware || 'unknown' }}</span></p></div></div>
+          <div class="row"><div class="lab">Build time</div><div class="ctl-col"><p class="val">{{ about.data.summary.build_time || 'unknown' }}</p></div></div>
+          <div class="row"><div class="lab">Hardware</div><div class="ctl-col"><p class="val"><span class="code">{{ about.data.summary.hardware || 'unknown' }}</span></p></div></div>
+          <div class="row"><div class="lab">Run time</div><div class="ctl-col"><p class="val">{{ runTime(about.data.summary.uptime_minutes) }}</p></div></div>
+          <div class="row">
+            <div class="lab">Extended info</div>
+            <div class="ctl-col">
+              <p v-if="about.data.info_ex" class="val"><span class="code">{{ JSON.stringify(about.data.info_ex) }}</span></p>
+              <p v-else class="hint">{{ about.data.info_ex_error }}</p>
+            </div>
+          </div>
+          <div class="row">
+            <div class="lab">Abilities<span class="hint">{{ about.data.abilities.length }} flags the camera reports as on</span></div>
+            <div class="ctl-col">
+              <details><summary>Show the list</summary><p class="hint code">{{ about.data.abilities.join(', ') }}</p></details>
+            </div>
+          </div>
+        </template>
+        <p v-else class="hint">Not read yet.</p>
+      </div>
+
+      <div class="set-card" data-testid="system-time">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Time</h3></div>
+        </div>
+        <p v-if="clock.error" class="hint warn-text">{{ clock.error }}</p>
+        <template v-else-if="clock.data">
+          <div class="row"><div class="lab">Camera time</div><div class="ctl-col"><p class="val">{{ clock.data.device_time || 'unknown' }}</p></div></div>
+          <div class="row"><div class="lab">Time zone</div><div class="ctl-col"><p class="val">{{ zoneLabel(clock.data.minutes_east) }}</p></div></div>
+          <div class="row">
+            <div class="lab">Daylight saving</div>
+            <div class="ctl-col"><p class="val">{{ (clock.data.location && clock.data.location.DSTRule) || 'unknown' }}</p></div>
+          </div>
+          <div class="row">
+            <div class="lab">Date format</div>
+            <div class="ctl-col"><p class="val">{{ (clock.data.location && clock.data.location.DateFormat) || 'unknown' }} · {{ (clock.data.location && clock.data.location.TimeFormat) || '' }}</p></div>
+          </div>
+          <div class="set-card-f">
+            <p class="hint">
+              Writes this computer’s clock, its standard time zone ({{ zoneLabel(baseOffsetMinutes()) }}) and its daylight-saving rule to the camera, as the phone app does.
+              <template v-if="noCamera">{{ noCamera }}</template>
+            </p>
+            <button class="btn btn-fill" type="button" data-testid="system-sync-time" :disabled="!!noCamera" :aria-busy="busy === 'time sync'" @click="syncTime">Sync with this computer</button>
+          </div>
+        </template>
+        <p v-else class="hint">Not read yet.</p>
+      </div>
+
+      <div class="set-card" data-testid="system-language">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Camera language</h3></div>
+        </div>
+        <p v-if="language.error" class="hint warn-text">{{ language.error }}</p>
+        <div v-else-if="language.data" class="row">
+          <label class="lab" for="system-language-pick">Language<span v-if="languageReason" class="hint">{{ languageReason }}</span></label>
+          <div class="ctl-col">
+            <select id="system-language-pick" v-model="language.pick">
+              <option v-for="item in language.data.available" :key="item" :value="item">{{ item }}</option>
+            </select>
+            <button class="btn btn-fill" type="button" data-testid="system-save-language" :disabled="!!languageReason" :aria-busy="busy === 'language'" @click="saveLanguage">Save language</button>
+          </div>
+        </div>
+        <p v-else class="hint">Not read yet.</p>
+      </div>
+    </div>
+
+    <div class="set-col">
+      <div class="set-card" data-testid="system-firmware">
+        <div class="set-card-h">
+          <div>
+            <h3 class="set-card-t">Firmware</h3>
+            <p class="set-card-d">Asks the camera and the upgrade server for a newer build.</p>
+          </div>
+          <div class="set-card-a">
+            <button class="btn" type="button" data-testid="system-check-firmware" :disabled="!!noCamera" :aria-busy="busy === 'firmware check'" @click="checkFirmware">Check for update</button>
+          </div>
+        </div>
+        <p v-if="noCamera" class="hint">{{ noCamera }}</p>
+        <p v-if="firmware.error" class="hint warn-text">{{ firmware.error }}</p>
+        <template v-else-if="firmware.data">
+          <div class="row">
+            <div class="lab">Upgrade server</div>
+            <div class="ctl-col">
+              <p class="val" data-testid="system-firmware-server">{{ firmware.data.server_check ? firmware.data.server_check.detail : firmware.data.server_check_error }}</p>
+              <p v-for="offer in offers" :key="offer.file_name" class="hint">{{ offer.file_name }} · {{ offer.date }}</p>
+            </div>
+          </div>
+          <div class="row">
+            <div class="lab">Camera check</div>
+            <div class="ctl-col"><p class="val">{{ firmware.data.device_check ? JSON.stringify(firmware.data.device_check) : firmware.data.device_check_error }}</p></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="set-card" data-testid="system-network">
+        <div class="set-card-h">
+          <div>
+            <h3 class="set-card-t">Network health</h3>
+            <p class="set-card-d">The camera pings from its own network and reports cloud, NAT and Wi-Fi state.</p>
+          </div>
+          <div class="set-card-a">
+            <button class="btn" type="button" data-testid="system-check-network" :disabled="!!noCamera" :aria-busy="busy === 'network check'" @click="checkNetwork">Run network check</button>
+          </div>
+        </div>
+        <p v-if="noCamera" class="hint">{{ noCamera }}</p>
+        <p v-if="network.error" class="hint warn-text">{{ network.error }}</p>
+        <template v-else-if="network.data">
+          <div class="row stack">
+            <table class="tbl">
+              <thead><tr><th scope="col">Host</th><th scope="col">Reachable</th><th scope="col">Average</th><th scope="col">Lost</th></tr></thead>
+              <tbody>
+                <tr v-for="ping in (network.data.pings as Ping[])" :key="ping.url">
+                  <th scope="row" class="code">{{ ping.url }}</th>
+                  <td>{{ ping.reachable ? 'yes' : 'no' }}</td>
+                  <td>{{ ping.average_ms === null || ping.average_ms === undefined ? '?' : ping.average_ms + ' ms' }}</td>
+                  <td>{{ ping.lost_percent === null || ping.lost_percent === undefined ? '?' : ping.lost_percent + ' % of ' + ping.sent }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p v-for="line in network.data.ping_errors" :key="line" class="hint warn-text">{{ line }}</p>
+          </div>
+          <div class="row"><div class="lab">Cloud status</div><div class="ctl-col"><p class="val code">{{ network.data.cloud_status ? JSON.stringify(network.data.cloud_status) : network.data.cloud_status_error }}</p></div></div>
+          <div class="row"><div class="lab">NAT</div><div class="ctl-col"><p class="val code">{{ network.data.nat ? JSON.stringify(network.data.nat) : network.data.nat_error }}</p></div></div>
+          <div class="row"><div class="lab">Wi-Fi signal</div><div class="ctl-col"><p class="val">{{ network.data.wifi ? JSON.stringify(network.data.wifi) : network.data.wifi_error }}</p></div></div>
+        </template>
+      </div>
+
+      <div class="set-card" data-testid="system-users">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Users</h3></div>
+        </div>
+        <p v-if="users.error" class="hint warn-text">{{ users.error }}</p>
+        <template v-else-if="users.data">
+          <div class="row stack">
+            <table class="tbl">
+              <thead><tr><th scope="col">Name</th><th scope="col">Group</th><th scope="col">Built in</th><th scope="col">Rights</th></tr></thead>
+              <tbody>
+                <tr v-for="user in (users.data.users as User[])" :key="user.name">
+                  <th scope="row">{{ user.name }}</th>
+                  <td>{{ user.group || '?' }}</td>
+                  <td>{{ user.reserved ? 'yes' : 'no' }}</td>
+                  <td>{{ user.authorities }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="row">
+            <div class="lab">Password recovery</div>
+            <div class="ctl-col"><p class="val">{{ users.data.recovery ? JSON.stringify(users.data.recovery) : users.data.recovery_error }}</p></div>
+          </div>
+          <p class="hint" data-testid="system-users-note">
+            Change the camera password from the camera list (Device names, groups, sharing, passwords, then Change through the cloud). This page reads device users only: a
+            user or password write over DVRIP is not offered because it cannot be tried on the camera and put back.
+          </p>
+        </template>
+        <p v-else class="hint">Not read yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="set-stack">
+    <div class="set-card danger" data-testid="system-danger">
+      <div class="set-card-h">
+        <div><h3 class="set-card-t"><Icon name="warning" small />Danger zone</h3></div>
+      </div>
       <div class="row">
-        <div class="lab">Extended info</div>
+        <label class="lab" for="system-upgrade-word">Install from the cloud<span class="hint">The camera downloads the offered firmware, flashes it and restarts. It is offline until the install finishes.</span></label>
         <div class="ctl-col">
-          <p v-if="about.data.info_ex" class="val"><span class="code">{{ JSON.stringify(about.data.info_ex) }}</span></p>
-          <p v-else class="hint">{{ about.data.info_ex_error }}</p>
+          <input id="system-upgrade-word" v-model="firmware.word" type="text" autocomplete="off" :placeholder="UPGRADE_WORD">
+          <button class="btn danger" type="button" data-testid="system-start-upgrade" :disabled="!!startReason" :aria-busy="busy === 'upgrade'" @click="startUpgrade">Install update</button>
+          <p v-if="startReason" class="hint" data-testid="system-start-reason">{{ startReason }}</p>
         </div>
       </div>
       <div class="row">
-        <div class="lab">Abilities<div class="hint">{{ about.data.abilities.length }} flags the camera reports as on</div></div>
+        <label class="lab" for="system-upgrade-file">Install from a file<span class="hint">The camera flashes the file you choose and restarts. A wrong file can leave it unusable.</span></label>
         <div class="ctl-col">
-          <details><summary>Show the list</summary><p class="hint code">{{ about.data.abilities.join(', ') }}</p></details>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div data-testid="system-time">
-    <p v-if="clock.error" class="hint warn-text">{{ clock.error }}</p>
-    <div v-else-if="clock.data">
-      <h3 class="set-h">Time</h3>
-      <div class="row"><div class="lab">Camera time</div><div class="ctl-col"><p class="val">{{ clock.data.device_time || 'unknown' }}</p></div></div>
-      <div class="row"><div class="lab">Time zone</div><div class="ctl-col"><p class="val">{{ zoneLabel(clock.data.minutes_east) }}</p></div></div>
-      <div class="row">
-        <div class="lab">Daylight saving</div>
-        <div class="ctl-col"><p class="val">{{ (clock.data.location && clock.data.location.DSTRule) || 'unknown' }}</p></div>
-      </div>
-      <div class="row">
-        <div class="lab">Date format</div>
-        <div class="ctl-col"><p class="val">{{ (clock.data.location && clock.data.location.DateFormat) || 'unknown' }} · {{ (clock.data.location && clock.data.location.TimeFormat) || '' }}</p></div>
-      </div>
-      <button class="btn btn-fill" type="button" data-testid="system-sync-time" :disabled="!!noCamera" :aria-busy="busy === 'time sync'" @click="syncTime">Sync with this computer</button>
-      <p class="hint">Writes this computer’s clock, its standard time zone ({{ zoneLabel(baseOffsetMinutes()) }}) and its daylight-saving rule to the camera, as the phone app does.</p>
-    </div>
-  </div>
-
-  <div data-testid="system-language">
-    <p v-if="language.error" class="hint warn-text">{{ language.error }}</p>
-    <div v-else-if="language.data">
-      <h3 class="set-h">Camera language</h3>
-      <div class="row">
-        <label class="lab" for="system-language-pick">Language</label>
-        <div class="ctl-col">
-          <select id="system-language-pick" v-model="language.pick">
-            <option v-for="item in language.data.available" :key="item" :value="item">{{ item }}</option>
-          </select>
-          <button class="btn btn-fill" type="button" data-testid="system-save-language" :disabled="!!languageReason" :aria-busy="busy === 'language'" @click="saveLanguage">Save language</button>
-          <p v-if="languageReason" class="hint">{{ languageReason }}</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div data-testid="system-firmware">
-    <h3 class="set-h">Firmware</h3>
-    <button class="btn btn-line" type="button" data-testid="system-check-firmware" :disabled="!!noCamera" :aria-busy="busy === 'firmware check'" @click="checkFirmware">Check for update</button>
-    <p v-if="firmware.error" class="hint warn-text">{{ firmware.error }}</p>
-    <div v-else-if="firmware.data">
-      <div class="row">
-        <div class="lab">Upgrade server</div>
-        <div class="ctl-col">
-          <p class="val" data-testid="system-firmware-server">{{ firmware.data.server_check ? firmware.data.server_check.detail : firmware.data.server_check_error }}</p>
-          <p v-for="offer in offers" :key="offer.file_name" class="hint">{{ offer.file_name }} · {{ offer.date }}</p>
+          <input id="system-upgrade-file" type="file" @change="pickFile">
+          <input v-model="firmware.fileWord" type="text" autocomplete="off" aria-label="Type UPGRADE to confirm" :placeholder="UPGRADE_WORD">
+          <button class="btn danger" type="button" data-testid="system-upload-firmware" :disabled="!!fileReason" :aria-busy="busy === 'upload'" @click="uploadFirmware">Send file to camera</button>
+          <p v-if="fileReason" class="hint">{{ fileReason }}</p>
         </div>
       </div>
       <div class="row">
-        <div class="lab">Camera check</div>
-        <div class="ctl-col"><p class="val">{{ firmware.data.device_check ? JSON.stringify(firmware.data.device_check) : firmware.data.device_check_error }}</p></div>
+        <div class="lab">Restart<span class="hint">Every stream drops; the camera answers again after about a minute.</span></div>
+        <div class="ctl-col">
+          <label class="switchrow"><input v-model="danger.restart" type="checkbox"><span>Yes, restart the camera now</span></label>
+          <button class="btn danger" type="button" data-testid="system-restart" :disabled="!!restartReason" :aria-busy="busy === 'restart'" @click="restart">Restart camera</button>
+          <p v-if="restartReason" class="hint">{{ restartReason }}</p>
+        </div>
       </div>
-    </div>
-    <div class="row">
-      <label class="lab" for="system-upgrade-word">Install from the cloud</label>
-      <div class="ctl-col">
-        <input id="system-upgrade-word" v-model="firmware.word" type="text" autocomplete="off" :placeholder="UPGRADE_WORD">
-        <button class="btn btn-line" type="button" data-testid="system-start-upgrade" :disabled="!!startReason" :aria-busy="busy === 'upgrade'" @click="startUpgrade">Install update</button>
-        <p v-if="startReason" class="hint" data-testid="system-start-reason">{{ startReason }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <label class="lab" for="system-upgrade-file">Install from a file</label>
-      <div class="ctl-col">
-        <input id="system-upgrade-file" type="file" @change="pickFile">
-        <input v-model="firmware.fileWord" type="text" autocomplete="off" aria-label="Type UPGRADE to confirm" :placeholder="UPGRADE_WORD">
-        <button class="btn btn-line" type="button" data-testid="system-upload-firmware" :disabled="!!fileReason" :aria-busy="busy === 'upload'" @click="uploadFirmware">Send file to camera</button>
-        <p v-if="fileReason" class="hint">{{ fileReason }}</p>
-      </div>
-    </div>
-  </div>
-
-  <div data-testid="system-network">
-    <h3 class="set-h">Network check</h3>
-    <button class="btn btn-line" type="button" data-testid="system-check-network" :disabled="!!noCamera" :aria-busy="busy === 'network check'" @click="checkNetwork">Run network check</button>
-    <p v-if="network.error" class="hint warn-text">{{ network.error }}</p>
-    <div v-else-if="network.data">
-      <table class="tbl">
-        <thead><tr><th scope="col">Host</th><th scope="col">Reachable</th><th scope="col">Average</th><th scope="col">Lost</th></tr></thead>
-        <tbody>
-          <tr v-for="ping in (network.data.pings as Ping[])" :key="ping.url">
-            <th scope="row" class="code">{{ ping.url }}</th>
-            <td>{{ ping.reachable ? 'yes' : 'no' }}</td>
-            <td>{{ ping.average_ms === null || ping.average_ms === undefined ? '?' : ping.average_ms + ' ms' }}</td>
-            <td>{{ ping.lost_percent === null || ping.lost_percent === undefined ? '?' : ping.lost_percent + ' % of ' + ping.sent }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p v-for="line in network.data.ping_errors" :key="line" class="hint warn-text">{{ line }}</p>
-      <div class="row"><div class="lab">Cloud status</div><div class="ctl-col"><p class="val code">{{ network.data.cloud_status ? JSON.stringify(network.data.cloud_status) : network.data.cloud_status_error }}</p></div></div>
-      <div class="row"><div class="lab">NAT</div><div class="ctl-col"><p class="val code">{{ network.data.nat ? JSON.stringify(network.data.nat) : network.data.nat_error }}</p></div></div>
-      <div class="row"><div class="lab">Wi-Fi signal</div><div class="ctl-col"><p class="val">{{ network.data.wifi ? JSON.stringify(network.data.wifi) : network.data.wifi_error }}</p></div></div>
-    </div>
-  </div>
-
-  <div data-testid="system-users">
-    <p v-if="users.error" class="hint warn-text">{{ users.error }}</p>
-    <div v-else-if="users.data">
-      <h3 class="set-h">Device users</h3>
-      <table class="tbl">
-        <thead><tr><th scope="col">Name</th><th scope="col">Group</th><th scope="col">Built in</th><th scope="col">Rights</th></tr></thead>
-        <tbody>
-          <tr v-for="user in (users.data.users as User[])" :key="user.name">
-            <th scope="row">{{ user.name }}</th>
-            <td>{{ user.group || '?' }}</td>
-            <td>{{ user.reserved ? 'yes' : 'no' }}</td>
-            <td>{{ user.authorities }}</td>
-          </tr>
-        </tbody>
-      </table>
       <div class="row">
-        <div class="lab">Password recovery</div>
-        <div class="ctl-col"><p class="val">{{ users.data.recovery ? JSON.stringify(users.data.recovery) : users.data.recovery_error }}</p></div>
-      </div>
-      <p class="hint" data-testid="system-users-note">
-        Change the camera password from the camera list (Device names, groups, sharing, passwords, then Change through the cloud). This page reads device users only: a
-        user or password write over DVRIP is not offered because it cannot be tried on the camera and put back.
-      </p>
-    </div>
-  </div>
-
-  <div data-testid="system-danger">
-    <h3 class="set-h">Restart and reset</h3>
-    <div class="row">
-      <div class="lab">Restart</div>
-      <div class="ctl-col">
-        <label class="switchrow"><input v-model="danger.restart" type="checkbox"><span>Yes, restart the camera now</span></label>
-        <button class="btn btn-line" type="button" data-testid="system-restart" :disabled="!!restartReason" :aria-busy="busy === 'restart'" @click="restart">Restart camera</button>
-        <p v-if="restartReason" class="hint">{{ restartReason }}</p>
+        <label class="lab" for="system-reset-word">Factory defaults<span class="hint">Erases every setting on the camera. Recordings stay.</span></label>
+        <div class="ctl-col">
+          <input id="system-reset-word" v-model="danger.reset" type="text" autocomplete="off" :placeholder="RESET_WORD">
+          <button class="btn danger" type="button" data-testid="system-reset" :disabled="!!resetReason" :aria-busy="busy === 'reset'" @click="reset">Restore factory defaults</button>
+          <p v-if="resetReason" class="hint" data-testid="system-reset-reason">{{ resetReason }}</p>
+        </div>
       </div>
     </div>
-    <div class="row">
-      <label class="lab" for="system-reset-word">Factory defaults<div class="hint">Erases every setting on the camera. Recordings stay.</div></label>
-      <div class="ctl-col">
-        <input id="system-reset-word" v-model="danger.reset" type="text" autocomplete="off" :placeholder="RESET_WORD">
-        <button class="btn btn-line" type="button" data-testid="system-reset" :disabled="!!resetReason" :aria-busy="busy === 'reset'" @click="reset">Restore factory defaults</button>
-        <p v-if="resetReason" class="hint" data-testid="system-reset-reason">{{ resetReason }}</p>
-      </div>
-    </div>
-  </div>
   </div>
 </template>
 
 <style scoped>
-.sys-body {
-  min-width: 0;
+details summary {
+  min-height: var(--hit);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  cursor: pointer;
+  font-size: var(--t-13);
+  color: var(--accent);
+}
+details > p {
+  margin: var(--s2) 0 0;
   overflow-wrap: anywhere;
-}
-.sys-body .tbl {
-  width: 100%;
-  table-layout: fixed;
-}
-.sys-body input,
-.sys-body select,
-.sys-body textarea {
-  max-width: 100%;
-  min-width: 0;
 }
 </style>

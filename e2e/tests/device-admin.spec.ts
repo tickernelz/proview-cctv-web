@@ -269,3 +269,13 @@ test('transferring a camera has its own field and asks before ownership moves', 
   ])
 })
 
+test('Add a camera in the sheet closes it and opens Settings at Configuration', async ({ page }) => {
+  await fakeCloud(page)
+  await signIn(page, 'one')
+  await playing(page)
+  const sheet = await openSheet(page)
+  await sheet.getByRole('button', { name: 'Add a camera' }).click()
+  await expect(sheet).toBeHidden()
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page).toHaveURL(/#\/settings\/config$/)
+})

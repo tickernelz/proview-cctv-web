@@ -284,6 +284,8 @@ export async function walkScreens(page: Page, check: Check) {
   await openSettingsScreen(page)
   const links = page.locator('.set-nav a[data-section]')
   for (const section of await links.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.section!))) {
+    const crumb = page.locator('#set-body > section:not([hidden]) .set-crumb')
+    if (await crumb.isVisible()) await crumb.click()
     await page.locator('.set-nav a[data-section="' + section + '"]').click()
     await expect(page.locator('#set-body > section[data-section="' + section + '"]')).toBeVisible()
     await check('settings, ' + section)

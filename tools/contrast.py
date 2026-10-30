@@ -74,6 +74,7 @@ PAIRS = [
     ('accent badge text on accent-soft over page', 'accent', 'accent-soft@bg', TEXT, 4.5),
     ('segmented selected label on accent-soft over bar', 'accent', 'accent-soft@bg-2', TEXT, 4.5),
     ('live text on live-soft over bar', 'live', 'live-soft@bg-2', TEXT, 4.5),
+    ('accent-ink on bad (filled danger button)', 'accent-ink', 'bad', TEXT, 4.5),
     ('accent on hover (New tag on a hovered event row)', 'accent', 'bg-3', TEXT, 4.5),
     ('event icon on page (motion kind on an event card)', 'event', 'bg', GRAPHIC, 3.0),
     ('live icon on page (alarm kind on an event card)', 'live', 'bg', GRAPHIC, 3.0),

@@ -298,10 +298,19 @@ impl Drop for Running {
 }
 
 async fn start(name: &str, cloud: &str) -> Running {
+    start_with(name, cloud, ProviderKind::Proview, 3600).await
+}
+
+async fn start_with(
+    name: &str,
+    cloud: &str,
+    provider: ProviderKind,
+    session_ttl_secs: u64,
+) -> Running {
     prepare_env();
     let dir = data_dir(name);
     let config = Config {
-        provider: ProviderKind::Proview,
+        provider,
         cloud_base: cloud.to_string(),
         share_base: cloud.to_string(),
         device_user: "admin".to_string(),
@@ -310,7 +319,7 @@ async fn start(name: &str, cloud: &str) -> Running {
         device_host: None,
         device_onvif: None,
         device_rtsp: None,
-        session_ttl_secs: 3600,
+        session_ttl_secs,
     };
     let settings = proview_server::settings::SettingsStore::load(Some(&dir));
     let opts = ServeOptions {
@@ -749,5 +758,50 @@ fn a_silent_vendor_is_a_504_that_names_the_stage() {
                 .contains("usercp"),
             "{body}"
         );
+    });
+}
+
+#[test]
+fn a_session_without_a_cloud_token_gets_409_for_the_profile() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|_, _| ok(json!("")));
+        let running = start_with("profile-tokenless", &cloud, ProviderKind::Fixture, 3600).await;
+        let mut browser = Browser::new();
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/login",
+                json!({ "email": "fixture@example.invalid", "password": "fixture-password" }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let (status, body) = browser.get(&running.base, "/api/cloud/profile").await;
+        assert_eq!(status, 409, "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no cloud sign-in"),
+            "{body}"
+        );
+        assert!(of(&calls, "userinfo2").is_empty());
+    });
+}
+
+#[test]
+fn an_expired_session_gets_401_for_the_profile() {
+    block_on(async {
+        let login = logins(PASSWORD);
+        let (cloud, calls) = cloud_stub(move |method, form| match method {
+            "loginExist" => login(form),
+            _ => ok(json!("")),
+        });
+        let running = start_with("profile-expired", &cloud, ProviderKind::Proview, 1).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base, PASSWORD).await, 200);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let (status, body) = browser.get(&running.base, "/api/cloud/profile").await;
+        assert_eq!(status, 401, "{body}");
+        assert!(of(&calls, "userinfo2").is_empty());
     });
 }
