@@ -9,6 +9,17 @@ stability before 1.0.
 
 ### Added
 
+- PTZ at parity with the phone app's live and preset screens, over the cloud
+  relay: the pad keys, arrow keys and zoom/focus buttons now move while held and
+  stop on release (`/api/device/controls/ptz/press` and `/ptz/release` keep one
+  DVRIP session per hold; a tap keeps moving 800 ms like the app); a click on the
+  top lens picture aims the moving lens there (`/ptz/locate`, `OPPtzLocate`);
+  "Edit presets" in the pad saves the current position as a preset, renames and
+  deletes presets and edits the tour stops (`/preset/add`, `/preset/rename`,
+  `/preset/delete`, `/tour/remove`). Zoom, focus, calibration
+  (`/ptz/calibrate`) and the panoramic PTZ range (`/panorama`) follow the
+  device's ability flags and stay hidden on this camera, which reports none of
+  them; the capability table shows why.
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
