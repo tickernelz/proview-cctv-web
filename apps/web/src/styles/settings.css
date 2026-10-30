@@ -40,7 +40,8 @@
   .set-card .row { display: flex; flex-wrap: wrap; justify-content: space-between; margin: 0; padding: var(--s3) var(--s4); border-top: 1px solid var(--line-soft); gap: var(--s2) var(--s5); align-items: center; }
   .set-card .row > .lab { flex: 1 1 220px; min-width: min(220px, 100%); }
   .set-card .row > .ctl-col { flex: 0 1 auto; max-width: 100%; }
-  .set-card .row.stack > .ctl-col, .set-card .row.stack > * { flex: 1 1 100%; }
+  .set-card .row.stack > * { flex: none; width: 100%; }
+  .set-card .row.stack > .ctl-col > * { flex: none; }
   .set-card .row .lab { padding-top: 0; }
   .set-card .row .val { padding-top: 0; }
   .set-card .row .ctl-col { align-items: flex-end; text-align: right; }
@@ -82,7 +83,7 @@
   #settings input::placeholder, #device-admin input::placeholder { color: var(--ink-3); }
   #settings input:disabled, #settings select:disabled, #device-admin input:disabled, #device-admin select:disabled { opacity: 0.55; cursor: not-allowed; }
   #settings input[type="number"] { width: 112px; font-variant-numeric: tabular-nums; }
-  #settings .set-card .row .ctl-col > input:is([type="text"], [type="password"], [type="email"], :not([type])), #settings .set-card .row .ctl-col > select { width: 280px; }
+  #settings .set-card .row .ctl-col > input:is([type="text"], [type="password"], [type="email"], :not([type])), #settings .set-card .row .ctl-col > select { width: 240px; }
   #settings .text-input { width: 100%; max-width: 420px; }
   #settings .text-input.mono-input, #settings .mono-input { font-family: var(--f-mono); font-size: var(--t-13); }
   #settings input[type="checkbox"]:not([role="switch"]), #device-admin input[type="checkbox"]:not([role="switch"]) { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); flex: none; }
@@ -193,6 +194,8 @@
     .set-nav { overflow: visible; border-right: 0; border-bottom: 1px solid var(--line-soft); padding: var(--s3) var(--s3) var(--s4); }
     .set-nav a { min-height: 44px; }
     .set-body { overflow: visible; padding: var(--s5) var(--s4) var(--s7); }
+    .set[data-view="list"] .set-body { display: none; }
+    .set[data-view="detail"] .set-nav { display: none; }
     .set-crumb { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--hit); margin: 0 0 var(--s2) calc(-1 * var(--s2)); padding: 0 var(--s2); border-radius: var(--r-md); font-size: var(--t-14); color: var(--ink-2); }
     .set-crumb:hover { background: var(--bg-3); color: var(--ink); }
     .savebar { flex-wrap: wrap; row-gap: var(--s2); padding: var(--s2) var(--s4); }
@@ -200,12 +203,11 @@
   }
   @media (max-width: 640px) {
     .row { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
-    .set-card .row { flex-direction: column; align-items: stretch; }
-    .set-card .row > .lab, .set-card .row > .ctl-col { flex: none; }
+    .set-card .row > .lab { flex-basis: 160px; min-width: min(160px, 100%); }
+    .set-card .row > .ctl-col:has(input:not([type="checkbox"]):not([type="radio"]):not([type="number"]), select, textarea, table, .seg) { flex: 1 1 100%; }
     .row .lab, .row .val { padding-top: 0; }
-    .set-card .row .ctl-col { align-items: stretch; text-align: left; }
-    .set-card .row .ctl-col .hint { text-align: left; }
-    .set-card .row .ctl-col .switchrow { flex-direction: row; justify-content: space-between; }
+    .set-card .row > .ctl-col:has(input:not([type="checkbox"]):not([type="radio"]):not([type="number"]), select, textarea, table, .seg) { align-items: stretch; text-align: left; }
+    .set-card .row > .ctl-col:has(input:not([type="checkbox"]):not([type="radio"]):not([type="number"]), select, textarea, table, .seg) .hint { text-align: left; }
     #settings .set-card .row .ctl-col > input:is([type="text"], [type="password"], [type="email"], :not([type])), #settings .set-card .row .ctl-col > select, #settings .text-input { width: 100%; max-width: none; }
     .codes { justify-content: flex-start; }
     .report.checks > div { grid-template-columns: minmax(0, 1fr); gap: var(--s1); }

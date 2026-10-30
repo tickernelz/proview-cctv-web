@@ -188,3 +188,45 @@ test('The live bar keeps Stop alarm hidden when the ability is missing', async (
   await expect.poll(() => asked).toBeGreaterThan(0)
   await expect(page.getByTestId('ctl-alarm-stop')).toHaveCount(0)
 })
+
+test('Painting the weekly grid rewrites only that day and refuses more ranges than the camera holds', async ({ page }) => {
+  const writes = await fake(page)
+  await openAlarm(page)
+  const grid = page.getByTestId('detect-motion-schedule')
+  await grid.getByRole('button', { name: 'Monday 00:00 to 01:00, detect', exact: true }).focus()
+  for (let step = 0; step < 6; step++) await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Space')
+  await expect(grid.getByRole('button', { name: 'Monday 06:00 to 07:00, off', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  for (let step = 0; step < 6; step++) await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Space')
+  await expect(page.getByTestId('detect-motion-schedule-refusal')).toContainText('This camera holds 2 time ranges a day')
+  await expect(grid.getByRole('button', { name: 'Monday 12:00 to 13:00, detect', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByTestId('detect-save-motion').click()
+  await expect(page.getByTestId('detect-status')).toHaveText('Motion detection read back after the write and kept.')
+  const sent = writes[0].body
+  expect(Object.keys(sent)).toEqual(['schedule'])
+  expect(sent.schedule[1]).toEqual(['1 00:00:00-06:00:00', '1 07:00:00-24:00:00'])
+  expect(sent.schedule[0]).toEqual(['1 00:00:00-24:00:00', '0 00:00:00-24:00:00'])
+  expect(sent.schedule[3][1]).toBe('0 07:00-08:00')
+})
+
+test('A region corner moves by keyboard, clamps to 8192 and travels in the rule area', async ({ page }) => {
+  const writes = await fake(page)
+  await page.route(/\/api\/device\/controls\/snapshot/, (route: Route) => route.fulfill({ status: 502, json: { message: 'camera did not answer' } }))
+  await openAlarm(page)
+  await expect(page.getByTestId('detect-human-picture-note')).toHaveText('No picture to draw on: camera did not answer')
+  await page.getByTestId('detect-human-handle-1').focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('Shift+ArrowDown')
+  await expect(page.getByTestId('detect-human-handle-1')).toHaveAttribute('aria-label', 'Corner 1: 164, 612')
+  await page.getByTestId('detect-human-handle-2').focus()
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.getByTestId('detect-save-human').click()
+  await expect(page.getByTestId('detect-status')).toHaveText('Human detection read back after the write and kept.')
+  expect(writes).toEqual([
+    {
+      path: '/api/device/detect/human',
+      body: { rule: { area: [[164, 612], [8192, 100], [8191, 8191], [100, 8191]] } },
+    },
+  ])
+})

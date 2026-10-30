@@ -155,3 +155,64 @@ test('a refused provider switch is not shown again when Settings opens later', a
   await expect(page.locator('#h-connection')).toBeVisible()
   await expect(page.getByTestId('mode-error')).toHaveCount(0)
 })
+
+test('the sections sit in three groups and Manage cameras opens the camera list from Settings', async ({ page }) => {
+  await page.route('**/api/cloud/device-attributes', (route) => route.fulfill({ json: { devices: [{ uuid: 'gate', nickname: 'Gate camera' }], groups: [] } }))
+  await openSection(page, 'Playback')
+  const nav = page.getByTestId('settings').getByRole('navigation', { name: 'Settings sections' })
+  await expect(nav.locator('.set-nav-g')).toHaveText(['Camera', 'App', 'Account & server'])
+  await expect(nav.locator('a[data-section]')).toHaveText([
+    'This camera',
+    'Video & storage',
+    'Image, light & sound',
+    'Detection & alarms',
+    'System',
+    'Playback',
+    'Configuration',
+    'Account',
+    'Connection',
+    'Server',
+  ])
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeVisible()
+  const manage = page.getByTestId('settings-cameras')
+  await manage.click()
+  await expect(page.getByTestId('device-admin')).toBeVisible()
+  await page.getByTestId('device-admin-close').click()
+  await expect(page.getByTestId('device-admin')).toBeHidden()
+  await expect(manage).toBeFocused()
+})
+
+test('Ctrl+S saves and Escape leaves only when nothing is unsaved', async ({ page }) => {
+  await openSection(page, 'Configuration')
+  await expect(page.getByTestId('settings-status')).not.toHaveText('Not loaded yet.')
+  const field = page.getByTestId('setting-PROVIEW_LISTEN')
+  await field.fill('nope')
+  await expect(page.getByTestId('save-state')).toHaveText('Unsaved changes · 1 field')
+  await page.locator('#h-config').focus()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await page.route('**/api/settings', (route) =>
+    route.request().method() === 'POST' ? route.fulfill({ status: 400, json: { message: 'PROVIEW_LISTEN is not a socket address' } }) : route.continue(),
+  )
+  await page.keyboard.press('Control+s')
+  await expect(page.getByTestId('save-state')).toHaveText('Not saved: PROVIEW_LISTEN is not a socket address')
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
+  await page.locator('#h-config').focus()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('live')).toBeVisible()
+})
+
+test('a phone shows the section list first, then the section, and All settings goes back', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'one')
+  await page.getByTestId('tab-settings').click()
+  const nav = page.getByTestId('settings').getByRole('navigation', { name: 'Settings sections' })
+  await expect(nav).toBeVisible()
+  await expect(page.locator('#set-body')).toBeHidden()
+  await nav.getByRole('link', { name: 'Server', exact: true }).click()
+  await expect(page.locator('#h-server')).toBeVisible()
+  await expect(nav).toBeHidden()
+  await page.locator('#set-body > section[data-section="server"]').getByRole('button', { name: 'All settings' }).click()
+  await expect(nav).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'Server', exact: true })).toBeFocused()
+})

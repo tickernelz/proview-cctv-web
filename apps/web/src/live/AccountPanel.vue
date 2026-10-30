@@ -30,6 +30,7 @@ const removal = reactive({ sent: false, sending: false, code: '', account: '', u
 const notCloud = computed(() => {
   if (!s.signedIn) return 'Sign in with the cloud account first.'
   if (profile.status === 409) return 'This session is on a camera on this network. Sign in with the cloud account to manage it.'
+  if (profile.status === 401) return 'This session has no cloud sign-in. Sign in with the cloud account to manage it.'
   return ''
 })
 const passwordBlock = computed(() => {
@@ -61,9 +62,17 @@ async function load() {
   try {
     const who = await api<{ account?: string }>('/api/me')
     me.account = who.account || ''
+  } catch (error) {
+    profile.loading = false
+    if (sessionLost(error)) return
+    profile.data = null
+    profile.status = (error as { status?: number }).status || 0
+    profile.error = sentence(error)
+    return
+  }
+  try {
     profile.data = await api<Profile>('/api/cloud/profile')
   } catch (error) {
-    if (sessionLost(error)) return
     profile.data = null
     profile.status = (error as { status?: number }).status || 0
     profile.error = sentence(error)

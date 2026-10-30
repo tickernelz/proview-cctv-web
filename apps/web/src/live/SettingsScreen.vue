@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import Icon from '../components/Icon.vue'
 import { Kbd } from '../components/ui/kbd'
 import { api } from '../lib/api'
-import { leaveSettings, setMode, setPref, showSection, signOut } from '../app/shell'
+import { leaveSettings, openSettings, setMode, setPref, showSection, signOut } from '../app/shell'
 import { toggleWhiteLight } from '../app/controls'
 import { live, menuOpen, type Prefs } from './store'
 import AccountPanel from './AccountPanel.vue'
@@ -308,7 +308,17 @@ function show(section: string, focus: boolean) {
   showSection(section, focus)
 }
 
+const narrowQuery = window.matchMedia('(max-width: 767px)')
+const narrow = ref(narrowQuery.matches)
+narrowQuery.addEventListener('change', (event) => (narrow.value = event.matches))
+const listView = ref(false)
+
 function pick(section: string) {
+  listView.value = false
+  if (!s.shown) {
+    openSettings(section, { focus: true })
+    return
+  }
   if (s.section === section) {
     reloadSection(section)
     if (section === 'config') load()
@@ -316,7 +326,9 @@ function pick(section: string) {
   show(section, true)
 }
 
-function toList() {
+async function toList() {
+  listView.value = true
+  await nextTick()
   const link = nav.value?.querySelector<HTMLAnchorElement>('a[aria-current="page"]')
   link?.focus()
   link?.scrollIntoView({ block: 'nearest' })
@@ -404,9 +416,18 @@ function onKey(event: KeyboardEvent) {
     save()
   } else if (event.key === 'Escape' && !typing(event.target) && !changed.value) {
     event.preventDefault()
-    goBack()
+    if (narrow.value && !listView.value) toList()
+    else goBack()
   }
 }
+
+watch(
+  () => s.shown,
+  (shown) => {
+    if (shown) listView.value = narrow.value && !s.focusKey
+  },
+  { immediate: true },
+)
 
 watch(() => s.section, (section) => {
   if (body.value) body.value.scrollTop = 0
@@ -445,7 +466,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <div class="set">
+  <div class="set" :data-view="narrow ? (listView ? 'list' : 'detail') : undefined">
     <nav ref="nav" class="set-nav" aria-label="Settings sections" @keydown="onNavKey">
       <div class="set-top">
         <button id="settings-back" ref="back" class="set-back" data-testid="settings-back" type="button" @click="goBack"><Icon name="arrow-left" small /><span id="settings-back-label">{{ backLabel }}</span></button>
