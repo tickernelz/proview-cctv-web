@@ -10,6 +10,7 @@ import PlaybackStrip from './PlaybackStrip.vue'
 import { decodeAlaw, PlaybackSound } from './playback-audio'
 import { deviceTime, fileAtTime, mb, secondsBetween, stamp, type Clip } from './playback-clips'
 import { addLauncher, live } from './store'
+import { liveHash, replaceHash } from '../shell/router'
 import { AVC_TYPE, decodes, mayAskForHevc, rememberHevc, watchFirstFrame, type StreamShape } from '../lib/hevc'
 
 type Device = { id: string; name?: string }
@@ -550,6 +551,7 @@ function downloadChosen() {
 
 function show() {
   live.screen = 'playback'
+  replaceHash(liveHash('playback'))
 }
 
 async function opened() {
@@ -575,7 +577,7 @@ function release() {
 function close(returnFocus = true) {
   if (!open.value) return
   live.screen = ''
-  if (location.hash === '#playback') history.replaceState(null, '', '#' + (page.view === 'grid' ? 'grid' : 'live'))
+  if (location.hash === liveHash('playback')) replaceHash(liveHash(page.view === 'grid' ? 'grid' : 'single'))
   if (returnFocus) document.getElementById('pb-open')?.focus()
 }
 

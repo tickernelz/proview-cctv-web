@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { api } from '../lib/api'
 import { sessionLost, signOut } from '../app/shell'
 import { live } from './store'
@@ -17,7 +17,7 @@ type Profile = {
 }
 type Done = { ok: boolean; message: string; latencyMs?: number }
 
-const props = defineProps<{ host: HTMLElement }>()
+const props = defineProps<{ shown: boolean }>()
 const s = live.settings
 
 const profile = reactive({ data: null as Profile | null, error: '', status: 0, loading: false })
@@ -137,18 +137,21 @@ function open() {
   const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
   if (typeof page.openSettings === 'function') page.openSettings('account')
   else if (typeof page.showSection === 'function') page.showSection('account', true)
-  else location.hash = '#settings/account'
+  else location.hash = '#/settings/account'
 }
 
 function openFromNav() {
-  const shown = !props.host.hidden
+  const shown = props.shown
   open()
   if (shown) load()
 }
 
-const watcher = new MutationObserver(() => {
-  if (!props.host.hidden) load()
-})
+watch(
+  () => props.shown,
+  (shown) => {
+    if (shown) load()
+  },
+)
 
 watch(
   () => s.signedIn,
@@ -159,20 +162,16 @@ watch(
     me.account = ''
     Object.assign(password, { current: '', next: '', confirm: '', note: '', bad: false })
     Object.assign(removal, { sent: false, code: '', account: '', understood: false, note: '', bad: false })
-    if (signed && !props.host.hidden) load()
+    if (signed && props.shown) load()
   },
 )
 
-onMounted(() => {
-  watcher.observe(props.host, { attributes: true, attributeFilter: ['hidden'] })
-})
 
-onBeforeUnmount(() => watcher.disconnect())
 </script>
 
 <template>
-  <Teleport to=".set-nav">
-    <a href="#settings/account" data-section="account" data-testid="account-settings-link" @click.prevent="openFromNav">Account</a>
+  <Teleport defer to=".set-nav">
+    <a href="#/settings/account" data-section="account" data-testid="account-settings-link" @click.prevent="openFromNav">Account</a>
   </Teleport>
   <h2 id="h-account" class="set-h" tabindex="-1">Account</h2>
   <p class="set-sub">The PROVIEW cloud account this app is signed in with, read from the vendor cloud now. Changes here apply to the phone app too.</p>

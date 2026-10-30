@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Locator } from '@playwright/test'
 import { playing, scenarioUrl, signIn } from './app'
-import { overflowFindings, smallTargets, walkScreens } from './layout'
+import { overflowFindings, smallTargets, tabBarShown, walkScreens } from './layout'
 
 const SCREENS: Record<string, (page: Page) => Promise<Locator[]>> = {
   signin: async (page) => {
@@ -22,7 +22,7 @@ const SCREENS: Record<string, (page: Page) => Promise<Locator[]>> = {
   },
   settings: async (page) => {
     await signIn(page, 'one')
-    await page.getByTestId('open-settings').click()
+    await page.getByTestId(tabBarShown(page) ? 'tab-settings' : 'open-settings').click()
     await expect(page.getByTestId('settings-status')).not.toHaveText('Not loaded yet.')
     return []
   },

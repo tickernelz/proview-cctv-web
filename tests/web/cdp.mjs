@@ -252,12 +252,14 @@ export async function startBrowser(extraArgs = []) {
   };
 }
 
+export const EVENTS_PANEL_CLOSED = "localStorage.setItem('pvw_events_panel', 'closed');";
+
 export async function signIn(page, base) {
   await page.goto(base + '/api/health');
   await page.evaluate(
     "fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'fixture@example.invalid', password: 'fixture-password' }) }).then((r) => r.status)",
   );
-  await page.goto(base + '/?signed-in#live');
+  await page.goto(base + '/?signed-in#/live');
   await page.wait("!document.getElementById('watch').hidden", 'the Live screen');
 }
 

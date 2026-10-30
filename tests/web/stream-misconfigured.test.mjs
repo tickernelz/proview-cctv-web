@@ -95,7 +95,7 @@ test('a missing camera password offers the button that reaches the field', async
       15000,
     );
     const opened = await page.evaluate("({ hash: location.hash, key: document.activeElement.dataset.key })");
-    assert.equal(opened.hash, '#settings/config');
+    assert.equal(opened.hash, '#/settings/config');
     assert.equal(opened.key, 'PROVIEW_DEVICE_PASS');
     console.log('password button -> ' + JSON.stringify(opened));
   } finally {

@@ -8,6 +8,8 @@ import { loadDevices, setQuality, setView, stopAll } from './view'
 import { closeFloating } from './chrome'
 import { savePrefs, SECTIONS, state } from './state'
 import { applyTheme } from './theme'
+import { shell } from '../shell/layout'
+import { parseHash, replaceHash, settingsHash } from '../shell/router'
 
 export function showScreen(name: string) {
   closeFloating(false)
@@ -18,6 +20,9 @@ export function showScreen(name: string) {
   }
   document.body.dataset.screen = name
   live.settings.shown = name === 'settings'
+  shell.screen = name
+  if (name === 'settings') shell.view = 'settings'
+  else if (shell.view === 'settings') shell.view = 'live'
 }
 
 export function showSignin(options: { expired?: boolean; focus?: boolean } = {}) {
@@ -70,19 +75,25 @@ export async function signedIn() {
 }
 
 export function route(hash: string, focus: boolean) {
-  const raw = (hash || '').replace(/^#/, '')
-  if (raw !== 'playback') live.screen = ''
-  if (raw.startsWith('settings')) {
-    openSettings(raw.split('/')[1] || state.section, { focus })
+  const next = parseHash(hash)
+  if (next.mode !== 'playback') live.screen = ''
+  if (next.view === 'settings') {
+    openSettings(next.section || state.section, { focus })
     return
   }
   if (!state.signedIn) return
   if (state.screen !== 'watch') showScreen('watch')
-  if (raw === 'playback') {
+  if (next.view === 'events') {
+    shell.view = 'events'
+    stopAll()
+    return
+  }
+  shell.view = 'live'
+  if (next.mode === 'playback') {
     live.screen = 'playback'
     return
   }
-  setView(raw === 'grid' && state.cameras.length > 1 ? 'grid' : 'live')
+  setView(next.mode === 'grid' && state.cameras.length > 1 ? 'grid' : 'live')
 }
 
 export function modeName(mode: string | undefined) {
@@ -161,7 +172,7 @@ export function openSettings(section?: string, options: { focus?: boolean } = {}
   live.settings.modeError = ''
   showScreen('settings')
   showSection(section || state.section, options.focus)
-  if (location.hash !== '#settings/' + state.section) history.replaceState(null, '', '#settings/' + state.section)
+  replaceHash(settingsHash(state.section))
   renderPrefsIntoForm()
   renderSettingsChrome()
   live.settings.load += 1

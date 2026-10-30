@@ -113,7 +113,7 @@ test('a field typed while boot finishes keeps its value, its focus and the Save 
     await page.evaluate('signedIn()');
     assert.equal(await page.evaluate('state.signedIn'), true);
     assert.equal(await page.evaluate('document.body.dataset.screen'), 'settings');
-    assert.equal(await page.evaluate('location.hash'), '#settings/config');
+    assert.equal(await page.evaluate('location.hash'), '#/settings/config');
     assert.equal(await page.evaluate(FIELD + '.value'), TYPED);
     assert.equal(await page.evaluate('document.activeElement.dataset.key'), 'PROVIEW_LISTEN');
     assert.equal(await page.evaluate("document.getElementById('settings-save').hidden"), false);

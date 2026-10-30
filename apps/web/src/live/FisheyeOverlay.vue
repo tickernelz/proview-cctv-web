@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { shallowRef, watch } from 'vue'
-import { FisheyeDewarp, lensFromVideo, requestFromUrl, type FisheyeRequest } from './fisheye'
+import { FisheyeDewarp, MODEL, lensFromVideo, requestFromUrl, webgl2Supported, type FisheyeRequest } from './fisheye'
+
+Object.assign(window, {
+  ProviewFisheye: { create: (target: HTMLCanvasElement) => new FisheyeDewarp(target), supported: webgl2Supported, model: MODEL },
+})
 
 const request = shallowRef<FisheyeRequest | null>(requestFromUrl(location.search))
 const canvas = shallowRef<HTMLCanvasElement | null>(null)
@@ -53,7 +57,7 @@ watch(canvas, (element) => {
 </script>
 
 <template>
-  <Teleport v-if="request" to="#lens-crop">
+  <Teleport v-if="request" defer to="#lens-crop">
     <canvas
       ref="canvas"
       data-testid="fisheye-overlay"

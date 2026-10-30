@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
 
@@ -28,7 +28,7 @@ type Report = {
 type Reply = { ok: boolean; status: number; body: any }
 type Job = '' | 'day' | 'mode' | 'scene' | 'lux' | 'light' | 'privacy' | 'sleep' | 'wake' | 'led' | 'tip' | 'speaker' | 'mic'
 
-const props = defineProps<{ host: HTMLElement }>()
+const props = defineProps<{ shown: boolean }>()
 
 const LEVELS = [
   { value: 1, label: 'Low' },
@@ -177,29 +177,28 @@ function open() {
   const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
   if (typeof page.openSettings === 'function') page.openSettings('image')
   else if (typeof page.showSection === 'function') page.showSection('image', true)
-  else location.hash = '#settings/image'
+  else location.hash = '#/settings/image'
 }
 
 function openFromNav() {
-  const shown = !props.host.hidden
+  const shown = props.shown
   open()
   if (shown) load()
 }
 
-const watcher = new MutationObserver(() => {
-  if (!props.host.hidden) load()
-})
+watch(
+  () => props.shown,
+  (shown) => {
+    if (shown) load()
+  },
+)
 
-onMounted(() => {
-  watcher.observe(props.host, { attributes: true, attributeFilter: ['hidden'] })
-})
 
-onBeforeUnmount(() => watcher.disconnect())
 </script>
 
 <template>
-  <Teleport to=".set-nav">
-    <a href="#settings/image" data-section="image" data-testid="image-settings-link" @click.prevent="openFromNav">Image, light and sound</a>
+  <Teleport defer to=".set-nav">
+    <a href="#/settings/image" data-section="image" data-testid="image-settings-link" @click.prevent="openFromNav">Image, light and sound</a>
   </Teleport>
   <h2 id="h-image" class="set-h" tabindex="-1">Image, light and sound</h2>
   <p class="set-sub">

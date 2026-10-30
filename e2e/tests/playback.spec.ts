@@ -71,7 +71,7 @@ test('after a click on the strip or the summary, keys still stay out of Live and
   await expect(page.getByTestId('camera-name')).toHaveText('Garage')
 })
 
-test('#playback opens Playback after sign-in and leaving it goes back to #live', async ({ page }) => {
+test('#/live/playback opens Playback after sign-in and leaving it goes back to #/live', async ({ page }) => {
   const asked: string[] = []
   await page.route(/\/api\/playback\/files/, (route) => {
     asked.push(deviceOf(route.request().url()) || '')
@@ -79,29 +79,29 @@ test('#playback opens Playback after sign-in and leaving it goes back to #live',
   })
   const base = await signIn(page, 'one')
   await playing(page)
-  await page.goto(base + '/#playback')
+  await page.goto(base + '/#/live/playback')
   const screen = page.getByTestId('playback')
   await expect(screen).toBeVisible()
   await expect(page.locator('.pb-row')).toHaveCount(3)
   expect(asked).toEqual(['gate'])
   await page.getByTestId('pb-back').click()
   await expect(screen).toBeHidden()
-  await expect(page).toHaveURL(/#live$/)
-  await page.evaluate(() => (location.hash = 'playback'))
+  await expect(page).toHaveURL(/#\/live$/)
+  await page.evaluate(() => (location.hash = '/live/playback'))
   await expect(screen).toBeVisible()
 })
 
-test('leaving Playback opened from the grid puts #grid back, not #live', async ({ page }) => {
+test('leaving Playback opened from the grid puts #/live/grid back, not #/live', async ({ page }) => {
   await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
   await signIn(page, 'many')
   await playing(page)
-  await page.getByTestId('grid-toggle').click()
-  await expect(page).toHaveURL(/#grid$/)
-  await page.evaluate(() => (location.hash = 'playback'))
+  await page.getByTestId('view-grid').click()
+  await expect(page).toHaveURL(/#\/live\/grid$/)
+  await page.evaluate(() => (location.hash = '/live/playback'))
   await expect(page.getByTestId('playback')).toBeVisible()
   await page.getByTestId('pb-back').click()
   await expect(page.getByTestId('playback')).toBeHidden()
-  await expect(page).toHaveURL(/#grid$/)
+  await expect(page).toHaveURL(/#\/live\/grid$/)
 })
 
 test('the day lists its recordings with camera and day, and a chosen clip is marked in the list and the strip', async ({ page }) => {

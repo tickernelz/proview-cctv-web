@@ -6,6 +6,12 @@ import { leaveSettings, setMode, setPref, showSection, signOut } from '../app/sh
 import { toggleTheme } from '../app/theme'
 import { toggleWhiteLight } from '../app/controls'
 import { live, menuOpen, type Prefs } from './store'
+import AccountPanel from './AccountPanel.vue'
+import AlarmSettings from './AlarmSettings.vue'
+import DeviceSettings from './DeviceSettings.vue'
+import ImageSettings from './ImageSettings.vue'
+import SystemAbout from './SystemAbout.vue'
+import { replaceHash, settingsHash } from '../shell/router'
 
 type Field = {
   key: string
@@ -332,10 +338,6 @@ function onKey(event: KeyboardEvent) {
 }
 
 function syncForeign(section: string) {
-  for (const node of document.querySelectorAll<HTMLElement>('#set-body > section[data-section]')) {
-    const id = node.dataset.section || ''
-    if (!OWN.has(id)) node.hidden = section !== id
-  }
   for (const link of document.querySelectorAll<HTMLAnchorElement>('.set-nav a[data-section]')) {
     const id = link.dataset.section || ''
     if (OWN.has(id)) continue
@@ -348,7 +350,7 @@ function syncForeign(section: string) {
 watch(() => s.section, (section) => {
   syncForeign(section)
   if (body.value) body.value.scrollTop = 0
-  if (s.shown && location.hash !== '#settings/' + section) history.replaceState(null, '', '#settings/' + section)
+  if (s.shown) replaceHash(settingsHash(section))
 })
 watch(() => s.focusHeading, async () => {
   await nextTick()
@@ -397,7 +399,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
       <a
         v-for="item in SECTIONS"
         :key="item.id"
-        :href="'#settings/' + item.id"
+        :href="settingsHash(item.id)"
         :data-section="item.id"
         :aria-current="s.section === item.id ? 'page' : undefined"
         :tabindex="s.section === item.id ? 0 : -1"
@@ -592,6 +594,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
           </div>
         </div>
       </section>
+      <section data-section="device" aria-labelledby="h-device" :hidden="s.section !== 'device'"><DeviceSettings :shown="s.section === 'device'" /></section>
+      <section data-section="system" aria-labelledby="h-system" :hidden="s.section !== 'system'"><SystemAbout :shown="s.section === 'system'" /></section>
+      <section data-section="alarm" aria-labelledby="h-alarm" :hidden="s.section !== 'alarm'"><AlarmSettings :shown="s.section === 'alarm'" /></section>
+      <section data-section="image" aria-labelledby="h-image" :hidden="s.section !== 'image'"><ImageSettings :shown="s.section === 'image'" /></section>
+      <section data-section="account" aria-labelledby="h-account" :hidden="s.section !== 'account'"><AccountPanel :shown="s.section === 'account'" /></section>
     </div>
   </div>
   <div class="savebar" :data-tone="barTone || undefined">

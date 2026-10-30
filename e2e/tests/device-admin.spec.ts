@@ -224,7 +224,8 @@ test('the three jobs sit on tabs, and the favourite switch is saved with the gro
   await expect(sheet.getByRole('tab', { name: 'Name', exact: true })).toHaveAttribute('aria-selected', 'false')
 })
 
-test('Devices, Cloud and Alarms share one corner and replace each other', async ({ page }) => {
+test('Devices, Cloud and the Events overlay share one corner and replace each other', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
   await fakeCloud(page)
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: { entries: [], total: 0, pollSeconds: 60 } }))
   await signIn(page, 'one')

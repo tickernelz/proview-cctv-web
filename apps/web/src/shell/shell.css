@@ -1,0 +1,48 @@
+@layer components {
+  #app { height: 100%; }
+  .app { height: 100%; display: flex; flex-direction: column; background: var(--bg); color: var(--ink); }
+  .app > .screen { flex: 1; min-height: 0; }
+
+  .app-header { position: relative; z-index: 20; height: var(--header); flex: none; display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s3) 0 var(--s4); border-bottom: 1px solid var(--line-soft); background: var(--bg); }
+  .app-header .brand { margin-right: var(--s2); }
+  .app-header .switcher { margin-left: 0; min-height: var(--hit); }
+  .hdr-actions { display: flex; align-items: center; gap: var(--s1); padding-left: var(--s2); }
+  .app-header .alarm-bell { display: inline-flex; width: auto; min-width: var(--hit); align-items: center; gap: var(--s2); height: var(--hit); padding: 0 var(--s3); border-radius: var(--r-md); color: var(--ink-2); font-size: var(--t-14); font-weight: 500; transition: background-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
+  .app-header .alarm-bell:hover { background: var(--bg-3); color: var(--ink); }
+  .app-header .alarm-bell[aria-expanded="true"] { background: var(--accent-soft); color: var(--ink); }
+  .app-header .alarm-bell[aria-expanded="true"] .i { color: var(--accent); }
+  .app-header .alarm-bell[hidden] { display: none; }
+  #open-settings[aria-pressed="true"] { background: var(--accent-soft); color: var(--ink); }
+
+  .app-body { position: relative; flex: 1; min-height: 0; display: flex; }
+  .app-body > .screen { flex: 1; min-width: 0; height: auto; }
+
+  .events-panel { flex: none; width: var(--panel); min-height: 0; display: flex; flex-direction: column; background: var(--bg-2); border-left: 1px solid var(--line-soft); }
+  .events-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .app[data-panel="overlay"] .events-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 30; box-shadow: var(--shadow-panel); animation: panel-in var(--dur-2) var(--ease); }
+  .app[data-view="events"] #watch { display: none; }
+  .app[data-view="events"] .events-panel { flex: 1; width: auto; border-left: 0; }
+  @keyframes panel-in {
+    from { opacity: 0; transform: translateX(8px); }
+  }
+
+  .tabbar { flex: none; display: grid; grid-template-columns: repeat(3, 1fr); height: calc(var(--tabbar) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom); border-top: 1px solid var(--line-soft); background: var(--bg); }
+  .tabbar-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 44px; color: var(--ink-3); font-size: var(--t-12); font-weight: 500; text-decoration: none; transition: color var(--dur-1) var(--ease); }
+  .tabbar-item[aria-current="page"] { color: var(--accent); }
+
+  @media (max-width: 1023px) {
+    .hdr-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .app-header .alarm-bell { width: var(--hit); padding: 0; justify-content: center; position: relative; }
+    .app-header .alarm-bell .badge { position: absolute; top: 2px; right: 0; }
+  }
+
+  @media (max-width: 767px) {
+    .app-header { gap: var(--s2); padding: 0 var(--s2) 0 var(--s3); }
+    .app-header .brand { display: none; }
+  }
+
+  @media (max-width: 640px) and (min-height: 481px) {
+    :root { --below: calc(var(--tabbar) + env(safe-area-inset-bottom)); }
+    .hdr-actions .alarm-bell { display: none; }
+  }
+}

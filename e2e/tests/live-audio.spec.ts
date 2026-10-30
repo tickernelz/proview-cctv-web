@@ -199,7 +199,7 @@ test('a camera that sends no audio says so on the Sound button', async ({ page }
 test('in the grid only the selected tile asks for sound, and only once Sound is on', async ({ page }) => {
   const sockets = await liveWithAudio(page)
   await signIn(page, 'grid')
-  await page.getByTestId('grid-toggle').click()
+  await page.getByTestId('view-grid').click()
   const tiles = page.getByTestId('grid-tile')
   await expect(tiles).toHaveCount(5)
   await expect(page.locator('.tile.sel')).toHaveCount(1)

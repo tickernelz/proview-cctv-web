@@ -2,3 +2,78 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities) source(none);
 @source "./**/*.vue";
+
+@theme {
+  --color-*: initial;
+  --font-*: initial;
+  --text-*: initial;
+  --radius-*: initial;
+  --shadow-*: initial;
+  --breakpoint-*: initial;
+  --breakpoint-sm: 640px;
+  --breakpoint-md: 1024px;
+  --breakpoint-lg: 1280px;
+  --breakpoint-xl: 1440px;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-bg-3: var(--bg-3);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-stage: var(--stage);
+  --color-stage-ink: var(--stage-ink);
+  --color-stage-ink-2: var(--stage-ink-2);
+  --color-stage-live: var(--stage-live);
+  --color-stage-warn: var(--stage-warn);
+  --color-stage-matte: var(--stage-matte);
+  --color-stage-line: var(--stage-line);
+  --color-stage-hover: var(--stage-hover);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-live: var(--live);
+  --color-live-soft: var(--live-soft);
+  --color-event: var(--event);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-bad: var(--bad);
+  --color-rec-bar: var(--rec-bar);
+  --color-focus: var(--focus);
+  --color-badge: var(--badge);
+  --color-badge-ink: var(--badge-ink);
+  --color-scrim: var(--scrim);
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --font-sans: var(--f-sans);
+  --font-mono: var(--f-mono);
+
+  --text-12: var(--t-12);
+  --text-12--line-height: var(--lh-body);
+  --text-13: var(--t-13);
+  --text-13--line-height: var(--lh-body);
+  --text-14: var(--t-14);
+  --text-14--line-height: var(--lh-body);
+  --text-15: var(--t-15);
+  --text-15--line-height: var(--lh-body);
+  --text-17: var(--t-17);
+  --text-17--line-height: var(--lh-head);
+  --text-21: var(--t-21);
+  --text-21--line-height: var(--lh-head);
+  --text-28: var(--t-28);
+  --text-28--line-height: var(--lh-head);
+
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+
+  --shadow-menu: var(--shadow-menu);
+  --shadow-panel: var(--shadow-panel);
+
+  --ease-standard: var(--ease);
+}

@@ -41,6 +41,8 @@ export const ICONS: Record<string, string> = {
   play: 'play',
   pause: 'pause',
   calendar: 'calendar-days',
+  loader: 'loader-circle',
+  alert: 'circle-alert',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

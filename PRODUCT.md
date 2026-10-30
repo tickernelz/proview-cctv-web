@@ -16,6 +16,13 @@ The job: open the app, see the live picture quickly, glance at what happened
 earlier, and close it. It must feel like an appliance, not like a control room
 that needs study.
 
+The app has three places, one per part of that job (ADR 0003): **Live** shows
+one camera with a timeline under it, so looking back is scrubbing the same
+picture, and every camera at once is a view of Live, not a page; **Events** lists
+what happened, and opening one plays it; **Settings** holds the camera, the app,
+and the account and server, in that order. Sign-in comes before all three. On a
+phone the three are bottom tabs.
+
 ## Product Purpose
 
 Put the vendor's camera stream on a desktop with less friction than the official
@@ -52,8 +59,8 @@ did not answer", never "oops".
    missing; a failed request shows the failure. No placeholder that pretends.
 4. **One vocabulary.** The same button shape, the same row, the same status dot
    everywhere; a second visual language is a bug.
-5. **Earned familiarity.** Standard desktop affordances — a device list, a
-   player, a date picker — done exactly as expected, not reinvented.
+5. **Earned familiarity.** Standard affordances — a camera switcher, a player
+   with a timeline, a date picker — done exactly as expected, not reinvented.
 
 ## Accessibility & Inclusion
 

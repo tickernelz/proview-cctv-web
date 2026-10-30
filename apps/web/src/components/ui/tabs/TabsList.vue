@@ -5,7 +5,7 @@ const props = defineProps<TabsListProps>()
 </script>
 
 <template>
-  <TabsList v-bind="props" class="tabs-list">
+  <TabsList v-bind="props" class="tabs-list flex gap-1 rounded-md bg-bg-3 p-1">
     <slot />
   </TabsList>
 </template>

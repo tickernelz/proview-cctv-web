@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { signIn } from './app'
+import { eventsPanelClosed, signIn } from './app'
 import { overflowFindings, walkScreens } from './layout'
 
 const VIEWPORTS = [
@@ -37,8 +37,9 @@ for (const [width, columns] of [
 ] as const) {
   test(`the auto grid uses ${columns} column(s) at ${width} px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 })
+    await eventsPanelClosed(page)
     await signIn(page, 'many')
-    await page.getByTestId('grid-toggle').click()
+    await page.getByTestId('view-grid').click()
     await expect(page.getByTestId('grid-tile')).toHaveCount(5)
     await expect
       .poll(() => page.getByTestId('grid-tiles').evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length))

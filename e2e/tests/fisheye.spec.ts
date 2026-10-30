@@ -21,7 +21,7 @@ test.skip(({ browserName }) => browserName !== 'chromium', 'the overlay needs We
 
 async function openWith(page: Page, query: string) {
   const base = await signIn(page, 'one')
-  await page.goto(base + '/?signed-in' + query + '#live')
+  await page.goto(base + '/?signed-in' + query + '#/live')
   await playing(page)
 }
 

@@ -2,6 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import AddCamera from './AddCamera.vue'
+import FisheyeOverlay from './FisheyeOverlay.vue'
+import GridView from './GridView.vue'
+import ImageLive from './ImageLive.vue'
+import LiveBar from './LiveBar.vue'
 import PtzEditor from './PtzEditor.vue'
 import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pickPtzSpeed, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
@@ -176,7 +180,9 @@ onBeforeUnmount(() => {
       </div>
       <div id="fs-line" class="fs-line" :hidden="!stage.fs.shown"><span id="fs-name">{{ stage.fs.name }}</span><span id="fs-time">{{ stage.fs.time }}</span></div>
     </div>
-    <div id="live-bar" class="live-bar" />
+    <div id="live-bar" class="live-bar"><LiveBar /></div>
+    <div class="live-bar"><ImageLive /></div>
   </section>
-  <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" :hidden="!live.panes.grid" />
+  <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" :hidden="!live.panes.grid"><GridView /></section>
+  <FisheyeOverlay />
 </template>

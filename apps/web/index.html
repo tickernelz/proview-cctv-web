@@ -9,34 +9,7 @@
 </head>
 <body>
 <svg class="sprite" aria-hidden="true" focusable="false"></svg>
-
-<div id="boot" class="screen" aria-busy="true">
-  <header class="topbar"><div class="sk" style="width:220px;height:20px"></div><div class="spacer"></div><div class="sk" style="width:116px;height:28px"></div></header>
-  <div class="viewer">
-    <div class="well"></div>
-    <div class="well-meta"><div class="sk" style="width:260px;height:14px"></div></div>
-    <div class="controls"><div class="sk" style="width:300px;height:28px"></div><span class="spacer"></span><div class="sk" style="width:200px;height:28px"></div></div>
-  </div>
-  <p class="sr" role="status">Opening PROVIEW</p>
-</div>
-
-<div id="signin" data-testid="signin" class="screen" hidden>
-  <header class="topbar">
-    <span class="brand"><span class="mark" aria-hidden="true"></span>PROVIEW</span>
-    <div class="spacer"></div>
-    <button class="iconbtn" type="button" data-theme-toggle data-testid="theme-toggle" aria-label="Switch to the light theme" title="Theme"><svg class="i" aria-hidden="true"><use href="#i-sun"></use></svg></button>
-  </header>
-  <main class="auth" id="signin-main"></main>
-</div>
-
-<div id="watch" data-testid="live" class="screen" hidden>
-  <a class="skip" href="#controls">Skip to controls</a>
-  <div id="live-top" class="live-top"></div>
-  <main id="main" class="viewer"></main>
-</div>
-
-<div id="settings" data-testid="settings" class="screen" hidden></div>
-
+<div id="app"><p class="sr" role="status">Opening PROVIEW</p></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

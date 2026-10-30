@@ -1,403 +1,469 @@
 # Design
 
-Version 2 (ZHA-4181, 2026-10-28). Zhafron opened a full redesign: Direction B
-("Window") is the starting layout, no longer a contract. What binds instead are
-the gates: AA contrast measured by `tools/contrast.py`, no horizontal scroll from
-320 to 1920 px (`e2e/tests/responsive.spec.ts`), 44 px targets under a coarse
-pointer, one icon family, motion that respects `prefers-reduced-motion`, and a
-screenshot baseline for every visual change (`e2e/tests/*-snapshots/`). The
-source of truth for every value is `apps/web/src/tokens.css`; this file says why.
-The options considered for v2 are in `docs/design/redesign-v2/`; the component
-layer decision is ADR 0002.
+Version 3 (2026-10-30, ADR 0003). Zhafron approved a combination from the PDF
+mockup (`~/re/proview-cctv/ux/mockup/PROVIEW-UI-Redesign-Mockup.pdf`): the visual
+system of Direction A "Graphite, refined" (shadcn-vue on Reka UI and Tailwind v4,
+the ADR 0002 stack) plus two components from Direction B "Night desk": the ruler
+timeline and the status plate. The research behind it is
+`~/re/proview-cctv/ux/RESEARCH.md` sections 5-9; the decision and its reasons are
+ADR 0003.
 
-The layout keeps v1's idea: one window onto one camera. The picture is the page;
-above it one line (the camera name, which is also the camera picker, and the
-icons), below it one caption line and one row of controls.
+What binds are the gates, unchanged from v2: AA contrast measured by
+`tools/contrast.py`, no horizontal scroll from 320 to 1920 px
+(`e2e/tests/responsive.spec.ts`), 44 px targets under a coarse pointer
+(`e2e/tests/touch.spec.ts`), one icon family, motion that respects
+`prefers-reduced-motion`, and a screenshot baseline for every visual change
+(`e2e/tests/*-snapshots/`). The source of truth for every value is
+`apps/web/src/tokens.css`, mapped to Tailwind utilities in
+`apps/web/src/tailwind.css`; this file says why.
+
+The structure changes, not the idea: one window onto one camera. Live, recorded
+video and events are one surface. The header names the camera; the stage shows
+it; a dock of labelled actions and a ruler timeline sit under it; events sit on
+the right on wide windows.
 
 ## Principles
 
-1. **The picture wins.** It is the largest and the brightest element on every
-   screen: 72 % of a 1440×900 window on Live. Chrome that does not change what
-   you see moves out of the way.
-2. **Colour means a state.** Neutral graphite everywhere, and one meaning per
-   colour: red only while recording or counting alarms, yellow only for data
-   that is not fresh, green only for online or supported, blue for what is
-   selected, pressed or primary (and the focus ring). v1 drew selection as ink
-   on ink, so a pressed control and a hovered one looked the same; v2 gives
-   selection its own colour.
-3. **Say what is true, under the picture.** One caption names the camera, the
-   state in words ("live, bottom lens", "frozen — the frame below is from
-   21:39:58", the server's own refusal) and a monospace clock. Text goes on top of
-   the video only in full screen.
+1. **The picture wins.** The stage is the largest and the brightest element on
+   every screen. Chrome has fixed sizes (header 48, dock 56, timeline 104, side
+   panel 320) so the picture gets the rest, and actions that are not used often
+   go under More.
+2. **Colour means a state.** Neutral graphite at hue 255 on every surface, and
+   one meaning per colour: blue for selected, primary, the playhead and the focus
+   ring; red only for live, recording and alarms; yellow for motion events and
+   for warnings, told apart by shape (an event is a 2 px tick, a warning is a chip
+   with an icon); green only for online. Colour never carries a state alone: a
+   word or a shape goes with it.
+3. **Time is the axis.** Live and recordings are one timeline. The playhead at
+   the right edge is live; anywhere else is playback. Events are points on that
+   axis, and opening one plays from 5 s before it.
+4. **Say what is true, in two layers.** A short human sentence first ("Reconnecting.
+   Last frame 18:56:29."), the server's own words in a mono Details block under
+   it. Text never points at a tooltip for the reason.
 
 ## Colour
 
-Graphite at hue 255 with chroma ≤ 0.008, written as the hex values the study
-measured. The light page is `#dfe0e2`, not white, so the picture stays brighter
-than the chrome.
+OKLCH is the source (RESEARCH section 6); `tokens.css` ships the hex the source
+converts to. No authored rule uses `oklch()` or `color-mix()`: older WebViews
+parse hex and `rgb()` alpha, and `tools/contrast.py` measures what it can parse.
+Derived colours come from tokens (`-soft`, `--scrim`, `--stage-*`), not from
+Tailwind opacity modifiers, so every colour the page draws is measured. Tailwind's
+default palette is reset (`--color-*: initial`), so no raw colour utility exists.
 
-| Token | Dark | Light | Role |
+| Token | Dark OKLCH | Dark hex | Light OKLCH | Light hex | Role |
+|---|---|---|---|---|---|
+| `--bg` | 0.165 0.006 255 | `#0d0e11` | 0.970 0.003 255 | `#f4f5f7` | page, header |
+| `--bg-2` | 0.205 0.008 255 | `#15171b` | 1 0 0 | `#ffffff` | side panel, menu, input |
+| `--bg-3` | 0.250 0.009 255 | `#1f2226` | 0.930 0.005 255 | `#e6e8eb` | hover, skeleton, timeline track |
+| `--line` | 0.370 0.012 255 | `#3c4046` | 0.790 0.010 255 | `#b6bbc1` | input border, strong divider |
+| `--line-soft` | 0.305 0.010 255 | `#2c2f34` | 0.855 0.008 255 | `#ccd0d5` | row divider |
+| `--ink` | 0.955 0.004 255 | `#eef0f3` | 0.205 0.010 255 | `#14171c` | main text |
+| `--ink-2` | 0.830 0.008 255 | `#c4c8cc` | 0.370 0.012 255 | `#3c4046` | control label |
+| `--ink-3` | 0.715 0.012 255 | `#9ea4ab` | 0.480 0.014 255 | `#585e66` | meta, clock |
+| `--stage` | 0.080 0.003 255 | `#010202` | same | `#010202` | behind the video |
+| `--accent` / `--focus` | 0.740 0.130 250 | `#67b0f9` | 0.500 0.160 255 | `#0961bb` | selected, primary, playhead, focus ring |
+| `--accent-ink` | 0.180 0.040 250 | `#031222` | 1 0 0 | `#ffffff` | text on accent |
+| `--live` | 0.680 0.190 25 | `#f75d59` | 0.470 0.180 25 | `#a9131f` | LIVE, recording, alarm marker |
+| `--event` | 0.800 0.130 80 | `#e9b452` | 0.560 0.120 75 | `#9d6800` | motion marker on the timeline |
+| `--ok` | 0.780 0.140 150 | `#6fd087` | 0.470 0.120 150 | `#146d34` | online |
+| `--warn` | 0.820 0.130 80 | `#f0ba59` | 0.500 0.110 75 | `#875800` | reconnecting, stale |
+| `--bad` | 0.690 0.170 22 | `#f2696a` | 0.500 0.180 25 | `#b32228` | error, destructive |
+| `--rec-bar` | 0.550 0.020 255 | `#6a727d` | 0.600 0.020 255 | `#78818c` | continuous recording segment |
+
+`--badge` / `--badge-ink` (`#c9363c` / `#ffffff` dark, `#c4252b` / `#ffffff`
+light) draw the unread count on the Events button.
+
+### Changed from the research palette
+
+Two tokens of RESEARCH section 6 failed a floor and were changed before they
+shipped: four lightness values in all. The ratios below come from converting the
+research OKLCH to sRGB hex (a throwaway script on 2026-10-30; the shipped values
+convert to exactly the hex in `tokens.css`, which checks the conversion) and the
+WCAG ratio against the same background `tools/contrast.py` uses.
+
+| Token | Research L | Ratio | Shipped L | Ratio (`contrast.py`) | Floor |
+|---|---|---|---|---|---|
+| `--line-soft` dark, on page | 0.290 | 1.37 | 0.305 | 1.44 | 1.4 |
+| `--line-soft` light, on page | 0.870 | 1.35 | 0.855 | 1.42 | 1.4 |
+| `--rec-bar` dark, on the timeline track | 0.420 | 1.89 | 0.550 | 3.28 | 3.0 |
+| `--rec-bar` light, on the timeline track | 0.780 | 1.63 | 0.600 | 3.22 | 3.0 |
+
+`--line-soft` is the only line between rows, so it has to read; the recorded
+segment is the one thing that tells "there is video here" from "there is not", so
+it is held to the 3:1 floor for graphics, not to the separator floor.
+
+### Derived tokens
+
+Alpha over a listed colour, never a new hue:
+
+| Token | Dark | Light | Use |
 |---|---|---|---|
-| `--bg` | `#0e1013` | `#f2f3f5` | page, top bar |
-| `--bg-2` | `#171a1f` | `#ffffff` | inputs, menus, sheets, raised surfaces |
-| `--bg-3` | `#21252b` | `#e5e7eb` | hover, skeleton, thumbnail placeholder |
-| `--line` | `#3c414a` | `#b3b8c0` | input borders, table rules |
-| `--line-soft` | `#2c3037` | `#c9cdd3` | row separators, top bar |
-| `--ink` | `#eef0f3` | `#14171c` | main text |
-| `--ink-2` | `#c4c9d0` | `#3b414a` | control labels, secondary text |
-| `--ink-3` | `#9da4ae` | `#5a616b` | clock, hints, meta |
-| `--stage` | `#030405` | `#030405` | behind the video, both themes |
-| `--stage-ink` / `--stage-ink-2` | `#cfd1d3` / `#96989c` | `#d6d8da` / `#9c9fa2` | text drawn on the stage |
-| `--accent` / `--accent-ink` | `#74b4ff` / `#061423` | `#0b5fbd` / `#ffffff` | primary button, pressed control, selected row, checked radio and switch |
 | `--accent-soft` | accent at 14 % | accent at 10 % | fill behind a pressed or selected control |
-| `--live` | `#fc665f` | `#b10d1a` | recording |
-| `--badge` / `--badge-ink` | `#c9363c` / `#ffffff` | `#c4252b` / `#ffffff` | the alarm count on the bell |
-| `--ok` | `#6cce8a` | `#176b39` | online dot, "supported" |
-| `--warn` | `#edb95d` | `#875a04` | frozen, stale, offline, a failed tile |
-| `--bad` | `#fb7172` | `#b9232d` | form errors, destructive actions |
-| `--focus` | `#74b4ff` | `#0b5fbd` | the focus ring (same hue as the accent) |
+| `--live-soft` | live at 16 % | live at 10 % | fill behind Record while recording |
+| `--scrim` | stage at 60 % | ink at 40 % | behind modal dialogs and sheets |
 
-Derived tokens are alpha over a listed colour, never a new hue: `--live-soft`
-(live at 16 % / 10 %), `--stage-matte` (stage at 90 %, the move pad and the
-full-screen line), `--stage-line` and `--stage-hover` (white at 14 % / 8 % on
-the stage). No rule uses `color-mix()` or `oklch()`, so the colours do not
-depend on what the WebView parses.
+Shared by both themes, because the stage is dark in both:
+
+| Token | Value | Use |
+|---|---|---|
+| `--stage-ink` / `--stage-ink-2` | `#d6d8da` / `#a9acb0` | text drawn on the stage |
+| `--stage-live` | `#ff6f69` | live dot on the status plate |
+| `--stage-warn` | `#f0ba59` | reconnecting chip, warning icon on the stage |
+| `--stage-matte` | stage at 80 % | status plate, controls drawn on the video |
+| `--stage-line` / `--stage-hover` | white at 14 % / 8 % | lines and hover on the stage |
+
+Shadows: `--shadow-menu` and `--shadow-panel` (see Elevation).
 
 ### Contrast
 
-`python3 tools/contrast.py` parses `apps/web/src/tokens.css`, composites every alpha
-token over its real background, and exits non-zero when a pair falls under its
-floor; CI runs it in the `check` job. Floors: 4.5:1 for text, 3:1 for dots and the focus ring, 1.6:1 for `--line` and 1.4:1 for
-`--line-soft` (a floor this project sets for separators; input edges do not
-rely on the line alone because inputs sit on `--bg-2`). The tightest pairs it
-reports, all passing:
+`python3 tools/contrast.py` parses `apps/web/src/tokens.css`, composites every
+alpha token over its real background (a stage token over a white video frame, the
+worst case for text on the picture), and exits non-zero when a pair falls under
+its floor. CI runs it in the `check` job. Floors: 4.5:1 for text, 3:1 for
+graphics (dots, markers, the playhead, the focus ring), 1.6:1 for `--line` and
+1.4:1 for `--line-soft` (a floor this project sets for separators; inputs do not
+rely on the line alone because they sit on `--bg-2`).
 
-| Pair | Dark | Light |
-|---|---|---|
-| ink-3 on page | 7.58 | 5.63 |
-| warn on page | 10.61 | 5.41 |
-| live on live-soft (recording control) | 5.34 | 5.39 |
-| bad on page | 6.99 | 5.66 |
-| accent-ink on accent (primary button) | 8.58 | 6.20 |
-| badge-ink on badge (alarm count) | 5.15 | 5.76 |
-| stage-ink-2 on the move pad over a white frame | 5.84 | 6.34 |
-| focus ring on page / on stage | 8.81 / 9.49 | 5.59 / 3.31 |
+Run on 2026-10-30 in the `ui/foundation` worktree: 57 pairs per theme, 114 in
+total, exit 0, last line "all 114 pairs clear their floor". The tightest pairs,
+by margin over their floor:
 
-76 of 76 pairs pass.
+| Pair | Floor | Dark | Light |
+|---|---|---|---|
+| line-soft on page | 1.4 | 1.44 | 1.42 |
+| line on bar (input border) | 1.6 | 1.72 | 1.93 |
+| line on page | 1.6 | 1.85 | 1.77 |
+| recorded segment on timeline track | 3.0 | 3.28 | 3.22 |
+| focus ring on stage | 3.0 | 9.06 | 3.40 |
+| event marker on timeline track | 3.0 | 8.45 | 3.88 |
+| accent playhead on timeline track | 3.0 | 6.96 | 4.97 |
+| live marker on timeline track | 3.0 | 5.07 | 6.11 |
+| stage-live dot on status plate over a white frame | 3.0 | 4.55 | 4.55 |
+| live on live-soft over page (recording control) | 4.5 | 5.09 | 5.77 |
+| badge-ink on badge (unread count) | 4.5 | 5.15 | 5.76 |
+| ink-3 on hover (timeline hour labels) | 4.5 | 6.35 | 5.33 |
+| stage-ink-2 on status plate over a white frame | 4.5 | 5.43 | 5.43 |
+| accent on page | 4.5 | 8.41 | 5.60 |
+| warn on page | 4.5 | 10.91 | 5.62 |
+| accent-ink on accent (primary button) | 4.5 | 8.22 | 6.11 |
+| ink-3 on page | 4.5 | 7.68 | 6.00 |
+
+A new token or a new pair goes into `tools/contrast.py` (a frozen file, so
+through the integrator) in the same change that uses it.
 
 ## Type
 
-IBM Plex Sans and IBM Plex Mono, bundled as five latin-subset woff2 files in
-`apps/web/public/fonts/` with `OFL.txt` (SIL OFL 1.1, © IBM Corp.), served by the server at
-`/fonts/*` and so inside the desktop app too. `system-ui` would mean Segoe, SF
-or Cantarell depending on the WebView; bundling keeps one face on every OS and
-works offline.
+IBM Plex Sans 400/500/600 and IBM Plex Mono 400/500, bundled as five
+latin-subset woff2 files in `apps/web/public/fonts/` with `OFL.txt` (SIL OFL 1.1,
+(c) IBM Corp.), served by the server at `/fonts/*` and so inside the desktop app
+too. `system-ui` would mean Segoe, SF or Cantarell depending on the WebView;
+bundling keeps one face on every OS and works offline.
 
-Fixed px scale: 30 display / 21 heading / 17 title / 15 UI / 14 body / 13 small /
-12 mono data and captions. Nothing renders under 12 px (v1 used 10-11 px in the
-alarm sheet and the pad notes; `--t-11` now resolves to 12 px). No tracked
-capitals; the only capitals are the wordmark. Mono only for machine data: clocks,
-ids, addresses, error codes. Every clock, timestamp, duration and file size uses
+| Token | px | Use |
+|---|---|---|
+| `--t-12` | 12 | captions, mono data, dock labels, timeline hours |
+| `--t-13` | 13 | small text, meta |
+| `--t-14` | 14 | body |
+| `--t-15` | 15 | control labels |
+| `--t-17` | 17 | titles |
+| `--t-21` | 21 | headings |
+| `--t-28` | 28 | display, sign-in only |
+
+Line height 1.4 for body (`--lh-body`), 1.2 for headings (`--lh-head`). Nothing
+renders under 12 px. No tracked capitals and no uppercase eyebrows. Mono
+(`--f-mono`) only for machine data: clocks, the status plate, timeline hours, ids,
+addresses, error codes and Details. Every clock, timestamp, duration and size uses
 tabular numerals, so a ticking clock does not shift its neighbours.
 
-## Space, shape, elevation
+## Spacing and fixed sizes
 
-Spacing on a 4 px grid, one token per value: `--s1` 4 · `--s2` 8 · `--s3` 12 ·
-`--s4` 16 · `--s5` 20 · `--s6` 24 · `--s7` 32 · `--s8` 40 · `--s9` 56 (v1's 6, 10
-and 14 px steps are gone). Tight inside a control (8), loose between
-groups (16–24); the page edge is 20 px (16 below 480 px) and the stage runs to
-it. Radius 6 (code chips), 8 (buttons, inputs, tiles), 12 (stage, menus, sheets);
-pill only for switches, badges and table status. Three layers: the flat page,
-`--bg-2` for inputs, menus and sheets, and a shadow only on what floats. No cards.
+Spacing on a 4 px grid, one token per value: `--s1` 4, `--s2` 8, `--s3` 12,
+`--s4` 16, `--s5` 20, `--s6` 24, `--s7` 32, `--s8` 40, `--s9` 56. Tight inside a
+control (8), loose between groups (16-24).
 
-Fixed sizes: top bar 56, control row 64, control 36 (44 under
-`pointer: coarse`, through `--hit`), menu row 48, pad key 40.
+| Token | px | What |
+|---|---|---|
+| `--header` | 48 | header |
+| `--dock` | 56 | dock under the stage |
+| `--timeline` | 104 | ruler timeline: ruler 20 + track 48, filmstrip on hover |
+| `--panel` | 320 | Events side panel, docked or overlay |
+| `--rail` | 240 | camera rail |
+| `--tabbar` | 56 | bottom tab bar under 640 px |
+| `--chip` | 24 | status plate and status chips |
+| `--hit` | 36 | control height; 44 under `pointer: coarse`; 32 in the compact density at <= 1024x640 |
+
+Event marker 2x12 px; event thumbnail 96x54 px.
+
+## Radii
+
+`--r-sm` 6 (chips, the status plate), `--r-md` 8 (buttons, inputs, tiles),
+`--r-lg` 12 (stage, panels, menus). Pill only for switches, the unread badge and
+status dots. Radius 12 is for containers, not for every element.
+
+## Elevation
+
+Flat surfaces separated by background steps (`--bg`, `--bg-2`, `--bg-3`) and
+lines. A shadow only on what floats: `--shadow-menu` for menus, popovers and
+tooltips; `--shadow-panel` for dialogs, sheets and the Events panel when it
+overlays the stage. `--scrim` sits behind modal dialogs and sheets, never behind
+the non-modal Events panel. The docked Events panel is a column with a
+`--line-soft` edge and no shadow. No blur.
+
+## Iconography
+
+One family: Lucide (`lucide-static` 1.63.0, ISC, licence in
+`apps/web/public/licenses/`). `apps/web/icons.ts` maps sprite ids to Lucide files
+and writes them at build time into the inline sprite of `index.html`;
+`src/components/Icon.vue` draws one `<use href="#i-<id>">`. No icon font, no
+icon runtime. 24 px grid drawn at 20 px with a 1.75 stroke (`.i` in
+`src/styles/base.css`), 16 px in menus and dense rows (`small`). Icons are
+`aria-hidden`; the label or `aria-label` carries the name. Each symbol has one
+meaning.
+
+The dock shows every icon with a 12 px label; an icon alone is allowed only
+where a tooltip and `aria-label` name it and space forbids a label (header icon
+buttons, the phone dock).
+
+Key set (RESEARCH section 6):
+
+| Action | Lucide | Sprite id today |
+|---|---|---|
+| Talk | `mic` | `mic` |
+| Sound on / off | `volume-2` / `volume-x` | `speaker` / `speaker-off` |
+| Snapshot | `camera` | `camera` |
+| Record | `circle-dot` | `record` |
+| Move | `move` | `move` |
+| Lens | `layers` | not in the sprite yet |
+| Quality | `gauge` | not in the sprite yet |
+| Full screen | `maximize` | `expand` |
+| More | `ellipsis` | `more` |
+| Events | `bell` | `bell` |
+| Grid | `layout-grid` | `grid` |
+| Settings | `settings` | `gear` |
+| Back to live | `radio` | not in the sprite yet |
+| Offline | `wifi-off` | `disconnect` |
+| Warning, error | `triangle-alert` | `warning` |
+| Done, supported | `check` | `check` |
+
+The status dot is CSS, not an icon. Adding a sprite id changes `icons.ts`, a
+frozen file, so it goes through the integrator.
 
 ## Motion
 
-160 ms for hover and press, 200 ms for a menu or sheet entering (opacity and
-4 px), one standard easing `cubic-bezier(0.2, 0, 0, 1)`. A press moves the
-control down 1 px, so a click is felt without a ripple. Motion only marks a state change: no page
-entrance, no pulsing record dot. The loading line on the stage moves 1.2 s
-linear. `prefers-reduced-motion: reduce` sets both duration tokens to 0, stops
-the loading line and drops the menu animation; the microphone level keeps moving
-because it is data.
+| Token | ms | Use |
+|---|---|---|
+| `--dur-1` | 160 | hover, press |
+| `--dur-2` | 200 | panel or menu entering: opacity and translateX 8 px |
+| `--dur-3` | 240 | chrome auto-hide fade |
 
-## Screens
+One easing, `--ease` `cubic-bezier(0.2, 0, 0, 1)`. Motion marks a state change
+only: no page entrance, no pulsing record dot. The playhead moves linearly in real
+time because it is data. `prefers-reduced-motion: reduce` sets every duration to
+0; the playhead and the microphone level keep moving.
 
-**Sign in.** Form on the left, an empty 16:9 stage on the right where the picture
-will appear. Tabs Account / This network (arrow keys switch). The button keeps
-its width and reads "Signing in…" while the request runs. A refusal marks the
-password field, says who refused, and selects the password. A session the server
-ended reads as what happened and when, notes that nothing records while signed
-out, and "Sign in to resume" returns to the camera that was open. Settings opens
-from here, before any session exists.
+## Components
 
-**Live.** The camera name with its status dot is the picker: a menu of every
-camera (each device channel is one camera) with dots, numbers 1–9, Refresh and
-Add a camera. Three icons on the right: every camera, Settings, theme. Under the
-picture the caption (`role="status"`; only the camera name and the state words
-are announced, the clock is outside the live region) and the control row:
-Talk · Sound | Record · Snapshot on the left, Move · Lens · Quality | full screen
-on the right. Controls the camera cannot do stay visible but disabled, with the
-server's reason as their tooltip; the full evidence lives in Settings → This
-camera.
+### `apps/web/src/components/ui/`
 
-**Stage states.** `loading` (a 2 px line and one sentence of what is awaited),
-`playing` (only after a frame decoded), `stalled` (the last real frame stays,
-the caption turns yellow with the time of that frame), `error` (title, the
-server's answer in mono, Try again, and "Check the camera password" when the
-answer is an authentication refusal), `offline` (the camera list reports it
-offline). A socket that opens and sends nothing decodable becomes `error` after
-six seconds.
+shadcn-vue style: copied in, built on Reka UI primitives, styled only with token
+utilities. Frozen after the foundation PR.
 
-**Lens.** A dual-lens camera sends one frame with both pictures stacked. "Both
-lenses" shows it as sent; Top and Bottom crop it in the browser with no second
-connection. The menu names each lens by role when the lens contract reports
-`ptz`, by position otherwise, and its last line says whether the split was
-reported or inferred.
+| Component | Purpose and variants |
+|---|---|
+| button | One shape for every text action. `variant` primary (accent fill), secondary (outlined, the default), ghost (no fill until hover), danger (`--bad`); `size` sm, md (`--hit`), lg; optional `icon` / `iconEnd`, `block`. `loading` keeps the width, sets `aria-busy` and ignores further presses. |
+| icon-button | Square button with one icon. `label` is required and becomes both `aria-label` and the tooltip; optional `shortcut` shows in the tooltip. `variant` ghost or secondary, `size` sm or md; `pressed` uses `--accent-soft` and `--accent`. |
+| select | Reka Select replacing native `<select>`; same height and border as an input. |
+| switch | On/off setting that applies at once; checked is `--accent`. |
+| slider | Continuous values (volume, the start position); value shown in tabular figures. |
+| tabs | Peer views of one object (sign-in Account / This network, Events filters). Arrow keys switch. |
+| dropdown-menu | Menus from a trigger: camera switcher, More, lens, quality. Roving focus, Home/End, wrap, Escape and Tab close and return focus. |
+| dialog | Modal confirmation or short form over `--scrim`; focus trapped and returned. |
+| sheet | Panel from an edge: the Events overlay under 1280 px, phone sheets. `--shadow-panel`. |
+| tooltip | Names an icon-only control. Never holds the only copy of a reason. |
+| badge | Short count or tag: unread count on Events, Restart tag in Settings. `tone` neutral, accent, live, ok, warn, bad; warn always shows its icon, so it never reads as a motion event. |
+| status-dot | Dot with its word. `status` online, offline, unknown, live, warn, recording; `label` is required and is the accessible name (`role="img"`). |
+| card | One bordered `--bg-2` group (a Settings group, the add-a-camera panel). No shadow, never a card inside a panel. |
+| field | Label, control, hint and error as one unit (`label`, `hint`, `error`, `disabledReason`, `required`); its slot passes `id`, `describedBy`, `invalid` and `required` to the control. The error is `--bad` text with the warning icon and `aria-invalid`; `disabledReason` puts the reason for a disabled control on screen. |
+| toast | Outcome of an action that has no place on screen (snapshot saved, clip downloaded). `toast({ title, description, tone, action, duration })` with `tone` neutral, ok, warn, bad; `dismiss(id)`; one `<Toaster>` in the shell. |
+| empty-state | Title, one sentence, at most one action; no illustration. |
+| skeleton | `--bg-3` blocks in the shape of the content while it loads; still under reduced motion. |
+| segmented-control | One choice among two to four peers shown at once: Single / Grid, PTZ speed Slow / Normal / Fast, grid columns. Reka ToggleGroup (single); `options` of `{ value, label, icon, disabled }`, a required `label` that names the group, `size` sm or md, `iconOnly`; `disabled` disables the whole group. |
+| kbd | A key in the keyboard sheet and in tooltips, mono. |
 
-**Move.** A pad over the bottom right of the stage on a 90 % stage matte, so its
-keys read on a white frame. Arrow keys move the lens while it is open, Space
-stops, presets are listed by name. It opens only when the capability report
-marks movement supported for the moving lens.
+### Product components
 
-**Every camera.** Up to four tiles, whole frame each (`object-fit: contain`,
-never a crop). Each tile is its own stream and fails on its own, with the
-reason and a Try again inside that tile. The selected camera is a 1.5 px ink
-ring, not an accent. The row under the tiles is one sentence: "4 cameras · 3 live
-· 1 offline".
+**Status plate.** Top-left on the video, `--chip` high, `--r-sm`, on
+`--stage-matte`: a dot and a word in mono. `LIVE` with the `--stage-live` dot
+when the playhead is live; `REC 14:32:10` (the time of the frame on screen) in
+playback. It is the one piece of text on the picture outside full screen,
+besides stage state messages, and its contrast is measured over a white frame.
 
-**Full screen.** The stage edge to edge; with "Camera name and clock in full
-screen" on, one small mono line at the bottom edge on a stage matte.
+**Ruler timeline.** 104 px under the dock: a 20 px ruler with hour labels in
+mono `--ink-3`, a 48 px track on `--bg-3` with `--rec-bar` segments where
+recording exists, event markers as 2x12 px ticks (`--event` for motion, `--live`
+for alarms), and the playhead in `--accent`. A filmstrip of event thumbnails
+(96x54) shows on hover. It opens at a 24 h span. Clicking an event starts
+playback 5 s before it. While the playhead is in the past, Back to live returns
+to the live edge. An empty day is a sentence on the track ("No recording on 30
+Oct."), not an empty bar.
 
-**Banner.** One line under the top bar, only for what affects the whole window or
-the open camera: this computer lost its network, the open camera is offline in the
-list, the camera list could not be read. Retry now is the only action.
+**Dock.** 56 px under the stage. Labelled main actions Talk, Sound, Snapshot,
+Record and Move; every other action sits under More. A control the camera cannot
+use right now stays in place, disabled, with its reason in words on screen.
 
-**Cloud recordings.** A panel above the control row (Vue,
-`src/live/RecordingsPanel.vue`), opened by Cloud. It opens on the camera on
-screen with focus in Day; Escape or Close returns focus to Cloud. Load reads
-"Loading…" with `aria-busy` and keeps focus while one request runs (a second
-press does nothing). An empty day names the camera and the day; a failed load is
-a `--bad` line with the warning icon and `role="alert"`, not grey text; a session
-that ended goes back to sign-in.
+**PTZ pad.** Shown on the stage while Move is on; click-to-aim works only while
+Move is on, so a click on the picture never moves the camera by surprise. Speed is
+the app's three levels Slow / Normal / Fast (server API `speed=slow|normal|fast`),
+default Normal, as a segmented control; the mockup's 1-5 scale is not used. Arrow
+keys move, Space stops, presets are listed by name. It is offered only when the
+capability report marks movement supported for the moving lens.
 
-**Live top bar.** Vue (`src/live/LiveTop.vue`, mounted into `#live-top`):
-the camera switcher is a Reka dropdown (roving focus, Home/End, wrap, Escape
-back to the switcher, outside click closes) whose rows keep the status dot,
-the channel/model line and the 1-9 shortcut; digits typed in the open menu
-switch camera. The banner is one `role="alert"` row: icon, bold title, one
-sentence, and an outlined action named for what it does (Refresh the list or
-Retry now); a failed list load uses the `--bad` warning icon, network and
-device problems the `--warn` disconnect icon. The keyboard list is a sheet
-that takes focus on its close button and returns it on close. Banner,
-switcher and caption text are computed in `src/app/chrome.ts` and
-`src/app/caption.ts`.
+**Dual-lens picture in picture.** A dual-lens camera sends both pictures stacked
+in one frame. The default view is picture in picture: the top lens large, the
+bottom lens in a small window, with a swap button; the browser crops the one
+stream, no second connection.
 
-**Live picture.** Vue (`src/live/LiveMain.vue`, mounted into `#main`): the
-empty state, the well (video, progress line, message, PTZ pad, full-screen
-line) and the empty `#live-bar`/`#grid` hosts. The stage state lives in
-`live.stage`, written only by `src/app/stage.ts`; which pane shows lives in
-`live.panes`, written only by `src/app/view.ts`. A failed stream is
-`role="alert"` with the `--stage-warn` warning icon in its title; offline uses
-the disconnect icon and stays a plain message, because the banner above already
-announces it. Message text never points at a tooltip: the server's reason is
-the mono line under the sentence. The pan-and-tilt pad, its presets and Tour
-render from `live.pad` and `live.gate` (one gate per action, written only by
-`src/app/controls.ts`), and the lens crop from `live.stage.crop`/`view`
-(written only by `src/app/lens.ts`). The one DOM write left outside Vue is
-`video.muted`, set by `src/app/media.ts` on the element the stream player
-also drives. The empty state carries the add-a-camera panel (`src/live/AddCamera.vue`)
-open below a hairline: one heading, two small forms (serial with username and
-password side by side above 480 px, QR text or share link), outlined buttons
-with the plus icon, and one result line under both forms (`--bad` alert with
-the warning icon, or the `--ok` check). There is no `src/legacy/` any more.
+**Events panel.** 320 px on the right. Rows: thumbnail, event kind in words, the
+camera, the time in tabular mono. Opening a row moves the timeline and starts
+playback 5 s before the event. Docked and open by default at >= 1280 px, an
+overlay sheet below; full page at `#/events`.
 
-**Settings.** Vue (`src/live/SettingsScreen.vue`, mounted into `#settings`;
-Device settings stays its own app teleporting its link into the section nav).
-The save bar is the one place for the outcome of a save: "Unsaved changes ·
-N fields", a refused save as a `--bad` alert with the warning icon and the
-server reason (focus stays on Save), and the restart prompt after a save. Back
-with unsaved edits turns the bar into the same alert and moves focus to Save.
-Fields that need a restart carry a small outlined Restart tag with the refresh
-icon; a changed field keeps a 1.5 px accent outline until it is saved or
-discarded. Server checks are a definition list of sentences with a check or
-warning icon and "(HTTP n)" after a failure. A refused provider switch is an
-alert under the radios and the radios return to the answering provider.
-Capability pills read supported/blocked/unavailable with a check or cross.
+## States
 
-**Sign-in.** Vue (`src/live/SignInScreen.vue`, mounted into `#signin-main`;
-the top bar stays static). Account and This network are Reka tabs. Email has
-focus on open; after an expired session the password has it when the email is
-known. A refused sign-in is a `--bad` alert with the warning icon under the
-password, which stays selected and carries `aria-invalid`; the server text is
-not repeated for a 401. Submit reads "Signing in…" with `aria-busy` and
-ignores further presses. This network shows the camera form only when the
-server is in local mode; otherwise one sentence points to Account or Settings.
-The probe is an outlined button; its failure is an alert, its report a
-definition list. Remember is the same switch as in Settings. Open Settings is
-an outlined button with the sliders icon.
+Every screen draws these, in these words:
 
-**Every camera (grid).** Vue (`src/live/GridView.vue`, one `GridTile.vue` per
-camera, mounted into `#grid`). Columns: Auto / 1 / 2 / 3 as a labelled segment;
-below 641 px wide every layout is one column (a saved 3-column layout no longer
-squeezes tiles to 111 px on a phone), and rows size to the picture so the
-caption of one tile never lands on the next. Each tile is a 16:9 well with the
-name, state word, an outlined HD/SD toggle and the clock (tabular, hidden while
-there is nothing to time). Connecting says so inside the picture; a failed or
-offline tile centres its reason, and a failed one offers Try again as a button.
-A layout the server refuses to save is a `--bad` alert with the warning icon.
-Arrow keys move focus between tiles and the focused tile shows the 2 px ring.
-The count line names cameras and states only; the layout lives on the segment.
-One shared 1 s clock drives every tile instead of a DOM query per second.
+| State | What shows |
+|---|---|
+| Loading | Skeleton: header text, dock and timeline track as `--bg-3` blocks; a 2 px line and one sentence of what is awaited on the stage. |
+| Playing | Only after a frame decoded; the status plate reads `LIVE` or `REC <time>`. |
+| Stalled | The last real frame stays; a `--stage-warn` chip with the warning icon: "Reconnecting. Last frame 18:56:29." One representation, not three. |
+| Offline | The last snapshot dimmed and "Offline since <time>" with the offline icon. |
+| Error | Title, one sentence, a mono Details block with the server's answer, and Try again. |
+| Empty: no camera | The add-a-camera panel in place of the stage. |
+| Empty: no recording that day | A sentence on the timeline track naming the day. |
+| Not supported | The camera cannot do it at all: the action is not offered in the dock, and Settings > Camera shows one row saying so, with the evidence under Details. |
+| Disabled | The camera can do it but not now (no session, lens not movable, already busy): the control stays visible and disabled, and its reason is on screen, not only in a tooltip. |
 
-**Playback.** A full screen (Vue, `src/live/PlaybackScreen.vue`) over Live,
-opened by Playback or `#playback` (`live.screen` in the store; leaving it sets
-`#live` again). It opens on the camera on screen with focus on the title. While
-it is open the page-wide key handler stands down whatever has focus, so number
-keys never switch the camera behind it, and Escape or "← Live" returns focus to
-Playback. The strip and the rows are child components so hovering the strip or
-dragging the start slider does not redraw a 557-file day. Camera, day
-(chevron icons either side) and Refresh sit on one row. The summary names the
-camera and the day ("5 files · 185.97 MB · Gate camera on 2026-10-27", "No
-recordings of … on …"); a failed file query is a `--bad` alert; changing the
-day or camera while a list loads shows only the last one asked. The day strip
-carries only ticks, with the hours below it and a legend (blue continuous,
-amber motion); the clip that plays is outlined on the strip and filled in the
-list. Rows carry a 3 px mode bar and the word "motion", not only a colour.
-"Play from here" and Download stay disabled until a clip is chosen, and the
-start slider shows its time in tabular figures. It reuses the camera list the
-app already loaded, and an expired session goes back to sign-in.
-
-**Devices.** A corner sheet (Vue, `src/live/DevicesSheet.vue`) opened by
-Devices; it shares the corner with Cloud recordings and Alarm messages, one at a
-time. The account's cameras are a radio group: arrows move the choice, focus
-lands on the chosen camera, and Escape or Close returns focus to Devices. Below
-it, three Reka tabs split the jobs (Name, Sharing, Password) so only one form
-shows; each form is a titled group with its own primary button. The header and
-the result line stay put while the body scrolls, so a result is seen without
-scrolling: green check for done, red warning with `role="alert"` for a refusal.
-A button that is working reads "Renaming…" with `aria-busy` and ignores a
-second press. Favourite is the same switch as in Settings. A list that fails to
-load is an alert with Try again; an account without cameras says so. Without a
-chosen camera the sheet opens on Sharing with Name and Password disabled, so
-Accept (a camera shared with you, or an invitation key) still works: an empty
-account gets its first camera that way. The sheet closes when Live is left for
-Settings or sign-in, signing out clears every typed field, and its height stops
-below the top bar.
-
-**Device settings.** A Settings section (Vue, `src/live/DeviceSettings.vue`,
-mounted into `#set-body` with its link added to the section nav). It reads
-encode, network and storage together each time it is shown. One status line
-(`#device-status`) says what is happening; a write's outcome stays there after
-the read-back reload, in `--warn` for a revert, a failed revert or a refusal.
-The write report sits above the forms: per field before, asked for, after and
-state, then the fields put back from the saved copy. The address is read only;
-DHCP, gateway and submask stay editable so the server's 409 refusal names what
-would have moved the camera. A save button that is working says so with
-`aria-busy` and ignores a second press.
-
-**Alarm messages.** The bell in the top bar (Vue, `src/live/AlarmCenter.vue`)
-counts alarms from the first check after sign-in, without opening anything. The
-sheet sits in the same corner as Cloud recordings and replaces it: one corner
-sheet at a time (`live.sheet` in the store). It opens with focus on Camera;
-Escape or Close returns focus to the bell, which carries `aria-expanded`.
-Camera and window ("Last 24 hours", "Last 7 days") change the list at once; a
-check still out for the previous choice is dropped, so a list never shows under
-a camera it does not belong to. Loading and empty states name the camera and
-the window; a failed check is a `--bad` line with the warning icon and
-`role="alert"`. The footer is "3 alarms · updated 22:16", with the vendor and
-round-trip timing in its tooltip. Rows show the event, the time in tabular
-figures, and the channel only for multi-channel cameras, counted from 1 like the
-caption; a row without a picture shows the `no-picture` icon instead of an
-empty box.
-
-**Settings.** A screen, not a panel: sections Playback, This camera, Connection,
-Configuration and Server on the left, one section on the right, "← Live" back to
-the last camera. Playback (browser preferences, applied at once), This camera
-(name, id, connection, lens layout, the capability table with the device's
-evidence for every row, the white light), Connection (provider choice, the
-server's fallback notice verbatim, sign out), Configuration (every server key,
-grouped; a key read once at startup says "Needs a restart" under its label;
-secrets render empty with "stored, type to replace"), Server (live checks of
-health, account, camera probe and stream ticket). The save bar always shows the
-state: "Everything saved", "Unsaved changes · 2 fields" with Discard and Save, or
-"Saved. Restart the app to apply 1 field" with Restart on the desktop.
-
-## Keyboard
-
-1–9 camera n · G every camera / Live · F full screen · M sound · T held talk ·
-R record · S snapshot · L lens Both → Top → Bottom · Q HD / SD · V move pad ·
-arrows move the lens (pad open) or the tile focus (grid) · Space stop · ,
-Settings · Esc closes the menu, then the pad, then full screen · ? the list,
-as a sheet, not a modal. Letter keys do nothing while focus is in a text field.
-In Settings: arrow keys walk the sections, Ctrl+S saves, Esc goes back when
-nothing is unsaved. A menu returns focus to its trigger when it closes;
-switching camera keeps focus where it was.
-
-## Menus and the WebView
-
-The lens and quality menus on Live are Reka UI `DropdownMenu` (Vue): they open
-above the control row, aligned to the trigger's end, shift inside an 8 px
-viewport margin, and keep `#lens-pick`, `#quality-pick`, `#lens-menu` and
-`#quality-menu` as ids. Reka brings the same keys (arrows, Home/End, Escape and
-Tab close and return focus). While one of them is open, the page's own keys
-(Escape for the pad and the device sheet, arrows for pan and tilt, letter
-shortcuts) step aside, so Escape closes only the menu. The menus below are
-still the page's own.
-
-Other menus use the Popover API when `HTMLElement.prototype.showPopover` exists
-(light dismiss and top layer from the platform) and a `hidden`-toggle with an
-outside-pointer handler otherwise; `<html data-popover>` records which path
-ran. Both paths share the same roving focus (arrows wrap, Home/End, Escape and
-Tab close and return focus). `tests/web/ui.test.mjs` runs the menu tests on both
-paths. WebKitGTK 2.54 (Fedora 44) reports `showPopover`; the fallback was also
-rendered there with the API deleted.
-
-## Icons
-
-One family: Lucide (`lucide-static` 1.63.0, ISC, licence in
-`apps/web/public/licenses/`). `apps/web/icons.ts` reads the SVGs at build time
-and writes them into the inline sprite of `index.html`, so the page keeps one
-`<use href="#i-name">` per icon and loads no icon font or runtime. 24 px grid,
-drawn at 20 px (16 px in menus), one 1.75 stroke. Each symbol has one meaning:
-`history` is recorded playback on the device, `cloud` is cloud recordings, `bell`
-is alarms, `cctv` is the device list; v1 drew Playback and Cloud with the same
-clock and the bell as an emoji.
+A socket that opens and sends nothing decodable becomes Error after six seconds.
 
 ## Responsive
 
-`e2e/tests/responsive.spec.ts` opens every main screen at 320×568, 568×320,
-360×640, 640×360, 390×844, 844×390, 768×1024, 1024×768, 1280×800, 1440×900 and
-1920×1080 and fails on any horizontal scroll or element past the edge.
+Breakpoints in `tailwind.css`: sm 640, md 1024, lg 1280, xl 1440.
 
-| Width | Change |
+| Width | Layout |
 |---|---|
-| < 1024 | auto grid: 2 columns (1 below 640) |
-| < 900 | sign-in becomes one column; the decorative stage is hidden |
-| < 768 | settings sections become a wrapping row above the content |
-| < 640 | settings rows stack label over control; tiles keep 16:9 and scroll; stream controls show icons only; the pan and tilt pad docks above the controls |
-| < 480 | top bar tightens to 16 px edges, the camera name ellipsises, the meta is hidden; every sheet spans the width |
+| < 640 (mobile) | Header 48 (camera name and status), video full width, bottom tab bar 56 (Live, Events, Settings). Events is the `#/events` route; no side panel. Grid is one column. |
+| 640-1023 (tablet) | Header; Events opens as a 320 px overlay sheet from the right over the stage. |
+| 1024-1279 (desktop small) | Same overlay panel, closed by default. |
+| >= 1280 (wide) | Events docked as a 320 px column right of the main region, open by default. |
 
-The gate walks every state a user reaches: both sign-in tabs, live, the pan and
-tilt pad, the camera and quality menus, the alarm, cloud-recording and devices
-sheets, playback, every camera, and each Settings section. Tables are the one
-thing allowed to scroll sideways, inside their own box. Under `pointer: coarse`
-(`e2e/tests/touch.spec.ts`, phone 390×844 and tablet 768×1024) every visible
-button, link, input, select, tab and menu item in those states is at least
-44×44.
+The Events toggle is persisted in `localStorage` key `pvw_events_panel`
+(`"open"` or `"closed"`). At <= 1024x640 the compact density sets `--hit` to
+32. Under `pointer: coarse` every target is 44 px.
+
+`e2e/tests/responsive.spec.ts` opens every main screen at 320x568, 568x320,
+360x640, 640x360, 390x844, 844x390, 768x1024, 1024x768, 1280x800, 1440x900 and
+1920x1080 and fails on any horizontal scroll or element past the edge. Tables
+are the one thing allowed to scroll sideways, inside their own box.
+`e2e/tests/touch.spec.ts` checks 44x44 targets on a 390x844 phone and a
+768x1024 tablet.
+
+## Information architecture
+
+| Place | Route | What |
+|---|---|---|
+| Live | `#/live` (default) | One camera, dual-lens picture in picture, dock, PTZ under Move, the ruler timeline with playback in it. |
+| Live, grid | `#/live/grid` | Every camera as tiles: a view mode of Live, switched by the Single / Grid segmented control in the header, not a page. |
+| Live, playback | `#/live/playback` | The playback screen until the timeline slice folds it into the timeline. |
+| Events | `#/events` | Full-page review; on wide windows also the docked side panel. |
+| Settings | `#/settings/<section>` | Three groups, below. |
+| Sign in | gate | Before everything; Settings stays reachable from it. |
+
+Settings groups and their section ids:
+
+| Group | Sections |
+|---|---|
+| Camera | `camera`, `device`, `image`, `alarm`, `system` |
+| App | `playback`, `config` |
+| Account & server | `account`, `connection`, `server` |
+
+The save bar stays the one place for the outcome of a save: "Everything saved",
+"Unsaved changes - N fields" with Discard and Save, a refused save as a `--bad`
+alert with the server's reason, and the restart prompt after a save.
+
+Desktop header, left to right: brand, camera switcher with its status, Single /
+Grid, then on the right Events (with the unread count), Settings, theme and the
+keyboard list. A banner under the header carries problems that affect the whole
+window or the open camera. Under 640 px the bottom tabs Live / Events / Settings
+replace the right-hand buttons.
+
+## Keyboard
+
+1-9 camera n - G Single / Grid - F full screen - M sound - T held talk - R record -
+S snapshot - L lens - Q HD / SD - V move pad - arrows move the lens (pad open) or
+the tile focus (grid) - Space stop - , Settings - Esc closes the menu, then the
+pad, then full screen - ? the list, as a sheet, not a modal. Letter keys do
+nothing while focus is in a text field. In Settings: arrow keys walk the
+sections, Ctrl+S saves, Esc goes back when nothing is unsaved. A menu returns
+focus to its trigger when it closes; switching camera keeps focus where it was.
+While a Reka menu is open, the page's own keys step aside, so Escape closes only
+the menu.
+
+## Menus and the WebView
+
+Menus, selects, tooltips and sheets are Reka primitives from `components/ui/`;
+they render inside the page (teleported to `body`), not as native windows, so
+they look and behave the same in Chrome, WebKitGTK, WKWebView and WebView2. They
+open aligned to the trigger and shift inside an 8 px viewport margin. The page
+floor is Chrome 111 / Safari 16.4 because of Tailwind v4
+(`docs/webview-matrix.md`).
 
 ## Focus and targets
 
-A 2 px `--focus` ring with a 2 px gap, on `:focus-visible` only. Every control
-is at least 36×36 (`--hit`), 44 under `pointer: coarse`. A "Skip to controls"
-link is the first stop on Live.
+A 2 px `--focus` outline with a 2 px offset, on `:focus-visible` only (rows in
+menus draw it inset). Every control is at least `--hit` high: 36 px, 44 under
+`pointer: coarse`, 32 in the compact density. A "Skip to controls" link is the
+first stop on Live. Status is never colour alone: the dot has a word, the event
+tick has a kind in the Events row, a warning has an icon.
 
 ## Not used, on purpose
 
-Hero-centred sign-in, cards with shadows, emoji or Unicode glyphs as icons,
-styles injected by scripts, gradients, tracked capital eyebrows, a coloured
-left border as accent, blur, radius above 10 px, cream backgrounds, entrance
-animation, empty-state illustrations, text over the video outside full screen,
-numbers that were not measured.
+Hero-centred sign-in; default shadcn look (cards with shadows, a card inside a
+panel, radius 12 on every element); emoji or Unicode glyphs as icons; icons
+without a name; styles injected by scripts; gradients; tracked capital eyebrows;
+a coloured left border as accent; blur; cream backgrounds; entrance animation;
+empty-state illustrations; text over the video other than the status plate, stage
+state messages and the full-screen line; a reason that lives only in a tooltip;
+file lists as the way into recordings; the 1-5 PTZ speed scale; Direction B's
+warm palette, teal signal colour, Geist and redrawn icons; numbers that were not
+measured.
+
+## File ownership for the next phase
+
+Five slices run in parallel after the foundation PR. Shared files change only
+through the integrator: a slice that needs one changed (a new store field, a new
+icon, a new contrast pair) asks the integrator instead of editing it.
+
+Frozen after the foundation PR, changed only through the integrator:
+`apps/web/index.html`, `src/main.ts`, `src/tokens.css`, `src/tailwind.css`,
+`src/styles/base.css`, `src/shell/**`, `src/components/ui/**`,
+`src/components/Icon.vue`, `apps/web/icons.ts`, `src/live/store.ts` (slices may
+ask the integrator for new fields), `src/app/state.ts`, `src/app/shell.ts`,
+`src/app/view.ts`, `src/app/chrome.ts`, `src/app/keys.ts`, `src/app/boot.ts`,
+`src/app/devices.ts`, `src/app/theme.ts`,
+`src/lib/api.ts`, `tools/contrast.py`, `e2e/tests/app.ts`, `e2e/tests/layout.ts`,
+`e2e/tests/visual.spec.ts` (and its snapshots, regenerated once by the
+integrator), `e2e/tests/shell.spec.ts`, `chrome.spec.ts`, `menus.spec.ts`,
+`responsive.spec.ts`, `touch.spec.ts` (and their snapshots),
+`tests/web/cdp.mjs`, `tests/web/ui.test.mjs`, `.github/workflows/**`,
+`package.json` and its lockfile.
+
+| Slice | Owns |
+|---|---|
+| 1. live-stage | `src/live/LiveMain.vue`, `LiveBar.vue`, `AlarmStop.vue`, `ImageLive.vue`, `FisheyeOverlay.vue`, `PtzEditor.vue`, `fisheye.ts`, `talk.ts`, new `src/live/stage/**`; `src/app/stage.ts`, `controls.ts`, `lens.ts`, `media.ts`, `caption.ts`, `dst.ts`, `format.ts`; `src/lib/stream-player.ts`, `hevc.ts`; `src/styles/live.css`; e2e live, stage, controls, talk, talk-race, lens, fisheye, live-audio; tests/web snapshot, stream-orphan, stream-misconfigured, live-late-viewer, hevc-fallback, hevc-verdict |
+| 2. timeline-playback | `src/live/PlaybackScreen.vue`, `PlaybackStrip.vue`, `PlaybackRows.vue`, `PlaybackCalendar.vue`, `RecordingsPanel.vue`, `playback-audio.ts`, `playback-clips.ts`, new `src/live/timeline/**`; `src/styles/playback.css`; e2e playback, playback-audio, recordings |
+| 3. events | `src/live/AlarmCenter.vue`, new `src/events/**`; `src/styles/events.css`; e2e alarms; tests/web alarms-pictures |
+| 4. settings | `src/live/SettingsScreen.vue`, `DeviceSettings.vue`, `AlarmSettings.vue`, `ImageSettings.vue`, `OsdSettings.vue`, `RecordSettings.vue`, `CardFormat.vue`, `SystemAbout.vue`, `AccountPanel.vue`, `DevicesSheet.vue`, new `src/settings/**`; `src/styles/settings.css`; e2e settings, device-settings, alarm-settings, image-settings, system-about, device-admin, devices, add-camera; tests/web device-settings, restart, settings-boot, desktop-settings |
+| 5. signin-states-grid-mobile | `src/live/SignInScreen.vue`, `AccountFlows.vue`, `account-flows.ts`, `AddCamera.vue`, `GridView.vue`, `GridTile.vue`, `grid-clock.ts`, new `src/states/**`; `src/styles/signin.css`, `grid.css`; e2e signin, grid; tests/web grid |
+
+Paths under `src/` are relative to `apps/web/`.

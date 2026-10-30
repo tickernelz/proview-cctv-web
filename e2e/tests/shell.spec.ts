@@ -3,13 +3,13 @@ import { playing, scenarioUrl, signIn } from './app'
 
 test('the address opens the screen it names, and a hash change moves between them', async ({ page }) => {
   const base = await signIn(page, 'many')
-  await page.goto(base + '/?signed-in&boot=settings#settings/server')
+  await page.goto(base + '/?signed-in&boot=settings#/settings/server')
   await expect(page.getByTestId('settings')).toBeVisible()
   await expect(page.locator('#h-server')).toBeVisible()
-  await page.evaluate(() => (location.hash = '#grid'))
+  await page.evaluate(() => (location.hash = '#/live/grid'))
   await expect(page.getByTestId('grid')).toBeVisible()
   await expect(page.getByTestId('live-well')).toBeHidden()
-  await page.evaluate(() => (location.hash = '#live'))
+  await page.evaluate(() => (location.hash = '#/live'))
   await expect(page.getByTestId('live-well')).toBeVisible()
   await expect(page.getByTestId('grid')).toBeHidden()
 })
@@ -18,17 +18,17 @@ test('a theme chosen with the toggle survives a reload and drives every toggle l
   await page.emulateMedia({ colorScheme: 'dark' })
   await signIn(page, 'one')
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-  await page.getByTestId('live').getByTestId('theme-toggle').click()
+  await page.getByTestId('app-header').getByTestId('theme-toggle').click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.reload()
   await expect(page.getByTestId('live')).toBeVisible()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await expect(page.getByTestId('live').getByTestId('theme-toggle')).toHaveAttribute('aria-label', 'Switch to the dark theme')
+  await expect(page.getByTestId('app-header').getByTestId('theme-toggle')).toHaveAttribute('aria-label', 'Switch to the dark theme')
 })
 
 test('Sign out from Settings returns to sign-in, keeps no camera, and a fresh sign-in opens Live again', async ({ page }) => {
   const base = await signIn(page, 'one')
-  await page.goto(base + '/?signed-in&boot=connection#settings/connection')
+  await page.goto(base + '/?signed-in&boot=connection#/settings/connection')
   await page.getByTestId('settings-signout').click()
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('settings')).toBeHidden()
@@ -68,7 +68,7 @@ async function playingClip(page: Page) {
     })
   })
   const base = await signIn(page, 'many')
-  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await page.goto(base + '/?signed-in&boot=playback#/live/playback')
   await expect(page.getByTestId('playback')).toBeVisible()
   await page.getByTestId('pb-day').fill('2026-10-27')
   await page.locator('.pb-row').first().click()
@@ -78,8 +78,8 @@ async function playingClip(page: Page) {
 
 const LEAVE: [string, (page: Page) => Promise<unknown>][] = [
   ['the desktop tray Live item', (page) => page.evaluate(() => window.dispatchEvent(new CustomEvent('desktop-live')))],
-  ['the Settings address', (page) => page.evaluate(() => (location.hash = '#settings/server'))],
-  ['the grid address', (page) => page.evaluate(() => (location.hash = '#grid'))],
+  ['the Settings address', (page) => page.evaluate(() => (location.hash = '#/settings/server'))],
+  ['the grid address', (page) => page.evaluate(() => (location.hash = '#/live/grid'))],
 ]
 
 for (const [label, leave] of LEAVE) {
@@ -93,20 +93,80 @@ for (const [label, leave] of LEAVE) {
 
 test('the address of another screen closes the Playback overlay', async ({ page }) => {
   const base = await signIn(page, 'many')
-  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await page.goto(base + '/?signed-in&boot=playback#/live/playback')
   await expect(page.getByTestId('playback')).toBeVisible()
-  await page.evaluate(() => (location.hash = '#settings/server'))
+  await page.evaluate(() => (location.hash = '#/settings/server'))
   await expect(page.locator('#h-server')).toBeVisible()
   await expect(page.getByTestId('playback')).toBeHidden()
 })
 
 test('the desktop tray Live item closes the Playback overlay and gives the digit keys back', async ({ page }) => {
   const base = await signIn(page, 'many')
-  await page.goto(base + '/?signed-in&boot=playback#playback')
+  await page.goto(base + '/?signed-in&boot=playback#/live/playback')
   await expect(page.getByTestId('playback')).toBeVisible()
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('desktop-live')))
   await expect(page.getByTestId('playback')).toBeHidden()
   await playing(page)
   await page.keyboard.press('2')
   await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+})
+
+test('#/events shows Events as a full page in place of Live, and #/live brings the stream back', async ({ page }) => {
+  await signIn(page, 'one')
+  await playing(page)
+  await page.evaluate(() => (location.hash = '#/events'))
+  await expect(page.getByTestId('events-panel')).toBeVisible()
+  await expect(page.getByTestId('alarm-center')).toBeVisible()
+  await expect(page.getByTestId('live')).toBeHidden()
+  const [panel, width] = await page.evaluate(() => [document.getElementById('events-panel')!.getBoundingClientRect().width, document.documentElement.clientWidth])
+  expect(panel).toBeGreaterThan(width * 0.9)
+  await page.evaluate(() => (location.hash = '#/live'))
+  await expect(page.getByTestId('live')).toBeVisible()
+  await playing(page)
+})
+
+test('the Events bell docks and undocks the panel at 1440 px and the choice survives a reload', async ({ page }) => {
+  await signIn(page, 'one')
+  const panel = page.getByTestId('events-panel')
+  const bell = page.getByTestId('alarm-bell')
+  await expect(bell).toHaveAccessibleName(/^Events/)
+  await expect(panel).toBeVisible()
+  await expect(bell).toHaveAttribute('aria-expanded', 'true')
+  await bell.click()
+  await expect(panel).toBeHidden()
+  expect(await page.evaluate(() => localStorage.getItem('pvw_events_panel'))).toBe('closed')
+  await page.reload()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect(bell).toHaveAttribute('aria-expanded', 'false')
+  await expect(panel).toBeHidden()
+  await bell.click()
+  await expect(panel).toBeVisible()
+  await page.reload()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect(panel).toBeVisible()
+  expect(await page.evaluate(() => localStorage.getItem('pvw_events_panel'))).toBe('open')
+})
+
+test('the phone tab bar moves between Live, Events and Settings at 390 px', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'one')
+  await expect(page.getByTestId('tab-bar')).toBeVisible()
+  await expect(page.getByTestId('alarm-bell')).toBeHidden()
+  await expect(page.getByTestId('open-settings')).toBeHidden()
+  await expect(page.getByTestId('events-panel')).toBeHidden()
+  await expect(page.getByTestId('tab-live')).toHaveAttribute('aria-current', 'page')
+  await page.getByTestId('tab-events').click()
+  await expect(page).toHaveURL(/#\/events$/)
+  await expect(page.getByTestId('events-panel')).toBeVisible()
+  await expect(page.getByTestId('live')).toBeHidden()
+  await expect(page.getByTestId('tab-events')).toHaveAttribute('aria-current', 'page')
+  await page.getByTestId('tab-settings').click()
+  await expect(page).toHaveURL(/#\/settings\/\w*$/)
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.getByTestId('events-panel')).toBeHidden()
+  await expect(page.getByTestId('tab-settings')).toHaveAttribute('aria-current', 'page')
+  await page.getByTestId('tab-live').click()
+  await expect(page).toHaveURL(/#\/live$/)
+  await expect(page.getByTestId('live')).toBeVisible()
+  await playing(page)
 })

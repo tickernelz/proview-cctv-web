@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
-import { ACCOUNT, playing, signIn } from './app'
+import { ACCOUNT, eventsPanelClosed, playing, signIn } from './app'
+
+test.beforeEach(({ page }) => eventsPanelClosed(page))
 
 const ALARMS = {
   serial: 'gate',
@@ -197,7 +199,8 @@ test('switching camera while a check is out shows the new camera, never the old 
   expect(asked).toContain('porch')
 })
 
-test('only one corner sheet is open: Alarms and Cloud replace each other', async ({ page }) => {
+test('only one corner sheet is open: the Events overlay and Cloud replace each other', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 768 })
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: ALARMS }))
   await signIn(page, 'one')
   await playing(page)

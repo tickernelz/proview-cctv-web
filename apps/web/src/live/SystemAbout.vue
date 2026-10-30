@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { baseOffsetMinutes, dstRule } from '../app/dst'
 import { state } from '../app/state'
@@ -8,7 +8,7 @@ type Reply = { ok: boolean; status: number; body: any }
 type Ping = { url: string; reachable: boolean; average_ms?: number | null; lost_percent?: number | null; sent: number }
 type User = { name: string; group?: string | null; memo?: string | null; reserved?: boolean | null; authorities: number }
 
-const props = defineProps<{ host: HTMLElement }>()
+const props = defineProps<{ shown: boolean }>()
 
 const BASE = '/api/device/system'
 const RESET_WORD = 'RESET'
@@ -252,26 +252,27 @@ function open() {
   const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
   if (typeof page.openSettings === 'function') page.openSettings('system')
   else if (typeof page.showSection === 'function') page.showSection('system', true)
-  else location.hash = '#settings/system'
+  else location.hash = '#/settings/system'
 }
 
 function openFromNav() {
-  const shown = !props.host.hidden
+  const shown = props.shown
   open()
   if (shown) load()
 }
 
-const watcher = new MutationObserver(() => {
-  if (!props.host.hidden) load()
-})
+watch(
+  () => props.shown,
+  (shown) => {
+    if (shown) load()
+  },
+)
 
-onMounted(() => watcher.observe(props.host, { attributes: true, attributeFilter: ['hidden'] }))
-onBeforeUnmount(() => watcher.disconnect())
 </script>
 
 <template>
-  <Teleport to=".set-nav">
-    <a href="#settings/system" data-section="system" data-testid="system-link" @click.prevent="openFromNav">About device</a>
+  <Teleport defer to=".set-nav">
+    <a href="#/settings/system" data-section="system" data-testid="system-link" @click.prevent="openFromNav">About device</a>
   </Teleport>
   <h2 id="h-system" class="set-h" tabindex="-1">About device</h2>
   <p class="set-sub">Identity, clock, language, firmware, network health and users as the camera reports them over DVRIP.</p>
