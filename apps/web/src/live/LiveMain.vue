@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import AddCamera from './AddCamera.vue'
-import { gotoPreset, sendControl } from '../app/controls'
+import PtzEditor from './PtzEditor.vue'
+import { aimAt, gotoPreset, holdMode, openEditor, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
 import { openSettings } from '../app/shell'
 import { copyStageDetail, renderFsLine, requestStream } from '../app/stage'
@@ -20,9 +21,26 @@ const PAD = [
   { act: 'right', label: 'Pan right', icon: 'chevron-right' },
   { act: 'down', label: 'Tilt down', icon: 'chevron-down' },
 ]
+const LENS = [
+  { act: 'zoom-out', label: 'Zoom out', text: 'Zoom −', gate: 'zoom' },
+  { act: 'zoom-in', label: 'Zoom in', text: 'Zoom +', gate: 'zoom' },
+  { act: 'focus-near', label: 'Focus near', text: 'Near', gate: 'focus' },
+  { act: 'focus-far', label: 'Focus far', text: 'Far', gate: 'focus' },
+]
 const showing = computed(() => stage.name === 'playing' || stage.name === 'stalled')
 let lastVideoTime = -1
 let observer: ResizeObserver | null = null
+
+function pressKey(act: string, event: PointerEvent) {
+  if (act === 'home' || event.button !== 0 || !holdMode()) return
+  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  pressControl(act)
+}
+
+function clickKey(act: string, event: MouseEvent) {
+  if (act === 'home' || !holdMode()) sendControl(act)
+  else if (event.detail === 0) tapControl(act)
+}
 
 function checkPassword() {
   live.settings.focusKey = 'PROVIEW_DEVICE_PASS'
@@ -82,7 +100,7 @@ onBeforeUnmount(() => {
   </div>
   <section id="live" class="live" aria-label="Live" :hidden="!live.panes.live">
     <div id="well" ref="well" class="well" data-testid="live-well" :data-state="stage.name" :data-lens="stage.lens">
-      <div id="lens-crop" class="lens-crop" data-testid="live-frame" :hidden="!showing" :data-flipped="stage.crop.flipped" :style="{ width: stage.crop.width, height: stage.crop.height }">
+      <div id="lens-crop" class="lens-crop" data-testid="live-frame" :hidden="!showing" :data-flipped="stage.crop.flipped" :data-aim="live.padOpen && live.gate.aim.ok ? 'on' : undefined" :style="{ width: stage.crop.width, height: stage.crop.height }" @click="aimAt">
         <video id="video" data-testid="live-video" playsinline muted :style="stage.view" @loadedmetadata="onMetadata" @timeupdate="onTimeUpdate" />
       </div>
       <div id="prog" class="prog" :hidden="stage.name !== 'loading'" />
@@ -98,7 +116,20 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div id="pad" class="pad" data-testid="ptz-pad" role="group" aria-label="Pan and tilt" :hidden="!live.padOpen">
-        <button v-for="key in PAD" :key="key.act" :class="['pk', key.act]" type="button" :aria-label="key.label" :disabled="!live.gate[key.act].ok" :title="live.gate[key.act].why" @click="sendControl(key.act)">
+        <button
+          v-for="key in PAD"
+          :key="key.act"
+          :class="['pk', key.act]"
+          type="button"
+          :aria-label="key.label"
+          :disabled="!live.gate[key.act].ok"
+          :title="live.gate[key.act].why"
+          @pointerdown="pressKey(key.act, $event)"
+          @pointerup="releaseControl()"
+          @pointercancel="releaseControl()"
+          @lostpointercapture="releaseControl()"
+          @click="clickKey(key.act, $event)"
+        >
           <Icon :name="key.icon" :small="key.act === 'home'" />
         </button>
         <div class="pad-note">
@@ -107,8 +138,27 @@ onBeforeUnmount(() => {
             <button v-for="preset in pad.presets" :key="preset.token" type="button" data-testid="ptz-preset" :title="'GotoPreset ' + preset.token" @click="gotoPreset(preset.token, preset.name)">{{ preset.name }}</button>
           </span>
           <button id="tour" class="btn btn-text" data-testid="ptz-tour" type="button" :aria-pressed="pad.tour ? 'true' : 'false'" :disabled="!live.gate.cruise.ok" :title="live.gate.cruise.why" @click="sendControl('cruise')">Tour</button>
+          <span v-if="live.gate.zoom.ok || live.gate.focus.ok" class="pad-lens" data-testid="ptz-lens">
+            <template v-for="key in LENS" :key="key.act">
+              <button
+                v-if="live.gate[key.gate].ok"
+                class="btn btn-text"
+                type="button"
+                :data-testid="'ptz-' + key.act"
+                :aria-label="key.label"
+                @pointerdown="pressKey(key.act, $event)"
+                @pointerup="releaseControl()"
+                @pointercancel="releaseControl()"
+                @lostpointercapture="releaseControl()"
+                @click="clickKey(key.act, $event)"
+              >{{ key.text }}</button>
+            </template>
+          </span>
+          <span v-if="live.gate.aim.ok" class="pad-hint" data-testid="ptz-aim-hint">Click the top lens to aim.</span>
+          <button v-if="live.gate.presetEdit.ok" id="ptz-edit" class="btn btn-text" data-testid="ptz-edit" type="button" :aria-pressed="pad.editing ? 'true' : 'false'" aria-controls="ptz-editor" @click="openEditor()">Edit presets</button>
           <span id="control-status" data-testid="control-status" role="status">{{ pad.status }}</span>
         </div>
+        <PtzEditor v-if="pad.editing" />
       </div>
       <div id="fs-line" class="fs-line" :hidden="!stage.fs.shown"><span id="fs-name">{{ stage.fs.name }}</span><span id="fs-time">{{ stage.fs.time }}</span></div>
     </div>

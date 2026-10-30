@@ -41,6 +41,12 @@ const supported = (feature: string, lens: string) => ({ feature, lens, backend: 
 export async function fakeDeviceControls(page: Page) {
   const calls: string[] = []
   let light = 'off'
+  const presets = [
+    { channel: 0, id: 1, name: 'Gate' },
+    { channel: 0, id: 2, name: 'Driveway' },
+  ]
+  const tour = [1, 2]
+  const lines = () => [{ channel: 0, id: 1, name: 'Yard', points: tour.map((preset) => ({ preset, seconds: 5 })) }]
   await page.route(/\/api\/device\/controls/, async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -50,10 +56,42 @@ export async function fakeDeviceControls(page: Page) {
       return json({
         onvif: false,
         dvrip: true,
-        capabilities: [supported('ptz move', 'bottom'), supported('ptz preset', 'bottom'), supported('white light', 'device'), supported('two-way audio', 'device')],
+        capabilities: [
+          supported('ptz move', 'bottom'),
+          supported('ptz preset', 'bottom'),
+          supported('ptz preset edit', 'bottom'),
+          supported('ptz aim', 'top'),
+          supported('white light', 'device'),
+          supported('two-way audio', 'device'),
+        ],
       })
     }
-    if (url.pathname.endsWith('/presets')) return json([{ token: '1', name: 'Gate' }, { token: '2', name: 'Driveway' }])
+    if (url.pathname.endsWith('/presets')) return json(presets.map((preset) => ({ token: String(preset.id), name: preset.name })))
+    if (url.pathname.endsWith('/ptz/press')) return json({ action: url.searchParams.get('action'), command: 'DirectionLeft', session_ms: 12, press_ms: 4 })
+    if (url.pathname.endsWith('/ptz/release')) return json({ held: true, times: { held_ms: Number(url.searchParams.get('pressed_ms')), stop_ms: 3 } })
+    if (url.pathname.endsWith('/ptz/locate')) return json({ xoffset: 0, yoffset: 0, session_ms: 12, locate_ms: 4 })
+    if (url.pathname.endsWith('/tour')) return json({ presets, lines: lines() })
+    if (url.pathname.endsWith('/tour/remove')) {
+      const stop = tour.indexOf(Number(url.searchParams.get('preset')))
+      if (stop >= 0) tour.splice(stop, 1)
+      return json({ tour: 1, lines: lines() })
+    }
+    if (url.pathname.endsWith('/preset/add')) {
+      const id = [1, 2, 3, 4].find((candidate) => !presets.some((preset) => preset.id === candidate)) ?? 9
+      const name = url.searchParams.get('name') || 'Preset' + id
+      presets.push({ channel: 0, id, name })
+      return json({ id, name, presets, lines: lines() })
+    }
+    if (url.pathname.endsWith('/preset/rename')) {
+      const entry = presets.find((preset) => String(preset.id) === url.searchParams.get('token'))
+      if (entry) entry.name = url.searchParams.get('name') ?? entry.name
+      return json({ id: entry?.id, name: entry?.name, presets, lines: lines() })
+    }
+    if (url.pathname.endsWith('/preset/delete')) {
+      const index = presets.findIndex((preset) => String(preset.id) === url.searchParams.get('token'))
+      const [gone] = presets.splice(index, 1)
+      return json({ id: gone.id, name: gone.name, presets, lines: lines() })
+    }
     if (url.pathname.endsWith('/preset/goto')) return json({ ok: true })
     if (url.pathname.endsWith('/ptz/stop')) return json({ detail: 'Stopped.' })
     if (url.pathname.endsWith('/ptz')) return json({ lens: url.searchParams.get('lens'), backend: 'dvrip', hold_ms: 600 })

@@ -16,6 +16,7 @@ export type Prefs = { theme: string; quality: string; lens: string; osd: boolean
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type Preset = { token: string; name: string }
+export type TourLine = { channel: number; id: number; name: string; points: number[] }
 export type CameraInfo = { name: string; id: string; channel: string; model: string; connection: string; stream: string }
 export type TalkPhase = 'idle' | 'asking' | 'opening' | 'sending' | 'error'
 
@@ -30,10 +31,10 @@ export const live = reactive({
   record: { on: false, disabled: true, elapsed: '' },
   snapshotDisabled: true,
   gate: Object.fromEntries(
-    ['intercom', 'move', 'up', 'down', 'left', 'right', 'home', 'cruise'].map((act) => [act, { ok: false, why: 'Device controls have not been checked yet.' } as Gate]),
+    ['intercom', 'move', 'up', 'down', 'left', 'right', 'home', 'cruise', 'aim', 'zoom', 'focus', 'presetEdit', 'calibrate'].map((act) => [act, { ok: false, why: 'Device controls have not been checked yet.' } as Gate]),
   ) as Record<string, Gate>,
   padOpen: false,
-  pad: { presets: [] as Preset[], presetsShown: false, tour: false, status: '' },
+  pad: { presets: [] as Preset[], presetsShown: false, tour: false, status: '', editing: false, busy: false, lines: [] as TourLine[] },
   panes: { empty: false, live: true, grid: false },
   stage: {
     name: 'idle',

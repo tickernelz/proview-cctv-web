@@ -1,4 +1,4 @@
-import { closePad, sendControl, togglePad } from './controls'
+import { closePad, holdMode, pressControl, releaseControl, sendControl, togglePad } from './controls'
 import { cycleLens } from './lens'
 import { live, menuOpen } from '../live/store'
 import { startTalk, stopTalk } from '../live/talk'
@@ -40,7 +40,7 @@ function onWatchKey(event: KeyboardEvent) {
     if (state.view === 'live' && state.padOpen) {
       event.preventDefault()
       const act = ARROWS[key]
-      if (live.gate[act].ok) sendControl(act)
+      if (live.gate[act].ok && !(event.repeat && holdMode())) pressControl(act)
     } else if (state.view === 'grid') {
       event.preventDefault()
       moveTileFocus(key)
@@ -81,9 +81,13 @@ document.addEventListener('keydown', (event) => {
 
 document.addEventListener('keyup', (event) => {
   if (event.key.toLowerCase() === 't') stopTalk()
+  if (ARROWS[event.key]) releaseControl()
 })
 
-window.addEventListener('blur', () => stopTalk())
+window.addEventListener('blur', () => {
+  stopTalk()
+  releaseControl()
+})
 
 document.querySelector('.skip')?.addEventListener('click', (event) => {
   event.preventDefault()
