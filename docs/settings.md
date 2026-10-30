@@ -8,7 +8,7 @@ app writes for you, so nothing has to be exported by hand.
 `<data dir>/settings.json`, shaped as
 
 ```json
-{ "values": { "PROVIEW_DEVICE_USER": "admin", "PROVIEW_PROVIDER": "local" } }
+{ "values": { "PROVIEW_DEVICE_USER": "admin", "PROVIEW_MODE": "local" } }
 ```
 
 The same file keeps the live grid layout under `grid`; a settings save leaves it alone.
@@ -44,19 +44,18 @@ must carry this server's own origin.
 1. On start the file is read and every known key except the `PROVIEW_DESKTOP_*` ones
    is exported into the environment **only when that variable is not already set**.
    An exported variable therefore wins until it is cleared. The standalone server
-   reads `PROVIEW_LISTEN` (or `--listen`) before it loads the file, so a listen
-   address saved in `settings.json` is shown but never used.
+   takes its listen address from `--listen`, then `PROVIEW_LISTEN` in the
+   environment, then the value saved in `settings.json`, then `127.0.0.1:8787`.
 2. `POST /api/settings` writes the file atomically (staged `settings.json.tmp`, then
    a rename) and exports the values into the process environment at once. Each save
    merges into what is already stored, so a second save never drops the first. Keys
    read when they are used (`PROVIEW_FFMPEG`, `PROVIEW_LENS_PTZ`,
    `PROVIEW_LENS_CAPABILITIES`, `PROVIEW_DEVICE_SERIAL`) apply immediately. Keys
    with the **Restart** tag (the `Restart` column below) are read once at startup, and
-   the view offers a **Restart the app** button for the desktop build. Four keys carry
-   no restart flag but are still read only when the server starts, so a saved value
-   takes effect on the next start: `PROVIEW_MODE` (the mode store's default) and
-   `PROVIEW_PORTAL_BASE`, `PROVIEW_CAPS_BASE`, `PROVIEW_CLOUD_SESSION_TTL` (the cloud
-   state built once at startup). The `PROVIEW_APP_*` identity is resolved per cloud
+   the view offers a **Restart the app** button for the desktop build. That includes
+   `PROVIEW_MODE` (the mode store's default) and `PROVIEW_PORTAL_BASE`,
+   `PROVIEW_CAPS_BASE`, `PROVIEW_CLOUD_SESSION_TTL` (the cloud state built once at
+   startup). The `PROVIEW_APP_*` identity is resolved per cloud
    call, except in the clients that cloud state builds at startup. The restart button
    posts to `POST /api/desktop/restart` with the per-run token the shell writes into
    the served page (`window.__PROVIEW_DESKTOP__`), and the shell calls
@@ -79,7 +78,8 @@ must carry this server's own origin.
    set it once in the environment (or in `settings.json` before the first start).
    Afterwards the view shows it as set and lets you replace it. The desktop build
    ignores it and signs the cookie with a key drawn fresh on every run, so a sign-in
-   does not survive a restart.
+   does not survive a restart; its Settings view does not list the key and refuses a
+   save that carries it.
 6. The file is plain JSON, so its directory is the protection: create the data
    directory 0700 and let only the service user own it. The desktop build keeps the
    interactive camera login in the OS keychain instead; there the order is keychain,
@@ -99,8 +99,8 @@ two select keys show words rather than identifiers:
 
 | Key | Label | Options shown |
 |---|---|---|
-| `PROVIEW_PROVIDER` | Provider | Vendor cloud, This network, Built-in sample data |
-| `PROVIEW_MODE` | Default mode | Cloud account, This network, Built-in sample data |
+| `PROVIEW_PROVIDER` | Provider | ProView camera, Built-in sample data |
+| `PROVIEW_MODE` | Default mode | Cloud account, This network |
 
 The `Desktop` group is shown only inside the desktop app. Validation and
 missing-value messages name the field's label or the Settings screen that owns the
@@ -114,12 +114,12 @@ server does with an unset key; only the four `Desktop` keys report it in the API
 
 | Group | Key | Label | Kind | Restart | Default and notes |
 |---|---|---|---|---|---|
-| Cloud | `PROVIEW_PROVIDER` | Provider | select `proview`, `local`, `fixture` | yes | `fixture` selects the built-in sample data; any other value, `local` included, selects the vendor cloud provider. The LAN path is the mode, not this key |
-| Cloud | `PROVIEW_MODE` | Default mode | select `cloud`, `local`, `fixture` | no | `cloud`. Only `cloud` and `local` are read; `fixture` counts as `cloud`. Read at startup; a `mode.json` in the data directory wins over it |
+| Cloud | `PROVIEW_PROVIDER` | Provider | select `proview`, `fixture` | yes | `proview`, the camera through the cloud or the local mode; `fixture` selects the built-in sample data. Any other stored value counts as `proview`. The LAN path is the mode, not this key |
+| Cloud | `PROVIEW_MODE` | Default mode | select `cloud`, `local` | yes | `cloud`. Read at startup; a `mode.json` in the data directory wins over it |
 | Cloud | `PROVIEW_CLOUD_BASE` | Cloud address | text | yes | `https://rs.xmeye.net`, the signed cloud login envelope |
-| Cloud | `PROVIEW_PORTAL_BASE` | Portal address | text | no | `https://api.xmeye.net`, the account login; read at startup |
-| Cloud | `PROVIEW_CAPS_BASE` | Capability address | text | no | `https://caps.xmcsrv.net`, device capabilities by serial; read at startup |
-| Cloud | `PROVIEW_CLOUD_SESSION_TTL` | Cloud session lifetime | number | no | `3600` seconds; read at startup |
+| Cloud | `PROVIEW_PORTAL_BASE` | Portal address | text | yes | `https://api.xmeye.net`, the account login |
+| Cloud | `PROVIEW_CAPS_BASE` | Capability address | text | yes | `https://caps.xmcsrv.net`, device capabilities by serial |
+| Cloud | `PROVIEW_CLOUD_SESSION_TTL` | Cloud session lifetime | number | yes | `3600` seconds |
 | Local network | `PROVIEW_DEVICE_HOST` | Camera address | text | yes | unset; DVRIP `host:port` |
 | Local network | `PROVIEW_DEVICE_RTSP` | Camera video address | text | yes | unset; RTSP `host:port`, port `554` when omitted |
 | Local network | `PROVIEW_DEVICE_ONVIF` | Camera control address | text | yes | unset; ONVIF base address |
@@ -127,14 +127,14 @@ server does with an unset key; only the four `Desktop` keys report it in the API
 | Local network | `PROVIEW_DEVICE_USER` | Camera user | text | yes | `admin` |
 | Local network | `PROVIEW_DEVICE_PASS` | Camera password | secret | yes | empty |
 | Server | `PROVIEW_SESSION_TTL` | Sign-in lifetime | number | yes | `3600` seconds |
-| Server | `PROVIEW_LISTEN` | Server address | text | yes | `127.0.0.1:8787`; standalone server only, from `--listen` or the environment (see above) |
+| Server | `PROVIEW_LISTEN` | Server address | text | yes | `127.0.0.1:8787`; standalone server only: `--listen`, then the environment, then this saved value (see above) |
 | Streaming | `PROVIEW_FFMPEG` | ffmpeg program | path | no | `ffmpeg` from `PATH` |
 | Streaming | `PROVIEW_LENS_PTZ` | Movement channel | number | no | unset; the 0-based lens index that moves, see [the lens contract](contracts/lens.md) |
 | Streaming | `PROVIEW_LENS_CAPABILITIES` | Lens features | text | no | empty; comma list of lens capabilities to advertise |
 | Advanced | `PROVIEW_FIXTURE_DIR` | Sample data folder | path | yes | `fixtures` in the working directory, else beside the executable, else the source checkout's |
 | Advanced | `PROVIEW_PROFILE` | Credential profile | text | yes | `default`; the desktop keychain profile |
 | Advanced | `PROVIEW_DATA_DIR` | Data folder | path | yes | standalone server: none (see above); the desktop app uses its own |
-| Advanced | `ROCKET_SECRET_KEY` | Sign-in cookie secret | secret | yes | none; see 5 above |
+| Advanced | `ROCKET_SECRET_KEY` | Sign-in cookie secret | secret | yes | none; not listed in the desktop app; see 5 above |
 | Self-built builds | `PROVIEW_APP_UUID` | Platform app uuid | text | no | the baked identity; only for a build made from source without one |
 | Self-built builds | `PROVIEW_APP_KEY` | Platform app key | text | no | as above |
 | Self-built builds | `PROVIEW_APP_SECRET` | Platform app secret | secret | no | as above |
