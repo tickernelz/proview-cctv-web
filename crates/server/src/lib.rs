@@ -12,6 +12,7 @@ pub mod settings;
 pub mod stream;
 
 pub use app::{
-    build, build_with, build_with_modes, build_with_state, build_with_state_and_accounts, serve,
-    serve_desktop, serve_desktop_shared, serve_shared, serve_with, serve_with_state, ServeOptions,
+    build, build_with, build_with_modes, build_with_state, build_with_state_and_accounts,
+    choose_port, serve, serve_desktop, serve_desktop_shared, serve_shared, serve_with,
+    serve_with_state, PortChoice, ServeOptions,
 };

@@ -41,6 +41,8 @@ pub struct DesktopState {
     pub tray_hint: bool,
     #[serde(default)]
     pub account: String,
+    #[serde(default)]
+    pub port: u16,
 }
 
 impl DesktopState {
@@ -258,6 +260,23 @@ mod tests {
             1,
             "an install with no alarms still announces the first one"
         );
+    }
+
+    #[test]
+    fn the_page_port_survives_a_restart_and_an_older_file_reads_as_none() {
+        let path = temp("port");
+        let state = DesktopState {
+            port: 51097,
+            ..DesktopState::default()
+        };
+        state.save(&path).expect("save");
+        assert_eq!(DesktopState::load(&path).port, 51097);
+        std::fs::write(&path, r#"{"seen":[],"lastSeen":5,"baselineDone":true}"#)
+            .expect("older file");
+        let older = DesktopState::load(&path);
+        assert_eq!(older.port, 0, "no saved port means a fresh one");
+        assert!(older.baseline_done, "the rest of an older file still loads");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

@@ -222,3 +222,101 @@ fn reserve_port(address: &str, requested: u16) -> u16 {
         Err(_) => 0,
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PortChoice {
+    pub port: u16,
+    pub fell_back: bool,
+}
+
+pub fn choose_port(address: &str, saved: u16, wait: std::time::Duration) -> PortChoice {
+    if saved != 0 {
+        let deadline = std::time::Instant::now() + wait;
+        loop {
+            if TcpListener::bind((address, saved)).is_ok() {
+                return PortChoice {
+                    port: saved,
+                    fell_back: false,
+                };
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    PortChoice {
+        port: reserve_port(address, 0),
+        fell_back: saved != 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn free_port() -> u16 {
+        TcpListener::bind(("127.0.0.1", 0))
+            .and_then(|listener| listener.local_addr())
+            .map(|address| address.port())
+            .expect("a free port")
+    }
+
+    #[test]
+    fn a_saved_port_that_is_free_is_used_again() {
+        let saved = free_port();
+        let choice = choose_port("127.0.0.1", saved, Duration::ZERO);
+        assert_eq!(
+            choice,
+            PortChoice {
+                port: saved,
+                fell_back: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_saved_port_held_by_another_program_falls_back_to_a_free_one() {
+        let held = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let saved = held.local_addr().expect("address").port();
+        let started = Instant::now();
+        let choice = choose_port("127.0.0.1", saved, Duration::from_millis(300));
+        assert!(choice.fell_back, "the saved port is taken");
+        assert_ne!(choice.port, saved);
+        assert_ne!(choice.port, 0);
+        assert!(
+            started.elapsed() >= Duration::from_millis(300),
+            "it waited for the port before giving up"
+        );
+        TcpListener::bind(("127.0.0.1", choice.port)).expect("the fallback port is free");
+        drop(held);
+    }
+
+    #[test]
+    fn a_saved_port_released_while_waiting_is_used_again() {
+        let held = TcpListener::bind(("127.0.0.1", 0)).expect("bind");
+        let saved = held.local_addr().expect("address").port();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            drop(held);
+        });
+        let choice = choose_port("127.0.0.1", saved, Duration::from_secs(3));
+        releaser.join().expect("releaser");
+        assert_eq!(
+            choice,
+            PortChoice {
+                port: saved,
+                fell_back: false
+            },
+            "a restart where the old process still holds the port keeps the same address"
+        );
+    }
+
+    #[test]
+    fn no_saved_port_picks_a_free_one_without_calling_it_a_fallback() {
+        let choice = choose_port("127.0.0.1", 0, Duration::from_secs(3));
+        assert!(!choice.fell_back);
+        assert_ne!(choice.port, 0);
+    }
+}

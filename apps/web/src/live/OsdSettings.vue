@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
+import { TechDetails } from '../states'
 
 export type OsdState = {
   channel: number
@@ -87,19 +88,21 @@ function save() {
     <div class="row">
       <div class="lab">
         Show title
-        <span v-if="osd.title_shown === null || osd.title_shown === undefined" class="hint">AVEnc.VideoWidget carries no ChannelTitleAttribute.</span>
+        <span v-if="osd.title_shown === null || osd.title_shown === undefined" class="hint">Not offered by this camera.</span>
       </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-osd-title" v-model="form.title" type="checkbox" role="switch" :disabled="osd.title_shown === null || osd.title_shown === undefined"><span>Overlay the channel title</span></label>
+        <TechDetails v-if="osd.title_shown === null || osd.title_shown === undefined" data-testid="device-osd-title-details" text="AVEnc.VideoWidget carries no ChannelTitleAttribute." />
       </div>
     </div>
     <div class="row">
       <div class="lab">
         Show time
-        <span v-if="osd.time_shown === null || osd.time_shown === undefined" class="hint">AVEnc.VideoWidget carries no TimeTitleAttribute.</span>
+        <span v-if="osd.time_shown === null || osd.time_shown === undefined" class="hint">Not offered by this camera.</span>
       </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-osd-time" v-model="form.time" type="checkbox" role="switch" :disabled="osd.time_shown === null || osd.time_shown === undefined"><span>Overlay the date and time</span></label>
+        <TechDetails v-if="osd.time_shown === null || osd.time_shown === undefined" data-testid="device-osd-time-details" text="AVEnc.VideoWidget carries no TimeTitleAttribute." />
       </div>
     </div>
     <div class="row">

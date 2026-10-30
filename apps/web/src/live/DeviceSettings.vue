@@ -4,6 +4,7 @@ import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
 import Icon from '../components/Icon.vue'
 import { settingsUi } from '../settings/ui'
+import { TechDetails } from '../states'
 import CardFormat from './CardFormat.vue'
 import OsdSettings, { type OsdState, type TitleDot } from './OsdSettings.vue'
 import RecordSettings, { type RecordState } from './RecordSettings.vue'
@@ -82,7 +83,8 @@ const WORKING: Record<Exclude<Job, ''>, string> = {
   format: 'Formatting…',
 }
 const SMART_LABEL: Record<string, string> = { off: 'Off', smart: 'Smart (H.264+ / H.265+)', smart_plus: 'Smart plus' }
-const NO_SMART = 'The camera answers neither AVEnc.SmartH264V2 with Encode264ability nor AVEnc.SmartH264, so it offers no smart encoding.'
+const NO_SMART = 'The camera answers neither AVEnc.SmartH264V2 with Encode264ability nor AVEnc.SmartH264.'
+const ONLY_OFF = 'Encode264ability reports neither H.264+ nor H.265+.'
 
 const status = reactive({ text: 'Not loaded yet.', bad: false })
 const reports = ref<Report[]>([])
@@ -391,7 +393,7 @@ watch(
   <header class="set-head">
     <div>
       <h2 id="h-device" class="set-h" tabindex="-1">Video &amp; storage</h2>
-      <p class="set-sub">Encoder, recording, on-screen text, network and storage as the camera holds them. Each card writes one block and reads it back.</p>
+      <p class="set-sub">Encoder, recording, on-screen text, network and storage as the camera holds them. Each card saves on its own and is checked with the camera.</p>
     </div>
   </header>
   <Teleport defer to="#savebar-note">
@@ -469,13 +471,14 @@ watch(
         <div class="row">
           <div class="lab">
             <label for="device-smart-mode">Mode</label>
-            <span v-if="!encode.smart" class="hint">{{ NO_SMART }}</span>
-            <span v-else-if="encode.smart.modes.length < 2" class="hint">Encode264ability reports neither H.264+ nor H.265+ for this camera, so only Off is offered.</span>
+            <span v-if="!encode.smart" class="hint">Not offered by this camera.</span>
+            <span v-else-if="encode.smart.modes.length < 2" class="hint">This camera offers only Off.</span>
           </div>
           <div class="ctl-col">
             <select id="device-smart-mode" v-model="smartForm" :disabled="!encode.smart || encode.smart.modes.length < 2">
               <option v-for="mode in encode.smart ? encode.smart.modes : ['off']" :key="mode" :value="mode">{{ SMART_LABEL[mode] || mode }}</option>
             </select>
+            <TechDetails v-if="!encode.smart || encode.smart.modes.length < 2" data-testid="device-smart-details" :text="encode.smart ? ONLY_OFF : NO_SMART" />
           </div>
         </div>
         <div class="set-card-f">

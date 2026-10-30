@@ -5,6 +5,7 @@ import { baseOffsetMinutes, dstRule } from '../app/dst'
 import { state } from '../app/state'
 import { settingsUi } from '../settings/ui'
 import Icon from '../components/Icon.vue'
+import { TechDetails } from '../states'
 
 type Reply = { ok: boolean; status: number; body: any }
 type Ping = { url: string; reachable: boolean; average_ms?: number | null; lost_percent?: number | null; sent: number }
@@ -82,9 +83,15 @@ const startReason = computed(() => {
   if (noCamera.value) return noCamera.value
   if (!firmware.data || firmware.camera !== camera.value) return 'Check for an update first.'
   if (!offers.value.length) return 'The upgrade server offers no newer firmware for this camera.'
-  if (!(about.data && about.data.gates && about.data.gates.cloud_upgrade)) return 'The camera does not report cloud upgrade support (OtherFunction/SupportCfgCloudupgrade).'
+  if (!(about.data && about.data.gates && about.data.gates.cloud_upgrade)) return 'This camera does not take updates from the upgrade server.'
   if (firmware.word !== UPGRADE_WORD) return 'Type ' + UPGRADE_WORD + ' to confirm.'
   return ''
+})
+const deviceCheckLine = computed(() => {
+  if (!firmware.data) return ''
+  if (firmware.data.device_check) return 'The camera answered the check.'
+  if (!(about.data && about.data.gates && about.data.gates.cloud_upgrade)) return 'Not offered by this camera.'
+  return 'The camera did not answer the check.'
 })
 const fileReason = computed(() => {
   if (noCamera.value) return noCamera.value
@@ -377,7 +384,10 @@ watch(
           </div>
           <div class="row">
             <div class="lab">Camera check</div>
-            <div class="ctl-col"><p class="val">{{ firmware.data.device_check ? JSON.stringify(firmware.data.device_check) : firmware.data.device_check_error }}</p></div>
+            <div class="ctl-col">
+              <p class="val" data-testid="system-firmware-device">{{ deviceCheckLine }}</p>
+              <TechDetails data-testid="system-firmware-device-details" :text="firmware.data.device_check ? JSON.stringify(firmware.data.device_check) : firmware.data.device_check_error || ''" />
+            </div>
           </div>
         </template>
       </div>

@@ -12,6 +12,7 @@ import DeviceSettings from './DeviceSettings.vue'
 import ImageSettings from './ImageSettings.vue'
 import SystemAbout from './SystemAbout.vue'
 import { replaceHash, settingsHash } from '../shell/router'
+import { TechDetails } from '../states'
 import { openDevices, reloadSection } from '../settings/ui'
 
 type Field = {
@@ -175,6 +176,7 @@ const modeNotice = computed(() => {
   return (notice.message || 'this network is not reachable, so the other provider answered.') + (notice.to ? ' Answering provider: ' + notice.to + '.' : '')
 })
 const capabilityRows = computed(() => s.capabilities)
+const capabilityDetails = (row: string[]) => [row[2] && row[2] !== 'none' ? 'Backend: ' + row[2] : '', 'Reported: ' + (row[3] || 'unavailable'), row[4]].filter(Boolean).join('\n')
 
 function sentence(text: string) {
   return text.charAt(0).toUpperCase() + text.slice(1)
@@ -571,7 +573,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
         <header class="set-head">
           <div>
             <h2 id="h-camera" class="set-h" tabindex="-1">This camera</h2>
-            <p id="camera-sub" class="set-sub">What the device says about itself, as the server last read it. An unavailable row means the camera returned no evidence, not that the app forgot to look.</p>
+            <p id="camera-sub" class="set-sub">What this camera reports about itself.</p>
           </div>
         </header>
         <div v-if="!s.camera" id="camera-none" class="set-card">
@@ -620,15 +622,14 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
               <div class="set-card-h"><div><h3 class="set-card-t">What it can do</h3><p id="device-note" class="set-card-d">{{ s.controlNote }}</p></div></div>
               <div class="row stack">
                 <table class="tbl caps">
-                  <caption class="sr">Device capability report from the server</caption>
-                  <thead><tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">Reported</th><th scope="col">Evidence</th></tr></thead>
+                  <caption class="sr">What this camera offers</caption>
+                  <thead><tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">On this camera</th><th scope="col"><span class="sr">Details</span></th></tr></thead>
                   <tbody id="capability-rows">
-                    <tr v-for="(row, index) in capabilityRows" :key="index">
+                    <tr v-for="(row, index) in capabilityRows" :key="index" data-testid="capability-row">
                       <td class="feature" data-label="Feature">{{ row[0] }}</td>
                       <td class="lens" data-label="Lens">{{ row[1] }}</td>
-                      <td class="backend" data-label="Backend">{{ row[2] }}</td>
-                      <td class="state" data-label="Reported"><span :class="['pill', row[3] === 'supported' ? 'ok' : 'no']"><Icon :name="row[3] === 'supported' ? 'check' : 'x'" small />{{ row[3] === 'supported' ? 'supported' : row[3] || 'unavailable' }}</span></td>
-                      <td class="evidence" data-label="Evidence">{{ row[4] }}</td>
+                      <td class="state" data-label="On this camera"><span :class="['pill', row[3] === 'supported' ? 'ok' : 'no']"><Icon :name="row[3] === 'supported' ? 'check' : 'x'" small />{{ row[3] === 'supported' ? 'Offered' : 'Not offered' }}</span></td>
+                      <td class="evidence"><TechDetails align="start" :text="capabilityDetails(row)" /></td>
                     </tr>
                   </tbody>
                 </table>

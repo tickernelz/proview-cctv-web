@@ -3,7 +3,7 @@ import type { SoundState } from '../lib/stream-player'
 
 export type Gate = { ok: boolean; why: string }
 export type LensOption = { value: string; name: string; sub: string }
-export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean; ptzSpeed: Record<string, string> }
+export type Prefs = { version: number; theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean; ptzSpeed: Record<string, string> }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type Preset = { token: string; name: string }

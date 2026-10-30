@@ -86,11 +86,26 @@ test('the lens menu offers picture in picture, both lenses, the top lens and the
   await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'combined')
 })
 
-test('More holds the lens modes and the swap, and a saved choice of both lenses still loads', async ({ page }) => {
+test('a lens saved before the picture-in-picture default reads as picture in picture once, and keeps the other choices', async ({ page }) => {
   await page.addInitScript(() => {
     if (!sessionStorage.getItem('seeded')) {
       sessionStorage.setItem('seeded', '1')
-      localStorage.setItem('pvw_prefs_v2', JSON.stringify({ lens: 'combined' }))
+      localStorage.setItem('pvw_prefs_v2', JSON.stringify({ theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: true, ptzSpeed: {} }))
+    }
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'pip')
+  await expect(page.getByTestId('live-frame')).toHaveAttribute('data-flipped', 'true')
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}'))
+  expect(stored).toMatchObject({ version: 1, lens: 'pip', flip: true })
+})
+
+test('More holds the lens modes and the swap, and a choice of both lenses saved by this version still loads', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('seeded')) {
+      sessionStorage.setItem('seeded', '1')
+      localStorage.setItem('pvw_prefs_v2', JSON.stringify({ version: 1, lens: 'combined' }))
     }
   })
   await signIn(page, 'one')

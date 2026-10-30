@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { signIn } from './app'
+import { openDetails, signIn } from './app'
 import { overflowFindings } from './layout'
 
 type Format = { resolution: string; compression: string; fps: number; bitrate: number; gop: number; quality: number; bitrate_control: string }
@@ -253,9 +253,10 @@ test('recording, on-screen text and the card format follow the camera abilities 
   const section = page.locator('#set-body > section[data-section="device"]')
   await expect(page.locator('#device-full-time')).toBeChecked()
   await expect(page.locator('#device-splicing')).toBeDisabled()
-  await expect(section).toContainText('SupportMultiLensSplicingWfsRecordStream')
+  await expect(section).not.toContainText(/SupportMultiLens|AVEnc\.|SupportRecMainOrExt|Encode264ability/, { useInnerText: true })
+  await expect(await openDetails(page.getByTestId('device-splicing-details'))).toHaveText('The camera does not report SupportMultiLensSplicingWfsRecordStream.')
   await expect(page.locator('#device-smart-mode')).toBeDisabled()
-  await expect(section).toContainText('neither AVEnc.SmartH264V2')
+  await expect(await openDetails(page.getByTestId('device-smart-details'))).toContainText('neither AVEnc.SmartH264V2')
   await page.locator('#device-full-time').uncheck()
   await page.locator('#device-packet-length').fill('10')
   await page.getByTestId('device-save-record').click()

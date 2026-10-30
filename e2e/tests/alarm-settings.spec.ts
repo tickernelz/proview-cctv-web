@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { signIn } from './app'
+import { openDetails, signIn } from './app'
 
 const SLOTS = (first: string) => Array.from({ length: 7 }, (_, day) => [first, day === 3 ? '0 07:00-08:00' : '0 00:00:00-24:00:00'])
 
@@ -100,14 +100,20 @@ async function openAlarm(page: Page) {
   await expect(page.getByTestId('detect-status')).toHaveText('Read from the camera just now.')
 }
 
-test('Alarm settings show what the camera offers and name the flag for what it does not', async ({ page }) => {
+test('Alarm settings say in words what the camera does not offer and keep the flag under Details', async ({ page }) => {
   await fake(page)
   await openAlarm(page)
+  const section = page.locator('#set-body > section[data-section="alarm"]')
   await expect(page.getByTestId('detect-motion')).toBeVisible()
-  await expect(page.getByTestId('detect-human')).toContainText('HumanRuleLimit Sensitivity=false')
-  await expect(page.getByTestId('detect-missing-car')).toContainText('does not report AlarmFunction.CarShapeDetection')
+  await expect(section).not.toContainText(/AlarmFunction|HumanRuleLimit|OtherFunction|base ability|evidence|block back/, { useInnerText: true })
+  await expect(page.getByTestId('detect-human')).toContainText('Fixed by this camera.', { useInnerText: true })
+  await expect(await openDetails(page.getByTestId('detect-human-sensitivity-details'))).toHaveText('HumanRuleLimit Sensitivity=false')
+  await expect(page.getByTestId('detect-missing-car')).toContainText('Not offered by this camera.', { useInnerText: true })
+  await expect(await openDetails(page.getByTestId('detect-missing-car-details'))).toHaveText('device does not report AlarmFunction.CarShapeDetection')
   await expect(page.getByTestId('detect-stop-button')).toBeDisabled()
-  await expect(page.getByTestId('detect-stop')).toContainText('ManuIntellAlertAlarm')
+  await expect(page.getByTestId('detect-stop-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('detect-stop-details'))).toHaveText('device does not report AlarmFunction.ManuIntellAlertAlarm')
+  await expect(await openDetails(page.getByTestId('detect-motion-details'))).toHaveText('base ability')
 })
 
 test('Saving motion detection sends only the fields that changed', async ({ page }) => {

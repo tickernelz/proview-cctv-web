@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { fakeDeviceControls, openLive, playing, signIn } from './app'
+import { fakeDeviceControls, openDetails, openLive, playing, signIn } from './app'
 
 test('Move opens the pan and tilt pad and each arrow and preset reaches the device', async ({ page }) => {
   const calls = await openLive(page)
@@ -152,6 +152,22 @@ test('the white light switch and the upside-down flip apply from Settings', asyn
   await page.getByTestId('settings-back').click()
   await expect(page.getByTestId('live')).toBeVisible()
   await expect(page.getByTestId('live-frame')).toHaveAttribute('data-flipped', 'true')
+})
+
+test('This camera says in words what the camera offers and keeps the backend and its evidence under Details', async ({ page }) => {
+  await openLive(page)
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings').getByRole('link', { name: 'This camera', exact: true }).click()
+  const section = page.locator('#set-body > section[data-section="camera"]')
+  await expect(section).toBeVisible()
+  await expect(section).not.toContainText(/Backend|Evidence|dvrip|e2e fixture|evidence/, { useInnerText: true })
+  const row = (feature: string) => page.getByTestId('capability-row').filter({ has: page.locator('td.feature').getByText(feature, { exact: true }) })
+  const light = row('white light')
+  await expect(light.locator('td.state')).toHaveText('Offered')
+  await expect(await openDetails(light)).toHaveText(/^Backend: dvrip\s+Reported: supported\s+e2e fixture$/)
+  const tracking = row('auto-tracking')
+  await expect(tracking.locator('td.state')).toHaveText('Not offered')
+  await expect(await openDetails(tracking)).toContainText('Reported: unavailable')
 })
 
 test('with ONVIF and DVRIP both present the editor works on DVRIP ids and the chips keep their ONVIF tokens', async ({ page }) => {

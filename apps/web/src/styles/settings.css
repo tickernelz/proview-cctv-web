@@ -149,7 +149,7 @@
   .tbl th { text-align: left; font-weight: 500; color: var(--ink-3); padding: 0 var(--s4) var(--s2) 0; border-bottom: 1px solid var(--line); font-size: var(--t-13); white-space: nowrap; }
   .tbl tbody th { color: var(--ink); padding-top: var(--s2); padding-bottom: var(--s2); border-bottom: 1px solid var(--line-soft); white-space: normal; }
   .tbl td { padding: var(--s2) var(--s4) var(--s2) 0; border-bottom: 1px solid var(--line-soft); color: var(--ink-2); vertical-align: top; }
-  .tbl td.evidence { word-break: break-word; min-width: 24ch; }
+  .tbl td.evidence { word-break: break-word; min-width: 12ch; }
   .pill { display: inline-flex; align-items: center; gap: var(--s1); min-height: 22px; padding: 0 var(--s2); border-radius: 999px; font-size: var(--t-12); white-space: nowrap; }
   .pill .i { width: 12px; height: 12px; }
   .caps td.feature { min-width: 9ch; }

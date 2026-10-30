@@ -233,6 +233,26 @@ test('an expired session while reading the account returns to sign-in', async ({
   await expect(page.getByTestId('settings')).toBeHidden()
 })
 
+test('Both lenses picked after the one-time lens migration stays Both lenses across reloads', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('seeded')) {
+      sessionStorage.setItem('seeded', '1')
+      localStorage.setItem('pvw_prefs_v2', JSON.stringify({ lens: 'combined', quality: 'main' }))
+    }
+  })
+  await openSection(page, 'Playback')
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeChecked()
+  await page.getByRole('radio', { name: 'Both lenses', exact: true }).check()
+  for (let round = 0; round < 2; round++) {
+    await page.reload()
+    await expect(page.getByTestId('settings')).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'Both lenses', exact: true })).toBeChecked()
+  }
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}'))).toMatchObject({ version: 1, lens: 'combined' })
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'combined', { timeout: 20_000 })
+})
+
 test('Picture in picture picked as the lens on open survives a reload and opens the live view in picture in picture', async ({ page }) => {
   await openSection(page, 'Playback')
   await page.getByRole('radio', { name: 'Both lenses', exact: true }).check()

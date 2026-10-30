@@ -69,7 +69,7 @@ function verdict(act: string): Gate {
   if (!row) return { ok: false, why: 'The capability report does not list "' + feature + '" for this device.' }
   if (row.state !== 'supported') return { ok: false, why: row.evidence || 'The device reports "' + feature + '" as blocked.' }
   if (act === 'home' && !state.control.onvif) return { ok: false, why: 'Stopping pan and tilt is served by the ONVIF channel, which this server does not expose.' }
-  return { ok: true, why: row.evidence || '' }
+  return { ok: true, why: '' }
 }
 
 function renderCapabilities() {
