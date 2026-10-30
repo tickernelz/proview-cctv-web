@@ -74,8 +74,12 @@ const summary = computed(() => {
   return files.list.length + ' files · ' + mb(totalBytes.value) + ' · ' + where + filterName.value + cap
 })
 
+watch(
+  () => open.value && tl.tab === 'cloud',
+  (cloud) => (launcher.pressed = cloud),
+)
+
 watch(open, async (shown) => {
-  launcher.pressed = shown
   if (!shown) {
     stopClip()
     return

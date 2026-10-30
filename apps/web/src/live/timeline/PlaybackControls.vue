@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import Icon from '../../components/Icon.vue'
 import { SegmentedControl } from '../../components/ui/segmented-control'
 import { live } from '../store'
-import { downloadFile, setSpeed, snapshot, SPEEDS, stepFrame, tl, togglePause, toggleSound } from './engine'
+import { backToLive, downloadFile, setSpeed, snapshot, SPEEDS, stepFrame, tl, togglePause, toggleSound } from './engine'
 
 const SPEED_OPTIONS = SPEEDS.map((value) => ({ value: String(value), label: value + 'x', testid: 'pb-speed-' + value }))
 
@@ -48,6 +48,9 @@ function download() {
     </button>
     <button id="pb-download" class="pbc-btn" type="button" data-testid="pb-download" :disabled="!tl.file" @click="download">
       <Icon name="download" /><span>Download clip</span>
+    </button>
+    <button class="pbc-btn pbc-live" type="button" data-testid="pb-back-live" @click="backToLive">
+      <Icon name="radio" /><span>Back to live</span>
     </button>
   </div>
 </template>

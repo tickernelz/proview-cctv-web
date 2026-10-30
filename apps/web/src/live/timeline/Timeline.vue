@@ -455,7 +455,7 @@ onBeforeUnmount(() => {
         :style="{ left: entry.left + '%' }"
       />
       <p v-if="trackNote" :class="['tl-note', { bad: tl.files.phase === 'error' }]" data-testid="tl-note" role="status">
-        <Icon v-if="tl.files.phase === 'error'" name="warning" small />{{ trackNote }}
+        <Icon v-if="tl.files.phase === 'error'" name="warning" small /><span class="tl-note-text">{{ trackNote }}</span>
       </p>
       <span v-if="cursorLeft !== null" class="tl-hover" :style="{ left: cursorLeft + '%' }" />
       <template v-if="headShown">
