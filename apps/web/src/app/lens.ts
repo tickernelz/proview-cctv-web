@@ -4,7 +4,7 @@ import { frameFit, pip } from '../live/stage/pip'
 import { renderCaption } from './caption'
 import { renderSwitcher } from './chrome'
 import { sessionLost } from './shell'
-import { renderFsLine } from './stage'
+import { renderFsLine, stageShowsSelected } from './stage'
 import { state } from './state'
 
 type Crop = { x: number; y: number; w: number; h: number }
@@ -151,13 +151,13 @@ export async function resolveLensFromFrame() {
   const deviceId = state.selectedId
   const channel = state.channel
   const frame = video()
-  if (state.lens || !deviceId || !frame || !frame.videoWidth || !frame.videoHeight) return
+  if (state.lens || !deviceId || !frame || !frame.videoWidth || !frame.videoHeight || !stageShowsSelected()) return
   const width = frame.videoWidth
   const height = frame.videoHeight
   if (state.lensSupport === 'present') {
     try {
       const payload = await api(lensQuery(deviceId, channel) + '&width=' + width + '&height=' + height)
-      if (state.lens || state.selectedId !== deviceId || state.channel !== channel) return
+      if (state.lens || state.selectedId !== deviceId || state.channel !== channel || !stageShowsSelected()) return
       if (knownLayout(payload)) {
         useLayout(normaliseLens(payload, 'contract'))
         return
@@ -167,7 +167,7 @@ export async function resolveLensFromFrame() {
       console.error('lens contract with the frame size failed', error)
     }
   }
-  if (state.lens || state.selectedId !== deviceId || state.channel !== channel) return
+  if (state.lens || state.selectedId !== deviceId || state.channel !== channel || !stageShowsSelected()) return
   const derived = deriveLensFromFrame()
   if (derived) useLayout(derived)
 }

@@ -173,12 +173,20 @@ function stagePlayer() {
   return player
 }
 
+let stageStream = ''
+
+export function stageShowsSelected() {
+  const camera = currentCamera()
+  return Boolean(camera && state.players.get('stage') && stageStream === camera.key)
+}
+
 export function stopStagePlayer() {
   const player = state.players.get('stage')
   if (player) {
     player.destroy()
     state.players.delete('stage')
   }
+  stageStream = ''
   stopRecording()
 }
 
@@ -192,6 +200,7 @@ export async function requestStream() {
     state.players.delete('stage')
   }
   const player = stagePlayer()
+  stageStream = camera.key
   state.ticket = null
   setStage('loading')
   try {

@@ -171,3 +171,91 @@ test('a cloud camera whose lens layout is unknown until the first frame still op
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').lens)).not.toBe('combined')
 })
 
+
+test('a frame from the camera being left does not decide the next camera\'s lens layout', async ({ page }) => {
+  await page.addInitScript(() => {
+    const queue: [WebSocket, unknown][] = []
+    Object.assign(window, { __hold: true, __queued: queue })
+    const Real = window.WebSocket
+    window.WebSocket = class extends Real {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols)
+        if (!String(url).includes('/ws/live')) return
+        this.addEventListener('message', (event) => {
+          if (!(window as unknown as { __hold: boolean }).__hold) return
+          event.stopImmediatePropagation()
+          queue.push([this, event.data])
+        })
+      }
+    } as typeof WebSocket
+    Object.assign(window, {
+      __flush: () => {
+        ;(window as unknown as { __hold: boolean }).__hold = false
+        for (const [socket, data] of queue.splice(0)) socket.dispatchEvent(new MessageEvent('message', { data }))
+      },
+    })
+  })
+  const unknown = (device: string) => ({ deviceId: device, channel: 1, streams: [], lenses: [], lensCount: 0, countSource: 'unknown', stack: 'single', cropsVerified: false, ptzSource: 'unknown' })
+  const dual = (device: string, width: number, height: number) => ({
+    deviceId: device,
+    channel: 1,
+    streams: [{ quality: 'main', codec: 'unknown', width, height, sizeSource: 'client_hint' }],
+    lenses: [
+      { index: 0, label: 'top', crop: { x: 0, y: 0, w: width, h: height / 2 }, ptz: false },
+      { index: 1, label: 'bottom', crop: { x: 0, y: height / 2, w: width, h: height / 2 }, ptz: true },
+    ],
+    lensCount: 2,
+    countSource: 'geometry',
+    stack: 'vertical',
+    cropsVerified: true,
+    ptzSource: 'measured_default',
+  })
+  const single = (device: string, width: number, height: number) => ({
+    deviceId: device,
+    channel: 1,
+    streams: [{ quality: 'main', codec: 'unknown', width, height, sizeSource: 'client_hint' }],
+    lenses: [{ index: 0, label: 'single', crop: { x: 0, y: 0, w: width, h: height }, ptz: false }],
+    lensCount: 1,
+    countSource: 'geometry',
+    stack: 'single',
+    cropsVerified: true,
+    ptzSource: 'unknown',
+  })
+  let porchStreaming = false
+  const porchSized: { afterStream: boolean }[] = []
+  let release = () => {}
+  const held = new Promise<void>((done) => (release = done))
+  page.on('request', (request) => {
+    if (request.url().includes('/api/stream?') && request.url().includes('device=porch')) porchStreaming = true
+  })
+  await page.route(/\/api\/lens\?/, async (route) => {
+    const url = new URL(route.request().url())
+    const device = url.searchParams.get('device') || ''
+    const width = Number(url.searchParams.get('width') || 0)
+    const height = Number(url.searchParams.get('height') || 0)
+    if (device === 'porch' && !width) {
+      await held
+      return route.fulfill({ json: unknown(device) })
+    }
+    if (!width) return route.fulfill({ json: unknown(device) })
+    if (device !== 'porch') return route.fulfill({ json: dual(device, width, height) })
+    porchSized.push({ afterStream: porchStreaming })
+    return route.fulfill({ json: porchStreaming ? single(device, width, height) : dual(device, width, height) })
+  })
+  await signIn(page, 'many')
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __queued: unknown[] }).__queued.length), { timeout: 20_000 }).toBeGreaterThan(3)
+  await page.keyboard.press('2')
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  await page.evaluate(() => (window as unknown as { __flush: () => void }).__flush())
+  await expect.poll(() => page.evaluate(() => (document.getElementById('video') as HTMLVideoElement).videoWidth)).toBeGreaterThan(0)
+  await page.waitForTimeout(500)
+  release()
+  await expect.poll(() => porchSized.some((call) => call.afterStream), { timeout: 20_000 }).toBe(true)
+  expect(porchSized.filter((call) => !call.afterStream)).toEqual([])
+  await playing(page)
+  await expect(page.getByTestId('pip-inset')).toHaveCount(0)
+  await expect(page.getByTestId('lens-pick')).toHaveCount(0)
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'combined')
+  await expect(page.getByTestId('camera-switcher')).toContainText('single lens')
+})
+
