@@ -90,7 +90,6 @@
   .banner strong { font-weight: 500; color: var(--ink); }
   .banner .btn { flex: none; }
   .banner[data-tone="list"] > .i { color: var(--bad); }
-  .live-top { display: contents; }
   .keys-sheet { z-index: 35; }
   .field { display: grid; gap: var(--s2); margin-bottom: var(--s3); }
   .field label { font-size: var(--t-13); color: var(--ink-2); }

@@ -68,6 +68,12 @@ PAIRS = [
     ('stage-live dot on status plate over a white frame', 'stage-live', 'stage-matte@white', GRAPHIC, 3.0),
     ('stage-warn on status plate over a white frame', 'stage-warn', 'stage-matte@white', GRAPHIC, 3.0),
     ('stage-live on stage', 'stage-live', 'stage', TEXT, 4.5),
+    ('ok badge text on hover', 'ok', 'bg-3', TEXT, 4.5),
+    ('warn badge text on hover', 'warn', 'bg-3', TEXT, 4.5),
+    ('bad badge text on hover', 'bad', 'bg-3', TEXT, 4.5),
+    ('accent badge text on accent-soft over page', 'accent', 'accent-soft@bg', TEXT, 4.5),
+    ('segmented selected label on accent-soft over bar', 'accent', 'accent-soft@bg-2', TEXT, 4.5),
+    ('live text on live-soft over bar', 'live', 'live-soft@bg-2', TEXT, 4.5),
 ]
 
 

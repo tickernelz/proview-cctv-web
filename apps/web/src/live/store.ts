@@ -53,7 +53,7 @@ export const live = reactive({
     crop: { width: '', height: '', flipped: 'false' },
     view: { left: '0%', top: '0%', width: '100%', height: '100%' },
   },
-  sheet: '' as '' | 'alarms' | 'recordings' | 'devices',
+  sheet: '' as '' | 'recordings' | 'devices',
   screen: '' as '' | 'playback',
   signin: { expired: false, expiredAt: 0, lastFrameAt: 0, generation: 0, focus: 0, mode: null as { mode?: string; source?: string } | null },
   theme: 'dark',
