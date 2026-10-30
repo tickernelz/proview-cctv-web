@@ -46,6 +46,11 @@ function movingLensName() {
   return raw === 'top' || raw === 'bottom' ? raw : 'bottom'
 }
 
+export function movingLensLabel() {
+  const entry = lensEntries().find((lens) => lens.role === 'moving')
+  return entry ? entry.label : ''
+}
+
 function capabilityRow(feature: string, lens: string | null) {
   const rows = state.control.rows.filter((row) => row.feature === feature)
   if (lens) {
@@ -412,7 +417,7 @@ export async function sendControl(action: string) {
 }
 
 function openPad() {
-  if (!live.gate.move.ok || state.view !== 'live') return
+  if (!live.gate.move.ok || state.view !== 'live' || live.mode === 'playback') return
   state.padOpen = true
   live.padOpen = true
   live.pad.speed = ptzSpeed()
