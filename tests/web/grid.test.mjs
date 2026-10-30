@@ -57,7 +57,7 @@ test('the grid plays one tile per device and keeps the layout and the tile strea
     assert.deepEqual(names, ['Gate camera', 'Porch', 'Yard']);
     assert.equal(await page.evaluate(columns), 3, 'auto puts up to 4 tiles in one row at 1440 px');
 
-    await page.evaluate("document.querySelector('#grid-bar button[data-layout=\"2\"]').click()");
+    await page.evaluate("document.querySelector('[data-testid=\"grid-layout-2\"]').click()");
     await page.wait(
       "fetch('/api/grid', { credentials: 'same-origin' }).then((response) => response.json()).then((spec) => spec.layout === '2')",
       'the layout to reach the server',
@@ -143,13 +143,13 @@ test('two layout clicks in one tick leave the server on the last one', async () 
   const page = await openGrid();
   try {
     await page.evaluate(
-      "document.querySelector('#grid-bar button[data-layout=\"1\"]').click(); document.querySelector('#grid-bar button[data-layout=\"3\"]').click();",
+      "document.querySelector('[data-testid=\"grid-layout-1\"]').click(); document.querySelector('[data-testid=\"grid-layout-3\"]').click();",
     );
     await page.wait(
       "fetch('/api/grid', { credentials: 'same-origin' }).then((response) => response.json()).then((spec) => spec.layout === '3')",
       'the server to hold layout 3',
     );
-    assert.equal(await page.evaluate("document.querySelector('#grid-bar button[data-layout=\"3\"]').getAttribute('aria-pressed')"), 'true');
+    assert.equal(await page.evaluate("document.querySelector('[data-testid=\"grid-layout-3\"]').getAttribute('aria-pressed')"), 'true');
     assert.equal(
       await page.evaluate("getComputedStyle(document.getElementById('tiles')).gridTemplateColumns.split(' ').filter(Boolean).length"),
       3,

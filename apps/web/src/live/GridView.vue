@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import Icon from '../components/Icon.vue'
+import { Button } from '../components/ui/button'
+import { IconButton } from '../components/ui/icon-button'
+import { SegmentedControl } from '../components/ui/segmented-control'
 import { api } from '../lib/api'
 import { hm } from '../app/format'
 import { sessionLost } from '../app/shell'
 import { state as page } from '../app/state'
-import { openCamera, toggleFullscreen } from '../app/view'
+import { loadDevices, openCamera, toggleFullscreen } from '../app/view'
 import GridTile from './GridTile.vue'
 import { runGridClock } from './grid-clock'
 import { live } from './store'
@@ -17,11 +20,15 @@ type Camera = { key: string; name: string; channel: number; device: { id: string
 
 const MAX = 9
 const LAYOUTS = [
-  { value: 'auto', label: 'Auto', columns: 0, title: 'As many columns as the window allows' },
-  { value: '1', label: '1', columns: 1, title: '1 column' },
-  { value: '2', label: '2', columns: 2, title: '2 columns' },
-  { value: '3', label: '3', columns: 3, title: '3 columns' },
+  { value: 'auto', label: 'Auto', columns: 0 },
+  { value: '1', label: '1', columns: 1 },
+  { value: '2', label: '2', columns: 2 },
+  { value: '3', label: '3', columns: 3 },
 ]
+const OPTIONS = ['1', '2', '3', 'auto'].map((value) => {
+  const entry = LAYOUTS.find((layout) => layout.value === value)!
+  return { value, label: entry.label, testid: 'grid-layout-' + value }
+})
 
 const spec = ref<Spec | null>(null)
 const cameras = shallowRef<Camera[]>([])
@@ -60,7 +67,7 @@ const count = computed(() => {
   const tally = (name: string) => shown.value.filter((view) => states[keyOf(view)] === name).length
   const total = cameras.value.length
   const parts = [total + ' camera' + (total === 1 ? '' : 's')]
-  for (const [name, word] of [['playing', 'live'], ['loading', 'connecting'], ['error', 'failed'], ['offline', 'offline']]) {
+  for (const [name, word] of [['playing', 'live'], ['loading', 'connecting'], ['stalled', 'reconnecting'], ['error', 'no picture'], ['offline', 'offline']]) {
     if (tally(name)) parts.push(tally(name) + ' ' + word)
   }
   if (total > MAX) parts.push('showing the first ' + MAX)
@@ -152,6 +159,10 @@ function setLayout(value: string) {
   persist()
 }
 
+function select(view: View) {
+  live.grid.selected = keyOf(view)
+}
+
 function toggle(view: View) {
   view.quality = view.quality === 'main' ? 'sub' : 'main'
   persist()
@@ -183,24 +194,42 @@ onMounted(() => {
 
 <template>
   <div id="grid-bar" class="grid-bar">
-    <span class="grid-label" aria-hidden="true">Columns</span>
-    <div class="grid-seg" role="group" aria-label="Grid layout" data-testid="grid-layout">
-      <button
-        v-for="entry in LAYOUTS"
-        :key="entry.value"
-        type="button"
-        :data-layout="entry.value"
-        :title="entry.title"
-        :disabled="!spec"
-        :aria-pressed="entry.value === layout.value"
-        @click="setLayout(entry.value)"
-      >{{ entry.label }}</button>
+    <div class="grid-title">
+      <h2 id="grid-heading">All cameras</h2>
+      <p id="grid-count" class="grid-count" data-testid="grid-count">{{ count }}</p>
+      <p id="grid-note" class="grid-note" data-testid="grid-note" :data-state="save.error ? 'error' : 'ok'" :role="save.error ? 'alert' : 'status'">
+        <Icon v-if="save.error" name="warning" small /><span>{{ note }}</span>
+      </p>
     </div>
-    <p id="grid-note" class="grid-note" data-testid="grid-note" :data-state="save.error ? 'error' : 'ok'" :role="save.error ? 'alert' : 'status'">
-      <Icon v-if="save.error" name="warning" small /><span>{{ note }}</span>
-    </p>
+    <div class="grid-tools">
+      <div v-if="medium" class="grid-layout">
+        <span id="grid-layout-label" class="grid-label">Columns</span>
+        <SegmentedControl
+          data-testid="grid-layout"
+          size="sm"
+          label="Grid columns"
+          :options="OPTIONS"
+          :model-value="layout.value"
+          :disabled="!spec"
+          @update:model-value="setLayout"
+        />
+      </div>
+      <Button
+        id="grid-sound"
+        variant="ghost"
+        size="sm"
+        data-testid="grid-sound"
+        aria-keyshortcuts="M"
+        :icon="live.muted ? 'speaker-off' : 'speaker'"
+        :aria-pressed="live.muted ? 'false' : 'true'"
+        :title="live.muted ? 'Sound is off (M)' : 'Sound follows the selected tile (M)'"
+        @click="live.sound === 'blocked' ? null : live.actions.toggleMute()"
+      >{{ live.muted ? 'Sound off' : 'Sound on' }}</Button>
+      <IconButton id="grid-fullscreen" icon="expand" label="Full screen" shortcut="F" side="bottom" @click="toggleFullscreen" />
+    </div>
   </div>
-  <div id="tiles" class="tiles" data-testid="grid-tiles" :data-count="shown.length" :data-layout="layout.value" :style="tilesStyle">
+  <p id="grid-open-hint" class="sr-only">Click selects the tile and its sound. Enter or double-click opens the camera in Live.</p>
+  <div id="tiles" class="tiles" data-testid="grid-tiles" :data-count="shown.length" :data-layout="layout.value" :style="tilesStyle" aria-labelledby="grid-heading" role="group">
     <template v-if="live.grid.open">
       <GridTile
         v-for="(view, index) in shown"
@@ -212,24 +241,10 @@ onMounted(() => {
         :run="run"
         @state="(name) => (states[keyOf(view)] = name)"
         @toggle="toggle(view)"
+        @select="select(view)"
+        @refresh="loadDevices()"
         @open="openCamera(cameras.indexOf(cameraOf(view)))"
       />
     </template>
-  </div>
-  <div class="controls">
-    <p id="grid-count" class="count" data-testid="grid-count">{{ count }}</p>
-    <span class="spacer" />
-    <button
-      id="grid-sound"
-      class="iconbtn"
-      type="button"
-      data-testid="grid-sound"
-      aria-keyshortcuts="M"
-      :aria-pressed="!live.muted"
-      :aria-label="live.muted ? 'Sound of the selected tile is off' : 'Sound of the selected tile is on'"
-      :title="(live.muted ? 'Sound is off' : 'Sound follows the selected tile') + ' (M)'"
-      @click="live.sound === 'blocked' ? null : live.actions.toggleMute()"
-    ><Icon :name="live.muted ? 'speaker-off' : 'speaker'" /></button>
-    <button id="grid-fullscreen" class="iconbtn" type="button" aria-label="Full screen" title="Full screen (F)" @click="toggleFullscreen"><Icon name="expand" /></button>
   </div>
 </template>

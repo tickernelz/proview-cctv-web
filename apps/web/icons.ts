@@ -47,6 +47,9 @@ export const ICONS: Record<string, string> = {
   human: 'scan-face',
   siren: 'siren',
   trash: 'trash-2',
+  eye: 'eye',
+  'eye-off': 'eye-off',
+  lock: 'lock',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

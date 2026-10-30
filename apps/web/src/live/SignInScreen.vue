@@ -1,12 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { TabsContent, TabsList, TabsRoot, TabsTrigger } from 'reka-ui'
 import Icon from '../components/Icon.vue'
+import { Button } from '../components/ui/button'
+import { Field } from '../components/ui/field'
+import { IconButton } from '../components/ui/icon-button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { api } from '../lib/api'
-import { hm, hms } from '../app/format'
 import { openSettings, signedIn } from '../app/shell'
+import { clockHm, clockHms } from '../states'
 import { live } from './store'
 import AccountFlows from './AccountFlows.vue'
+import { sentence } from './account-flows'
 
 type Probe = { host: string; session: number | string; device_type?: string; video_codec?: string; audio_codec?: string; framerate?: number }
 type Remembered = { email?: string; restored?: boolean }
@@ -15,37 +19,34 @@ const tab = ref<'cloud' | 'local'>('cloud')
 const emailInput = ref<HTMLInputElement>()
 const passwordInput = ref<HTMLInputElement>()
 const localPassInput = ref<HTMLInputElement>()
-const cloud = reactive({ email: '', password: '', busy: false, error: '' })
+const cloud = reactive({ email: '', password: '', busy: false, error: '', reveal: false })
 const local = reactive({ user: '', password: '', busy: false, error: '' })
 const probe = reactive({ busy: false, report: null as Probe | null, error: '' })
 const remember = reactive({ on: false, note: '' })
 const flow = ref<'' | 'forgot' | 'register'>('')
 const flowNote = ref('')
+const server = location.host
 
 const s = live.signin
 const expired = computed(() => s.expired)
 const mode = computed(() => (s.mode ? s.mode.mode : ''))
 const localReady = computed(() => mode.value === 'local')
 const lede = computed(() =>
-  expired.value
-    ? 'The server ended this session at ' + hm(s.expiredAt) + '. Signing in again picks the camera back up.'
-    : 'The same PROVIEW account your phone uses. The camera password stays on this machine.',
+  expired.value ? 'Sign in again to pick the camera back up where you left it.' : 'Use your PROVIEW account, or reach a camera on this network.',
 )
-const stage = computed(() =>
-  expired.value && s.lastFrameAt
-    ? 'Last frame ' + hms(s.lastFrameAt) + '. Signing in picks the stream up again.'
-    : 'The picture appears here as soon as a camera answers.',
+const ended = computed(() => (s.expiredAt ? 'Your session ended at ' + clockHm(s.expiredAt) + '.' : 'Your session ended.'))
+const endedDetail = computed(() =>
+  (s.lastFrameAt ? 'The server no longer knew this browser. Last frame ' + clockHms(s.lastFrameAt) + '. ' : 'The server no longer knew this browser. ') +
+  'Nothing is being recorded while you are signed out.',
+)
+const privacy = computed(() =>
+  tab.value === 'local' ? 'The camera password goes only to this server and the camera.' : 'Your password goes only to this server and the PROVIEW cloud.',
 )
 const localNote = computed(() => {
   if (!s.mode) return 'The server did not report which provider it uses.'
   if (localReady.value) return 'The server is set to this network, so the camera login below is the one to use.'
   return 'The server is set to the ' + (mode.value === 'cloud' ? 'cloud account' : mode.value || 'other provider') + '. Use Account, or choose this network under Settings, Connection.'
 })
-
-function sentence(error: unknown) {
-  const text = error instanceof Error ? error.message : String(error)
-  return text.charAt(0).toUpperCase() + text.slice(1)
-}
 
 async function rememberNow() {
   if (!remember.on) return
@@ -57,6 +58,11 @@ async function rememberNow() {
   }
 }
 
+function setRemember(on: boolean) {
+  remember.on = on
+  remember.note = ''
+}
+
 async function submitCloud() {
   if (cloud.busy) return
   cloud.error = ''
@@ -64,6 +70,7 @@ async function submitCloud() {
   try {
     await api('/api/login', { method: 'POST', body: JSON.stringify({ email: cloud.email, password: cloud.password }) })
     cloud.password = ''
+    cloud.reveal = false
     cloud.busy = false
     await rememberNow()
     await signedIn()
@@ -157,101 +164,125 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="auth-form">
-    <h1 id="signin-title" tabindex="-1">Watch the camera from this desk</h1>
-    <p id="signin-lede" class="lede">{{ lede }}</p>
-    <div v-if="expired" id="signin-notice" class="notice" data-testid="signin-notice">
-      <Icon name="clock" small /><span>Nothing is being recorded while you are signed out.</span>
+  <div class="auth-col">
+    <p class="auth-brand"><span class="brand"><span class="mark" aria-hidden="true" /><span>PROVIEW</span></span></p>
+    <div class="auth-head">
+      <h1 id="signin-title" tabindex="-1">Sign in</h1>
+      <p id="signin-lede" class="auth-lede">{{ lede }}</p>
     </div>
+    <section v-if="expired" id="signin-notice" class="auth-expired" data-testid="signin-notice" aria-labelledby="signin-ended">
+      <Icon name="clock" small />
+      <div>
+        <p id="signin-ended" class="auth-expired-title" data-testid="signin-ended">{{ ended }}</p>
+        <p class="auth-expired-text">{{ endedDetail }}</p>
+      </div>
+    </section>
     <AccountFlows v-if="flow" :kind="flow" :email="cloud.email" @close="closeFlow" />
-    <TabsRoot v-else v-model="tab">
-      <TabsList class="tabs" aria-label="Sign-in method">
+    <Tabs v-else v-model="tab" class="auth-tabs">
+      <TabsList aria-label="Sign-in method">
         <TabsTrigger value="cloud" data-testid="signin-tab-account">Account</TabsTrigger>
         <TabsTrigger value="local" data-testid="signin-tab-local">This network</TabsTrigger>
       </TabsList>
       <TabsContent value="cloud">
-        <form id="login-form" autocomplete="on" novalidate @submit.prevent="submitCloud">
-          <div class="field">
-            <label for="email">Email</label>
-            <input id="email" ref="emailInput" v-model="cloud.email" data-testid="signin-email" name="email" type="email" autocomplete="username" placeholder="name@example.com" spellcheck="false" required>
-          </div>
-          <div id="password-field" class="field" :class="{ bad: cloud.error }">
-            <label for="password">Password</label>
-            <input
-              id="password"
-              ref="passwordInput"
-              v-model="cloud.password"
-              data-testid="signin-password"
-              name="password"
-              type="password"
-              autocomplete="current-password"
-              required
-              :aria-invalid="cloud.error ? 'true' : null"
-              :aria-describedby="cloud.error ? 'login-error' : null"
-            >
+        <form id="login-form" class="auth-form" autocomplete="on" novalidate @submit.prevent="submitCloud">
+          <Field id="email" label="Email">
+            <template #default="{ id }">
+              <input :id="id" ref="emailInput" v-model="cloud.email" class="auth-input" data-testid="signin-email" name="email" type="email" autocomplete="username" placeholder="you@example.com" spellcheck="false" required>
+            </template>
+          </Field>
+          <div id="password-field" class="flex flex-col gap-1.5">
+            <label for="password" class="text-13 font-medium text-ink-2">Password</label>
+            <div class="auth-secret">
+              <input
+                id="password"
+                ref="passwordInput"
+                v-model="cloud.password"
+                class="auth-input"
+                data-testid="signin-password"
+                name="password"
+                :type="cloud.reveal ? 'text' : 'password'"
+                autocomplete="current-password"
+                required
+                :aria-invalid="cloud.error ? 'true' : null"
+                :aria-describedby="cloud.error ? 'login-error' : null"
+              >
+              <IconButton
+                size="sm"
+                class="auth-reveal"
+                data-testid="signin-reveal"
+                :icon="cloud.reveal ? 'eye-off' : 'eye'"
+                :label="cloud.reveal ? 'Hide the password' : 'Show the password'"
+                :pressed="cloud.reveal"
+                @click="cloud.reveal = !cloud.reveal"
+              />
+            </div>
             <p v-if="cloud.error" id="login-error" class="err" data-testid="signin-error" role="alert"><Icon name="warning" small /><span>{{ cloud.error }}</span></p>
           </div>
-          <label class="switchrow signin-remember">
-            <input id="remember-account" v-model="remember.on" type="checkbox" role="switch" data-testid="signin-remember" @change="remember.note = ''">
-            Remember this account in this browser
+          <label class="auth-switch">
+            <input id="remember-account" :checked="remember.on" type="checkbox" role="switch" class="peer" data-testid="signin-remember" @change="setRemember(($event.target as HTMLInputElement).checked)">
+            <span class="auth-track" aria-hidden="true"><span /></span>
+            <span>Remember this account in this browser</span>
           </label>
           <p v-if="remember.note" id="remember-note" class="hint" data-testid="signin-remember-note" role="status">{{ remember.note }}</p>
-          <button id="login-submit" data-testid="signin-submit" class="btn btn-fill" type="submit" :aria-busy="cloud.busy">
+          <Button id="login-submit" data-testid="signin-submit" variant="primary" size="lg" block type="submit" :aria-busy="cloud.busy ? 'true' : 'false'">
             {{ cloud.busy ? 'Signing in…' : expired ? 'Sign in to resume' : 'Sign in' }}
-          </button>
-          <p v-if="flowNote" class="hint signin-flow-note" data-testid="signin-flow-note" role="status">{{ flowNote }}</p>
-          <p class="auth-note signin-account-links">
-            <button class="btn-text" type="button" data-testid="signin-forgot" @click="openFlow('forgot')">Forgot password</button>
-            <button class="btn-text" type="button" data-testid="signin-register" @click="openFlow('register')">Create account</button>
-          </p>
+          </Button>
+          <p v-if="flowNote" class="hint" data-testid="signin-flow-note" role="status">{{ flowNote }}</p>
+          <div class="auth-links">
+            <Button variant="ghost" size="sm" data-testid="signin-forgot" @click="openFlow('forgot')">Forgot password</Button>
+            <Button variant="ghost" size="sm" data-testid="signin-register" @click="openFlow('register')">Create account</Button>
+          </div>
         </form>
       </TabsContent>
       <TabsContent value="local">
-        <p id="local-mode" class="auth-sub" role="status">{{ localNote }}</p>
-        <form v-if="localReady" id="local-form" novalidate @submit.prevent="submitLocal">
-          <div class="field">
-            <label for="local-user">Camera username</label>
-            <input id="local-user" v-model="local.user" type="text" autocomplete="username" spellcheck="false">
-          </div>
-          <div id="local-pass-field" class="field" :class="{ bad: local.error }">
-            <label for="local-pass">Camera password</label>
-            <input
-              id="local-pass"
-              ref="localPassInput"
-              v-model="local.password"
-              type="password"
-              autocomplete="current-password"
-              :aria-invalid="local.error ? 'true' : null"
-              :aria-describedby="local.error ? 'local-error' : null"
-            >
-            <p v-if="local.error" id="local-error" class="err" data-testid="signin-local-error" role="alert"><Icon name="warning" small /><span>{{ local.error }}</span></p>
-          </div>
-          <button id="local-submit" class="btn btn-fill" type="submit" :aria-busy="local.busy">{{ local.busy ? 'Signing in…' : 'Sign in to the camera' }}</button>
-        </form>
-        <button id="local-connect" class="btn btn-line wide" type="button" data-testid="signin-probe" :aria-busy="probe.busy" @click="runProbe">
-          <Icon name="refresh" small />{{ probe.busy ? 'Probing…' : 'Probe the camera on this network' }}
-        </button>
-        <p v-if="probe.error" class="err signin-probe-err" data-testid="signin-probe-error" role="alert"><Icon name="warning" small /><span>{{ probe.error }}</span></p>
-        <template v-if="probe.report">
-          <dl id="local-report" class="report" data-testid="signin-probe-report">
-            <div><dt>Host</dt><dd>{{ probe.report.host }}</dd></div>
-            <div><dt>Session</dt><dd>{{ String(probe.report.session) }}</dd></div>
-            <div><dt>Device type</dt><dd>{{ probe.report.device_type || 'not reported' }}</dd></div>
-            <div><dt>Video</dt><dd>{{ probe.report.video_codec || 'not reported' }}</dd></div>
-            <div><dt>Audio</dt><dd>{{ probe.report.audio_codec || 'none' }}</dd></div>
-            <div><dt>Frame rate</dt><dd>{{ probe.report.framerate ? probe.report.framerate + ' fps' : 'not reported' }}</dd></div>
-          </dl>
-          <p id="local-next" class="auth-note">This server is set to the camera on this network, so the account sign-in shows that camera too.</p>
-        </template>
+        <div class="auth-form">
+          <p id="local-mode" class="auth-sub" role="status">{{ localNote }}</p>
+          <form v-if="localReady" id="local-form" class="auth-form" novalidate @submit.prevent="submitLocal">
+            <Field id="local-user" label="Camera username">
+              <template #default="{ id }">
+                <input :id="id" v-model="local.user" class="auth-input" type="text" autocomplete="username" spellcheck="false">
+              </template>
+            </Field>
+            <div id="local-pass-field" class="flex flex-col gap-1.5">
+              <label for="local-pass" class="text-13 font-medium text-ink-2">Camera password</label>
+              <input
+                id="local-pass"
+                ref="localPassInput"
+                v-model="local.password"
+                class="auth-input"
+                type="password"
+                autocomplete="current-password"
+                :aria-invalid="local.error ? 'true' : null"
+                :aria-describedby="local.error ? 'local-error' : null"
+              >
+              <p v-if="local.error" id="local-error" class="err" data-testid="signin-local-error" role="alert"><Icon name="warning" small /><span>{{ local.error }}</span></p>
+            </div>
+            <Button id="local-submit" variant="primary" size="lg" block type="submit" :aria-busy="local.busy ? 'true' : 'false'">{{ local.busy ? 'Signing in…' : 'Sign in to the camera' }}</Button>
+          </form>
+          <Button id="local-connect" block icon="refresh" data-testid="signin-probe" :aria-busy="probe.busy ? 'true' : 'false'" @click="runProbe">
+            {{ probe.busy ? 'Probing…' : 'Probe the camera on this network' }}
+          </Button>
+          <p v-if="probe.error" class="err" data-testid="signin-probe-error" role="alert"><Icon name="warning" small /><span>{{ probe.error }}</span></p>
+          <template v-if="probe.report">
+            <dl id="local-report" class="report" data-testid="signin-probe-report">
+              <div><dt>Host</dt><dd>{{ probe.report.host }}</dd></div>
+              <div><dt>Session</dt><dd>{{ String(probe.report.session) }}</dd></div>
+              <div><dt>Device type</dt><dd>{{ probe.report.device_type || 'not reported' }}</dd></div>
+              <div><dt>Video</dt><dd>{{ probe.report.video_codec || 'not reported' }}</dd></div>
+              <div><dt>Audio</dt><dd>{{ probe.report.audio_codec || 'none' }}</dd></div>
+              <div><dt>Frame rate</dt><dd>{{ probe.report.framerate ? probe.report.framerate + ' fps' : 'not reported' }}</dd></div>
+            </dl>
+            <p id="local-next" class="auth-sub">This server is set to the camera on this network, so the account sign-in shows that camera too.</p>
+          </template>
+        </div>
       </TabsContent>
-    </TabsRoot>
-    <p class="auth-note">
-      Settings opens before you sign in: cloud address, camera address, camera password.
-      <button id="login-settings" class="btn btn-line signin-settings" type="button" data-testid="signin-settings" @click="openSettings('config', { focus: true })"><Icon name="sliders" small />Open Settings</button>
-    </p>
+    </Tabs>
+    <div class="auth-row">
+      <Button id="login-settings" variant="ghost" size="sm" icon="gear" class="auth-settings" data-testid="signin-settings" @click="openSettings('config', { focus: true })">Open settings</Button>
+      <span class="auth-server" data-testid="signin-server">server {{ server }}</span>
+    </div>
+    <p class="auth-why">Settings opens before you sign in: cloud address, camera address, camera password.</p>
+    <p class="auth-privacy"><Icon name="lock" small /><span>{{ privacy }}</span></p>
   </div>
-  <div class="auth-stage" aria-hidden="true">
-    <div class="stage" />
-    <p id="signin-stage" class="stage-cap">{{ stage }}</p>
-  </div>
+  <p class="auth-keys">Keyboard: Tab moves between fields, Enter signs in</p>
 </template>
