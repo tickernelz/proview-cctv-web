@@ -76,10 +76,7 @@ async function bindQr() {
 
 <template>
   <section id="add-device" class="add-device" data-testid="add-camera" aria-labelledby="add-device-title">
-    <div class="auth-head">
-      <h3 id="add-device-title">Add a camera to this account</h3>
-      <p class="auth-sub">By the serial on the camera's label, or the code the phone app shares.</p>
-    </div>
+    <h3 id="add-device-title">Add a camera to this account</h3>
     <form id="add-device-form" class="add-form" novalidate @submit.prevent="bindSerial">
       <h4>By serial number</h4>
       <div class="flex flex-col gap-1.5">

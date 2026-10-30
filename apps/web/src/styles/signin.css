@@ -49,7 +49,7 @@
   .report dt { color: var(--ink-3); }
   .report dd { color: var(--ink); font-family: var(--f-mono); font-size: var(--t-12); word-break: break-all; padding-top: 2px; }
   .report dd[data-ok="false"] { color: var(--bad); }
-  .add-device { display: flex; flex-direction: column; gap: var(--s5); margin-top: var(--s5); padding-top: var(--s5); border-top: 1px solid var(--line-soft); text-align: left; width: 100%; }
+  .add-device { display: flex; flex-direction: column; gap: var(--s4); margin-top: var(--s3); padding-top: var(--s4); border-top: 1px solid var(--line-soft); text-align: left; width: 100%; }
   .add-device h3 { font-size: var(--t-17); line-height: var(--lh-head); font-weight: 600; color: var(--ink); }
   .add-form { display: flex; flex-direction: column; gap: var(--s3); }
   .add-form h4 { font-size: var(--t-14); font-weight: 500; color: var(--ink); }

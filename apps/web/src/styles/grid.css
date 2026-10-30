@@ -31,8 +31,9 @@
   .tile-pick { position: relative; z-index: 2; flex: none; min-width: 36px; min-height: 24px; padding: 0 var(--s2); border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font-family: var(--f-mono); font-size: var(--t-12); transition: background-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease); }
   .tile-pick:hover { background: var(--bg-3); color: var(--ink); }
   .tile-pick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .tile[data-state="error"]:not(.sel) .tile-actions, .tile[data-state="offline"]:not(.sel) .tile-actions { display: none; }
   @media (hover: none) {
-    .tile-actions { opacity: 1; }
+    .tile:not(.sel) .tile-actions { display: none; }
   }
   @media (pointer: coarse) {
     .grid-layout [data-testid^="grid-layout-"] { min-width: var(--hit); }
