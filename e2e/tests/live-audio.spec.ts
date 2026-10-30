@@ -41,12 +41,12 @@ const SOUND_OFF = JSON.stringify({ type: 'sound', on: false })
 
 function stageSound(page: Page) {
   return page.evaluate(() => {
-    const player = (window as unknown as { state: { players: Map<string, { heard: number; soundState: string; sound: { played: number } }> } }).state.players.get('stage')
-    return player ? { heard: player.heard, state: player.soundState, played: player.sound.played } : null
+    const player = (window as unknown as { state: { players: Map<string, { heard: number; soundState: string; sound: { received: number; context: AudioContext | null } }> } }).state.players.get('stage')
+    return player ? { heard: player.heard, state: player.soundState, queued: player.sound.received, context: player.sound.context?.state ?? null } : null
   })
 }
 
-test('live sound stays off until Sound asks the server for the camera audio, then plays it', async ({ page }) => {
+test('live sound stays off until Sound asks the server for the camera audio, then queues it on the video clock', async ({ page }) => {
   const sockets = await liveWithAudio(page)
   await signIn(page, 'one')
   await playing(page)
@@ -57,7 +57,8 @@ test('live sound stays off until Sound asks the server for the camera audio, the
   await button.click()
   await expect.poll(() => sockets.at(-1)?.sent ?? []).toContain(SOUND_ON)
   await expect(button).toHaveAttribute('data-sound', 'playing')
-  await expect.poll(async () => (await stageSound(page))?.played ?? 0, { timeout: 10_000 }).toBeGreaterThan(5)
+  await expect.poll(async () => (await stageSound(page))?.queued ?? 0, { timeout: 10_000 }).toBeGreaterThan(5)
+  expect((await stageSound(page))?.context).toBe('running')
   await expect(page.getByTestId('sound-label')).toHaveText('Sound')
   await button.click()
   await expect.poll(() => sockets.at(-1)?.sent ?? []).toContain(SOUND_OFF)
