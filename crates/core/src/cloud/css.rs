@@ -9,6 +9,8 @@ pub const CSS_PORT: u16 = 6614;
 pub const API_VERSION: &str = "1.0";
 pub const SIGN_REQUEST: &str = "MSG_DOWNLOAD_SIGN_REQ";
 pub const OBJECT_TYPE: &str = "PIC";
+pub const VIDEO_OBJECT_TYPE: &str = "VIDEO";
+pub const HLS_REQUEST: &str = "MSG_GET_CSS_HLS_REQ";
 pub const CHANNEL: &str = "0";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 pub const USER_AGENT: &str = "proview-cctv-web/0.1";
@@ -94,18 +96,44 @@ impl CssClient {
     }
 
     pub async fn sign(&self, request: &SignRequest) -> CloudResult<SignedFile> {
+        parse_sign(&self.post(&request_body(request)).await?)
+    }
+
+    pub async fn sign_objects(
+        &self,
+        request: &SignRequest,
+        kind: &str,
+        objects: &[String],
+    ) -> CloudResult<Vec<SignedFile>> {
+        let files = parse_signs(&self.post(&sign_body(request, kind, objects)).await?)?;
+        if files.len() != objects.len() {
+            return Err(CloudError::Rejected(format!(
+                "css signed {} of {} objects",
+                files.len(),
+                objects.len()
+            )));
+        }
+        Ok(files)
+    }
+
+    pub async fn center(&self, body: &Value) -> CloudResult<Value> {
+        let text = self.post(body).await?;
+        serde_json::from_str(&text)
+            .map_err(|error| CloudError::Malformed(format!("css reply is not json: {error}")))
+    }
+
+    async fn post(&self, body: &Value) -> CloudResult<String> {
         let reply = self
             .http
             .post(&self.endpoint)
-            .json(&request_body(request))
+            .json(body)
             .send()
             .await
             .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
-        let text = reply
+        reply
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
-        parse_sign(&text)
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))
     }
 
     pub async fn picture(&self, request: &SignRequest) -> CloudResult<Vec<u8>> {
@@ -114,6 +142,28 @@ impl CssClient {
     }
 
     pub async fn fetch(&self, file: &SignedFile) -> CloudResult<Vec<u8>> {
+        let (status, bytes) = self.download(file).await?;
+        if bytes.len() > 3 && bytes[0] == 0xff && bytes[1] == 0xd8 {
+            return Ok(bytes);
+        }
+        Err(CloudError::Malformed(format!(
+            "object storage refused {status}: {}",
+            brief(&bytes)
+        )))
+    }
+
+    pub async fn fetch_object(&self, file: &SignedFile) -> CloudResult<Vec<u8>> {
+        let (status, bytes) = self.download(file).await?;
+        if status.is_success() {
+            return Ok(bytes);
+        }
+        Err(CloudError::Malformed(format!(
+            "object storage refused {status}: {}",
+            brief(&bytes)
+        )))
+    }
+
+    async fn download(&self, file: &SignedFile) -> CloudResult<(reqwest::StatusCode, Vec<u8>)> {
         let url = target(file, self.loopback)?;
         let method = if file.method.trim().is_empty() {
             "GET"
@@ -141,13 +191,7 @@ impl CssClient {
             .bytes()
             .await
             .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
-        if bytes.len() > 3 && bytes[0] == 0xff && bytes[1] == 0xd8 {
-            return Ok(bytes.to_vec());
-        }
-        Err(CloudError::Malformed(format!(
-            "object storage refused {status}: {}",
-            brief(&bytes)
-        )))
+        Ok((status, bytes.to_vec()))
     }
 }
 
@@ -192,12 +236,20 @@ fn brief(bytes: &[u8]) -> String {
 }
 
 pub fn request_body(request: &SignRequest) -> Value {
+    sign_body(request, OBJECT_TYPE, std::slice::from_ref(&request.object))
+}
+
+pub fn sign_body(request: &SignRequest, kind: &str, objects: &[String]) -> Value {
+    let info: Vec<Value> = objects
+        .iter()
+        .map(|name| json!({ "ObjName": name.trim(), "StorageBucket": request.bucket.trim() }))
+        .collect();
     let mut body = json!({
         "SerialNumber": request.serial.trim(),
         "Encrypt": 1,
         "Channel": CHANNEL,
-        "ObjType": OBJECT_TYPE,
-        "ObjInfo": [{ "ObjName": request.object.trim(), "StorageBucket": request.bucket.trim() }],
+        "ObjType": kind,
+        "ObjInfo": info,
     });
     if let Some(fields) = body.as_object_mut() {
         if !request.auth_code.trim().is_empty() {
@@ -216,6 +268,13 @@ pub fn request_body(request: &SignRequest) -> Value {
 }
 
 pub fn parse_sign(text: &str) -> CloudResult<SignedFile> {
+    parse_signs(text)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CloudError::Rejected("css sign reply carries no object".to_string()))
+}
+
+pub fn parse_signs(text: &str) -> CloudResult<Vec<SignedFile>> {
     let value: Value = serde_json::from_str(text)
         .map_err(|error| CloudError::Rejected(format!("css sign reply is not json: {error}")))?;
     let centre = &value["CssCenter"];
@@ -228,19 +287,22 @@ pub fn parse_sign(text: &str) -> CloudResult<SignedFile> {
         )));
     }
     let body = &centre["Body"];
-    let info = body["ObjInfo"]
+    let entries = body["ObjInfo"]
         .as_array()
-        .and_then(|entries| entries.first())
+        .filter(|entries| !entries.is_empty())
         .ok_or_else(|| CloudError::Rejected("css sign reply carries no object".to_string()))?;
     let method = body["Method"].as_str().unwrap_or("GET");
-    Ok(SignedFile {
-        url: text_of(info, "URL"),
-        host: text_of(info, "Host"),
-        schema: text_of(info, "Schema"),
-        method: method.to_string(),
-        date: text_of(&info["ReqHeader"], "Date"),
-        authorization: text_of(&info["ReqHeader"], "Authorization"),
-    })
+    Ok(entries
+        .iter()
+        .map(|info| SignedFile {
+            url: text_of(info, "URL"),
+            host: text_of(info, "Host"),
+            schema: text_of(info, "Schema"),
+            method: method.to_string(),
+            date: text_of(&info["ReqHeader"], "Date"),
+            authorization: text_of(&info["ReqHeader"], "Authorization"),
+        })
+        .collect())
 }
 
 fn text_of(value: &Value, key: &str) -> String {
@@ -301,6 +363,34 @@ mod tests {
         assert_eq!(file.method, "GET");
         assert_eq!(file.date, "Tue, 27 Oct 2026 16:09:33 GMT");
         assert!(file.authorization.starts_with("OSS "));
+    }
+
+    #[test]
+    fn video_batch_lists_every_object_in_order() {
+        let objects = vec!["a/one.m3u8".to_string(), "a/two.ts".to_string()];
+        let body = sign_body(&request(), VIDEO_OBJECT_TYPE, &objects);
+        let centre = &body["CssCenter"]["Body"];
+        assert_eq!(centre["ObjType"], "VIDEO");
+        assert_eq!(centre["ObjInfo"].as_array().map(Vec::len), Some(2));
+        assert_eq!(centre["ObjInfo"][1]["ObjName"], "a/two.ts");
+        assert_eq!(
+            centre["ObjInfo"][1]["StorageBucket"],
+            "OSS_oss-ap-id-pic-01"
+        );
+        assert_eq!(
+            request_body(&request())["CssCenter"]["Body"]["ObjType"],
+            "PIC"
+        );
+    }
+
+    #[test]
+    fn batch_reply_keeps_every_signed_object() {
+        let text = r#"{"CssCenter":{"Body":{"Method":"GET","ObjInfo":[{"Schema":"https","Host":"h.aliyuncs.com","URL":"/a/one.ts","ReqHeader":{"Date":"d1","Authorization":"OSS k:1"}},{"Schema":"https","Host":"h.aliyuncs.com","URL":"/a/two.ts","ReqHeader":{"Date":"d2","Authorization":"OSS k:2"}}]},"Header":{"ErrorNum":"200","ErrorString":"Success OK"}}}"#;
+        let files = parse_signs(text).expect("signed files");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1].url, "/a/two.ts");
+        assert_eq!(files[1].authorization, "OSS k:2");
+        assert_eq!(parse_sign(text).expect("first").date, "d1");
     }
 
     #[test]

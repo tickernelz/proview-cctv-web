@@ -2,7 +2,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use proview_core::cloud::attributes::{AttributeClient, AttributeStore, DeviceAttributes};
+use proview_core::cloud::attributes::{
+    dev_info_plain, permission_list, share_powers, share_qr_link, AttributeClient, AttributeStore,
+    DeviceAttributes, ShareEntry, ShareQrInfo, SHARE_PERMISSIONS, SHARE_QR_LIFETIME_MS,
+};
+use proview_core::cloud::bind::encode_qr_blob;
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
 use proview_core::cloud::{CloudError, CloudSession};
 use proview_core::config::Config;
@@ -30,7 +34,96 @@ pub fn routes() -> Vec<rocket::route::Route> {
         share_accept,
         share_cancel,
         change_password,
+        share_permissions,
+        share_permitted,
+        shares_of_device,
+        shares_received,
+        share_set_permissions,
+        share_revoke,
+        share_answer,
+        share_qr,
     ]
+}
+
+const DEFAULT_SHARE_WINDOW_MS: u64 = 12_000;
+
+fn share_window() -> std::time::Duration {
+    let millis = std::env::var("PROVIEW_SHARE_WINDOW_MS")
+        .ok()
+        .and_then(|value| value.trim().parse().ok())
+        .filter(|value: &u64| *value > 0)
+        .unwrap_or(DEFAULT_SHARE_WINDOW_MS);
+    std::time::Duration::from_millis(millis)
+}
+
+async fn within<T>(
+    stage: &str,
+    work: impl std::future::Future<Output = Result<T, CloudError>>,
+) -> Result<T, Failure> {
+    let window = share_window();
+    match tokio::time::timeout(window, work).await {
+        Ok(result) => result.map_err(cloud_failure),
+        Err(_) => Err(fail(
+            Status::GatewayTimeout,
+            format!(
+                "the share service did not answer the {stage} request within {} ms",
+                window.as_millis()
+            ),
+        )),
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn blob_offset() -> u32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or_default();
+    nanos % 699 + 1
+}
+
+pub fn share_credentials(cfg: &Config, uuid: &str, configured: &str) -> (String, String) {
+    let configured = configured.trim();
+    if !configured.is_empty() && configured.eq_ignore_ascii_case(uuid.trim()) {
+        let user = if cfg.device_user.trim().is_empty() {
+            "admin".to_string()
+        } else {
+            cfg.device_user.trim().to_string()
+        };
+        return (user, cfg.device_pass.clone());
+    }
+    ("admin".to_string(), String::new())
+}
+
+fn picked_permissions(wanted: &[String]) -> Result<String, Failure> {
+    permission_list(wanted).map_err(|error| fail(Status::BadRequest, error.to_string()))
+}
+
+fn share_id_of(raw: &str) -> Result<String, Failure> {
+    let id = raw.trim();
+    let shaped = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !shaped {
+        return Err(fail(Status::BadRequest, "that is not a share id"));
+    }
+    Ok(id.to_string())
+}
+
+fn serial_of(raw: &str) -> Result<String, Failure> {
+    let serial = raw.trim();
+    if !proview_core::cloud::bind::serial_ok(serial) {
+        return Err(fail(Status::BadRequest, "that is not a device serial"));
+    }
+    Ok(serial.to_string())
 }
 
 fn store_path() -> PathBuf {
@@ -543,6 +636,333 @@ async fn change_password(
     Ok(Json(StatusBody {
         ok: true,
         message: format!("the cloud changed the device password of {uuid}; {source}"),
+    }))
+}
+
+#[derive(Serialize)]
+pub struct PermissionOption {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub default: bool,
+}
+
+#[get("/cloud/device/share/permissions")]
+fn share_permissions(
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<Vec<PermissionOption>>, Failure> {
+    guard_session(store, cookies)?;
+    Ok(Json(
+        SHARE_PERMISSIONS
+            .iter()
+            .map(|(id, label, default)| PermissionOption {
+                id,
+                label,
+                default: *default,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct PermittedBody {
+    uuid: String,
+    #[serde(default, rename = "acceptId", alias = "accept_id")]
+    accept_id: Option<String>,
+    #[serde(default)]
+    account: Option<String>,
+    #[serde(default)]
+    permissions: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermittedReply {
+    pub ok: bool,
+    pub uuid: String,
+    pub permissions: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<String>,
+    pub vendor: serde_json::Value,
+}
+
+#[post("/cloud/device/share/permitted", data = "<body>")]
+async fn share_permitted(
+    body: Json<PermittedBody>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<PermittedReply>, Failure> {
+    let signed = signed(store, cookies)?;
+    let uuid = serial_of(&body.uuid)?;
+    let permissions = picked_permissions(&body.permissions)?;
+    let admin = clients(cfg);
+    let (target, resolved) = match (clean(&body.accept_id), clean(&body.account)) {
+        (Some(id), _) => (id, None),
+        (None, Some(account)) => {
+            let hits = within(
+                "account search",
+                admin.admin.search_user(&signed.token, &account),
+            )
+            .await?;
+            let matching: Vec<_> = hits
+                .iter()
+                .filter(|hit| account_matches(&hit.account, &account))
+                .collect();
+            match matching.as_slice() {
+                [hit] => (hit.id.clone(), Some(hit.account.clone())),
+                [] => {
+                    return Err(fail(
+                        Status::NotFound,
+                        format!("no account on the cloud matches {account}"),
+                    ))
+                }
+                many => {
+                    return Err(fail(
+                        Status::Conflict,
+                        format!(
+                            "{account} matches {} accounts on the cloud; send the receiving account id instead",
+                            many.len()
+                        ),
+                    ))
+                }
+            }
+        }
+        (None, None) => {
+            return Err(fail(
+                Status::BadRequest,
+                "the receiving account or its account id is required",
+            ))
+        }
+    };
+    let (user, password) =
+        share_credentials(cfg, &uuid, &proview_core::device::configured_serial());
+    let plain = dev_info_plain(&uuid, &user, &password, 0, now_secs());
+    let powers = share_powers(&encode_qr_blob(&plain, blob_offset()));
+    let vendor = within(
+        "share",
+        admin
+            .admin
+            .share_with_permissions(&signed.token, &uuid, &target, &powers, &permissions),
+    )
+    .await?;
+    Ok(Json(PermittedReply {
+        ok: true,
+        uuid,
+        permissions,
+        resolved,
+        vendor,
+    }))
+}
+
+#[get("/cloud/device/shares?<uuid>")]
+async fn shares_of_device(
+    uuid: String,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<Vec<ShareEntry>>, Failure> {
+    let signed = signed(store, cookies)?;
+    let uuid = serial_of(&uuid)?;
+    let admin = clients(cfg);
+    within(
+        "share list",
+        admin.admin.shares_of_device(&signed.token, &uuid),
+    )
+    .await
+    .map(Json)
+}
+
+#[get("/cloud/device/shares/received")]
+async fn shares_received(
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<Vec<ShareEntry>>, Failure> {
+    let signed = signed(store, cookies)?;
+    let admin = clients(cfg);
+    within(
+        "received shares",
+        admin.admin.shares_received(&signed.token),
+    )
+    .await
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+pub struct SharePermissionBody {
+    #[serde(rename = "shareId", alias = "share_id")]
+    share_id: String,
+    #[serde(default)]
+    permissions: Vec<String>,
+}
+
+#[post("/cloud/device/shares/permissions", data = "<body>")]
+async fn share_set_permissions(
+    body: Json<SharePermissionBody>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<serde_json::Value>, Failure> {
+    let signed = signed(store, cookies)?;
+    let id = share_id_of(&body.share_id)?;
+    let permissions = picked_permissions(&body.permissions)?;
+    let admin = clients(cfg);
+    within(
+        "permission change",
+        admin
+            .admin
+            .set_share_permissions(&signed.token, &id, &permissions),
+    )
+    .await
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+pub struct ShareIdBody {
+    #[serde(rename = "shareId", alias = "share_id")]
+    share_id: String,
+    #[serde(default)]
+    accept: Option<bool>,
+}
+
+#[post("/cloud/device/shares/revoke", data = "<body>")]
+async fn share_revoke(
+    body: Json<ShareIdBody>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<serde_json::Value>, Failure> {
+    let signed = signed(store, cookies)?;
+    let id = share_id_of(&body.share_id)?;
+    let admin = clients(cfg);
+    within("revoke", admin.admin.revoke_share(&signed.token, &id))
+        .await
+        .map(Json)
+}
+
+#[post("/cloud/device/shares/answer", data = "<body>")]
+async fn share_answer(
+    body: Json<ShareIdBody>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<serde_json::Value>, Failure> {
+    let signed = signed(store, cookies)?;
+    let id = share_id_of(&body.share_id)?;
+    let accept = body.accept.ok_or_else(|| {
+        fail(
+            Status::BadRequest,
+            "say whether the share is accepted or refused",
+        )
+    })?;
+    let admin = clients(cfg);
+    if accept {
+        within(
+            "accept",
+            admin.admin.accept_permission_share(&signed.token, &id),
+        )
+        .await
+        .map(Json)
+    } else {
+        within("refuse", admin.admin.refuse_share(&signed.token, &id))
+            .await
+            .map(Json)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ShareQrBody {
+    uuid: String,
+    #[serde(default)]
+    permissions: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareQrReply {
+    pub link: String,
+    pub svg: String,
+    pub expires_at: i64,
+    pub lifetime_secs: u64,
+    pub permissions: String,
+}
+
+pub fn share_qr_info(
+    uuid: &str,
+    user_id: &str,
+    credentials: (String, String),
+    permissions: &str,
+    now: i64,
+) -> ShareQrInfo {
+    let (login_name, pwd) = credentials;
+    ShareQrInfo {
+        dev_id: uuid.to_string(),
+        dev_type: 0,
+        user_id: user_id.to_string(),
+        login_name,
+        pwd,
+        share_times: now,
+        permissions: permissions.to_string(),
+    }
+}
+
+pub fn qr_svg(text: &str) -> Result<String, Failure> {
+    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|error| {
+        fail(
+            Status::InternalServerError,
+            format!("the share link does not fit a QR code: {error}"),
+        )
+    })?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(232, 232)
+        .quiet_zone(true)
+        .build())
+}
+
+#[post("/cloud/device/share/qr", data = "<body>")]
+async fn share_qr(
+    body: Json<ShareQrBody>,
+    cfg: &State<Config>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Result<Json<ShareQrReply>, Failure> {
+    let signed = signed(store, cookies)?;
+    let uuid = serial_of(&body.uuid)?;
+    let permissions = picked_permissions(&body.permissions)?;
+    let user_id = proview_core::cloud::claims(&signed.token)
+        .and_then(|claims| claims.account)
+        .unwrap_or_default();
+    let now = now_secs();
+    let credentials = share_credentials(cfg, &uuid, &proview_core::device::configured_serial());
+    let info = share_qr_info(&uuid, &user_id, credentials, &permissions, now);
+    let plain = serde_json::to_string(&info).map_err(|error| {
+        fail(
+            Status::InternalServerError,
+            format!("the share code cannot be built: {error}"),
+        )
+    })?;
+    let blob = encode_qr_blob(&plain, blob_offset());
+    let admin = clients(cfg);
+    let (key, expires) = within(
+        "share code",
+        admin
+            .admin
+            .save_share_info(&signed.token, &blob, SHARE_QR_LIFETIME_MS),
+    )
+    .await?;
+    let link = share_qr_link(&key);
+    Ok(Json(ShareQrReply {
+        svg: qr_svg(&link)?,
+        link,
+        expires_at: if expires > 0 {
+            expires
+        } else {
+            now * 1000 + SHARE_QR_LIFETIME_MS as i64
+        },
+        lifetime_secs: SHARE_QR_LIFETIME_MS / 1000,
+        permissions,
     }))
 }
 

@@ -1,8 +1,10 @@
+pub mod account;
 pub mod alarm;
 pub mod app;
 pub mod attributes;
 pub mod bind;
 pub mod client;
+pub mod cloud_clip;
 pub mod css;
 pub mod device_tokens;
 pub mod digest;
