@@ -18,6 +18,17 @@ stability before 1.0.
   abnormal sound, intelligent vigilance, one-key call) are listed with the
   ability flag that hides them, the same gate the phone app uses. The live bar
   offers Stop alarm only on cameras that report the manual alarm ability.
+- Device settings work through the vendor cloud: `/api/device/settings/{encode,network,storage}`
+  and `/api/device/controls/settings` take `device` and open DVRIP over the relay,
+  so they answer without the camera on the local network. New blocks with the
+  mobile app's gating: SD card usage by partition kind and the missing-card alarm
+  (`Storage.StorageNotExist`), the record schedule (full-time or alarm-only),
+  clip length, record stream (`Storage.RecordStream`), lens splicing, record
+  audio (`/api/device/settings/record`), smart encode behind `Encode264ability`,
+  an encoder form bounded by `EncodeCapability`, the burned-in channel title and
+  time overlay (`/api/device/settings/osd`, `AVEnc.VideoWidget` + `ChannelTitle`,
+  optional `TitleDot` bitmap), and Format SD (`OPStorageManager`, cmd 1460)
+  behind a typed `FORMAT` confirmation.
 
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
