@@ -102,6 +102,8 @@ export const live = reactive({
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',
   launchers: [] as Launcher[],
+  mode: 'live' as 'live' | 'playback',
+  playback: { at: null as number | null, paused: false, speed: 1, picture: false, quality: 'HD' as 'SD' | 'HD' },
   actions: {
     startTalk: noop,
     stopTalk: noop,

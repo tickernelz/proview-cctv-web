@@ -1,8 +1,11 @@
+import { watch } from 'vue'
 import { api } from '../lib/api'
 import { StreamPlayer, type SoundState } from '../lib/stream-player'
-import { setControlStatus } from './controls'
+import { closePad, setControlStatus } from './controls'
 import { layoutLensCrop, lensEntries, lensViewLabel } from './lens'
 import { live } from '../live/store'
+import { stopTalk } from '../live/talk'
+import { shell } from '../shell/layout'
 import { elapsed, renderCaption, renderFlag } from './caption'
 import { renderBanner } from './chrome'
 import { currentCamera, deviceStatus } from './devices'
@@ -14,7 +17,7 @@ import { state } from './state'
 type Attempt = { stage?: string; elapsed_ms?: number; detail?: string; message?: string; stages?: { stage: string; ok: boolean; elapsed_ms: number; detail: string }[] }
 type StageDetail = { text?: string; code?: string; stage?: Attempt | null }
 
-const showingStage = (name: string) => name === 'playing' || name === 'stalled'
+const showingStage = (name: string) => name === 'playing' || name === 'stalled' || name === 'playback'
 
 export function setStage(name: string, detail: StageDetail = {}) {
   const camera = currentCamera()
@@ -181,6 +184,7 @@ export function stopStagePlayer() {
 
 export async function requestStream() {
   const camera = currentCamera()
+  if (live.mode === 'playback') return
   if (!camera || (deviceStatus(camera.device).known && !camera.device.online) || !state.signedIn) return
   const previous = state.players.get('stage')
   if (previous) {
@@ -213,6 +217,40 @@ export async function requestStream() {
     }
   }
 }
+
+function enterPlayback() {
+  stopTalk()
+  closePad()
+  stopStagePlayer()
+  state.stage.name = 'playback'
+  const stage = live.stage
+  stage.name = 'playback'
+  stage.title = ''
+  stage.text = ''
+  stage.code = ''
+  renderStage(null)
+  stage.passwordHint = false
+  live.record.disabled = true
+  live.snapshotDisabled = true
+  renderCaption()
+  renderFsLine()
+  layoutLensCrop()
+  renderBanner()
+}
+
+function leavePlayback() {
+  state.stage.name = 'idle'
+  live.stage.name = 'idle'
+  live.stage.title = ''
+  live.stage.text = ''
+  live.stage.code = ''
+  if (state.screen === 'watch' && shell.view === 'live' && state.view === 'live') requestStream()
+}
+
+watch(
+  () => live.mode,
+  (mode) => (mode === 'playback' ? enterPlayback() : leavePlayback()),
+)
 
 export function renderCameraInfo() {
   const camera = currentCamera()
