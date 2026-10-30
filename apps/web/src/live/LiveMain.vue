@@ -7,6 +7,7 @@ import GridView from './GridView.vue'
 import ImageLive from './ImageLive.vue'
 import LiveBar from './LiveBar.vue'
 import PtzEditor from './PtzEditor.vue'
+import Timeline from './timeline/Timeline.vue'
 import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pickPtzSpeed, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
 import { openSettings } from '../app/shell'
@@ -182,6 +183,7 @@ onBeforeUnmount(() => {
     </div>
     <div id="live-bar" class="live-bar"><LiveBar /></div>
     <div class="live-bar"><ImageLive /></div>
+    <Timeline />
   </section>
   <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" :hidden="!live.panes.grid"><GridView /></section>
   <FisheyeOverlay />

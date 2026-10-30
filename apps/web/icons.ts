@@ -43,6 +43,11 @@ export const ICONS: Record<string, string> = {
   calendar: 'calendar-days',
   loader: 'loader-circle',
   alert: 'circle-alert',
+  radio: 'radio',
+  'zoom-in': 'zoom-in',
+  'zoom-out': 'zoom-out',
+  'step-back': 'step-back',
+  'step-forward': 'step-forward',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

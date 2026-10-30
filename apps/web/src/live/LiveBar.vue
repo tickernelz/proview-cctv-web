@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import Icon from '../components/Icon.vue'
 import AlarmStop from './AlarmStop.vue'
+import PlaybackControls from './timeline/PlaybackControls.vue'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,6 +68,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
     </div>
   </div>
   <div id="controls" class="controls" data-testid="live-controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
+    <template v-if="live.mode !== 'playback'">
     <button
       id="talk"
       data-testid="ctl-talk"
@@ -118,6 +120,8 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
     <button id="snapshot" data-testid="ctl-snapshot" class="ctl" type="button" aria-keyshortcuts="S" :disabled="live.snapshotDisabled" @click="live.actions.captureSnapshot()">
       <Icon name="camera" /><span>Snapshot</span>
     </button>
+    </template>
+    <PlaybackControls v-else />
     <AlarmStop />
     <button
       v-for="item in start"
@@ -149,6 +153,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       <Icon :name="item.icon" /><span>{{ item.label }}</span>
     </button>
     <button
+      v-if="live.mode !== 'playback'"
       id="move"
       data-testid="ctl-move"
       class="ctl"
@@ -176,7 +181,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
         <p class="menu-note">{{ live.lens.note }}</p>
       </DropdownMenuContent>
     </DropdownMenu>
-    <DropdownMenu :modal="false">
+    <DropdownMenu v-if="live.mode !== 'playback'" :modal="false">
       <DropdownMenuTrigger id="quality-pick" data-testid="quality-pick" class="pick" aria-keyshortcuts="Q">
         <span id="quality-pick-label">{{ qualityLabel }}</span><Icon name="chevron-down" small />
       </DropdownMenuTrigger>
