@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sessionLost } from '../app/shell'
+import { state } from '../app/state'
+import CardFormat from './CardFormat.vue'
+import OsdSettings, { type OsdState, type TitleDot } from './OsdSettings.vue'
+import RecordSettings, { type RecordState } from './RecordSettings.vue'
 
 type Stream = 'main' | 'extra'
-type Block = 'encode' | 'network' | 'storage'
-type Job = '' | Stream | 'network' | 'storage'
+type Block = 'encode' | 'network' | 'storage' | 'record' | 'osd'
+type Job = '' | Stream | 'smart' | 'network' | 'storage' | 'record' | 'osd' | 'format'
 type Field = { field: string; before: unknown; requested: unknown; after: unknown; matches: boolean }
 type Report = { block: string; backup: string; fields: Field[]; reverted: boolean; restored: Field[] }
 type Format = {
@@ -26,14 +30,38 @@ type Network = {
   spare_dns?: string | null
 }
 type Partition = {
+  disk?: number
   index: number
   current?: boolean | null
   status?: number | string | null
+  driver_type?: number | null
   total_space?: string | null
   remain_space?: string | null
+  total_mb?: number
+  remain_mb?: number
   start?: string | null
 }
-type Storage = { partitions: Partition[]; overwrite?: string | null; record_mode?: string | null }
+type Usage = {
+  card: string
+  total_mb: number
+  remain_mb: number
+  record_mb: number
+  snapshot_mb: number
+  remain_percent?: number | null
+  record_percent?: number | null
+  snapshot_percent?: number | null
+}
+type Storage = {
+  partitions: Partition[]
+  usage?: Usage
+  percent_view?: boolean
+  overwrite?: string | null
+  record_mode?: string | null
+  missing_alarm?: boolean | null
+}
+type Limits = { resolutions: string[]; max_fps: Record<string, number> }
+type Capability = { max_bitrate?: number | null; fps_ceiling: number; main: Limits; extra: Limits }
+type Smart = { mode: string; modes: string[]; source: string }
 type Reply = { ok: boolean; status: number; body: any }
 type EncodeForm = { fps: number | string; bitrate: number | string; gop: number | string; resolution: string }
 
@@ -44,22 +72,31 @@ const STREAMS: Stream[] = ['main', 'extra']
 const WORKING: Record<Exclude<Job, ''>, string> = {
   main: 'Saving main…',
   extra: 'Saving extra…',
+  smart: 'Saving smart encoding…',
   network: 'Saving network…',
   storage: 'Saving storage…',
+  record: 'Saving recording…',
+  osd: 'Saving on-screen text…',
+  format: 'Formatting…',
 }
+const SMART_LABEL: Record<string, string> = { off: 'Off', smart: 'Smart (H.264+ / H.265+)', smart_plus: 'Smart plus' }
+const NO_SMART = 'The camera answers neither AVEnc.SmartH264V2 with Encode264ability nor AVEnc.SmartH264, so it offers no smart encoding.'
 
 const status = reactive({ text: 'Not loaded yet.', bad: false })
 const reports = ref<Report[]>([])
 const busy = ref<Job>('')
-const encode = reactive({ data: null as Record<string, Format> | null, error: '' })
+const encode = reactive({ data: null as Record<string, Format> | null, error: '', capability: null as Capability | null, smart: null as Smart | null })
 const network = reactive({ data: null as Network | null, error: '' })
 const storage = reactive({ data: null as Storage | null, error: '' })
+const record = reactive({ data: null as RecordState | null, error: '' })
+const osd = reactive({ data: null as OsdState | null, error: '' })
+const smartForm = ref('off')
 const encodeForm = reactive<Record<Stream, EncodeForm>>({
   main: { fps: '', bitrate: '', gop: '', resolution: '' },
   extra: { fps: '', bitrate: '', gop: '', resolution: '' },
 })
 const networkForm = reactive({ dhcp: false, dns: '', spare_dns: '', gateway: '', submask: '' })
-const storageForm = reactive({ overwrite: 'overwrite', record: 'config' })
+const storageForm = reactive({ overwrite: 'overwrite', record: 'config', missing_alarm: false })
 
 const text = (value: unknown) => (value === null || value === undefined ? '' : String(value))
 const known = (value: unknown) => (value === null || value === undefined ? null : Number(value))
@@ -70,6 +107,34 @@ const currentRecord = computed(() => {
   const wire = (storage.data?.record_mode || 'ConfigRecord').toLowerCase()
   return wire.startsWith('manual') ? 'manual' : wire.startsWith('off') ? 'off' : 'config'
 })
+
+function withDevice(path: string) {
+  const id = state.selectedId || ''
+  return id ? path + (path.includes('?') ? '&' : '?') + 'device=' + encodeURIComponent(id) : path
+}
+
+function limitsFor(stream: Stream): Limits | null {
+  return encode.capability ? encode.capability[stream] : null
+}
+
+function fpsCeiling(stream: Stream) {
+  const limits = limitsFor(stream)
+  if (!limits) return null
+  const token = encodeForm[stream].resolution
+  const found = Object.entries(limits.max_fps).find(([name]) => name.toLowerCase() === token.toLowerCase())
+  return found ? found[1] : encode.capability?.fps_ceiling ?? null
+}
+
+function megabytes(value: number) {
+  return value >= 1024 ? (value / 1024).toFixed(2) + ' GB' : value + ' MB'
+}
+
+function usageLine(usage: Usage, percent: boolean) {
+  if (percent) {
+    return 'Free ' + (usage.remain_percent ?? 0) + '% · recordings ' + (usage.record_percent ?? 0) + '% · pictures ' + (usage.snapshot_percent ?? 0) + '%'
+  }
+  return 'Total ' + megabytes(usage.total_mb) + ' · free ' + megabytes(usage.remain_mb) + ' · recordings ' + megabytes(usage.record_mb) + ' · pictures ' + megabytes(usage.snapshot_mb)
+}
 
 function say(line: string, bad = false) {
   status.text = line
@@ -128,14 +193,26 @@ function fillNetwork() {
 function fillStorage() {
   storageForm.overwrite = currentOverwrite.value
   storageForm.record = currentRecord.value
+  storageForm.missing_alarm = Boolean(storage.data?.missing_alarm)
 }
 
+function fillSmart() {
+  smartForm.value = encode.smart ? encode.smart.mode : 'off'
+}
+
+const noop = () => {}
+
 function apply(name: Block, result: Reply) {
-  const target = { encode, network, storage }[name]
+  const target = { encode, network, storage, record, osd }[name]
   if (result.ok && result.body) {
     target.data = result.body[name]
     target.error = ''
-    ;({ encode: fillEncode, network: fillNetwork, storage: fillStorage })[name]()
+    if (name === 'encode') {
+      encode.capability = result.body.capability || null
+      encode.smart = result.body.smart || null
+      fillSmart()
+    }
+    ;({ encode: fillEncode, network: fillNetwork, storage: fillStorage, record: noop, osd: noop })[name]()
   } else {
     target.error = name + ': ' + (result.body && result.body.message ? result.body.message : failureText(result))
   }
@@ -146,20 +223,25 @@ let ticket = 0
 async function load(afterWrite = false) {
   const mine = ++ticket
   if (!afterWrite) say('Reading the device settings over DVRIP…')
-  const [encodeReply, networkReply, storageReply] = await Promise.all([
-    request(BASE + '/encode'),
-    request(BASE + '/network'),
-    request(BASE + '/storage'),
+  const [encodeReply, networkReply, storageReply, recordReply, osdReply] = await Promise.all([
+    request(withDevice(BASE + '/encode')),
+    request(withDevice(BASE + '/network')),
+    request(withDevice(BASE + '/storage')),
+    request(withDevice(BASE + '/record')),
+    request(withDevice(BASE + '/osd')),
   ])
   if (mine !== ticket) return
-  if (expired(encodeReply, networkReply, storageReply)) return
-  if (!encodeReply.ok && !networkReply.ok && !storageReply.ok) {
+  const replies = [encodeReply, networkReply, storageReply, recordReply, osdReply]
+  if (expired(...replies)) return
+  if (replies.every((reply) => !reply.ok)) {
     say('The camera answered nothing: ' + failureText(encodeReply), true)
     return
   }
   apply('encode', encodeReply)
   apply('network', networkReply)
   apply('storage', storageReply)
+  apply('record', recordReply)
+  apply('osd', osdReply)
   if (!afterWrite) say('Read from the device just now.')
 }
 
@@ -172,7 +254,14 @@ function showReports(body: any) {
   else if (found.length) say('Read back after the write and kept.')
 }
 
-async function write(job: Exclude<Job, ''>, path: string, patch: Record<string, string>, nothing: string, writing: string) {
+async function write(
+  job: Exclude<Job, ''>,
+  path: string,
+  patch: Record<string, string>,
+  nothing: string,
+  writing: string,
+  after?: () => Promise<string>,
+) {
   if (busy.value) {
     if (busy.value !== job) say('Wait for the ' + busy.value + ' write to finish.')
     return
@@ -184,13 +273,17 @@ async function write(job: Exclude<Job, ''>, path: string, patch: Record<string, 
   busy.value = job
   say(writing)
   try {
-    const result = await request(BASE + path + '?' + new URLSearchParams(patch), { method: 'PUT' })
+    const result = await request(withDevice(BASE + path + '?' + new URLSearchParams(patch)), { method: 'PUT' })
     if (expired(result)) return
     if (!result.ok && !(result.body && result.body.reports)) {
       say('Could not write: ' + failureText(result), true)
       return
     }
     showReports(result.body)
+    if (after && result.ok) {
+      const problem = await after()
+      if (problem) say(problem, true)
+    }
     await load(true)
   } finally {
     busy.value = ''
@@ -219,11 +312,58 @@ function saveNetwork() {
   return write('network', '/network', patch, 'Nothing changed on the network.', 'Writing the network settings…')
 }
 
+function saveSmart() {
+  const current = encode.smart ? encode.smart.mode : 'off'
+  const patch: Record<string, string> = smartForm.value !== current ? { smart: smartForm.value } : {}
+  return write('smart', '/encode', patch, 'Smart encoding is unchanged.', 'Writing smart encoding…')
+}
+
 function saveStorage() {
   const patch: Record<string, string> = {}
   if (storageForm.overwrite !== currentOverwrite.value) patch.overwrite = storageForm.overwrite
   if (storageForm.record !== currentRecord.value) patch.record = storageForm.record
+  const alarm = storage.data?.missing_alarm
+  if (alarm !== null && alarm !== undefined && storageForm.missing_alarm !== alarm) patch.missing_alarm = String(storageForm.missing_alarm)
   return write('storage', '/storage', patch, 'Nothing changed on storage.', 'Writing the storage settings…')
+}
+
+function saveRecord(patch: Record<string, string>) {
+  return write('record', '/record', patch, 'Nothing changed on recording.', 'Writing the recording settings…')
+}
+
+function saveOsd(patch: Record<string, string>, dot: TitleDot | null) {
+  const after = dot
+    ? async () => {
+        const reply = await request(withDevice(BASE + '/osd/dot'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(dot),
+        })
+        return reply.ok ? '' : 'The title was saved but the title bitmap was not: ' + failureText(reply)
+      }
+    : undefined
+  return write('osd', '/osd', patch, 'Nothing changed on the on-screen text.', 'Writing the on-screen text…', after)
+}
+
+async function formatCard(confirm: string) {
+  if (busy.value) {
+    say('Wait for the ' + busy.value + ' write to finish.')
+    return
+  }
+  busy.value = 'format'
+  say('Formatting the memory card…')
+  try {
+    const result = await request(withDevice(BASE + '/storage/format?confirm=' + encodeURIComponent(confirm)), { method: 'POST' })
+    if (expired(result)) return
+    if (!result.ok) {
+      say('Could not format: ' + failureText(result), true)
+      return
+    }
+    say('The card was formatted (' + ((result.body && result.body.steps) || []).length + ' partitions cleared).')
+    await load(true)
+  } finally {
+    busy.value = ''
+  }
 }
 
 function label(job: Exclude<Job, ''>, idle: string) {
@@ -260,7 +400,8 @@ onBeforeUnmount(() => watcher.disconnect())
   </Teleport>
   <h2 id="h-device" class="set-h" tabindex="-1">Device settings</h2>
   <p class="set-sub">
-    Encoder, network and storage as the camera holds them now, read over DVRIP. Every write saves a copy of the block first, reads it back, and
+    Encoder, recording, on-screen text, network and storage as the camera holds them now, read over DVRIP through the cloud relay or the local
+    network. Every write saves a copy of the block first, reads it back, and
     puts the copy back when the device returns a different value.
   </p>
   <p id="device-status" :class="['hint', { 'warn-text': status.bad }]" data-testid="device-status" role="status">{{ status.text }}</p>
@@ -314,11 +455,12 @@ onBeforeUnmount(() => watcher.disconnect())
           <div class="ctl-col">
             <label class="field">
               <span>Frames per second</span>
-              <input :id="'device-' + stream + '-fps'" v-model="encodeForm[stream].fps" type="number" step="1" min="0">
+              <input :id="'device-' + stream + '-fps'" v-model="encodeForm[stream].fps" type="number" step="1" min="0" :max="fpsCeiling(stream) ?? undefined">
+              <span v-if="fpsCeiling(stream) !== null" class="hint">Up to {{ fpsCeiling(stream) }} at {{ encodeForm[stream].resolution || 'this resolution' }}, from EncodeCapability.</span>
             </label>
             <label class="field">
               <span>Bitrate (kbps)</span>
-              <input :id="'device-' + stream + '-bitrate'" v-model="encodeForm[stream].bitrate" type="number" step="1" min="0">
+              <input :id="'device-' + stream + '-bitrate'" v-model="encodeForm[stream].bitrate" type="number" step="1" min="0" :max="encode.capability?.max_bitrate ?? undefined">
             </label>
             <label class="field">
               <span>Keyframe interval</span>
@@ -326,8 +468,11 @@ onBeforeUnmount(() => watcher.disconnect())
             </label>
             <label class="field">
               <span>Resolution</span>
-              <input :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution" type="text" placeholder="3072*2048">
-              <span class="hint">The device token, for example 3072*2048.</span>
+              <select v-if="limitsFor(stream)?.resolutions.length" :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution">
+                <option v-for="name in limitsFor(stream)?.resolutions" :key="name" :value="name">{{ name }}</option>
+              </select>
+              <input v-else :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution" type="text" placeholder="3072*2048">
+              <span class="hint">{{ limitsFor(stream)?.resolutions.length ? 'The sizes EncodeCapability allows for this stream.' : 'The device token, for example 3072*2048.' }}</span>
             </label>
             <button
               class="btn btn-fill"
@@ -339,6 +484,27 @@ onBeforeUnmount(() => watcher.disconnect())
           </div>
         </div>
       </div>
+    </div>
+    <div v-if="encode.data" id="device-smart" class="row" data-testid="device-smart">
+      <label class="lab" for="device-smart-mode">Smart encoding</label>
+      <div class="ctl-col">
+        <select id="device-smart-mode" v-model="smartForm" :disabled="!encode.smart || encode.smart.modes.length < 2">
+          <option v-for="mode in encode.smart ? encode.smart.modes : ['off']" :key="mode" :value="mode">{{ SMART_LABEL[mode] || mode }}</option>
+        </select>
+        <p v-if="!encode.smart" class="hint">{{ NO_SMART }}</p>
+        <p v-else-if="encode.smart.modes.length < 2" class="hint">Encode264ability reports neither H.264+ nor H.265+ for this camera, so only Off is offered.</p>
+        <button class="btn btn-fill" type="button" data-testid="device-save-smart" :aria-busy="busy === 'smart'" :disabled="!encode.smart || encode.smart.modes.length < 2" @click="saveSmart">
+          {{ label('smart', 'Save smart encoding') }}
+        </button>
+      </div>
+    </div>
+    <div id="device-record" data-testid="device-record">
+      <p v-if="record.error" class="hint warn-text">{{ record.error }}</p>
+      <RecordSettings v-else-if="record.data" :record="record.data" :busy="busy === 'record'" :label="label('record', 'Save recording')" @save="saveRecord" />
+    </div>
+    <div id="device-osd-block">
+      <p v-if="osd.error" class="hint warn-text">{{ osd.error }}</p>
+      <OsdSettings v-else-if="osd.data" :osd="osd.data" :busy="busy === 'osd'" :label="label('osd', 'Save on-screen text')" @save="saveOsd" />
     </div>
     <div id="device-network" data-testid="device-network">
       <p v-if="network.error" class="hint warn-text">{{ network.error }}</p>
@@ -407,6 +573,17 @@ onBeforeUnmount(() => watcher.disconnect())
               </tbody>
             </table>
             <p v-else class="val">The device reports no card in this camera.</p>
+            <p v-if="storage.data.usage" class="val" data-testid="device-usage">{{ usageLine(storage.data.usage, Boolean(storage.data.percent_view)) }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lab">Card missing alarm</div>
+          <div class="ctl-col">
+            <label class="switchrow">
+              <input id="device-missing-alarm" v-model="storageForm.missing_alarm" type="checkbox" role="switch" :disabled="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined">
+              <span>Raise an alarm when the card is missing or fails</span>
+            </label>
+            <p v-if="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined" class="hint">The camera does not answer Storage.StorageNotExist.</p>
           </div>
         </div>
         <div class="row">
@@ -431,6 +608,7 @@ onBeforeUnmount(() => watcher.disconnect())
         <button class="btn btn-fill" type="button" data-testid="device-save-storage" :aria-busy="busy === 'storage'" @click="saveStorage">
           {{ label('storage', 'Save storage') }}
         </button>
+        <CardFormat :card="storage.data.usage ? storage.data.usage.card : storage.data.partitions.length ? 'ok' : 'absent'" :busy="busy === 'format'" :label="label('format', 'Format card')" @format="formatCard" />
       </div>
     </div>
   </div>

@@ -1,11 +1,13 @@
 pub mod client;
 pub mod control;
 pub mod crypto;
+pub mod encode_osd;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod frame;
 pub mod playback;
 pub mod settings;
+pub mod storage_card;
 pub mod system;
 pub mod talk;
 
@@ -21,6 +23,9 @@ pub mod msg {
     pub const SYSTEM_INFO: u16 = 1020;
     pub const CONFIG_SET: u16 = 1040;
     pub const CONFIG_GET: u16 = 1042;
+    pub const CHANNEL_TITLE_SET: u16 = 1046;
+    pub const CHANNEL_TITLE_GET: u16 = 1048;
+    pub const TITLE_DOT_SET: u16 = 1050;
     pub const ABILITY: u16 = 1360;
     pub const PTZ_CONTROL: u16 = 1400;
     pub const TALK: u16 = 1430;
@@ -35,6 +40,7 @@ pub mod msg {
     pub const SAFETY: u16 = 1650;
     pub const VERSION_REQ: u16 = 2016;
     pub const START_UPGRADE: u16 = 2018;
+    pub const STORAGE_MANAGER: u16 = 1460;
     pub const SNAP: u16 = 1560;
     pub const MONITOR: u16 = 0x0585;
     pub const MONITOR_CHANNEL: u8 = 99;

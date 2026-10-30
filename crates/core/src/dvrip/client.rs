@@ -441,6 +441,18 @@ impl Connection {
         Ok(())
     }
 
+    pub async fn request_bytes(&mut self, id: u16, body: &[u8]) -> Result<Value, DvrError> {
+        match &self.seal {
+            Some(cipher) => {
+                let mut payload = cipher.encrypt_body(body).into_bytes();
+                payload.push(0);
+                self.send_frame_on(0, false, id, &payload).await?;
+            }
+            None => self.send_frame(id, body).await?,
+        }
+        self.await_reply(8).await
+    }
+
     pub async fn start_monitor(
         &mut self,
         cipher: &crate::media::dhav::MediaCipher,
