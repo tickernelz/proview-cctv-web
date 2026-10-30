@@ -53,6 +53,7 @@
   .add-device h3 { font-size: var(--t-17); line-height: var(--lh-head); font-weight: 600; color: var(--ink); }
   .add-form { display: flex; flex-direction: column; gap: var(--s3); }
   .add-form h4 { font-size: var(--t-14); font-weight: 500; color: var(--ink); }
+  .add-device h3, .add-form h4, .auth-col h1, .auth-flow-title { margin: 0; }
   .add-form > .btn, .add-form > button { align-self: flex-start; }
   .add-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
   .ok-line { font-size: var(--t-13); color: var(--ink); display: flex; gap: var(--s2); align-items: flex-start; line-height: 1.43; }
