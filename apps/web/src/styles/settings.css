@@ -110,7 +110,8 @@
   .seg > label:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
   .seg > label:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
   @media (pointer: coarse) {
-    .seg > label { min-height: var(--hit); }
+    .seg > label { min-height: var(--hit); min-width: var(--hit); }
+    .switchrow { min-width: var(--hit); justify-content: flex-end; }
   }
 
   .savebar { flex: none; min-height: var(--dock); display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s5); border-top: 1px solid var(--line-soft); background: var(--bg); }
