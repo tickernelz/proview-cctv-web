@@ -71,6 +71,15 @@ watch(open, (shown) => (launcher.pressed = shown))
 const device = computed(() => list.devices.find((entry) => entry.uuid === chosen.value) || null)
 const shownTab = computed(() => (device.value ? tab.value : 'share'))
 
+watch(
+  () => open.value && shownTab.value === 'share',
+  (sharing) => {
+    if (!sharing) return
+    if (permissions.value === FALLBACK_PERMISSIONS) loadPermissions()
+    loadReceived()
+  },
+)
+
 function sentence(error: unknown) {
   const text = error instanceof Error ? error.message : String(error)
   return text.charAt(0).toUpperCase() + text.slice(1)
@@ -127,8 +136,6 @@ async function refresh() {
 
 async function show() {
   live.sheet = 'devices'
-  if (permissions.value === FALLBACK_PERMISSIONS) loadPermissions()
-  loadReceived()
   const loading = refresh()
   await nextTick()
   closeButton.value?.focus()
