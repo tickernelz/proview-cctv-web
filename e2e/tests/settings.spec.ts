@@ -232,3 +232,18 @@ test('an expired session while reading the account returns to sign-in', async ({
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('settings')).toBeHidden()
 })
+
+test('Picture in picture picked as the lens on open survives a reload and opens the live view in picture in picture', async ({ page }) => {
+  await openSection(page, 'Playback')
+  await page.getByRole('radio', { name: 'Both lenses', exact: true }).check()
+  await page.getByRole('radio', { name: 'Picture in picture', exact: true }).check()
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeChecked()
+  await page.reload()
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeChecked()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').lens)).toBe('pip')
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'pip', { timeout: 20_000 })
+  await expect(page.getByTestId('pip-inset')).toBeVisible()
+})
