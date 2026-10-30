@@ -5,7 +5,8 @@
 [data-testid="tl-pill"],
 [data-testid="tl-head"],
 [data-testid="tl-day"] span,
-[data-testid="tl-note"] {
+[data-testid="tl-note"],
+[data-testid="signin-server"] {
   visibility: hidden !important;
 }
 

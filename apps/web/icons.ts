@@ -48,6 +48,9 @@ export const ICONS: Record<string, string> = {
   'zoom-out': 'zoom-out',
   'step-back': 'step-back',
   'step-forward': 'step-forward',
+  eye: 'eye',
+  'eye-off': 'eye-off',
+  lock: 'lock',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

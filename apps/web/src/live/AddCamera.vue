@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, reactive, ref } from 'vue'
 import Icon from '../components/Icon.vue'
+import { Button } from '../components/ui/button'
 import { api, type ApiError } from '../lib/api'
 import { sessionLost } from '../app/shell'
 import { loadDevices } from '../app/view'
@@ -78,35 +79,35 @@ async function bindQr() {
     <h3 id="add-device-title">Add a camera to this account</h3>
     <form id="add-device-form" class="add-form" novalidate @submit.prevent="bindSerial">
       <h4>By serial number</h4>
-      <div :class="['field', { bad: serial.missing }]">
-        <label for="add-sn">Serial number</label>
-        <input id="add-sn" ref="snInput" v-model="serial.sn" type="text" spellcheck="false" autocomplete="off" placeholder="AASN000000000001" :aria-invalid="serial.missing" :aria-describedby="serial.missing ? 'add-sn-missing' : undefined">
+      <div class="flex flex-col gap-1.5">
+        <label for="add-sn" class="text-13 font-medium text-ink-2">Serial number</label>
+        <input id="add-sn" ref="snInput" v-model="serial.sn" class="auth-input" type="text" spellcheck="false" autocomplete="off" placeholder="AASN000000000001" :aria-invalid="serial.missing" :aria-describedby="serial.missing ? 'add-sn-missing' : undefined">
         <p v-if="serial.missing" id="add-sn-missing" class="err"><Icon name="warning" small /><span>Type the serial printed on the camera or in the phone app.</span></p>
       </div>
       <div class="add-pair">
-        <div class="field">
-          <label for="add-user">Camera username</label>
-          <input id="add-user" v-model="serial.username" type="text" spellcheck="false" autocomplete="off">
+        <div class="flex flex-col gap-1.5">
+          <label for="add-user" class="text-13 font-medium text-ink-2">Camera username</label>
+          <input id="add-user" v-model="serial.username" class="auth-input" type="text" spellcheck="false" autocomplete="off">
         </div>
-        <div class="field">
-          <label for="add-pass">Camera password</label>
-          <input id="add-pass" v-model="serial.password" type="password" autocomplete="off">
+        <div class="flex flex-col gap-1.5">
+          <label for="add-pass" class="text-13 font-medium text-ink-2">Camera password</label>
+          <input id="add-pass" v-model="serial.password" class="auth-input" type="password" autocomplete="off">
         </div>
       </div>
-      <button id="add-device-submit" class="btn btn-line" type="submit" :aria-busy="result.busy === 'serial'">
-        <Icon name="plus" small />{{ result.busy === 'serial' ? 'Adding…' : 'Add this camera' }}
-      </button>
+      <Button id="add-device-submit" type="submit" icon="plus" :aria-busy="result.busy === 'serial' ? 'true' : 'false'">
+        {{ result.busy === 'serial' ? 'Adding…' : 'Add this camera' }}
+      </Button>
     </form>
     <form id="add-qr-form" class="add-form" novalidate @submit.prevent="bindQr">
       <h4>From a QR code or share link</h4>
-      <div :class="['field', { bad: qr.missing }]">
-        <label for="add-qr">QR code text or share link</label>
-        <input id="add-qr" ref="qrInput" v-model="qr.payload" type="text" spellcheck="false" autocomplete="off" placeholder="https://d.xmeye.net/CSee?shareInfo=..." :aria-invalid="qr.missing" :aria-describedby="qr.missing ? 'add-qr-missing' : undefined">
+      <div class="flex flex-col gap-1.5">
+        <label for="add-qr" class="text-13 font-medium text-ink-2">QR code text or share link</label>
+        <input id="add-qr" ref="qrInput" v-model="qr.payload" class="auth-input" type="text" spellcheck="false" autocomplete="off" placeholder="https://d.xmeye.net/CSee?shareInfo=..." :aria-invalid="qr.missing" :aria-describedby="qr.missing ? 'add-qr-missing' : undefined">
         <p v-if="qr.missing" id="add-qr-missing" class="err"><Icon name="warning" small /><span>Paste the text of the code or the share link.</span></p>
       </div>
-      <button id="add-qr-submit" class="btn btn-line" type="submit" :aria-busy="result.busy === 'qr'">
-        <Icon name="plus" small />{{ result.busy === 'qr' ? 'Reading the code…' : 'Add the camera in that code' }}
-      </button>
+      <Button id="add-qr-submit" type="submit" icon="plus" :aria-busy="result.busy === 'qr' ? 'true' : 'false'">
+        {{ result.busy === 'qr' ? 'Reading the code…' : 'Add the camera in that code' }}
+      </Button>
     </form>
     <p v-if="result.text && !result.ok" id="add-device-status" class="err" role="alert" data-testid="add-camera-result"><Icon name="warning" small /><span>{{ result.text }}</span></p>
     <p v-else-if="result.text" id="add-device-status" class="ok-line" role="status" data-testid="add-camera-result"><Icon name="check" small /><span>{{ result.text }}</span></p>
