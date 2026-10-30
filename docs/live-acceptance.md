@@ -4,7 +4,7 @@ One command decides whether the cloud path really carried live video, and it
 writes the numbers down.
 
 ```sh
-tools/acceptance/live_acceptance.py
+python3 tools/acceptance/live_acceptance.py
 ```
 
 The harness is the only accepted evidence for a "live cloud works" claim. A
@@ -18,7 +18,7 @@ Exit code 0 means every stage below passed on the branch under test:
 
 | Stage | Requirement |
 |---|---|
-| `lan_guard` | `nc -z 192.168.0.100 554` fails, so the camera is not reachable on the LAN and every byte must come through the vendor cloud; a reachable camera never turns into a pass, see the verdict table |
+| `lan_guard` | a TCP connect to `--lan-target` (`192.168.0.100:554`) fails within 3 s, so the camera is not reachable on the LAN and every byte must come through the vendor cloud; a reachable camera never turns into a pass, see the verdict table |
 | `identity` | the three app-identity keys come from `~/re/proview-cctv/secrets/identity.env`; without them a build signs nothing and answers `MISSING_CLOUD_IDENTITY` at login |
 | `build` | `cargo build --release -p proview-server` through `~/re/proview-cctv/build-slot.sh`, never a bare cargo invocation, with the identity exported as `PROVIEW_APP_*` and `PROVIEW_REQUIRE_CLOUD_IDENTITY=1` so a build that cannot bake it fails loudly; with `--no-build` a cloud run refuses a binary older than the commit it would be labelled with |
 | `credentials` | sign-in material from `~/re/proview-cctv/secrets/proview.env` |
@@ -89,10 +89,9 @@ Two private files feed the harness: `secrets/proview.env` (`PROVIEW_EMAIL`,
 bakes into the binary. No value from either file is ever written to a report;
 the report records the file path and which keys were present.
 
-Cloud run from a host off the camera LAN:
+Cloud run from a host off the camera LAN, at the root of the checkout under test:
 
 ```sh
-cd ~/Projects/proview-cctv-web-wt/acceptance
 python3 tools/acceptance/live_acceptance.py --sn <camera-serial>
 ```
 
@@ -115,6 +114,8 @@ Useful flags:
 | `--out` | `~/re/proview-cctv/acceptance` | report root |
 | `--lock` | `~/re/proview-cctv/relay.lock` | relay mutex |
 | `--lock-wait` | 60 | seconds to wait for the lock before failing |
+| `--build-slot` | `~/re/proview-cctv/build-slot.sh` | wrapper the release build runs through; a missing file is a preflight failure (exit 2) |
+| `--device-env-file` | `~/re/proview-cctv/secrets/device.env` | `PROVIEW_DEVICE_USER`/`PASS` handed to the server in cloud mode, when the file has both |
 | `--identity-file` | `~/re/proview-cctv/secrets/identity.env` | `PROVIEW_APP_UUID`/`KEY`/`SECRET` handed to the build |
 | `--env-file` | `~/re/proview-cctv/secrets/proview.env` | `PROVIEW_EMAIL`/`PASSWORD` used for sign-in |
 | `--dump-bytes` | 4 MiB | cap on the elementary stream kept for ffprobe |
@@ -138,10 +139,9 @@ python3 tools/acceptance/live_acceptance.py --mode fixture \
 ```
 
 A self-check that reports zero frames is a harness bug, never a camera bug. It also has a known
-limit: `framed` only happens when the server has a local RTSP target **and** the request carries
-`codec=hevc` (`crates/server/src/routes.rs`, `ws_live`); every other case, including this self-check and
-every cloud run today, is `raw`. The `framed` path therefore has no live proof yet, and its dump is
-checked by a separate probe that feeds the wire format the server really sends.
+limit: `--codec hevc` gets the camera's H.265 untouched (passthrough) only in cloud mode or when the
+server has a local RTSP target (`crates/server/src/routes.rs`, `ws_live`). The fixture provider has
+neither, so this self-check always measures the transcode.
 
 ## Reading the report
 

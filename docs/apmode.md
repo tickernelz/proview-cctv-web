@@ -36,7 +36,7 @@ QuickConfigResultActivity
 number is stored as the message id by `CConfigAPDev::Start_Wifi`
 (`0xb28254`, `mov w9, #0x1407`).
 
-### What the route may reach (ZHA-4026)
+### What the route may reach
 
 `POST /api/apmode/provision` reads no network target from the body (PR #20 removed the
 host/target/port fields; `ProvisionBody` has carried only the SSID, the Wi-Fi key, an
@@ -338,9 +338,9 @@ itself after 180 s.
 Verification commands (no camera needed):
 
 ```
-~/re/proview-cctv/build-slot.sh cargo test -p proview-core --lib apmode
-~/re/proview-cctv/build-slot.sh cargo test -p proview-server --lib apmode
-~/re/proview-cctv/build-slot.sh cargo test -p proview-server --test api apmode
+cargo test -p proview-core --lib apmode
+cargo test -p proview-server --lib apmode
+cargo test -p proview-server --test api apmode
 ```
 
 ## 8. Re-checking the evidence

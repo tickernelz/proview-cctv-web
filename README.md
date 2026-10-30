@@ -1,264 +1,164 @@
+<p align="center"><img src="app-icon.png" alt="PROVIEW CCTV" width="96"></p>
+
 # proview-cctv-web
 
-A small Rocket server, and a Tauri desktop shell around it, that put PROVIEW
-CCTV (package `com.proview.cctv`, a Xiongmai / XMEye white-label) cameras on a
-desktop instead of a phone.
+PROVIEW CCTV cameras on a desktop instead of a phone. A Rust server and a Tauri
+desktop app that speak to the vendor cloud the way the PROVIEW Android app
+(`com.proview.cctv`, a Xiongmai / XMEye white-label) does: sign in with your
+PROVIEW account and watch, move, play back and configure your cameras. No camera
+password, no port forwarding, no vendor binary.
 
-Current release: **v0.4.0** (`CHANGELOG.md` carries what changed). Status: a
-working server and desktop app with configuration in the app itself, at parity
-with the phone app over the vendor cloud relay: live view with camera sound and
-Talk, PTZ, playback by time with downloads, device settings, alarms, the account,
-sharing and cloud storage, all through the account sign-in with no camera
-password and no LAN path. A LAN camera works end to end too. The vendor cloud
-account login **ships here**: email + password is sealed in the signed v3
-envelope from Rust (`crates/core/src/cloud/envelope.rs`) and the account's device
-list follows it (see "Cloud account login" below). `docs/parity.md` lists every
-feature of the app with its state and the boundaries that remain;
-`docs/protocol.md` records exactly what is proven and what is not.
+Current release: **v0.4.0** ([CHANGELOG.md](CHANGELOG.md)). Not affiliated with
+the vendor; it talks only to cameras and an account you own.
 
-## What works today
+## Features
 
-| Piece | State |
+| Area | What you get |
 |---|---|
-| Rocket server, static UI, JSON API | works |
-| Server-side session (private cookie → in-memory vendor session) | works |
-| Settings view: every server key, from the sign-in screen, saved to `settings.json` | works, saves merge, secrets never read back |
-| Desktop app (Tauri 2): Settings, mode choice, "Restart the app" | built by CI for 7 targets; launched on Linux (WebKitGTK 2.54, Xvfb) for v0.3.0, signs in and renders; live H.264 there needs the GStreamer H.264 decoder (`docs/webview-matrix.md`) |
-| Desktop alarm notifications and tray | works from the desktop process: one native system notification per new alarm (keyed by device, channel and id; survives a restart; one summary after a gap), tray with Open / Live / Quit, a single instance, close-to-tray on and minimize-to-tray off by default, all four switches in Settings; `docs/desktop-notifications.md` states what a headless box could and could not measure |
-| Web UI (v0.3.0): one camera fills the window, camera menu, lens menu, every-camera view, move pad, keyboard shortcuts (`?`), Settings as a screen | works; `DESIGN.md` |
-| DVRIP framing, login handshake, session | works, tested against the camera at `192.168.0.100` (`Ret: 100`) and a mock |
-| Annex-B NAL splitter, H.264/H.265 detection, SPS parse | works, tested |
-| Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
-| Device caps from the app cloud | works: `GET /api/cloud/device-caps?sn=<serial>` answers model, firmware, WAN address and the capability block, no account session needed; unknown serial is a 404 |
-| Live video to the browser | works over the vendor cloud relay and from a LAN camera (RTSP): H.265 passthrough muxed in-process into `hvc1` fMP4 (no ffmpeg) for a webview that decodes HEVC, H.264 remuxed in process, and one ffmpeg transcode per stream only as the fallback, all over WebSocket into MSE; main or sub stream per tile, grid of up to nine tiles |
-| Live sound and Talk | works: the camera's own G.711 A-law sound plays in the live bar and the grid, and Talk sends the microphone over the relay (account device token, no camera password) or the direct address; the Talk button is enabled only when a path exists |
-| PTZ over the cloud relay | works: press and hold to move, tap-to-aim on the wide lens, presets add, rename, delete and go, tour start, stop and edit; zoom, focus, calibration and panorama are shown only when the camera reports them, as the app does |
-| Playback | works over the relay: day file list, play by time across files, month calendar, thumbnails, pause and speed 1/4x to 4x (4x shows only where the webview decodes 48 fps of H.265), sound and mute, snapshot of the playing frame, record-type filter, and clip download as a playable MP4 |
-| Device settings over the cloud relay | works: encode, network (DNS writes only), storage and SD status, record schedule, OSD, alarm and detection, image, light and sound; encode, network and storage writes are read back and restored from a backup on a mismatch; SD format and factory reset are fake-tested only |
-| About device | works: model, firmware, run time, camera time and sync, UI language, firmware check, network check, device users and restart; firmware install is fake-tested only |
-| Alarms | works: list with pictures, delete and clear, month calendar, type filter, push subscription state, and desktop notifications for new alarms |
-| Account, sharing, cloud storage | works: profile, change password, forgot password, register, share with permissions (share, list and revoke measured on the real account) and share by QR, and the cloud storage plan and list; delete account and the final register call are fake-tested only, and cloud clip play and download are fake-tested because the account has no plan (`docs/parity.md`) |
-| Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
-| Provider seam (cloud / local / fixture) | works: the same UI over the vendor cloud, a camera on the LAN, or recorded sample data |
-| Fixture provider (no camera, no account) | works, opt-in (`PROVIEW_PROVIDER=fixture`); the default provider is the vendor cloud |
-| Vendor cloud account login | works: `POST /api/login` seals email + password in the signed v3 envelope from Rust and answers an `accessToken`; no vendor binary is involved |
-| Device list from the vendor cloud | works: `GET /api/devices` returns the account's devices after that login (`msdlistCode`); `401` until signed in |
+| Live view | One camera fills the window, or a grid of up to nine tiles; main or sub stream; dual-lens split; fisheye dewarp; snapshot; keyboard shortcuts (`?`) |
+| Sound and Talk | Camera sound in live view and playback; Talk sends your microphone to the camera |
+| PTZ | Press and hold to move, tap-to-aim on the wide lens, presets and tours |
+| Playback | Day file list, play by time, month calendar, thumbnails, speed 1/4x to 4x, MP4 download |
+| Device settings | Encode, network, storage and SD card, record schedule, OSD, alarm and detection, image, light and sound, time, language, users, restart |
+| Alarms | List with pictures, calendar, filters, delete; native desktop notifications and a tray icon |
+| Account | Profile, password change and reset, register, sharing with permissions and by QR, cloud storage plan |
+| Without the cloud | Live view and controls of a camera on your LAN (RTSP, ONVIF, DVRIP); built-in sample data for a demo |
 
-The server never sends a vendor token to the browser: the browser holds only an
-opaque `pvw_session` cookie, and every vendor call happens server side.
+Every feature of the phone app, with its state here and the boundaries that
+remain: [docs/parity.md](docs/parity.md).
 
-## Run
+## Install
 
-The page is a Vite app in `apps/web`; the server embeds its `dist/` at compile
-time, so build it before any `cargo` command (Node 20.19+ or 22.12+):
+Download from the [latest release](https://github.com/tickernelz/proview-cctv-web/releases/latest);
+`SHA256SUMS` covers every file.
 
-```sh
-(cd apps/web && npm ci --include=dev && npm run build)
-```
+| Platform | Desktop app | Server binary |
+|---|---|---|
+| Windows x64 / arm64 | `.msi` or `-setup.exe` | `proview-server-<arch>-pc-windows-msvc.zip` |
+| macOS Apple silicon / Intel / universal | `.dmg` | `proview-server-<arch>-apple-darwin.tar.gz` |
+| Linux x86_64 / aarch64 | `.AppImage`, `.deb`, `.rpm` | `proview-server-<arch>-unknown-linux-{gnu,musl}.tar.gz` |
 
-```sh
-ROCKET_SECRET_KEY="$(openssl rand -base64 32)" cargo run --release -p proview-server
-# http://127.0.0.1:8787
-```
+The installers are not code-signed. On Windows choose SmartScreen → More info →
+Run anyway; on macOS right-click → Open, or System Settings → Privacy & Security → Open
+Anyway on macOS 15 and later (or `xattr -dr com.apple.quarantine`);
+on Linux `chmod +x` the AppImage. Per-platform detail:
+[docs/install.md](docs/install.md). Running the server behind TLS with systemd:
+[docs/deploy.md](docs/deploy.md).
 
-The release build refuses to start without `ROCKET_SECRET_KEY` (it signs the
-sign-in cookie, and Rocket requires a real key outside debug builds). Any value
-of 32 random bytes in base64 or 64 hex characters works; make it stable so
-sessions survive a restart. A debug build generates its own.
+## Quick start
 
-No other program is required: `ffmpeg` is only a fallback for a webview that
-cannot decode H.265 (see "Live view from a LAN camera" below).
+**Desktop app.** Open it and sign in with the email and password of your
+PROVIEW account. Your cameras appear; pick one.
 
-Open Settings from the sign-in screen (the link under the form) and fill in what
-you need; nothing has to be exported by hand. Sample data, no camera needed:
+**Server.** It serves the same page on `http://127.0.0.1:8787`:
 
 ```sh
-PROVIEW_PROVIDER=fixture cargo run -p proview-server
+export ROCKET_SECRET_KEY="$(openssl rand -base64 32)"
+export PROVIEW_DATA_DIR="$HOME/.local/share/proview"
+./proview-server            # --listen 0.0.0.0:8787 to bind elsewhere
 ```
 
-A debug build generates its own cookie secret, so the demo needs no environment
-at all.
+A release build refuses to start without `ROCKET_SECRET_KEY` (it signs the
+sign-in cookie; keep it stable so sessions survive a restart).
+`PROVIEW_DATA_DIR` is where Settings are saved; without it the server keeps
+them in memory only.
 
-```
-email:    fixture@example.invalid
-password: fixture-password
-```
-
-Frontend work with hot reload: run the server on its default port 8787, then
-`npm run dev` in `apps/web` and open http://localhost:5173; Vite proxies
-`/api`, `/ws` and `/media` to the server. For the desktop shell,
-`PROVIEW_WEB_DEV=1 cargo tauri dev` starts Vite, binds the in-process server to
-8787 and opens the window on Vite instead of the embedded page (debug builds
-only).
-
-Configuration lives in the app. Values are written to `settings.json` in the
-data directory, each save merges into what is already stored, and a key that is
-read once at startup is marked "needs restart" in the view — the desktop build
-offers a **Restart the app** button for those and restarts the shell through
-`POST /api/desktop/restart` with the per-run token the served page carries (no
-IPC, which the loopback origin is refused; the route and the page take only the
-bound `127.0.0.1:<port>` authority), a server says to restart the process. Keys
-read per request apply as soon as they are saved.
-`docs/settings.md` lists every key, the precedence rule and the API.
-
-## Cloud account login: the signed v3 envelope, in this repository
-
-The vendor app logs in with email + password through `libFunSDK.so`
-(`XM_Video_Login_XMAccount`), not through the v2 portal this repository talks
-to. That library cannot be redistributed, so the envelope was read out of it on
-2026-10-27 and reimplemented in Rust: no vendor binary, chroot or emulator is
-needed at run time, and none of it is in this repository or in a release. What
-the login does:
-
-- email + password → an `accessToken` (JWT, HS256, 30 days);
-- the platform exchange on `boss22-api.xmcsrv.net` answers `code 2000` with a
-  device token;
-- signed calls go to `<host>/v3/<tsid>/<sig>.rs` with `tsid` = `0000003` plus
-  epoch milliseconds and a 32-hex `sig`; the body is 96 lowercase hex
-  characters, i.e. API-encrypted 28 bytes (12 random + 4-byte timestamp +
-  12-char seed), and that path needs no `UniqueCode` header;
-- the device list follows on `msdlistCode` and carries the account's devices.
-
-`POST /api/login` with `{"email","password"}` runs those steps and answers
-`{"ok":true,...}`; `GET /api/devices` then lists the devices and `GET /api/me`
-reports the account. The app's platform identity ships inside the app: the
-`release` workflow bakes `PROVIEW_APP_UUID`, `PROVIEW_APP_KEY` and
-`PROVIEW_APP_SECRET` into the binary from repository secrets, so signing in asks
-for the email and the password and nothing else. The environment still wins per
-value when it is set, which is the way a build made from source brings its own
-identity; a build without one answers that the vendor cloud login is off instead
-of asking anyone to fill in variables. Rotating the identity is a release, not a
-setting: a binary keeps the identity it was built with, so the vendor has to
-issue a new one and every copy needs a build made after that. The product path measured 0.30–0.39 s for sign-in plus device list,
-against 65 s for the out-of-tree emulator the derivation used
-(`docs/performance.md`). `docs/protocol.md` sections 3A and 3B carry the
-derivation and the shipped implementation.
-
-## Live view from a LAN camera
-
-The local provider needs no cloud account: point the server at the camera and it
-pulls, depacketizes and either muxes the HEVC into fMP4 for a client that can
-decode it or transcodes once per channel, then fans the fragments out over a
-WebSocket.
-
-```sh
-PROVIEW_DEVICE_RTSP=192.168.0.100:554 \
-PROVIEW_DEVICE_HOST=192.168.0.100:34567 \
-PROVIEW_DEVICE_ONVIF=192.168.0.100:8899 \
-PROVIEW_DEVICE_USER=admin \
-PROVIEW_DEVICE_PASS='the device password' \
-cargo run --release -p proview-server
-```
-
-The same five values can be typed into Settings → Configuration → Local network
-and saved; the difference is that the environment wins over the file until you
-clear it in the view.
-
-Device control (ONVIF for movement and presets, DVRIP for settings and
-snapshots) is served under `/api/device/controls`: the capability report lists
-every feature per lens with the device wording that backs it, `ptz` moves the
-lower lens with an explicit timeout and still sends the stop on a fresh
-connection when the start misses that timeout, and `snapshot`, `light`, `flip` and
-`record` read or write the DVRIP settings. `GET /api/device/controls/settings`
-returns the read-only ONVIF device, encoder, imaging and network view.
-
-`ffmpeg` is needed only as a fallback, when the webview cannot decode H.265.
-The page asks the webview (`MediaSource.isTypeSupported` and the coded size);
-when it can, the camera's H.265 is muxed into `hvc1` fMP4 in process and no
-ffmpeg starts, for live view, playback and downloads alike. Windows (WebView2;
-Chrome 156 decoded the server's 2304x2592 `hvc1` stream) and macOS (WKWebView)
-decode it where the OS carries the HEVC decoder, so the desktop app there needs
-no ffmpeg (`docs/webview-matrix.md`).
-Otherwise put `ffmpeg` on `PATH` (or point the "ffmpeg program" setting at the
-binary): the server then transcodes to H.264 once per (device, channel, stream)
-and every viewer shares the result, and on Windows it never opens a console
-window. H.264 cameras never need ffmpeg. Measured latency and
-memory are in `docs/performance.md`, the protocol in `docs/protocol.md`
-section 8. The stream source stays warm for 60 s after the last viewer leaves,
-so re-opening a camera is a warm start (~200 ms) instead of a cold one
-(~2.5-5 s, bounded by the camera's keyframe interval).
+**Demo, no camera and no account.** `PROVIEW_PROVIDER=fixture` serves recorded
+sample data; sign in with `fixture@example.invalid` / `fixture-password`.
 
 ## Configuration
 
-Settings → Configuration is the first place to look. Every key in the file is
-readable there, with a plain label, a hint and a "needs restart" marker; secrets
-are written but never shown back. The environment remains supported for
-unattended installs and wins over the file until the key is cleared in the view.
+Everything is in the app: **Settings → Configuration** (the sign-in screen's
+**Open Settings** button goes straight there). Settings answer only a browser
+on the same machine as the server (a loopback address); for a remote server use
+an SSH tunnel or the environment. Values are saved to `settings.json` in the data folder; a key
+read only at startup carries a **Restart** tag, and the desktop app offers a
+**Restart the app** button for it. Environment variables still work for
+unattended installs; a variable set when the process starts wins over the
+saved value.
 
-| Variable | Settings label | Default | Meaning |
-|---|---|---|---|
-| `PROVIEW_PROVIDER` | Provider | `proview` | `proview`, `local` or `fixture` |
-| `PROVIEW_MODE` | Default mode | `cloud` | `cloud` or `local`; bootstrap default for `GET /api/config/mode` |
-| `PROVIEW_CLOUD_BASE` | Cloud address | `https://pub-token.xmeye.net` | vendor cloud base |
-| `PROVIEW_PORTAL_BASE` | Portal address | vendor default | host used by the account login |
-| `PROVIEW_CAPS_BASE` | Capability address | `https://caps.xmcsrv.net` | host that answers device capabilities by serial |
-| `PROVIEW_CLOUD_SESSION_TTL` | Cloud session lifetime | vendor default | seconds a cloud session is kept |
-| `PROVIEW_DEVICE_HOST` | Camera address | unset | `host:port` for DVRIP (probe, settings, snapshots) |
-| `PROVIEW_DEVICE_RTSP` | Camera video address | unset | `host:port` for RTSP; what `local` mode streams |
-| `PROVIEW_DEVICE_ONVIF` | Camera control address | unset | ONVIF base for movement and presets |
-| `PROVIEW_DEVICE_SERIAL` | Camera serial for the device sign-in | unset | `local` mode and the LAN probes send `PROVIEW_DEVICE_USER`/`PASS` only to this serial; the cloud playback, live stream, talk and walk diagnosis never send them |
-| `PROVIEW_DEVICE_USER` | Camera user | `admin` | device-side account |
-| `PROVIEW_DEVICE_PASS` | Camera password | empty | device-side password, secret |
-| `PROVIEW_SESSION_TTL` | Sign-in lifetime | `3600` | browser session lifetime, seconds |
-| `PROVIEW_LISTEN` | Server address | `127.0.0.1:8787` | standalone server bind address |
-| `PROVIEW_FFMPEG` | ffmpeg program | `ffmpeg` | binary used for the HEVC → H.264 fallback when the webview cannot decode H.265 |
-| `PROVIEW_LENS_PTZ` | Movement channel | measured default | lens index that pans/tilts (bottom lens on the dual-lens IPC) |
-| `PROVIEW_LENS_CAPABILITIES` | Lens features | unset | comma list of `SystemFunctionBean$OtherFunction` flags to advertise |
-| `PROVIEW_FIXTURE_DIR` | Sample data folder | `fixtures` | directory the fixture provider reads |
-| `PROVIEW_PROFILE` | Credential profile | `default` | keychain profile name for the desktop |
-| `PROVIEW_DATA_DIR` | Data folder | platform default | where `settings.json` and `mode.json` live |
-| `ROCKET_SECRET_KEY` | Sign-in cookie secret | generated | signs the session cookie; set it for a server so sessions survive restarts |
+The essentials:
 
-Three keys have no Settings label and are set in the environment only:
-`PROVIEW_SETTINGS_WINDOW_MS` is the window, in milliseconds, that one settings
-read or write waits for the camera (default `20000`), `PROVIEW_SETTINGS_BACKUP_DIR`
-is where the pre-write copies go (default `settings-backups` under the data folder),
-and `PROVIEW_DVRIP_WINDOW_MS` is the window, in milliseconds, that one camera
-operation waits — a capability read, a tour listing or change, a PTZ move, a
-white-light or record-mode read, a snapshot, or the logout after it (default `20000`).
+| Variable | Default | Meaning |
+|---|---|---|
+| `ROCKET_SECRET_KEY` | generated in debug builds | server only: signs the session cookie; required by a release build |
+| `PROVIEW_LISTEN` | `127.0.0.1:8787` | server only: bind address, environment or `--listen` (which wins) |
+| `PROVIEW_DATA_DIR` | unset | server only: where `settings.json` and `mode.json` live (the desktop app always uses its own app data folder) |
+| `PROVIEW_PROVIDER` | the vendor cloud | `fixture` for sample data |
+| `PROVIEW_DEVICE_RTSP`, `_HOST`, `_ONVIF`, `_USER`, `_PASS` | unset | a camera on the LAN (video, DVRIP, ONVIF, credentials) |
+| `PROVIEW_FFMPEG` | `ffmpeg` | ffmpeg program for the H.265 fallback |
 
-`PROVIEW_PLAYBACK_WINDOW_MS` (environment only) is the window, in milliseconds,
-that a playback file list, month calendar or thumbnail batch waits for the cloud
-tunnel and for each device answer (default `20000`).
+Every key, its label, the precedence rule and the API:
+[docs/settings.md](docs/settings.md). LAN, cloud and fixture providers:
+[docs/providers.md](docs/providers.md).
 
-Nothing here is a vendor secret. The extracted application credentials from the
-APK are deliberately **not** in this repository; `docs/protocol.md` records
-where they come from and what they are used for, not their values.
+The browser never sees a vendor token: it holds only an opaque `pvw_session`
+cookie, and every vendor call happens server side.
 
-## Layout
+## ffmpeg (fallback only)
 
-```
-crates/core          config, providers (cloud/local/fixture), RTSP, DVRIP, ONVIF,
-                     media (RTP, HEVC, fMP4), lens
-crates/server        Rocket app: JSON API, static files, settings store, sessions
-src-tauri            desktop shell: embedded server, keychain, restart command
-web                  UI (no build step): app.js, index.html, style.css, tokens.css,
-                     fonts/ (IBM Plex, SIL OFL 1.1)
-fixtures             recorded device metadata for local runs
-tools                measurement and contrast scripts
-tests/web            UI tests in headless Chrome over the DevTools protocol (node --test)
-docs                 protocol record, contracts, deploy and install guides
+Nothing else needs installing for live view, playback and downloads. Where the
+webview decodes H.265 (Windows WebView2 and macOS WKWebView where the OS carries
+the HEVC decoder), the camera's H.265 is muxed into fMP4 in process, and H.264
+is remuxed in process everywhere. `ffmpeg` (from `PATH`, or the "ffmpeg
+program" setting) is used only when it is there, for:
+
+- transcoding H.265 to H.264 for a webview that cannot decode H.265, or for a
+  stream that reorders frames (once per stream, shared by every viewer);
+- the thumbnail of a recorded clip that holds no motion picture;
+- turning cloud-storage clips into MP4.
+
+Without it those three show an error and everything else keeps working. Which
+webview decodes what: [docs/webview-matrix.md](docs/webview-matrix.md).
+
+## Development
+
+Requirements: Rust stable, Node 22 (Vite needs 20.19+ or 22.12+), and for the
+desktop app the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+```sh
+(cd apps/web && npm ci && npm run build)    # the server embeds apps/web/dist
+cargo run -p proview-server                 # http://127.0.0.1:8787
+PROVIEW_PROVIDER=fixture cargo run -p proview-server
 ```
 
-## Download and signing status
+Hot reload: keep the server on 8787, run `npm run dev` in `apps/web` and open
+`http://localhost:5173` (Vite proxies `/api`, `/ws` and `/media`). Desktop
+shell (`cargo install tauri-cli --version "^2.0"`): `cargo tauri dev`; with
+`PROVIEW_WEB_DEV=1` (debug builds) it opens the window on Vite instead of the
+embedded page.
 
-Installers and server binaries come from one release per tag (v0.4.0 is the
-current one), with `SHA256SUMS` covering every file. None of them are
-code-signed — there is no Apple Developer certificate and no Windows signing
-certificate behind this project.
+Tests, as CI runs them:
 
-| Platform | Signature | First-launch handling | Upgrade path |
-|---|---|---|---|
-| Windows (msi/nsis) | unsigned (2026-10-27) | SmartScreen → More info → Run anyway; `Unblock-File` first | SignPath Foundation, or Certum Open Source Code Signing |
-| macOS (dmg) | unsigned, ad-hoc `codesign -s -`, no notarization (2026-10-27) | right-click → Open, or `xattr -dr com.apple.quarantine` | Apple Developer ID + notarization |
-| Linux (AppImage/deb/rpm) | not required | `chmod +x` for AppImage | — |
+```sh
+cargo fmt --all --check
+cargo clippy -p proview-core -p proview-server --all-targets -- -D warnings
+cargo test -p proview-core -p proview-server
+node --test tests/web/*.test.mjs            # needs a built proview-server and Chrome
+(cd e2e && npm ci && npx playwright test)   # see e2e/README.md
+```
 
-Details per platform: `docs/install.md`. What changed between releases:
-`CHANGELOG.md`.
+| Path | What |
+|---|---|
+| `crates/core` | protocol and media: cloud envelope, relay, DVRIP, RTSP, ONVIF, fMP4, providers |
+| `crates/server` | Rocket app: JSON API, WebSocket streams, settings store, sessions |
+| `src-tauri` | desktop shell: embedded server, tray, notifications, restart |
+| `apps/web` | UI: Vue 3, TypeScript, Vite, Tailwind |
+| `tests/web`, `e2e` | UI tests in headless Chrome and Playwright |
+| `fixtures` | recorded device data for the fixture provider |
+| `tools` | measurement and acceptance scripts |
 
-## Licence
+## Documentation
 
-MIT, see `LICENSE`.
+Start at [docs/README.md](docs/README.md). Most used:
+[install](docs/install.md), [deploy](docs/deploy.md),
+[settings](docs/settings.md), [parity](docs/parity.md),
+[protocol record](docs/protocol.md), [performance](docs/performance.md).
 
-This project ships no vendor code, no APK, no vendor `.so` and no extracted
-keys. It talks to a device and a cloud account you own.
+## License
+
+MIT, see [LICENSE](LICENSE). This project ships no vendor code, APK, `.so` or
+extracted keys; release builds carry the app's platform identity from
+repository secrets, and a build from source brings its own
+(`PROVIEW_APP_UUID`, `PROVIEW_APP_KEY`, `PROVIEW_APP_SECRET`) or runs with the
+cloud sign-in off.

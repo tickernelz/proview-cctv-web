@@ -5,6 +5,38 @@ versionCode 10403) or observed on the wire from this project's own probes.
 Claims carry the artifact they came from. Nothing here is a guess presented as
 fact; the "open" section says what is still unknown.
 
+## Contents
+
+Where to start: 3A and 3B for the account login envelope, 4C for the cloud relay
+and the media cipher (live view and Talk), 9A to 9C for PTZ, downloads and
+playback, 10 to 10E for the account, bind and share calls, 6, 8, 9 and 11 for
+the transports as this project implements them.
+
+- [1. What the app is](#1-what-the-app-is)
+- [2. Cloud service map](#2-cloud-service-map)
+- [3. Account login (mobile flow)](#3-account-login-mobile-flow)
+- [3A. The signed cloud envelope, proven through the vendor SDK (2026-10-27)](#3a-the-signed-cloud-envelope-proven-through-the-vendor-sdk-2026-10-27)
+- [3B. The envelope algorithm, derived from the binary (2026-10-27)](#3b-the-envelope-algorithm-derived-from-the-binary-2026-10-27)
+- [4. Media paths](#4-media-paths)
+- [4A. Cloud device status (pub-status, `/v1/status/third`)](#4a-cloud-device-status-pub-status-v1statusthird)
+- [4B. What the cloud can and cannot stream (measured 2026-10-27)](#4b-what-the-cloud-can-and-cannot-stream-measured-2026-10-27)
+- [4C. The P2P wire, as the phone and the SDK actually speak it (2026-10-27)](#4c-the-p2p-wire-as-the-phone-and-the-sdk-actually-speak-it-2026-10-27)
+- [5. Open items](#5-open-items)
+- [6. DVRIP transport as implemented here](#6-dvrip-transport-as-implemented-here)
+- [7. Method](#7-method)
+- [8. RTSP transport as implemented here](#8-rtsp-transport-as-implemented-here)
+- [9. Device control transport (ONVIF)](#9-device-control-transport-onvif)
+- [9A. PTZ over DVRIP: the tour, the motorised lens, and what the acks are worth (2026-10-27)](#9a-ptz-over-dvrip-the-tour-the-motorised-lens-and-what-the-acks-are-worth-2026-10-27)
+- [9B. Playback download over the tunnel: DownloadStart, and the audio that is not there (2026-10-28)](#9b-playback-download-over-the-tunnel-downloadstart-and-the-audio-that-is-not-there-2026-10-28)
+- [9C. Playback by time, the month calendar, thumbnails, and the audio that was there (2026-10-30)](#9c-playback-by-time-the-month-calendar-thumbnails-and-the-audio-that-was-there-2026-10-30)
+- [10. Cloud account: the v2 portal, as implemented here](#10-cloud-account-the-v2-portal-as-implemented-here)
+- [10A. The app's own cloud is REST on api.jftechws.com](#10a-the-apps-own-cloud-is-rest-on-apijftechwscom)
+- [10B. A cloud session without the account: the JF portal device login](#10b-a-cloud-session-without-the-account-the-jf-portal-device-login)
+- [10C. The iOS app's cloud surface, and the one call it makes without a session](#10c-the-ios-apps-cloud-surface-and-the-one-call-it-makes-without-a-session)
+- [10D. Device bind on the account envelope (`mdadd`, `mdrm`), and the QR payload codec](#10d-device-bind-on-the-account-envelope-mdadd-mdrm-and-the-qr-payload-codec)
+- [10E. Device share on the account envelope (`usersearch`, `devicesTrans*`, `mdshareaccept`), measured 2026-10-28](#10e-device-share-on-the-account-envelope-usersearch-devicestrans-mdshareaccept-measured-2026-10-28)
+- [11. Live passthrough transport (stream 2)](#11-live-passthrough-transport-stream-2)
+
 ## 1. What the app is
 
 A white-label of the Xiongmai / XMEye (JF) camera stack: a thin Java/Kotlin UI
@@ -272,7 +304,7 @@ Where each claim comes from, so it can be re-checked:
 | mirror + MD5 order | `GetEncryptStr` `0xf50ec0`-`0xf51234`; 27 of 27 `sdk.log` rows reproduced |
 | `key16` rule | `KeyFilter` `0xf4fb4c`; a row with an empty secret reads `3070132241012345` (ten timestamp digits then the digit padding), a row with the secret set keeps its first six characters after those digits |
 | body plaintext | the captured 96-hex login body decrypts to `account=...&pass=...` under that key |
-| device list | captured `msdlistCode` reply decrypts to `{"code":2000,"data":{"mine":[..."7f92970ddf5282743hrc"...]}}` |
+| device list | captured `msdlistCode` reply decrypts to `{"code":2000,"data":{"mine":[..."<serial>"...]}}` |
 
 Implementation: `crates/core/src/cloud/envelope.rs` (`scramble`, `signature`,
 `body_key`, `seal`, `open`, `signed_request`, `EnvelopeClient`), wired into
@@ -285,7 +317,7 @@ encrypted blob of it is stored in the sources, the workflows or the tags.
 Live run from this box, `cargo run -p proview-core --example envelope_login`,
 three consecutive runs on 2026-10-27: login 0.24-0.33 s, device token
 0.20-0.39 s, device list 0.06-0.07 s, refresh 0.13 s, one device returned each
-time (`uuid 7f92970ddf5282743hrc`, a nickname, an owner account and one
+time (`uuid <serial>`, a nickname, an owner account and one
 channel). The qemu harness of section 3A needs about 65 s for the same three
 steps.
 
@@ -330,11 +362,11 @@ Content-Type: application/json
   "Body":[{"SerialNumber":"<serial>","AuthCode":"<device code>"}]}}
 ```
 
-Reply, measured on 2026-10-27 09:35 UTC for `7f92970ddf5282743hrc`:
+Reply, measured on 2026-10-27 09:35 UTC for `<serial>`:
 
 ```
 {"StatusProtocol":{
-  "Body":[{"WanIP":"103.85.122.66","SerialNumber":"7f92970ddf5282743hrc",
+  "Body":[{"WanIP":"103.85.122.66","SerialNumber":"<serial>",
            "ServerPort":"8765","Status":"Online","ServerIP":"110.239.85.50","NatType":"0"}],
   "Header":{"ErrorNum":"200","ErrorString":"Success OK","Version":"1.0","CSeq":"1",
             "MessageType":"MSG_STATUS_MULTIQUERY_RSP"}}}
@@ -489,7 +521,7 @@ The phone's live video is one TCP flow: **9.5 MB downstream in 17 s to
 base64 text:
 
 ```
-aaaaaaaa-1a1b397d2:c_6kjkfw65cvzl39rjrno8yc0j:7f92970ddf5282743hrc:cy7cimmp5
+aaaaaaaa-1a1b397d2:c_6kjkfw65cvzl39rjrno8yc0j:<serial>:cy7cimmp5
 ```
 
 i.e. `<rps id>:<client session id>:<device serial>:<client token>`, where the
@@ -528,7 +560,7 @@ Right before the media connect the phone asks the relay set for the device's
 current address on UDP `8777`:
 
 ```
-15 20 00 b0 | "7f92970ddf5282743hrc\0"
+15 20 00 b0 | "<serial>\0"
 15 20 01 b0 | 01 00 00 00 | serial\0 | zeros | "110.239.85.50\0" | zeros |
               3d 22 00 00 | 00 00 00 00 | 02 00 00 00
 ```
@@ -539,8 +571,8 @@ the device's relay `110.239.85.50` and port `0x223d` = 8765.
 The 8777 query also answers this box, so it is not phone-specific:
 
 ```
-send 152000b0 + "7f92970ddf5282743hrc\0"  -> 140 bytes
-recv 152001b0 01000000 "7f92970ddf5282743hrc\0" ... "110.239.85.50\0" ... 3d220000 00000000 02000000
+send 152000b0 + "<serial>\0"  -> 140 bytes
+recv 152001b0 01000000 "<serial>\0" ... "110.239.85.50\0" ... 3d220000 00000000 02000000
 ```
 
 The reply names the relay the device sits on right now (`110.239.85.50`, then
@@ -567,7 +599,7 @@ The SDK log names the whole chain, file and line included:
 ```
 agent_session: session_id = aporjw9z96js0jin0qludar0yird3g8e,
                access_ip = 110.239.87.207, access_port = 6510,
-               uuid = 7f92970ddf5282743hrc, dest_port = 34567, svr_type = RpsAV
+               uuid = <serial>, dest_port = 34567, svr_type = RpsAV
 agent create socket (110.239.87.207, 6510)
 agent_session, set_agent_server, get tcp port addr: 162.128.66.64:6611
 agent create socket (162.128.66.64, 6611)
@@ -583,7 +615,7 @@ registered, and 8777/7999 only hand out the 8765 discovery relays.
 Our own client's handshake on the assigned agent, straight from that capture:
 
 ```
--> base64 aaaaaaaa-1a1b2f27d:c_v4w9y...:7f92970ddf5282743hrc:<token>
+-> base64 aaaaaaaa-1a1b2f27d:c_v4w9y...:<serial>:<token>
 <- base64 {"ErrorNum":"200","DestIP":"103.85.122.66","MTU":"1400"} + "XXEE"
 ```
 
@@ -605,7 +637,7 @@ measured as zero hook hits). The RPS access endpoint takes an HTTP request on th
 raw port the status cluster reports, `POST /` with `Host: 110.239.87.207`:
 
 ```json
-{"AgentProtocol":{"Body":{"Authcode":"aaaaaaaa-1a1b2f27d","ClientToken":"c_1yy07itliajqv91mz6249eet","DestPort":"34567","Encrypt":"1","ProtocolMode":"tcp","SerialNumber":"7f92970ddf5282743hrc","ServiceType":"RpsCmd","SessionId":"04yebeay8cpxqwob4ze5u7y0iev07ffo","Step":"0"},"Header":{"MessageType":"MSG_CLI_NEED_CON_REQ","Version":"1.0"}}}
+{"AgentProtocol":{"Body":{"Authcode":"aaaaaaaa-1a1b2f27d","ClientToken":"c_1yy07itliajqv91mz6249eet","DestPort":"34567","Encrypt":"1","ProtocolMode":"tcp","SerialNumber":"<serial>","ServiceType":"RpsCmd","SessionId":"04yebeay8cpxqwob4ze5u7y0iev07ffo","Step":"0"},"Header":{"MessageType":"MSG_CLI_NEED_CON_REQ","Version":"1.0"}}}
 ```
 
 and answers `Content-Type: text/plain`:
@@ -629,7 +661,7 @@ base64("<Authcode>:<ClientToken>:<SerialNumber>:<RpsAV SessionId>") + "XXEE"
 
 Measured in one run: `RpsAV` answered `SessionId y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`,
 and the 136-byte frame that reached `162.128.66.103:6611` decoded to
-`aaaaaaaa-1a1b397d2:c_rpftjva4cpy4aphg09y083ya:7f92970ddf5282743hrc:y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`.
+`aaaaaaaa-1a1b397d2:c_rpftjva4cpy4aphg09y083ya:<serial>:y8ekrmh5ud5wtaoak22y5o0vxz5l1qzg`.
 `crates/core/src/provider/p2p.rs` now builds both frames and parses the reply;
 four tests pin them to those captured strings.
 
@@ -1310,7 +1342,7 @@ needed for this camera, and the LAN-free live row is no longer `partial`.
 `CloudProvider::stream` carried live media for the first time on 2026-10-28:
 
 ```
-GET /api/stream?device=7f92970ddf5282743hrc&channel=1&quality=main
+GET /api/stream?device=<serial>&channel=1&quality=main
 502 in 9.21 s
   "stored device token ret 137, password registration ret 100, device token stored true,
    session 0x000000ba, claim reply seen session 0x000000ba,
@@ -1368,7 +1400,7 @@ Measured on 2026-10-28, camera on a network this host cannot reach
 (`192.168.0.100:554` times out, exit 0 comes only with that guard):
 
 ```
-tools/acceptance/live_acceptance.py --mode cloud --duration 60 --sn 7f92970ddf5282743hrc
+tools/acceptance/live_acceptance.py --mode cloud --duration 60 --sn <serial>
 verdict: pass · frames: 31 · bytes: 82552824 · longest gap: 2.439s · seconds: 60.569
 
 tools/acceptance/live_acceptance.py --mode cloud --duration 300
@@ -1473,7 +1505,7 @@ Re-measured on the clean commit `6ad7572`, binary built from it, same command:
 
 The same source with only the opening removed (the raw 44-character token offered
 instead) stops at `Ret 137`, logged as `account device token ret 137, the device
-refuses it, token dropped; no camera user and password for 7f92970ddf5282743hrc`,
+refuses it, token dropped; no camera user and password for <serial>`,
 and the harness fails the run at the live stage after 6.3 s
 (run `89601875b59c-20261029T001337Z`). The opening is what makes the token login
 work, not the absence of a password.
@@ -2163,7 +2195,7 @@ login, so a cloud session exists without any account credential:
 | `GET` that frame | `200`, 105,009 bytes, `<title>NETSuveillance WEB</title>` |
 
 Reproduced on 2026-10-26 from this box with the device serial
-`7f92970ddf5282743hrc` and the credentials in `secrets/device.env`: the login
+`<serial>` and the credentials in `secrets/device.env`: the login
 returned `1200`, the cookie jar held `JSESSIONID` + `macCookie`, and the framed
 page came back with the byte count and title above. Device username and password
 are encrypted by the portal page before the call; the same values from the
@@ -2304,12 +2336,12 @@ Vectors produced by the shipped library under the bionic harness (qemu-user,
 | `abc` | 0 | `z1e3Rh1Ugz` |
 | `abc` | 1 / 2 / 3 | `a1Zvbiiz` / `lkrBKaz` / `HFDMEbz` |
 | `abc` | 334 | `HlBMNGz` |
-| `7f92970ddf5282743hrc` | 0 | `vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz` |
+| `<serial>` | 0 | `vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz` |
 | `AASN000000000001,,,2,1793109504` | 312 | `8DIC0Ga40A1eX8C9dG2M9oV1B1yX9A0gH9L9pX1UAh3KBJ9KYI0CDw9A0KI9L9pv1VqV3Lbtz` |
 
 `EncDevInfo` replaces an `admin` login name with an empty field and appends
 `time(0)` as the fifth column, which is why the vendor blob for the real serial
-with a harness password decodes to `7f92970ddf5282743hrc,,TestPass1,0,1793109504`
+with a harness password decodes to `<serial>,,TestPass1,0,1793109504`
 (`TestPass1` is the input in `re/qemu/harness_qr.c`, not the camera password).
 
 ### 10D.3 Sign-out
