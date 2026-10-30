@@ -21,8 +21,6 @@ import {
   playEvent,
   setDay,
   shiftDay,
-  snapshot,
-  stepFrame,
   tl,
   today,
   togglePause,
@@ -130,6 +128,9 @@ const pillShift = computed(() => {
   const half = width.value ? (40 / width.value) * 100 : 3
   return left < half ? 'translateX(0)' : left > 100 - half ? 'translateX(-100%)' : 'translateX(-50%)'
 })
+const reasons = computed(
+  () => playing.value && (tl.status.bad || live.playback.speed !== 1 || !live.playback.picture || !tl.file),
+)
 const headShown = computed(() => headLeft.value !== null && headLeft.value >= 0 && headLeft.value <= 100)
 const cursor = computed(() => pointer.at)
 const cursorLeft = computed(() => (cursor.value === null ? null : pct(cursor.value)))
@@ -307,6 +308,7 @@ function onTrackKey(event: KeyboardEvent) {
     event.preventDefault()
     event.stopPropagation()
     if (pointer.at !== null) pick(pointer.at)
+    else if (event.key === ' ' && playing.value) togglePause()
     pointer.at = null
     pointer.keyboard = false
     return
@@ -359,17 +361,7 @@ function overlayOpen() {
 function onKey(event: KeyboardEvent) {
   if (live.mode !== 'playback' || event.defaultPrevented || page.screen !== 'watch' || overlayOpen()) return
   if (event.ctrlKey || event.metaKey || event.altKey || typing(event.target)) return
-  const key = event.key
-  if (key === ' ' && !(event.target instanceof Element && event.target.closest('button, [role="slider"]'))) {
-    event.preventDefault()
-    togglePause()
-  } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
-    event.preventDefault()
-    stepFrame(key === 'ArrowLeft' ? -1 : 1)
-  } else if (key.toLowerCase() === 's' && live.playback.picture) {
-    event.preventDefault()
-    snapshot()
-  } else if (key === 'Escape' && !document.fullscreenElement && !live.padOpen) {
+  if (event.key === 'Escape' && !document.fullscreenElement && !live.padOpen) {
     event.preventDefault()
     goLive()
   }
@@ -417,6 +409,12 @@ onBeforeUnmount(() => {
 
 <template>
   <div id="timeline" ref="root" class="tl" data-testid="timeline" :data-mode="live.mode" role="group" aria-label="Timeline">
+    <p v-if="reasons" :class="['tl-reason', { bad: tl.status.bad }]" data-testid="pb-reasons" :role="tl.status.bad ? 'alert' : 'status'">
+      <span v-if="tl.status.bad" data-testid="pb-error-note"><Icon name="warning" small />{{ tl.status.text }} </span>
+      <span v-if="live.playback.speed !== 1" data-testid="pb-sound-note">Sound plays at 1x only. </span>
+      <span v-if="!live.playback.picture && !tl.status.bad" data-testid="pb-snapshot-note">Snapshot and frame step wait for the first picture. </span>
+      <span v-if="!tl.file" data-testid="pb-download-note">{{ tl.files.phase === 'loading' ? 'Download clip waits for the file list of the day.' : 'Download clip needs a recording file under the playhead.' }}</span>
+    </p>
     <div class="tl-ruler" aria-hidden="true">
       <template v-for="tick in ticks" :key="tick.key">
         <i :class="['tl-tick', { major: tick.major }]" :style="{ left: tick.left + '%' }" />
@@ -477,14 +475,7 @@ onBeforeUnmount(() => {
         <span class="tl-zoom-seg"><SegmentedControl :options="ZOOM_OPTIONS" :model-value="zoom.value" label="Timeline span" size="sm" @update:model-value="onZoomPick" /></span>
         <IconButton label="Zoom out" icon="zoom-out" size="sm" data-testid="tl-zoom-out" :disabled="view.zoom === 0" @click="setZoom(view.zoom - 1)" />
         <IconButton label="Zoom in" icon="zoom-in" size="sm" data-testid="tl-zoom-in" :disabled="view.zoom === ZOOMS.length - 1" @click="setZoom(view.zoom + 1)" />
-        <p :class="['tl-status', { bad: tl.status.bad }]" data-testid="pb-status" :role="tl.status.bad ? 'alert' : 'status'">
-          <template v-if="playing">
-            <span v-if="live.playback.speed !== 1" data-testid="pb-sound-note">Sound plays at 1x only. </span>
-            <span v-if="!live.playback.picture && !tl.status.bad" data-testid="pb-snapshot-note">Snapshot and frame step wait for the first picture. </span>
-            <span v-if="live.playback.picture && !tl.file" data-testid="pb-download-note">Download clip needs the file list of the day. </span>
-          </template>
-          <span :title="tl.status.text">{{ playing || tl.status.bad ? tl.status.text : '' }}</span>
-        </p>
+        <p class="tl-status" data-testid="pb-status" role="status" :title="tl.status.text">{{ playing && !tl.status.bad ? tl.status.text : '' }}</p>
       </div>
       <div class="tl-day" role="group" aria-label="Day">
         <IconButton label="Previous day" icon="chevron-left" size="sm" data-testid="tl-prev-day" @click="stepDay(-1)" />

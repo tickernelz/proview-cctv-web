@@ -6,7 +6,8 @@ import { state as page } from '../../app/state'
 import { shell } from '../../shell/layout'
 import { decodeAlaw, PlaybackSound } from '../playback-audio'
 import { deviceTime, fileAtTime, mb, stamp, type Clip } from '../playback-clips'
-import { live } from '../store'
+import { setView } from '../../app/view'
+import { live, menuOpen } from '../store'
 import { bridgeStage } from './stage-bridge'
 
 export type Kind = 'all' | 'regular' | 'alarm'
@@ -575,10 +576,18 @@ function start(begin: string, askHevc = mayAskForHevc()) {
   )
 }
 
+let queued: number | null = null
+
 export async function playAt(ms: number) {
   if (!device() || !page.signedIn) return
   const mine = ++playTicket
   const at = Math.floor(ms / 1000) * 1000
+  if (page.view !== 'live') setView('live')
+  if (live.mode !== 'playback' && live.stage.name === 'loading') {
+    queued = at
+    return
+  }
+  queued = null
   if (dayOf(at) !== tl.day) {
     tl.day = dayOf(at)
     loadDay()
@@ -598,6 +607,11 @@ export function playEvent(at: number) {
 }
 
 export function backToLive() {
+  leavePlayback(true)
+}
+
+function leavePlayback(resume: boolean) {
+  queued = null
   if (live.mode !== 'playback') return
   playTicket += 1
   const video = stream.video
@@ -618,7 +632,7 @@ export function backToLive() {
   tl.file = null
   say('')
   live.mode = 'live'
-  bridgeStage('live')
+  if (resume) bridgeStage('live')
 }
 
 export function setSpeed(value: number) {
@@ -731,7 +745,7 @@ let pendingSeek: Seek | null = null
 
 function trySeek() {
   const seek = pendingSeek
-  if (!seek || !watching() || device() !== seek.serial) return
+  if (!seek || !watching() || device() !== seek.serial || live.stage.name === 'loading') return
   pendingSeek = null
   void playEvent(seek.at)
 }
@@ -785,6 +799,63 @@ watch(
     tl.device = ''
   },
 )
+
+watch(
+  () => live.stage.name,
+  (name) => {
+    if (name === 'loading') leavePlayback(false)
+  },
+  { flush: 'sync' },
+)
+
+watch(
+  () => live.stage.name,
+  (name) => {
+    if (name === 'loading') return
+    trySeek()
+    if (queued === null) return
+    const at = queued
+    queued = null
+    if (watching() || page.view === 'live') void playAt(at)
+  },
+)
+
+function typingIn(target: EventTarget | null) {
+  return Boolean(target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"]'))
+}
+
+function onControl(target: EventTarget | null) {
+  return Boolean(target instanceof Element && target.closest('button, a[href], [role="slider"], [role="radio"], [role="tab"], [role="menuitem"], [role="menuitemradio"]'))
+}
+
+function playbackKey(event: KeyboardEvent) {
+  if (live.mode !== 'playback' || event.defaultPrevented || page.screen !== 'watch' || live.sheet || menuOpen()) return
+  if (event.ctrlKey || event.metaKey || event.altKey || typingIn(event.target)) return
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+  const take = () => {
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  if (key === ' ') {
+    if (onControl(event.target)) return
+    take()
+    togglePause()
+  } else if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
+    if (onControl(event.target)) return
+    take()
+    if (key === 'ArrowLeft' || key === 'ArrowRight') stepFrame(key === 'ArrowLeft' ? -1 : 1)
+  } else if (key === 's') {
+    take()
+    if (live.playback.picture) snapshot()
+  } else if (key === 'm') {
+    take()
+    if (live.playback.speed === 1) toggleSound()
+  } else if (key === 't' || key === 'r' || key === 'v' || key === 'q') {
+    take()
+  }
+}
+
+window.addEventListener('keydown', playbackKey, true)
 
 watch(
   () => live.alarmDay.token,

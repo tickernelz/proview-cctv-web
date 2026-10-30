@@ -54,6 +54,33 @@ async function fakePlayback(page: Page, frames = true): Promise<Sockets> {
   return sockets
 }
 
+type Live = { opened: number; closed: number }
+
+async function trackLive(page: Page): Promise<Live> {
+  const live: Live = { opened: 0, closed: 0 }
+  await page.routeWebSocket(/\/ws\/live/, (ws: WebSocketRoute) => {
+    live.opened += 1
+    const server = ws.connectToServer()
+    let gone = false
+    const done = () => {
+      if (gone) return
+      gone = true
+      live.closed += 1
+    }
+    ws.onClose((code, reason) => {
+      done()
+      server.close({ code, reason })
+    })
+    server.onClose((code, reason) => {
+      done()
+      ws.close({ code, reason })
+    })
+  })
+  return live
+}
+
+const openSockets = (live: Live, playback: Sockets) => ({ live: live.opened - live.closed, playback: playback.urls.length - playback.closed })
+
 async function trackPoint(page: Page, time: string) {
   const box = await page.getByTestId('tl-track').boundingBox()
   if (!box) throw new Error('the timeline track has no box')
@@ -161,6 +188,11 @@ test('#/live/playback and the Playback button open the day of recordings, and a 
   await expect(list).toBeVisible()
   await expect(page).toHaveURL(/#\/live$/)
   await expect(list.locator('.pb-row')).toHaveCount(3)
+  await page.keyboard.press('Escape')
+  await expect(list).toBeHidden()
+  await page.evaluate(() => (location.hash = '/live/playback'))
+  await expect(list).toBeVisible()
+  await expect(page).toHaveURL(/#\/live$/)
   await page.keyboard.press('Escape')
   await expect(list).toBeHidden()
   const launcher = page.getByTestId('pb-open')
@@ -481,3 +513,141 @@ test('changing the day while a thumbnail batch is in flight sends the next batch
   expect(asked[1]).toEqual(other.map((file) => file.name))
   expect(most).toBe(1)
 })
+
+test('in playback the live keys stay out: T, R, V and Q do nothing live, S saves the playback frame, Space pauses, arrows step', async ({ page }) => {
+  await prepare(page)
+  const live = await trackLive(page)
+  const sockets = await fakePlayback(page)
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('tl-bar')).toHaveCount(3)
+  await clickAt(page, '08:52:00')
+  await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
+  const quality = await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').quality ?? 'main')
+  for (const key of ['t', 'r', 'v', 'q']) await page.keyboard.press(key)
+  await expect(page.getByTestId('playback-controls')).toBeVisible()
+  await expect(page.getByTestId('ptz-pad')).toBeHidden()
+  await expect(page.getByTestId('ctl-record')).toHaveCount(0)
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').quality ?? 'main')).toBe(quality)
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+  expect(sockets.urls.length).toBe(1)
+  const saved = page.waitForEvent('download')
+  await page.keyboard.press('s')
+  expect((await saved).suggestedFilename()).toMatch(/^gate_playback_2026-10-27-08-5\d-\d\d\.png$/)
+  const video = page.locator('#video')
+  await video.evaluate(async (element: HTMLVideoElement) => {
+    element.currentTime = 0.05
+    await element.play()
+  })
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press(' ')
+  await expect(video).toHaveJSProperty('paused', true)
+  await expect(page.getByTestId('pb-pause')).toHaveAttribute('aria-pressed', 'true')
+  await video.evaluate((element: HTMLVideoElement) => (element.currentTime = 0.4))
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeCloseTo(0.4, 1)
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.currentTime)).toBeGreaterThan(0.43)
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+})
+
+test('a live route during playback leaves playback first: one socket, live mode', async ({ page }) => {
+  await prepare(page)
+  const live = await trackLive(page)
+  const sockets = await fakePlayback(page)
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('tl-bar')).toHaveCount(3)
+  await clickAt(page, '08:52:00')
+  await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+  await page.evaluate(() => {
+    history.replaceState(null, '', '#/live/single')
+    location.hash = '#/live'
+  })
+  await expect.poll(() => sockets.closed).toBe(1)
+  await expect(page.getByTestId('playback-controls')).toHaveCount(0)
+  await expect(page.getByTestId('tl-live')).toBeVisible()
+  await playing(page)
+  await expect.poll(() => openSockets(live, sockets)).toEqual({ live: 1, playback: 0 })
+})
+
+test('switching camera and clicking the track while the new stream loads plays that camera once the stream settles', async ({ page }) => {
+  await prepare(page)
+  const live = await trackLive(page)
+  const sockets = await fakePlayback(page)
+  await signIn(page, 'many')
+  await playing(page)
+  await expect(page.getByTestId('tl-bar')).toHaveCount(3)
+  await page.keyboard.press('2')
+  await clickAt(page, '08:52:00')
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  await expect(page.getByTestId('playback-controls')).toBeVisible()
+  await expect.poll(() => sockets.urls.length).toBe(1)
+  expect(param(sockets.urls[0], 'device')).toBe('porch')
+  await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
+  await page.waitForTimeout(1500)
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+  await expect(page.getByTestId('playback-controls')).toBeVisible()
+})
+
+test('Play on an event of another camera switches camera, then plays 5 s before it with one socket', async ({ page }) => {
+  await prepare(page)
+  const live = await trackLive(page)
+  const sockets = await fakePlayback(page)
+  await signIn(page, 'many')
+  await playing(page)
+  await page.evaluate(() => (location.hash = '#/events'))
+  await expect(page.getByTestId('alarm-center')).toHaveAttribute('data-mode', 'page')
+  await page.getByTestId('alarm-camera').click()
+  await page.getByRole('option', { name: 'Porch', exact: true }).click()
+  await expect(page.getByTestId('alarm-row')).toHaveCount(2)
+  await page.getByTestId('alarm-row').filter({ hasText: '08:40' }).locator('.ev-hit').click()
+  await expect(page.getByTestId('alarm-play')).toBeEnabled()
+  await page.getByTestId('alarm-play').click()
+  await expect(page).toHaveURL(/#\/live$/)
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  await expect.poll(() => sockets.urls.length).toBe(1)
+  expect(param(sockets.urls[0], 'device')).toBe('porch')
+  expect(param(sockets.urls[0], 'begin')).toBe('2026-10-27 08:39:55')
+  await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
+  await page.waitForTimeout(1500)
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+  await expect(page.getByTestId('playback-controls')).toBeVisible()
+})
+
+test('leaving the recordings opened from the grid puts #/live/grid back', async ({ page }) => {
+  await prepare(page)
+  await signIn(page, 'many')
+  await playing(page)
+  await page.getByTestId('view-grid').click()
+  await expect(page).toHaveURL(/#\/live\/grid$/)
+  await page.evaluate(() => (location.hash = '/live/playback'))
+  const list = page.getByTestId('playback')
+  await expect(list).toBeVisible()
+  await expect(page).toHaveURL(/#\/live\/grid$/)
+  await page.keyboard.press('Escape')
+  await expect(list).toBeHidden()
+  await expect(page).toHaveURL(/#\/live\/grid$/)
+  await expect(page.getByTestId('grid')).toBeVisible()
+})
+
+for (const size of [{ width: 1024, height: 768 }, { width: 768, height: 1024 }, { width: 390, height: 844 }]) {
+  test('the reasons for disabled playback controls are on screen at ' + size.width + 'x' + size.height, async ({ page }) => {
+    await page.setViewportSize(size)
+    await prepare(page)
+    await fakePlayback(page, false)
+    await signIn(page, 'one')
+    await playing(page)
+    await expect(page.getByTestId('tl-bar')).toHaveCount(3)
+    await clickAt(page, '08:52:00')
+    await expect(page.getByTestId('playback-controls')).toBeVisible()
+    await expect(page.getByTestId('pb-snapshot')).toBeDisabled()
+    await expect(page.getByTestId('pb-snapshot-note')).toBeVisible()
+    await expect(page.getByTestId('pb-snapshot-note')).toHaveText(/Snapshot and frame step wait for the first picture/)
+    const speed = size.width > 880 ? page.getByTestId('pb-speed-2') : page.getByTestId('pb-speed-cycle')
+    await speed.click()
+    await expect(page.getByTestId('pb-sound')).toBeDisabled()
+    await expect(page.getByTestId('pb-sound-note')).toBeVisible()
+    await expect(page.getByTestId('pb-sound-note')).toHaveText('Sound plays at 1x only.')
+  })
+}

@@ -1,6 +1,9 @@
 @layer components {
-  .tl { position: relative; flex: none; height: var(--timeline); display: flex; flex-direction: column; padding: 0 var(--s1); background: var(--bg); user-select: none; -webkit-user-select: none; }
+  .tl { position: relative; flex: none; min-height: var(--timeline); display: flex; flex-direction: column; padding: 0 var(--s1); background: var(--bg); user-select: none; -webkit-user-select: none; }
   .tl-ruler { position: relative; height: 20px; flex: none; }
+  .tl-reason { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s1); padding: 2px 0; font-size: var(--t-12); line-height: 16px; color: var(--ink-2); }
+  .tl-reason.bad { color: var(--bad); }
+  .tl-reason .i { vertical-align: -3px; margin-right: var(--s1); }
   .tl-tick { position: absolute; bottom: 0; width: 1px; height: 5px; background: var(--line-soft); }
   .tl-tick.major { height: 9px; background: var(--line); }
   .tl-hour { position: absolute; top: 1px; transform: translateX(-50%); font-family: var(--f-mono); font-size: var(--t-12); line-height: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -121,12 +124,9 @@
     .pbc-btn > span:not(.pbc-speed-value) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   }
   .pbc-live { display: none; }
-  @media (max-height: 400px) {
-    .tl { display: none; }
-    .pbc-live { display: inline-flex; }
-  }
   @media (max-height: 520px) {
-    .tl { height: auto; flex-direction: row; align-items: center; gap: var(--s2); padding: 2px 0; }
+    .tl { min-height: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); padding: 2px 0; }
+    .tl-reason { flex-basis: 100%; }
     .tl-ruler, .tl-zoom, .tl-film, .tl-pill, .tl-day-long, .tl-label { display: none; }
     .tl-day-short, .tl-label-short { display: inline; }
     .tl-track { flex: 1; min-width: 96px; height: 32px; }
@@ -136,6 +136,10 @@
     .tl-head { top: -2px; bottom: -2px; }
     .tl-note { font-size: var(--t-12); }
     .tl-bar-row { flex: none; display: flex; min-height: 0; gap: var(--s1); }
+  }
+  @media (max-height: 400px) {
+    .tl > :not(.tl-reason) { display: none; }
+    .pbc-live { display: inline-flex; }
   }
   @media (pointer: coarse) {
     .tl { height: auto; }
