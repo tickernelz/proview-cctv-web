@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
+import { TechDetails } from '../states'
 
 export type RecordState = {
   mode?: string | null
@@ -83,22 +84,24 @@ function save() {
     <div class="row">
       <div class="lab">
         <label for="device-record-stream">Recorded stream</label>
-        <span v-if="!record.record_stream_supported" class="hint">The camera does not report SupportRecMainOrExtUseMainType, so it always records the main stream.</span>
+        <span v-if="!record.record_stream_supported" class="hint">This camera always records the main stream.</span>
       </div>
       <div class="ctl-col">
         <select id="device-record-stream" v-model="form.record_stream" :disabled="!record.record_stream_supported">
           <option value="main">Main stream (HD)</option>
           <option value="extra">Extra stream (low HD)</option>
         </select>
+        <TechDetails v-if="!record.record_stream_supported" data-testid="device-record-stream-details" text="The camera does not report SupportRecMainOrExtUseMainType." />
       </div>
     </div>
     <div class="row">
       <div class="lab">
         Lens splicing
-        <span v-if="!record.splicing_supported" class="hint">The camera does not report SupportMultiLensSplicingWfsRecordStream.</span>
+        <span v-if="!record.splicing_supported" class="hint">Not offered by this camera.</span>
       </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-splicing" v-model="form.splicing" type="checkbox" role="switch" :disabled="!record.splicing_supported"><span>Record both lenses as one spliced picture</span></label>
+        <TechDetails v-if="!record.splicing_supported" data-testid="device-splicing-details" text="The camera does not report SupportMultiLensSplicingWfsRecordStream." />
       </div>
     </div>
     <div class="row">

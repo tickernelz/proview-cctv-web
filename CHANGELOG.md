@@ -49,6 +49,23 @@ stability before 1.0.
 - A tap on a PTZ key no longer runs the motor for an extra 800 ms: the stop
   goes out as soon as the press is acked, like the app pad (17-34 px per tap
   instead of 130-137 px). Tilt uses the app's step 2 instead of 4.
+- The desktop app keeps its preferences (theme, quality, lens, on-screen text,
+  sound, flip, PTZ speed, Events and panel choices) across launches. The page
+  lives at `http://127.0.0.1:<port>` and the browser engine keeps saved
+  preferences per port, but every launch took a new random port, so each
+  launch started from the defaults. The app now saves its port in
+  `desktop-state.json` and asks for it again; when another program holds it
+  (after waiting up to 2 s for a restarting copy to let go) it takes a free
+  port, logs that, and keeps the new one for next time.
+- A lens layout stored by an earlier version as Both lenses now opens once as
+  Picture in picture, the default since this release; earlier versions saved
+  every preference with each change, so the stored Both lenses was rarely a
+  choice. Preferences now carry a version, and Both lenses picked after the
+  change stays.
+- Settings and This camera say in plain words what the camera does not offer
+  ("Not offered by this camera.") instead of showing the flag the app checks;
+  the flag, the backend and the camera's answer sit under a Details button
+  under the line. Section headers no longer describe save mechanics.
 
 ### Added
 

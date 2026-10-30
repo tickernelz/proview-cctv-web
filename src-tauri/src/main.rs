@@ -151,6 +151,29 @@ fn restart_probe() -> Option<std::path::PathBuf> {
 }
 
 const WEB_DEV_API_PORT: u16 = 8787;
+const SAVED_PORT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn page_port(state_path: Option<&std::path::Path>) -> u16 {
+    let Some(path) = state_path else {
+        return proview_server::choose_port("127.0.0.1", 0, SAVED_PORT_WAIT).port;
+    };
+    let mut state = desktop_state::DesktopState::load(path);
+    let choice = proview_server::choose_port("127.0.0.1", state.port, SAVED_PORT_WAIT);
+    if choice.fell_back {
+        tracing::warn!(
+            saved = state.port,
+            port = choice.port,
+            "the saved page port is taken; this launch uses another one and the page preferences start fresh"
+        );
+    }
+    if state.port != choice.port {
+        state.port = choice.port;
+        if let Err(error) = state.save(path) {
+            tracing::warn!(%error, "could not save the page port");
+        }
+    }
+    choice.port
+}
 
 fn web_dev_url(app: &tauri::App) -> Option<tauri::Url> {
     if !cfg!(debug_assertions) || std::env::var_os("PROVIEW_WEB_DEV").is_none() {
@@ -191,15 +214,16 @@ fn main() {
             settings.apply_env();
             let config = config_from_keychain();
             let web_dev = web_dev_url(app);
+            let state_path = data_dir.as_ref().map(|dir| dir.join("desktop-state.json"));
             let options = ServeOptions {
                 address: "127.0.0.1".to_string(),
                 port: if web_dev.is_some() {
                     WEB_DEV_API_PORT
                 } else {
-                    0
+                    page_port(state_path.as_deref())
                 },
                 secret_key: Some(local_secret()),
-                data_dir: data_dir.clone(),
+                data_dir,
             };
             let (control, mut restarts) =
                 proview_server::desktop::DesktopControl::new(local_secret());
@@ -226,7 +250,6 @@ fn main() {
                     quitting.restart();
                 }
             });
-            let state_path = data_dir.map(|dir| dir.join("desktop-state.json"));
             let shell = Arc::new(DesktopShell::new(settings, state_path, sessions));
             match notify::install(app.handle()) {
                 Ok(()) => tracing::info!("notification clicks are wired to the window"),

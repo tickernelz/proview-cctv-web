@@ -4,6 +4,7 @@ import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
 import { settingsUi } from '../settings/ui'
 import Icon from '../components/Icon.vue'
+import { TechDetails } from '../states'
 
 type Feature<T> = { supported: boolean; evidence: string; value: T | null }
 type Choice = { code: number; key: string; label: string }
@@ -194,7 +195,7 @@ watch(
   <header class="set-head">
     <div>
       <h2 id="h-image" class="set-h" tabindex="-1">Image, light &amp; sound</h2>
-      <p class="set-sub">Day and night, spotlight, privacy, indicators and volumes as the camera holds them. Each save reads the block back.</p>
+      <p class="set-sub">Day and night, spotlight, privacy, indicators and volumes as the camera holds them. Each save is checked with the camera.</p>
     </div>
   </header>
   <Teleport defer to="#savebar-note">
@@ -219,12 +220,13 @@ watch(
           </div>
         </div>
         <div v-else class="row">
-          <label class="lab" for="image-day-night">Day and night<span class="hint">{{ report.day_night.supported ? 'Now: ' + report.day_night.value?.label : report.day_night.evidence }}</span></label>
+          <label class="lab" for="image-day-night">Day and night<span class="hint" data-testid="image-day-night-reason">{{ report.day_night.supported ? 'Now: ' + report.day_night.value?.label : 'Not offered by this camera.' }}</span></label>
           <div class="ctl-col">
             <select id="image-day-night" v-model.number="form.day" data-testid="image-day-night" :disabled="!report.day_night.supported">
               <option v-for="choice in report.day_night.value?.options || []" :key="choice.code" :value="choice.code">{{ choice.label }}</option>
             </select>
             <button class="btn btn-fill" type="button" data-testid="image-save-day" :disabled="!report.day_night.supported" :aria-busy="busy === 'day'" @click="saveDay">Save</button>
+            <TechDetails v-if="!report.day_night.supported" data-testid="image-day-night-details" :text="report.day_night.evidence" />
           </div>
         </div>
         <div class="row">
@@ -234,7 +236,10 @@ watch(
               <input id="image-scene" v-model.number="form.scene" data-testid="image-scene" type="number" min="0" max="255" step="1">
               <button class="btn btn-fill" type="button" :aria-busy="busy === 'scene'" @click="saveScene">Save</button>
             </template>
-            <p v-else class="hint" data-testid="image-scene-reason">Not offered by this camera: {{ report.scene.evidence }}</p>
+            <template v-else>
+              <p class="hint" data-testid="image-scene-reason">Not offered by this camera.</p>
+              <TechDetails data-testid="image-scene-details" :text="report.scene.evidence" />
+            </template>
           </div>
         </div>
         <div class="row">
@@ -251,7 +256,8 @@ watch(
                 @change="saveLux(checked($event))"
               ><span>Starlight low-lux mode</span>
             </label>
-            <p v-if="!report.low_lux.supported" class="hint" data-testid="image-low-lux-reason">Not offered by this camera: {{ report.low_lux.evidence }}</p>
+            <p v-if="!report.low_lux.supported" class="hint" data-testid="image-low-lux-reason">Not offered by this camera.</p>
+            <TechDetails v-if="!report.low_lux.supported" data-testid="image-low-lux-details" :text="report.low_lux.evidence" />
           </div>
         </div>
       </div>
@@ -298,7 +304,10 @@ watch(
             <button class="btn btn-fill" type="button" data-testid="image-save-light" :aria-busy="busy === 'light'" @click="saveLight">Save spotlight</button>
           </div>
         </template>
-        <p v-else class="hint">Not offered by this camera: {{ report.white_light.evidence }}</p>
+        <template v-else>
+          <p class="hint" data-testid="image-light-reason">Not offered by this camera.</p>
+          <div class="tech-pad"><TechDetails data-testid="image-light-details" align="start" :text="report.white_light.evidence" /></div>
+        </template>
       </div>
     </div>
 
@@ -321,7 +330,8 @@ watch(
                 @change="savePrivacy(checked($event))"
               ><span>Privacy shading</span>
             </label>
-            <p v-if="!report.privacy.supported" class="hint" data-testid="image-privacy-reason">Not offered by this camera: {{ report.privacy.evidence }}</p>
+            <p v-if="!report.privacy.supported" class="hint" data-testid="image-privacy-reason">Not offered by this camera.</p>
+            <TechDetails v-if="!report.privacy.supported" data-testid="image-privacy-details" :text="report.privacy.evidence" />
           </div>
         </div>
         <div class="row">
@@ -339,7 +349,10 @@ watch(
                 <button class="btn btn-fill" type="button" data-testid="image-save-sleep" :aria-busy="busy === 'sleep'" @click="saveSleep">Save sleep</button>
               </div>
             </template>
-            <p v-else class="hint" data-testid="image-sleep-reason">Not offered by this camera: {{ report.sleep.evidence }}</p>
+            <template v-else>
+              <p class="hint" data-testid="image-sleep-reason">Not offered by this camera.</p>
+              <TechDetails data-testid="image-sleep-details" :text="report.sleep.evidence" />
+            </template>
           </div>
         </div>
       </div>
@@ -362,7 +375,8 @@ watch(
                 @change="saveLed(checked($event))"
               ><span>Status light</span>
             </label>
-            <p v-if="!report.status_led.supported" class="hint" data-testid="image-led-reason">Not offered by this camera: {{ report.status_led.evidence }}</p>
+            <p v-if="!report.status_led.supported" class="hint" data-testid="image-led-reason">Not offered by this camera.</p>
+            <TechDetails v-if="!report.status_led.supported" data-testid="image-led-details" :text="report.status_led.evidence" />
             <label class="switchrow">
               <input
                 id="image-voice-tip"
@@ -374,7 +388,8 @@ watch(
                 @change="saveTip(checked($event))"
               ><span>Spoken prompts from the camera</span>
             </label>
-            <p v-if="!report.voice_tip.supported" class="hint" data-testid="image-voice-tip-reason">Not offered by this camera: {{ report.voice_tip.evidence }}</p>
+            <p v-if="!report.voice_tip.supported" class="hint" data-testid="image-voice-tip-reason">Not offered by this camera.</p>
+            <TechDetails v-if="!report.voice_tip.supported" data-testid="image-voice-tip-details" :text="report.voice_tip.evidence" />
           </div>
         </div>
         <div class="row">
@@ -385,7 +400,10 @@ watch(
               <span class="level">{{ form.speaker }}</span>
               <button class="btn btn-fill" type="button" data-testid="image-save-speaker" :aria-busy="busy === 'speaker'" @click="saveSpeaker">Save</button>
             </div>
-            <p v-else class="hint" data-testid="image-speaker-reason">Not offered by this camera: {{ report.speaker_volume.evidence }}</p>
+            <template v-else>
+              <p class="hint" data-testid="image-speaker-reason">Not offered by this camera.</p>
+              <TechDetails data-testid="image-speaker-details" :text="report.speaker_volume.evidence" />
+            </template>
           </div>
         </div>
         <div class="row">
@@ -396,7 +414,10 @@ watch(
               <span class="level">{{ form.mic }}</span>
               <button class="btn btn-fill" type="button" data-testid="image-save-mic" :aria-busy="busy === 'mic'" @click="saveMic">Save</button>
             </div>
-            <p v-else class="hint" data-testid="image-mic-reason">Not offered by this camera: {{ report.mic_volume.evidence }}</p>
+            <template v-else>
+              <p class="hint" data-testid="image-mic-reason">Not offered by this camera.</p>
+              <TechDetails data-testid="image-mic-details" :text="report.mic_volume.evidence" />
+            </template>
           </div>
         </div>
       </div>
@@ -405,6 +426,9 @@ watch(
 </template>
 
 <style scoped>
+.tech-pad {
+  padding: 0 var(--s4) var(--s3);
+}
 .ctl-line {
   display: flex;
   flex-wrap: wrap;

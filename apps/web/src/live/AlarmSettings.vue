@@ -4,6 +4,7 @@ import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
 import { settingsUi } from '../settings/ui'
 import Icon from '../components/Icon.vue'
+import { TechDetails } from '../states'
 
 type Gate = { supported: boolean; evidence: string }
 type Rule = { rule_type: number; enabled: boolean; area: [number, number][]; line: [number, number, number, number] | null }
@@ -535,7 +536,7 @@ async function stopAlarm() {
 function trackBlocked(item: Detector) {
   if (item.id !== 'track' || !data.value || data.value.combined.supported) return ''
   const human = data.value.detectors.find((entry) => entry.id === 'human')
-  return human && human.state && human.state.enable ? 'Human detection is on and the camera does not run both: ' + data.value.combined.evidence : ''
+  return human && human.state && human.state.enable ? 'Human detection is on, and this camera cannot run both at once.' : ''
 }
 
 function levelOptions(current: number | null) {
@@ -569,7 +570,7 @@ onBeforeUnmount(() => {
   <header class="set-head">
     <div>
       <h2 id="h-alarm" class="set-h" tabindex="-1">Detection &amp; alarms</h2>
-      <p class="set-sub">Detection, schedule and alarm actions as the camera holds them. Each save keeps a copy, reads the block back, and puts the copy back when the camera returns a different value.</p>
+      <p class="set-sub">Detection, schedule and alarm actions as the camera holds them. Each save is checked with the camera.</p>
     </div>
   </header>
   <Teleport defer to="#savebar-note">
@@ -615,13 +616,14 @@ onBeforeUnmount(() => {
         <div class="set-card-h">
           <div>
             <h3 class="set-card-t">{{ item.label }}</h3>
-            <p class="set-card-d">{{ item.gate.evidence }}</p>
           </div>
+          <TechDetails :data-testid="'detect-' + item.id + '-details'" :text="item.gate.evidence" />
         </div>
         <div v-if="forms[item.id].enable !== null && item.id !== 'push'" class="row">
           <label class="lab" :for="'detect-' + item.id + '-enable'">Detection<span v-if="trackBlocked(item)" class="hint warn-text">{{ trackBlocked(item) }}</span></label>
           <div class="ctl-col">
             <input :id="'detect-' + item.id + '-enable'" v-model="forms[item.id].enable" type="checkbox" role="switch" :disabled="Boolean(trackBlocked(item))" :data-testid="'detect-' + item.id + '-enable'">
+            <TechDetails v-if="trackBlocked(item)" :data-testid="'detect-' + item.id + '-blocked-details'" :text="data.combined.evidence" />
           </div>
         </div>
         <div v-if="forms[item.id].level !== null" class="row">
@@ -634,7 +636,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="forms[item.id].sensitivity !== null" class="row">
           <label :id="'detect-' + item.id + '-sensitivity-label'" class="lab" :for="item.id === 'track' || sensitivityFixed(item) ? undefined : 'detect-' + item.id + '-sensitivity'">
-            Sensitivity<span v-if="sensitivityFixed(item)" class="hint">Fixed: the camera reports HumanRuleLimit Sensitivity=false, so the app offers no slider.</span>
+            Sensitivity<span v-if="sensitivityFixed(item)" class="hint">Fixed by this camera.</span>
           </label>
           <div class="ctl-col">
             <div v-if="item.id === 'track'" :id="'detect-' + item.id + '-sensitivity'" class="seg" role="radiogroup" :aria-labelledby="'detect-' + item.id + '-sensitivity-label'">
@@ -642,17 +644,21 @@ onBeforeUnmount(() => {
                 <input v-model="forms[item.id].sensitivity" type="radio" :name="'detect-' + item.id + '-sensitivity'" :value="option.value">{{ option.label }}
               </label>
             </div>
-            <p v-else-if="sensitivityFixed(item)" class="val">{{ item.state!.sensitivity }}</p>
+            <template v-else-if="sensitivityFixed(item)">
+              <p class="val">{{ item.state!.sensitivity }}</p>
+              <TechDetails :data-testid="'detect-' + item.id + '-sensitivity-details'" text="HumanRuleLimit Sensitivity=false" />
+            </template>
             <input v-else :id="'detect-' + item.id + '-sensitivity'" v-model.number="forms[item.id].sensitivity" type="number" step="1" :min="item.id === 'volume' ? 70 : 0" :max="item.id === 'volume' ? 110 : 100">
           </div>
         </div>
         <div v-if="forms[item.id].show_track !== null" class="row">
           <label class="lab" :for="'detect-' + item.id + '-track-box'">
             Track box<span class="hint">Draw the track box on people</span>
-            <span v-if="item.id === 'human' && !data.rule_limit?.show_track" class="hint">Fixed: the camera reports HumanRuleLimit ShowTrack=false.</span>
+            <span v-if="item.id === 'human' && !data.rule_limit?.show_track" class="hint">Fixed by this camera.</span>
           </label>
           <div class="ctl-col">
             <input :id="'detect-' + item.id + '-track-box'" v-model="forms[item.id].show_track" type="checkbox" role="switch" :disabled="item.id === 'human' && !data.rule_limit?.show_track">
+            <TechDetails v-if="item.id === 'human' && !data.rule_limit?.show_track" :data-testid="'detect-' + item.id + '-track-box-details'" text="HumanRuleLimit ShowTrack=false" />
           </div>
         </div>
         <template v-for="link in LINKS" :key="link.key">
@@ -671,7 +677,10 @@ onBeforeUnmount(() => {
             <select v-if="data.tones_gate.supported && data.tones.length" :id="'detect-' + item.id + '-tone'" v-model.number="forms[item.id].voice_type">
               <option v-for="tone in data.tones" :key="tone.id" :value="tone.id">{{ tone.text }}</option>
             </select>
-            <p v-else class="hint">Fixed at tone {{ item.state!.voice_type }}: {{ data.tones_gate.evidence }}</p>
+            <template v-else>
+              <p class="hint">Fixed at tone {{ item.state!.voice_type }} on this camera.</p>
+              <TechDetails :data-testid="'detect-' + item.id + '-tone-details'" :text="data.tones_gate.evidence" />
+            </template>
           </div>
         </div>
         <div v-if="forms[item.id].duration !== null" class="row">
@@ -712,10 +721,11 @@ onBeforeUnmount(() => {
         </div>
         <div class="row">
           <div class="lab">
-            Manual alarm<span class="hint">{{ data.manual_stop.supported ? stopNote || 'Sends only the stop command; nothing here starts a sound.' : 'Not offered: ' + data.manual_stop.evidence }}</span>
+            Manual alarm<span class="hint" data-testid="detect-stop-reason">{{ data.manual_stop.supported ? stopNote || 'Sends only the stop command; nothing here starts a sound.' : 'Not offered by this camera.' }}</span>
           </div>
           <div class="ctl-col">
             <button class="btn" type="button" :disabled="!data.manual_stop.supported" data-testid="detect-stop-button" @click="stopAlarm">Stop the alarm</button>
+            <TechDetails v-if="!data.manual_stop.supported" data-testid="detect-stop-details" :text="data.manual_stop.evidence" />
           </div>
         </div>
       </div>
@@ -723,12 +733,15 @@ onBeforeUnmount(() => {
         <div class="set-card-h">
           <div>
             <h3 class="set-card-t">Not on this camera</h3>
-            <p class="set-card-d">The phone app hides these for this camera; the evidence is the flag it checks.</p>
+            <p class="set-card-d">The phone app hides these for this camera too.</p>
           </div>
         </div>
         <div v-for="item in missing" :key="item.id" class="row" :data-testid="'detect-missing-' + item.id">
-          <div class="lab">{{ item.label }}<span class="hint">{{ item.gate.evidence }}</span></div>
-          <div class="ctl-col"><p class="val">Not available</p></div>
+          <div class="lab">{{ item.label }}</div>
+          <div class="ctl-col">
+            <p class="val">Not offered by this camera.</p>
+            <TechDetails :data-testid="'detect-missing-' + item.id + '-details'" :text="item.gate.evidence" />
+          </div>
         </div>
         <div v-for="item in broken" :key="item.id" class="row">
           <div class="lab">{{ item.label }}<span class="hint warn-text">{{ item.error }}</span></div>
@@ -752,7 +765,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="row">
           <div :id="'detect-' + item.id + '-rule-type-label'" class="lab">
-            Rule type<span v-if="!data.rule_limit?.area || !data.rule_limit?.line" class="hint">The camera's HumanRuleLimit does not offer {{ !data.rule_limit?.area && !data.rule_limit?.line ? 'either type' : !data.rule_limit?.area ? 'an area' : 'a line' }}.</span>
+            Rule type<span v-if="!data.rule_limit?.area || !data.rule_limit?.line" class="hint">This camera does not offer {{ !data.rule_limit?.area && !data.rule_limit?.line ? 'either type' : !data.rule_limit?.area ? 'an area' : 'a line' }}.</span>
           </div>
           <div class="ctl-col">
             <div class="seg" role="radiogroup" :aria-labelledby="'detect-' + item.id + '-rule-type-label'" :data-testid="'detect-' + item.id + '-rule-type'">

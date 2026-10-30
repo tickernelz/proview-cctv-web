@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { signIn } from './app'
+import { openDetails, signIn } from './app'
 
 const gate = (key: string) => 'SystemFunction.OtherFunction.' + key + ' is absent; the app gates this control on it (e2e fixture)'
 
@@ -78,18 +78,25 @@ async function openImageSettings(page: Page) {
   await expect(page.getByTestId('image-status')).toHaveText('Read from the camera just now.')
 }
 
-test('Image settings show gated controls with the camera reason and write a volume with a read-back', async ({ page }) => {
+test('Image settings say in words what the camera does not offer, keep the flag under Details, and write a volume with a read-back', async ({ page }) => {
   const camera = await fakeCamera(page, FULL_LIGHT)
   await openImageSettings(page)
   await expect(page.getByTestId('image-day-night')).toHaveValue('3')
+  await expect(page.locator('#set-body > section[data-section="image"]')).not.toContainText(/SystemFunction|OtherFunction|Camera\.FishEye|block back|e2e fixture/, { useInnerText: true })
   await expect(page.getByTestId('image-low-lux')).toBeDisabled()
-  await expect(page.getByTestId('image-low-lux-reason')).toContainText('SupportLowLuxMode')
+  await expect(page.getByTestId('image-low-lux-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('image-low-lux-details'))).toHaveText(gate('SupportLowLuxMode'))
   await expect(page.getByTestId('image-led')).toBeDisabled()
-  await expect(page.getByTestId('image-led-reason')).toContainText('SupportStatusLed')
+  await expect(page.getByTestId('image-led-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('image-led-details'))).toHaveText(gate('SupportStatusLed'))
   await expect(page.getByTestId('image-privacy')).toBeDisabled()
-  await expect(page.getByTestId('image-privacy-reason')).toContainText('SupportOneKeyMaskVideo')
-  await expect(page.getByTestId('image-sleep-reason')).toContainText('SupportTimingSleep')
-  await expect(page.getByTestId('image-scene-reason')).toContainText('Camera.FishEye')
+  await expect(page.getByTestId('image-privacy-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('image-privacy-details'))).toHaveText(gate('SupportOneKeyMaskVideo'))
+  await expect(page.getByTestId('image-sleep-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('image-sleep-details'))).toHaveText(gate('SupportTimingSleep'))
+  await expect(page.getByTestId('image-scene-reason')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('image-scene-details'))).toHaveText('Camera.FishEye answered no data (Ret 607 or a null entry)')
+  await expect(page.getByTestId('image-voice-tip-details')).toHaveCount(0)
   await expect(page.getByTestId('image-voice-tip')).toBeEnabled()
   await expect(page.getByTestId('image-start')).toHaveValue('18:00')
   await expect(page.getByTestId('image-mic')).toHaveValue('34')

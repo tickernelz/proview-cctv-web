@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { PER_BROWSER, type Scenario } from '../scenarios.mjs'
 
 export const ACCOUNT = { email: 'fixture@example.invalid', password: 'fixture-password' }
@@ -18,6 +18,17 @@ export async function eventsPanelClosed(page: Page) {
   await page.addInitScript(() => {
     if (localStorage.getItem('pvw_events_panel') === null) localStorage.setItem('pvw_events_panel', 'closed')
   })
+}
+
+export async function openDetails(scope: Locator): Promise<Locator> {
+  const text = scope.getByTestId('tech-details-text')
+  const toggle = scope.getByTestId('tech-details-toggle')
+  await expect(text).toBeHidden()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await toggle.press('Enter')
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await expect(text).toBeVisible()
+  return text
 }
 
 export async function signIn(page: Page, scenario: Scenario): Promise<string> {

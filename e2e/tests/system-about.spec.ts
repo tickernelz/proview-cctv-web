@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { playing, signIn } from './app'
+import { openDetails, playing, signIn } from './app'
 
 const ABOUT = {
   ok: true,
@@ -110,6 +110,8 @@ test('Install update names why it is off when the server offers nothing', async 
   await expect(page.getByTestId('system-start-reason')).toHaveText('Check for an update first.')
   await page.getByTestId('system-check-firmware').click()
   await expect(page.getByTestId('system-firmware-server')).toContainText('no newer firmware')
+  await expect(page.getByTestId('system-firmware-device')).toHaveText('Not offered by this camera.')
+  await expect(await openDetails(page.getByTestId('system-firmware-device-details'))).toHaveText('the device does not report OtherFunction/SupportCfgCloudupgrade')
   await expect(page.getByTestId('system-start-upgrade')).toBeDisabled()
   await expect(page.getByTestId('system-start-reason')).toHaveText('The upgrade server offers no newer firmware for this camera.')
 })

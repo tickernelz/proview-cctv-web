@@ -13,10 +13,11 @@ export type Device = {
 export type Camera = { device: Device; channel: number; key: string; name: string }
 
 const PREFS_KEY = 'pvw_prefs_v2'
+const PREFS_VERSION = 1
 export const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server', 'system', 'alarm', 'image', 'account']
 
 function defaultPrefs(): Prefs {
-  return { theme: 'system', quality: 'main', lens: 'pip', osd: true, muted: true, flip: false, ptzSpeed: {} }
+  return { version: PREFS_VERSION, theme: 'system', quality: 'main', lens: 'pip', osd: true, muted: true, flip: false, ptzSpeed: {} }
 }
 
 function loadPrefs(): Prefs {
@@ -35,7 +36,20 @@ function loadPrefs(): Prefs {
   const prefs = { ...defaultPrefs(), ...stored }
   if (!prefs.ptzSpeed || typeof prefs.ptzSpeed !== 'object') prefs.ptzSpeed = {}
   if (!stored.theme && (legacyTheme === 'dark' || legacyTheme === 'light')) prefs.theme = legacyTheme
+  if (Object.keys(stored).length && (Number(stored.version) || 0) < PREFS_VERSION) {
+    if (stored.lens === 'combined') prefs.lens = 'pip'
+    prefs.version = PREFS_VERSION
+    writePrefs(prefs)
+  }
   return prefs
+}
+
+function writePrefs(prefs: Prefs) {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    return
+  }
 }
 
 export const state = {
@@ -70,9 +84,5 @@ export const state = {
 }
 
 export function savePrefs() {
-  try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(state.prefs))
-  } catch {
-    return
-  }
+  writePrefs(state.prefs)
 }
