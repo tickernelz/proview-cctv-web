@@ -91,7 +91,7 @@
   .pad[data-mode="sheet"] .pad-panel { grid-area: panel; }
   .pad-head { display: flex; align-items: center; gap: var(--s2); min-height: 32px; font-weight: 500; }
   .pad-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pad-x { display: grid; place-items: center; width: 28px; height: 28px; border-radius: var(--r-sm); color: var(--p-ink); }
+  .pad-x { display: grid; place-items: center; width: var(--hit); height: var(--hit); border-radius: var(--r-sm); color: var(--p-ink); }
   .pad-x:hover { background: var(--p-hover); }
 
   .joy { position: relative; width: 168px; height: 168px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--p-line); touch-action: none; }
@@ -112,7 +112,7 @@
   .pad-lab { flex: none; width: 52px; font-size: var(--t-12); color: var(--p-ink-2); }
   .pad-row.top .pad-lab { padding-top: 7px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-  .pchip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--p-line); color: var(--p-ink); font-size: var(--t-13); font-weight: 500; white-space: nowrap; transition: background-color var(--dur-1) var(--ease); }
+  .pchip { display: inline-flex; align-items: center; gap: 6px; min-height: var(--hit); padding: 0 10px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px var(--p-line); color: var(--p-ink); font-size: var(--t-13); font-weight: 500; white-space: nowrap; transition: background-color var(--dur-1) var(--ease); }
   .pchip:hover:not(:disabled) { background: var(--p-hover); }
   .pchip b { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 4px; background: var(--p-line); font-family: var(--f-mono); font-size: var(--t-12); font-weight: 500; }
   .pchip[aria-pressed="true"] { background: var(--p-hover); box-shadow: inset 0 0 0 1px var(--p-ink); }
@@ -128,7 +128,7 @@
   .ptz-edit input, .ptz-edit select { flex: 1 1 auto; min-width: 0; height: 28px; padding: 0 var(--s2); border: 0; border-radius: var(--r-md); background: transparent; color: var(--p-ink); box-shadow: inset 0 0 0 1px var(--p-line); font: inherit; }
   .ptz-edit select option { color: var(--ink); background: var(--bg-2); }
   .ptz-edit-stops span { flex: 1 1 auto; }
-  .pad-btn { flex: none; min-height: 28px; padding: 0 var(--s1); color: var(--p-ink); font-size: var(--t-13); text-decoration: underline; text-underline-offset: 3px; }
+  .pad-btn { flex: none; min-height: var(--hit); padding: 0 var(--s1); color: var(--p-ink); font-size: var(--t-13); text-decoration: underline; text-underline-offset: 3px; }
   .pad-btn:disabled { color: var(--p-ink-2); text-decoration: none; cursor: not-allowed; }
 
   .emptywrap { flex: 1; min-height: 0; display: grid; place-items: center; padding: var(--s4); overflow-y: auto; }
@@ -142,8 +142,6 @@
   .wait, .plate, .dock-status { font-variant-numeric: tabular-nums; }
 
   @media (pointer: coarse) {
-    .pchip, .pad-btn, .pad-x { min-height: var(--hit); }
-    .pad-x { width: var(--hit); height: var(--hit); }
     .ptz-edit input, .ptz-edit select { height: var(--hit); }
   }
   @media (max-width: 640px) {

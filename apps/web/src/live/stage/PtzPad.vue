@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '../../components/Icon.vue'
 import { SegmentedControl } from '../../components/ui/segmented-control'
 import { addPreset, calibrate, gotoPreset, holdsAction, movingLensLabel, openEditor, pickPtzSpeed, pressControl, releaseControl, sendControl, tapControl, togglePad } from '../../app/controls'
@@ -55,18 +55,29 @@ function releaseFocus(event: PointerEvent) {
 
 const knob = ref({ x: 0, y: 0, active: false })
 let aimed = ''
+let pointer: number | null = null
 const REACH = 40
 const DEAD = 14
 
+function capture(target: HTMLElement, id: number) {
+  try {
+    target.setPointerCapture(id)
+    return true
+  } catch {
+    return false
+  }
+}
+
 function grab(event: PointerEvent) {
-  if (event.button !== 0) return
-  ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+  if (event.button !== 0 || pointer !== null) return
+  pointer = event.pointerId
+  capture(event.currentTarget as HTMLElement, event.pointerId)
   knob.value = { x: 0, y: 0, active: true }
   aimed = ''
 }
 
 function drag(event: PointerEvent) {
-  if (!knob.value.active) return
+  if (event.pointerId !== pointer) return
   const box = (event.currentTarget as HTMLElement).parentElement!.getBoundingClientRect()
   let x = event.clientX - (box.left + box.width / 2)
   let y = event.clientY - (box.top + box.height / 2)
@@ -84,12 +95,22 @@ function drag(event: PointerEvent) {
   else sendControl(act)
 }
 
-function drop() {
-  if (!knob.value.active) return
-  knob.value = { x: 0, y: 0, active: false }
-  if (aimed) releaseControl()
+function letGo() {
+  const held = aimed
+  pointer = null
   aimed = ''
+  knob.value = { x: 0, y: 0, active: false }
+  if (held) releaseControl()
 }
+
+function drop(event: PointerEvent) {
+  if (event.pointerId === pointer) letGo()
+}
+
+onBeforeUnmount(() => {
+  letGo()
+  releaseControl()
+})
 
 const knobStyle = computed(() => ({ transform: 'translate(' + knob.value.x + 'px, ' + knob.value.y + 'px)' }))
 

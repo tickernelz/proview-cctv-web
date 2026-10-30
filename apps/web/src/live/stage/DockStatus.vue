@@ -2,9 +2,10 @@
 import { computed } from 'vue'
 import ImageLive from '../ImageLive.vue'
 import { live } from '../store'
-import { alarmStopNote } from './notes'
+import { alarmStopNote, PLAYBACK_NOTE } from './notes'
 
-const talkNote = computed(() => live.talk.note || (live.gate.intercom.ok ? '' : live.gate.intercom.why))
+const playback = computed(() => live.mode === 'playback')
+const talkNote = computed(() => (playback.value ? '' : live.talk.note || (live.gate.intercom.ok ? '' : live.gate.intercom.why)))
 const talkTone = computed(() => (live.talk.phase === 'error' ? 'bad' : live.talk.phase === 'sending' ? 'live' : ''))
 const moveNote = computed(() => {
   if (live.gate.move.ok || live.mode === 'playback') return ''
@@ -21,6 +22,7 @@ const moveNote = computed(() => {
     </p>
     <p id="control-status" class="dock-note" data-testid="control-status" role="status">{{ live.pad.status }}</p>
     <p v-if="talkNote" id="talk-note" data-testid="talk-note" :class="['dock-note', talkTone]" role="status">{{ talkNote }}</p>
+    <p v-if="playback" id="playback-note" class="dock-note" data-testid="playback-note">{{ PLAYBACK_NOTE }}</p>
     <p v-if="moveNote" id="move-note" class="dock-note" data-testid="move-note">{{ moveNote }}</p>
     <p v-if="alarmStopNote.text" id="alarm-stop-note" data-testid="ctl-alarm-stop-note" :class="['dock-note', { bad: alarmStopNote.bad }]" role="status">{{ alarmStopNote.text }}</p>
     <p v-if="live.settings.lightStatus" class="dock-note" data-testid="live-light-status" role="status">{{ live.settings.lightStatus }}</p>

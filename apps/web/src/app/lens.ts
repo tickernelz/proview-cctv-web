@@ -189,6 +189,7 @@ function lensSub(entry: LensEntry) {
 export function renderLensPicker() {
   const entries = lensEntries()
   const pair = entries.length > 1
+  if (state.lens && !pair && state.lensView !== 'combined') state.lensView = 'combined'
   live.lens.shown = pair
   live.lens.label = lensViewLabel()
   live.settings.lensNote = lensNote()

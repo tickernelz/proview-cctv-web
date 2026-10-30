@@ -270,3 +270,49 @@ test('Move stays in the dock, disabled, with its reason on screen when the camer
   await expect(move).toHaveAttribute('aria-describedby', 'move-note')
 })
 
+
+test('a second finger on the knob is ignored: one hold is one press and one release', async ({ page }) => {
+  const calls = await openLive(page)
+  await page.getByTestId('ctl-move').click()
+  const knob = page.getByTestId('ptz-pad').locator('.knob')
+  await expect(knob).toBeVisible()
+  const box = (await knob.boundingBox())!
+  const x = box.x + box.width / 2
+  const y = box.y + box.height / 2
+  const send = (type: string, pointerId: number, dx: number, dy: number) =>
+    knob.dispatchEvent(type, { pointerId, pointerType: 'touch', isPrimary: pointerId === 1, button: 0, buttons: type === 'pointerup' ? 0 : 1, clientX: x + dx, clientY: y + dy, bubbles: true })
+  await send('pointerdown', 1, 0, 0)
+  await send('pointermove', 1, 34, 0)
+  await expect.poll(() => calls.filter((call) => call.includes('/ptz/press'))).toEqual(['POST /api/device/controls/ptz/press?action=right&speed=normal&device=gate'])
+  await send('pointerdown', 2, 0, 0)
+  await send('pointermove', 2, 0, -34)
+  await send('pointerup', 2, 0, -34)
+  await page.waitForTimeout(300)
+  expect(calls.filter((call) => call.includes('/ptz/press'))).toHaveLength(1)
+  expect(calls.filter((call) => call.includes('/ptz/release'))).toEqual([])
+  await send('pointerup', 1, 34, 0)
+  await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(1)
+  await page.waitForTimeout(300)
+  expect(calls.filter((call) => call.includes('/ptz/press'))).toHaveLength(1)
+  expect(calls.filter((call) => call.includes('/ptz/release'))).toHaveLength(1)
+})
+
+test('a layout swap in the middle of a hold stops the motor', async ({ page }) => {
+  const calls = await openLive(page)
+  await page.getByTestId('ctl-move').click()
+  const pad = page.getByTestId('ptz-pad')
+  await expect(pad).toHaveAttribute('data-mode', 'overlay')
+  const left = pad.getByRole('button', { name: 'Pan left', exact: true })
+  const box = (await left.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=left&speed=normal&device=gate')
+  expect(calls.filter((call) => call.includes('/ptz/release'))).toEqual([])
+  await page.setViewportSize({ width: 900, height: 900 })
+  await expect(page.getByTestId('ptz-pad')).toHaveAttribute('data-mode', 'sheet')
+  await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(1)
+  await page.mouse.up()
+  await page.waitForTimeout(300)
+  expect(calls.filter((call) => call.includes('/ptz/release'))).toHaveLength(1)
+})
+

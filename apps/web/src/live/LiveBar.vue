@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
 import { live } from './store'
+import { PLAYBACK_NOTE } from './stage/notes'
 
 const start = computed(() => live.launchers.filter((item) => item.slot === 'start'))
 const end = computed(() => live.launchers.filter((item) => item.slot === 'end'))
@@ -33,6 +34,12 @@ const SOUND_LABELS: Record<string, string> = {
 }
 const soundTitle = computed(() => (live.muted ? 'Sound is off' : SOUND_TITLES[live.sound] || 'Sound is on') + ' (M)')
 const soundLabel = computed(() => (live.muted ? 'Sound' : SOUND_LABELS[live.sound] || 'Sound'))
+
+const playback = computed(() => live.mode === 'playback')
+const talkOff = computed(() => playback.value || !live.gate.intercom.ok)
+const moveOff = computed(() => playback.value || !live.gate.move.ok)
+const talkWhy = computed(() => (playback.value ? 'playback-note' : live.gate.intercom.ok ? undefined : 'talk-note'))
+const moveWhy = computed(() => (playback.value ? 'playback-note' : live.gate.move.ok ? undefined : 'move-note'))
 
 function clickSound() {
   if (live.sound !== 'blocked') live.actions.toggleMute()
@@ -65,9 +72,9 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       type="button"
       aria-keyshortcuts="T"
       :aria-pressed="live.talk.on"
-      :aria-describedby="live.gate.intercom.ok ? undefined : 'talk-note'"
-      :disabled="!live.gate.intercom.ok"
-      :title="live.gate.intercom.ok ? 'Hold to talk (T)' : live.gate.intercom.why"
+      :aria-describedby="talkWhy"
+      :disabled="talkOff"
+      :title="playback ? PLAYBACK_NOTE : live.gate.intercom.ok ? 'Hold to talk (T)' : live.gate.intercom.why"
       @pointerdown="pressTalk"
       @pointerup="live.actions.stopTalk()"
       @pointercancel="live.actions.stopTalk()"
@@ -111,10 +118,10 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       type="button"
       aria-controls="pad"
       aria-keyshortcuts="V"
-      :title="live.gate.move.ok ? 'Move the camera (V)' : live.gate.move.why"
+      :title="playback ? PLAYBACK_NOTE : live.gate.move.ok ? 'Move the camera (V)' : live.gate.move.why"
       :aria-pressed="live.padOpen"
-      :disabled="!live.gate.move.ok"
-      :aria-describedby="live.gate.move.ok ? undefined : 'move-note'"
+      :disabled="moveOff"
+      :aria-describedby="moveWhy"
       @click="live.actions.togglePad()"
     >
       <Icon name="move" /><span class="dk-label">Move</span>

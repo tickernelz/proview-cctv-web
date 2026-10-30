@@ -105,3 +105,17 @@ test('More holds the lens modes and the swap, and a saved choice of both lenses 
   await page.getByTestId('more-swap').click()
   await expect(page.getByTestId('pip-label')).toHaveText('Top lens')
 })
+
+test('a single-lens camera stays on its one picture: no inset, and the snapshot is named for the whole frame', async ({ page }) => {
+  await page.route(/\/api\/lens\?/, (route) =>
+    route.fulfill({ json: { deviceId: 'gate', channel: 1, streams: [{ codec: 'h264', width: 640, height: 720 }], lenses: [{ index: 0, label: 'Single lens', crop: { x: 0, y: 0, w: 1, h: 1 } }] } }),
+  )
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'combined')
+  await expect(page.getByTestId('pip-inset')).toHaveCount(0)
+  await expect(page.getByTestId('lens-pick')).toHaveCount(0)
+  const file = await Promise.all([page.waitForEvent('download'), page.getByTestId('ctl-snapshot').click()]).then(([download]) => download)
+  expect(file.suggestedFilename()).toMatch(/_lens-combined_/)
+})
+
