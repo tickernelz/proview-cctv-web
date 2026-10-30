@@ -12,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const WINDOW_MS: u64 = 400;
+const HOLD_MS: u64 = 2500;
 const OUTER: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -37,9 +38,45 @@ struct Device {
     presets: Arc<Mutex<Vec<(i64, String)>>>,
     tour: Arc<Mutex<Vec<i64>>>,
     connections: Arc<Mutex<usize>>,
+    dropped: Option<&'static str>,
 }
 
+const ABILITIES: [&str; 5] = [
+    "SupportPTZTour",
+    "SupportBallTelescopic",
+    "SupportGunBallTwoSensorPtzLocate",
+    "SupportPtzAutoAdjust",
+    "SupportPTZDirectionControl",
+];
+
 impl Device {
+    fn without(mut self, ability: &'static str) -> Self {
+        self.dropped = Some(ability);
+        self
+    }
+
+    fn system_function(&self) -> Value {
+        let mut other = serde_json::Map::new();
+        for ability in ABILITIES {
+            if Some(ability) != self.dropped {
+                other.insert(ability.to_string(), json!(true));
+            }
+        }
+        json!({ "Ret": 100, "SystemFunction": { "OtherFunction": other } })
+    }
+
+    fn writes(&self) -> Vec<Seen> {
+        self.frames()
+            .into_iter()
+            .filter(|frame| {
+                matches!(
+                    frame.id,
+                    msg::PTZ_CONTROL | msg::PTZ_LOCATE | msg::OP_MACHINE
+                )
+            })
+            .collect()
+    }
+
     fn frames(&self) -> Vec<Seen> {
         self.seen.lock().unwrap().clone()
     }
@@ -109,6 +146,7 @@ fn device(mood: Mood, presets: &[(i64, &str)], tour: &[i64]) -> Device {
         )),
         tour: Arc::new(Mutex::new(tour.to_vec())),
         connections: Arc::new(Mutex::new(0)),
+        dropped: None,
     }
 }
 
@@ -185,6 +223,7 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
                 Some(json!({ "Ret": 100 }))
             }
             msg::PTZ_LOCATE if device.mood == Mood::SilentOnLocate => None,
+            msg::ABILITY if body["Name"] == "SystemFunction" => Some(device.system_function()),
             msg::ABILITY if body["Name"] == "GoToPosition" && device.mood == Mood::NoPanorama => {
                 Some(json!({ "Ret": 103 }))
             }
@@ -226,6 +265,7 @@ fn config(address: &str) -> proview_core::config::Config {
 
 async fn client(address: &str) -> Client {
     std::env::set_var("PROVIEW_DVRIP_WINDOW_MS", WINDOW_MS.to_string());
+    std::env::set_var("PROVIEW_PTZ_HOLD_MS", HOLD_MS.to_string());
     let client = Client::tracked(proview_server::build_with_modes(
         figment(),
         config(address),
@@ -578,4 +618,114 @@ async fn calibration_sends_ptz_auto_adjust_on_the_machine_message() {
         .find(|frame| frame.id == msg::OP_MACHINE)
         .expect("an OPMachine frame");
     assert_eq!(frame.body["Name"], "OPPtzAutoAdjust");
+}
+
+const REFUSALS: [(&str, &str); 12] = [
+    (
+        "SupportBallTelescopic",
+        "/api/device/controls/ptz/press?action=zoom-in",
+    ),
+    (
+        "SupportBallTelescopic",
+        "/api/device/controls/ptz/press?action=focus-far",
+    ),
+    (
+        "SupportGunBallTwoSensorPtzLocate",
+        "/api/device/controls/ptz/locate?x=0.5&y=0.5",
+    ),
+    ("SupportPTZTour", "/api/device/controls/preset/add?name=x"),
+    (
+        "SupportPTZTour",
+        "/api/device/controls/preset/rename?token=1&name=x",
+    ),
+    (
+        "SupportPTZTour",
+        "/api/device/controls/preset/delete?token=1",
+    ),
+    (
+        "SupportPTZTour",
+        "/api/device/controls/tour/remove?tour=1&preset=1",
+    ),
+    (
+        "SupportPTZTour",
+        "/api/device/controls/tour/add?tour=1&preset=1",
+    ),
+    ("SupportPTZTour", "/api/device/controls/tour/clear?tour=1"),
+    ("SupportPTZTour", "/api/device/controls/tour/start?tour=1"),
+    ("SupportPTZTour", "/api/device/controls/tour/stop?tour=1"),
+    ("SupportPtzAutoAdjust", "/api/device/controls/ptz/calibrate"),
+];
+
+#[tokio::test]
+async fn a_write_the_device_does_not_report_answers_501_before_anything_is_sent() {
+    for (ability, path) in REFUSALS {
+        let fake = device(Mood::Answers, &[(1, "Gate")], &[1]).without(ability);
+        let client = client(&listen(fake.clone()).await).await;
+        let (status, body, _) = post(&client, path).await;
+        assert_eq!(status, Status::NotImplemented, "{path}: {body}");
+        assert!(body.to_string().contains(ability), "{path}: {body}");
+        assert!(
+            fake.writes().is_empty(),
+            "{path} wrote to a camera without {ability}"
+        );
+        assert!(
+            fake.frames().iter().any(|frame| frame.id == msg::ABILITY),
+            "{path} never read the abilities"
+        );
+        assert_eq!(fake.presets.lock().unwrap().len(), 1);
+        assert_eq!(*fake.tour.lock().unwrap(), vec![1]);
+    }
+}
+
+#[tokio::test]
+async fn every_gated_write_goes_out_when_the_device_reports_its_ability() {
+    for (_, path) in REFUSALS {
+        let fake = device(Mood::Answers, &[(1, "Gate")], &[1]);
+        let client = client(&listen(fake.clone()).await).await;
+        let (status, body, _) = post(&client, path).await;
+        assert_eq!(status, Status::Ok, "{path}: {body}");
+        assert!(!fake.writes().is_empty(), "{path}");
+        let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    }
+}
+
+#[tokio::test]
+async fn pan_and_tilt_do_not_need_the_zoom_ability() {
+    let fake = device(Mood::Answers, &[], &[]).without("SupportBallTelescopic");
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(status, Status::Ok);
+    assert_eq!(fake.ptz().len(), 2);
+}
+
+#[tokio::test]
+async fn a_hold_without_a_release_stops_itself_at_the_limit() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=right").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["limit_ms"], HOLD_MS);
+    let deadline = Instant::now() + Duration::from_millis(HOLD_MS + 3000);
+    while Instant::now() < deadline && !fake.ptz().iter().any(|frame| preset_of(frame) == -1) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let frames = fake.ptz();
+    assert_eq!(frames.len(), 2, "the stop never went out");
+    assert_eq!(command(&frames[1]), "DirectionRight");
+    assert_eq!(preset_of(&frames[1]), -1);
+    assert_eq!(frames[0].connection, frames[1].connection);
+    let ran = frames[1].at - frames[0].at;
+    assert!(
+        ran >= Duration::from_millis(HOLD_MS - 100),
+        "stopped after {ran:?}"
+    );
+    assert!(
+        ran < Duration::from_millis(HOLD_MS + 1000),
+        "stopped after {ran:?}"
+    );
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=4000").await;
+    assert_eq!(status, Status::Ok);
+    assert_eq!(body["held"], false);
 }

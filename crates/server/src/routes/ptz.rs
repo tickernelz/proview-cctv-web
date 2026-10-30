@@ -9,7 +9,8 @@ use proview_core::device::{op_window, ControlError, DvripControl, SESSION_WINDOW
 use proview_core::dvrip::client::{Connection, DvrError};
 use proview_core::dvrip::control::{PresetEntry, TourLine};
 use proview_core::dvrip::ptz::{
-    locate_offsets, next_preset_id, preset_name, PanoramaRange, PtzAction, PRESET_LIMIT, PRESS_STEP,
+    ability_refusal, locate_offsets, next_preset_id, preset_name, PanoramaRange, PtzAction,
+    CALIBRATE_ABILITY, LOCATE_ABILITY, PRESET_ABILITY, PRESET_LIMIT, PRESS_STEP, ZOOM_ABILITY,
 };
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::session::Store;
@@ -24,6 +25,7 @@ use super::{fail, session_id, Failure};
 use crate::config::ModeStore;
 
 pub const HOLD_LIMIT: Duration = Duration::from_secs(30);
+const HOLD_ENV: &str = "PROVIEW_PTZ_HOLD_MS";
 pub const TAP_WINDOW: Duration = Duration::from_millis(500);
 pub const TAP_TAIL: Duration = Duration::from_millis(800);
 pub const CALIBRATE_WINDOW: Duration = Duration::from_secs(60);
@@ -98,6 +100,57 @@ async fn finish<T>(
         let _ = connection.logout_within(op_window()).await;
     }
     result
+}
+
+pub fn hold_limit() -> Duration {
+    match std::env::var(HOLD_ENV)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => HOLD_LIMIT,
+    }
+}
+
+async fn refusal(
+    control: &DvripControl,
+    connection: &mut Connection,
+    path: &[&str],
+) -> Result<Option<String>, ControlError> {
+    let abilities = within("ability read", control, op_window(), connection.abilities()).await?;
+    Ok(ability_refusal(&abilities, path))
+}
+
+fn unsupported(operation: &str, reason: String) -> Failure {
+    fail(
+        Status::NotImplemented,
+        format!("{operation}: {reason}, so the app hides this control and nothing was sent to the camera"),
+    )
+}
+
+async fn gate(
+    control: &DvripControl,
+    mut connection: Connection,
+    path: &[&str],
+    operation: &str,
+) -> Result<Connection, Failure> {
+    match refusal(control, &mut connection, path).await {
+        Ok(None) => Ok(connection),
+        Ok(Some(reason)) => {
+            let _ = connection.logout_within(op_window()).await;
+            Err(unsupported(operation, reason))
+        }
+        Err(error) => Err(control_failure(
+            finish::<()>(connection, Err(error)).await.unwrap_err(),
+        )),
+    }
+}
+
+pub(crate) async fn tour_gate(control: &DvripControl, operation: &str) -> Result<(), Failure> {
+    let Opened { connection, .. } = open(control).await.map_err(control_failure)?;
+    let mut connection = gate(control, connection, &PRESET_ABILITY, operation).await?;
+    let _ = connection.logout_within(op_window()).await;
+    Ok(())
 }
 
 fn dvrip_of(
@@ -209,26 +262,21 @@ async fn send_stop(
     Ok((ms(started.elapsed()), true))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn hold(
     control: DvripControl,
+    opened: Opened,
+    begun: Instant,
     action: PtzAction,
     step: u8,
     started: oneshot::Sender<Result<PressTimes, ControlError>>,
     release: oneshot::Receiver<Release>,
     finished: impl FnOnce(),
 ) {
-    let begun = Instant::now();
     let Opened {
         mut connection,
         session_ms,
-    } = match open(&control).await {
-        Ok(opened) => opened,
-        Err(error) => {
-            let _ = started.send(Err(error));
-            finished();
-            return;
-        }
-    };
+    } = opened;
     let press_started = Instant::now();
     match within(
         "ptz press",
@@ -262,7 +310,7 @@ async fn hold(
     let acked = Instant::now();
     let request = tokio::select! {
         request = release => request.ok(),
-        _ = tokio::time::sleep(HOLD_LIMIT) => None,
+        _ = tokio::time::sleep(hold_limit()) => None,
     };
     finished();
     let (held_ms, tail, reply) = match request {
@@ -282,7 +330,7 @@ async fn hold(
             };
             (ms(pressed_for), tail, Some(reply))
         }
-        None => (ms(HOLD_LIMIT), Duration::ZERO, None),
+        None => (ms(hold_limit()), Duration::ZERO, None),
     };
     let outcome = send_stop(&control, Some(connection), action, step)
         .await
@@ -320,7 +368,7 @@ async fn release_entry(
             "the held move already ended before the release arrived".to_string(),
         ));
     }
-    let bound = TAP_TAIL + SESSION_WINDOW + op_window() * 2 + RELEASE_MARGIN + HOLD_LIMIT;
+    let bound = TAP_TAIL + SESSION_WINDOW + op_window() * 2 + RELEASE_MARGIN + hold_limit();
     match tokio::time::timeout(bound, answer).await {
         Ok(Ok(outcome)) => outcome,
         _ => Err(ControlError::Device(
@@ -365,6 +413,18 @@ async fn ptz_press(
     if let Some(previous) = take_held(&key) {
         let _ = release_entry(previous, None).await;
     }
+    let begun = Instant::now();
+    let opened = open(&control).await.map_err(control_failure)?;
+    let opened = if parsed.moves_the_lens() {
+        let session_ms = opened.session_ms;
+        let connection = gate(&control, opened.connection, &ZOOM_ABILITY, "ptz press").await?;
+        Opened {
+            connection,
+            session_ms,
+        }
+    } else {
+        opened
+    };
     let generation = next_generation();
     let (release_tx, release_rx) = oneshot::channel();
     let (started_tx, started_rx) = oneshot::channel();
@@ -381,6 +441,8 @@ async fn ptz_press(
     let owned_key = key.clone();
     tokio::spawn(hold(
         control,
+        opened,
+        begun,
         parsed,
         step,
         started_tx,
@@ -405,7 +467,7 @@ async fn ptz_press(
         step,
         session_ms: times.session_ms,
         press_ms: times.press_ms,
-        limit_ms: ms(HOLD_LIMIT),
+        limit_ms: ms(hold_limit()),
     }))
 }
 
@@ -486,9 +548,10 @@ async fn ptz_locate(
     })?;
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let Opened {
-        mut connection,
+        connection,
         session_ms,
     } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &LOCATE_ABILITY, "ptz locate").await?;
     let started = Instant::now();
     let sent = within(
         "ptz locate",
@@ -559,9 +622,10 @@ async fn preset_add(
 ) -> Result<Json<PresetEditBody>, Failure> {
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let Opened {
-        mut connection,
+        connection,
         session_ms,
     } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &PRESET_ABILITY, "preset add").await?;
     let outcome = async {
         let (_, before) = listing(&control, &mut connection, "preset listing").await?;
         if before.len() >= PRESET_LIMIT {
@@ -627,9 +691,10 @@ async fn preset_rename(
     let label = preset_name(Some(&name), id);
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let Opened {
-        mut connection,
+        connection,
         session_ms,
     } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &PRESET_ABILITY, "preset rename").await?;
     let outcome = async {
         let (_, before) = listing(&control, &mut connection, "preset listing").await?;
         if !listing_has(&before, id) {
@@ -680,9 +745,10 @@ async fn preset_delete(
     let id = preset_id(&token)?;
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let Opened {
-        mut connection,
+        connection,
         session_ms,
     } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &PRESET_ABILITY, "preset delete").await?;
     let outcome = async {
         let (tours, before) = listing(&control, &mut connection, "preset listing").await?;
         let Some(entry) = before.iter().find(|preset| preset.id == id).cloned() else {
@@ -759,7 +825,8 @@ async fn tour_remove(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<TourEditBody>, Failure> {
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
-    let Opened { mut connection, .. } = open(&control).await.map_err(control_failure)?;
+    let Opened { connection, .. } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &PRESET_ABILITY, "tour point delete").await?;
     let outcome = async {
         let (before, _) = listing(&control, &mut connection, "tour listing").await?;
         let Some(line) = before.iter().find(|line| line.id == tour) else {
@@ -817,9 +884,10 @@ async fn ptz_calibrate(
 ) -> Result<Json<CalibrateBody>, Failure> {
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let Opened {
-        mut connection,
+        connection,
         session_ms,
     } = open(&control).await.map_err(control_failure)?;
+    let mut connection = gate(&control, connection, &CALIBRATE_ABILITY, "ptz calibrate").await?;
     let started = Instant::now();
     let sent = within(
         "ptz calibrate",
@@ -919,6 +987,17 @@ async fn panorama_goto(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_hold_limit_follows_its_env_knob() {
+        std::env::remove_var("PROVIEW_PTZ_HOLD_MS");
+        assert_eq!(hold_limit(), HOLD_LIMIT);
+        std::env::set_var("PROVIEW_PTZ_HOLD_MS", "1500");
+        assert_eq!(hold_limit(), Duration::from_millis(1500));
+        std::env::set_var("PROVIEW_PTZ_HOLD_MS", "0");
+        assert_eq!(hold_limit(), HOLD_LIMIT);
+        std::env::remove_var("PROVIEW_PTZ_HOLD_MS");
+    }
 
     #[test]
     fn a_tap_keeps_moving_for_the_app_tail_and_a_hold_stops_at_once() {

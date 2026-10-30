@@ -71,6 +71,27 @@ impl PtzAction {
     }
 }
 
+pub const ZOOM_ABILITY: [&str; 2] = ["OtherFunction", "SupportBallTelescopic"];
+pub const LOCATE_ABILITY: [&str; 2] = ["OtherFunction", "SupportGunBallTwoSensorPtzLocate"];
+pub const PRESET_ABILITY: [&str; 2] = ["OtherFunction", "SupportPTZTour"];
+pub const CALIBRATE_ABILITY: [&str; 2] = ["OtherFunction", "SupportPtzAutoAdjust"];
+
+pub fn ability_refusal(abilities: &Value, path: &[&str]) -> Option<String> {
+    let name = path.join(".");
+    let mut cursor = abilities;
+    for segment in path {
+        match cursor.get(*segment) {
+            Some(next) => cursor = next,
+            None => return Some(format!("device did not report {name}")),
+        }
+    }
+    match cursor.as_bool() {
+        Some(true) => None,
+        Some(false) => Some(format!("device reports {name}=false")),
+        None => Some(format!("device reports {name}={cursor}, not true")),
+    }
+}
+
 pub fn locate_offsets(x: f64, y: f64) -> Option<(i32, i32)> {
     if !x.is_finite() || !y.is_finite() {
         return None;
@@ -240,6 +261,22 @@ mod tests {
 
     fn body(frame: &str) -> Value {
         serde_json::from_str(frame.trim_end_matches(['\0', '\n', ' '])).expect("json frame")
+    }
+
+    #[test]
+    fn an_ability_counts_only_when_the_device_reports_true() {
+        let abilities = json!({ "OtherFunction": { "SupportPTZTour": true, "SupportBallTelescopic": false, "SupportPtzAutoAdjust": 1 } });
+        assert_eq!(ability_refusal(&abilities, &PRESET_ABILITY), None);
+        assert_eq!(
+            ability_refusal(&abilities, &ZOOM_ABILITY).as_deref(),
+            Some("device reports OtherFunction.SupportBallTelescopic=false")
+        );
+        assert_eq!(
+            ability_refusal(&abilities, &LOCATE_ABILITY).as_deref(),
+            Some("device did not report OtherFunction.SupportGunBallTwoSensorPtzLocate")
+        );
+        assert!(ability_refusal(&abilities, &CALIBRATE_ABILITY).is_some());
+        assert!(ability_refusal(&Value::Null, &PRESET_ABILITY).is_some());
     }
 
     #[test]
