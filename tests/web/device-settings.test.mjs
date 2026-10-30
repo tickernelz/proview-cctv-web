@@ -92,7 +92,7 @@ test('the Device settings page reads the camera and writes only the fields that 
       patterns: [{ urlPattern: '*/api/device/settings/*' }],
       respond: (url) => {
         seen.push(url);
-        if (url.includes('/encode?')) return REPORT;
+        if (url.includes('/encode?') && url.includes('stream=')) return REPORT;
         if (url.includes('/encode')) return ENCODE;
         if (url.includes('/network')) return NETWORK;
         return STORAGE;
@@ -113,7 +113,8 @@ test('the Device settings page reads the camera and writes only the fields that 
     );
     await page.evaluate("document.querySelector('#device-encode button').click()");
     await page.wait("document.getElementById('device-report').textContent.includes('MainFormat.Video.FPS')", 'the write report to render');
-    const write = seen.find((url) => url.includes('/encode?'));
+    const write = seen.find((url) => url.includes('/encode?') && url.includes('stream='));
+    assert.ok(seen.every((url) => url.includes('device=gate')), seen.join(' '));
     assert.match(write, /stream=main/);
     assert.match(write, /fps=10/);
     assert.doesNotMatch(write, /bitrate=/);
