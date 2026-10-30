@@ -80,7 +80,12 @@ jobs:
         run: npm ci --include=dev
       - name: e2e (Chromium and WebKit, fixture servers)
         working-directory: e2e
-        run: npx --no-install playwright test
+        run: npx --no-install playwright test tests/visual.spec.ts --update-snapshots=changed
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-snapshots
+          path: e2e/tests/**/*-snapshots/**
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
