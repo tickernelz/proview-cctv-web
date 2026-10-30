@@ -1,6 +1,7 @@
 pub mod client;
 pub mod control;
 pub mod crypto;
+pub mod detect;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod frame;
@@ -30,4 +31,5 @@ pub mod msg {
     pub const MONITOR: u16 = 0x0585;
     pub const MONITOR_CHANNEL: u8 = 99;
     pub const MONITOR_START: u16 = 0x0582;
+    pub const OP_REMOTE_CTRL: u16 = 4000;
 }

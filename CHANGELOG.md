@@ -9,6 +9,16 @@ stability before 1.0.
 
 ### Added
 
+- Alarm and detection settings over the vendor cloud (Settings, Alarm and
+  detection): motion detection (on/off, Low/Middle/High, area grid, schedule,
+  alarm actions, alarm tone), human detection (track box, area/line rule),
+  video loss and tamper, human tracking and the device push interval, each read
+  and written through `/api/device/detect` with a saved copy, a read-back and an
+  automatic revert. Blocks the camera does not advertise (vehicle, pet, cry,
+  abnormal sound, intelligent vigilance, one-key call) are listed with the
+  ability flag that hides them, the same gate the phone app uses. The live bar
+  offers Stop alarm only on cameras that report the manual alarm ability.
+
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
