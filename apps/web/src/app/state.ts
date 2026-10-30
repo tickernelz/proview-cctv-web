@@ -13,7 +13,7 @@ export type Device = {
 export type Camera = { device: Device; channel: number; key: string; name: string }
 
 const PREFS_KEY = 'pvw_prefs_v2'
-export const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server', 'alarm']
+export const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server', 'system', 'alarm']
 
 function defaultPrefs(): Prefs {
   return { theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: false }

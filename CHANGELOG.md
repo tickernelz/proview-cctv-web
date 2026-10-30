@@ -15,6 +15,25 @@ stability before 1.0.
 
 ### Added
 
+- About device in Settings, over the vendor cloud relay (`/api/device/system*`):
+  model, serial, firmware, build time, hardware, run time, `SystemInfoEx` and the
+  `SystemFunction` flags; camera clock and time zone with a sync to this
+  computer that writes the standard offset and the daylight-saving rule the way
+  the app does (`OPTimeQuery` 1452, `OPTimeSetting` 1450, `System.TimeZone`,
+  `General.Location` `DSTRule`/`DSTStart`/`DSTEnd`); the camera UI language
+  from its `MultiLanguage` list;
+  a firmware check that asks the camera (`OPVersionReq` 2016, only when it
+  reports `SupportCfgCloudupgrade`) and the vendor upgrade server
+  (`POST upgrade.secu100.net:9083/list`, 204 means no newer build); a network
+  check (`Ping` 1052 to the app's hosts plus the gateway, `XmCloudStatus`,
+  `Status.NatInfo`, `WifiRouteInfo` gated by `WifiRouteSignalLevel`, 60 s
+  in total); the device user list without password hashes; restart
+  (`OPMachine`, session held 5 s before logout). Factory defaults (typed RESET)
+  and cloud and file firmware upgrade (typed UPGRADE) are wired with the app's
+  wire JSON and proven against a fake device only. Device password, user and
+  recovery writes over DVRIP are not offered; the cloud `mdeditPass` route
+  stays the way to change the camera password.
+
 - Live view plays the camera's own sound (G.711 A-law, 8 kHz) over the cloud
   relay, for the stage and the selected grid tile, in both H.265 passthrough
   and H.264 transcode. The server sends audio only to a viewer that switched
