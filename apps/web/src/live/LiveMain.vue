@@ -105,9 +105,9 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
-    <LiveBar />
     <DockStatus />
     <PtzPad v-if="padSheet.on" mode="sheet" />
+    <LiveBar />
   </section>
   <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" :hidden="!live.panes.grid"><GridView /></section>
   <FisheyeOverlay />

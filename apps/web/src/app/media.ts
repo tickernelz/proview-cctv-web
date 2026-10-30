@@ -16,6 +16,8 @@ export function renderMute() {
 export function toggleMute() {
   state.muted = !state.muted
   renderMute()
+  const player = state.players.get('stage')
+  if (!state.muted && player) player.soundTick()
 }
 
 function download(blob: Blob, name: string) {

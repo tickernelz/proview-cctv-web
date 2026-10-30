@@ -14,6 +14,8 @@ import {
 } from '../components/ui/dropdown-menu'
 import { live } from './store'
 
+const start = computed(() => live.launchers.filter((item) => item.slot === 'start'))
+const end = computed(() => live.launchers.filter((item) => item.slot === 'end'))
 const quality = computed(() => (live.quality === 'sub' ? 'SD' : 'HD'))
 const SOUND_TITLES: Record<string, string> = {
   waiting: 'Sound is on, waiting for the camera audio',
@@ -118,9 +120,23 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       <Icon name="move" /><span class="dk-label">Move</span>
     </button>
     <AlarmStop />
+    <button
+      v-for="item in start"
+      :id="item.id"
+      :key="item.id"
+      :data-testid="item.id"
+      class="dk"
+      type="button"
+      :title="item.title"
+      :aria-pressed="item.pressed ?? undefined"
+      :aria-controls="item.controls"
+      @click="item.onClick()"
+    >
+      <Icon :name="item.icon" /><span class="dk-label">{{ item.label }}</span>
+    </button>
     <span class="spacer" />
     <button
-      v-for="item in live.launchers"
+      v-for="item in end"
       :id="item.id"
       :key="item.id"
       :data-testid="item.id"
@@ -148,7 +164,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
     </DropdownMenu>
     <DropdownMenu :modal="false">
       <DropdownMenuTrigger id="quality-pick" data-testid="quality-pick" class="dk" aria-keyshortcuts="Q" title="Quality (Q)">
-        <span class="dk-q" data-testid="quality-value">{{ quality }}</span><span class="dk-label">Quality</span>
+        <span class="dk-label">Quality</span> <span class="dk-q" data-testid="quality-value">{{ quality }}</span>
       </DropdownMenuTrigger>
       <DropdownMenuContent id="quality-menu" data-testid="quality-menu" aria-label="Quality">
         <DropdownMenuLabel class="menu-h">Quality · Q switches</DropdownMenuLabel>
