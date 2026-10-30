@@ -9,6 +9,14 @@ stability before 1.0.
 
 ### Added
 
+- Live view plays the camera's own sound (G.711 A-law, 8 kHz) over the cloud
+  relay, for the stage and the selected grid tile, in both H.265 passthrough
+  and H.264 transcode. The server sends audio only to a viewer that switched
+  Sound on, the Sound button reads "No sound" when the camera sends none, and
+  during Talk the live sound stops while the camera audio returned on the talk
+  channel plays instead. Measured on the dual-lens camera: about 25 audio
+  frames a second for main and sub, room noise near -50 dBFS.
+
 - H.265 plays without ffmpeg where the webview decodes it: cloud live (stage
   and grid tiles), LAN passthrough and device playback mux the camera's HEVC
   in-process into fragmented MP4 (`hvc1`) for the MediaSource player. The
