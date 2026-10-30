@@ -7,6 +7,12 @@ stability before 1.0.
 
 ## Unreleased
 
+### Fixed
+
+- Two settings writes of the same block in the same millisecond no longer fail
+  with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
+  and a name that already exists is skipped instead of refused.
+
 ### Added
 
 - PTZ at parity with the phone app's live and preset screens, over the cloud
@@ -24,6 +30,15 @@ stability before 1.0.
   wording when the flag is missing, before anything is sent. A hold stops by
   itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
   sends the release as a beacon.
+- Alarm and detection settings over the vendor cloud (Settings, Alarm and
+  detection): motion detection (on/off, Low/Middle/High, schedule, alarm
+  actions, alarm tone), human detection (track box, area/line rule), human
+  tracking and the device push interval (30 to 1800 s, nothing else on that
+  block), each read and written through `/api/device/detect` with a saved copy, a read-back and an
+  automatic revert. Blocks the camera does not advertise (vehicle, pet, cry,
+  abnormal sound, intelligent vigilance, one-key call) are listed with the
+  ability flag that hides them, the same gate the phone app uses. The live bar
+  offers Stop alarm only on cameras that report the manual alarm ability.
 - Device settings work through the vendor cloud: `/api/device/settings/{encode,network,storage}`
   and `/api/device/controls/settings` take `device` and open DVRIP over the relay,
   so they answer without the camera on the local network. New blocks with the

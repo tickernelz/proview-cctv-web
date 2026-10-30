@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Icon from '../components/Icon.vue'
+import AlarmStop from './AlarmStop.vue'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -96,6 +97,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
     <button id="snapshot" data-testid="ctl-snapshot" class="ctl" type="button" aria-keyshortcuts="S" :disabled="live.snapshotDisabled" @click="live.actions.captureSnapshot()">
       <Icon name="camera" /><span>Snapshot</span>
     </button>
+    <AlarmStop />
     <button
       v-for="item in start"
       :id="item.id"

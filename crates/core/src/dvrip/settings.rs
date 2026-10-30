@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -333,20 +334,56 @@ fn private_file(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
+static BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const BACKUP_ATTEMPTS: usize = 16;
+
+fn backup_path(dir: &Path, name: &str, at_ms: u128) -> PathBuf {
+    let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        "config-backup-{}-{at_ms}-{}-{sequence}.json",
+        slug(name),
+        std::process::id()
+    ))
+}
+
+fn create_backup(
+    dir: &Path,
+    name: &str,
+    at_ms: u128,
+) -> Result<(PathBuf, fs::File), SettingsError> {
+    let mut last = None;
+    for _ in 0..BACKUP_ATTEMPTS {
+        let path = backup_path(dir, name, at_ms);
+        match private_file(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last = Some((path, error))
+            }
+            Err(error) => {
+                return Err(SettingsError::Backup {
+                    path: path.display().to_string(),
+                    detail: error.to_string(),
+                })
+            }
+        }
+    }
+    let (path, error) = last.expect("at least one attempt ran");
+    Err(SettingsError::Backup {
+        path: path.display().to_string(),
+        detail: error.to_string(),
+    })
+}
+
 pub(crate) fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, SettingsError> {
     private_dir(dir)?;
     let at_ms = stamp();
-    let path = dir.join(format!("config-backup-{}-{at_ms}.json", slug(name)));
+    let (path, mut file) = create_backup(dir, name, at_ms)?;
     let body = json!({
         "block": name,
         "captured_at_ms": at_ms,
         "value": value,
     });
     let text = serde_json::to_string_pretty(&body).map_err(|error| SettingsError::Backup {
-        path: path.display().to_string(),
-        detail: error.to_string(),
-    })?;
-    let mut file = private_file(&path).map_err(|error| SettingsError::Backup {
         path: path.display().to_string(),
         detail: error.to_string(),
     })?;
@@ -1223,5 +1260,61 @@ mod tests {
     fn a_backup_name_is_a_flat_file_for_any_block_name() {
         assert_eq!(slug("Simplify.Encode"), "simplify-encode");
         assert_eq!(slug("NetWork.NetCommon"), "network-netcommon");
+    }
+
+    #[test]
+    fn concurrent_backups_of_one_block_never_share_a_file() {
+        const WRITERS: usize = 64;
+        let dir = std::env::temp_dir().join(format!(
+            "pvw-backup-names-{}-{}",
+            std::process::id(),
+            stamp()
+        ));
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let dir = dir.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    backup_file("Simplify.Encode", &json!({ "writer": writer }), &dir)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        let failures: Vec<String> = results
+            .iter()
+            .filter_map(|result| result.as_ref().err().map(ToString::to_string))
+            .collect();
+        let paths: std::collections::BTreeSet<PathBuf> =
+            results.into_iter().filter_map(Result::ok).collect();
+        let files = fs::read_dir(&dir)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        let writers: std::collections::BTreeSet<i64> = paths
+            .iter()
+            .map(|path| {
+                let text = fs::read_to_string(path).unwrap();
+                serde_json::from_str::<Value>(&text).unwrap()["value"]["writer"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            failures.is_empty(),
+            "{} failed: {failures:?}",
+            failures.len()
+        );
+        assert_eq!(paths.len(), WRITERS);
+        assert_eq!(files, WRITERS);
+        assert_eq!(writers.len(), WRITERS);
+        assert!(paths.iter().all(|path| path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("config-backup-simplify-encode-"))));
     }
 }

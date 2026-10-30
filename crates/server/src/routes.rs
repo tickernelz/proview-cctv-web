@@ -44,6 +44,7 @@ use crate::config::ModeStore;
 
 pub mod audio;
 pub mod control;
+pub mod detect;
 pub mod ptz;
 pub mod settings_write;
 
@@ -80,6 +81,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(device_admin::routes())
     .chain(apmode::routes())
     .chain(settings_write::routes())
+    .chain(detect::routes())
     .collect()
 }
 

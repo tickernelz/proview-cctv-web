@@ -1,6 +1,7 @@
 pub mod client;
 pub mod control;
 pub mod crypto;
+pub mod detect;
 pub mod encode_osd;
 #[cfg(test)]
 pub(crate) mod fake;
@@ -39,4 +40,5 @@ pub mod msg {
     pub const MONITOR_CHANNEL: u8 = 99;
     pub const MONITOR_START: u16 = 0x0582;
     pub const PTZ_LOCATE: u16 = 3032;
+    pub const OP_REMOTE_CTRL: u16 = 4000;
 }
