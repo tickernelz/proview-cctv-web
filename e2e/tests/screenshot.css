@@ -1,7 +1,12 @@
 [data-testid="live-clock"],
 [data-testid="live-lag"],
 [data-testid="grid-tile-clock"],
-[data-testid="alarm-status"] {
+[data-testid="alarm-status"],
+[data-testid="tl-pill"],
+[data-testid="tl-head"],
+[data-testid="tl-day"] span,
+.tl-ruler,
+.tl-note-text {
   visibility: hidden !important;
 }
 
