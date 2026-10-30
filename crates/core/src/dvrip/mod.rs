@@ -11,6 +11,7 @@ pub mod playback_plus;
 pub mod ptz;
 pub mod settings;
 pub mod storage_card;
+pub mod system;
 pub mod talk;
 
 pub const MAGIC: u8 = 0xff;
@@ -35,6 +36,13 @@ pub mod msg {
     pub const TALK_CLAIM: u16 = 1434;
     pub const OP_MACHINE: u16 = 1450;
     pub const TIME_QUERY: u16 = 1452;
+    pub const PING: u16 = 1052;
+    pub const USERS_GET: u16 = 1472;
+    pub const SYSTEM_UPGRADE: u16 = 1520;
+    pub const UPGRADE_DATA: u16 = 1522;
+    pub const SAFETY: u16 = 1650;
+    pub const VERSION_REQ: u16 = 2016;
+    pub const START_UPGRADE: u16 = 2018;
     pub const STORAGE_MANAGER: u16 = 1460;
     pub const SNAP: u16 = 1560;
     pub const MONITOR: u16 = 0x0585;
