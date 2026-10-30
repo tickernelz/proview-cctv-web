@@ -7,6 +7,12 @@ stability before 1.0.
 
 ## Unreleased
 
+### Fixed
+
+- Two settings writes of the same block in the same millisecond no longer fail
+  with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
+  and a name that already exists is skipped instead of refused.
+
 ### Added
 
 - Alarm and detection settings over the vendor cloud (Settings, Alarm and
