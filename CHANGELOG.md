@@ -81,6 +81,30 @@ stability before 1.0.
   time overlay (`/api/device/settings/osd`, `AVEnc.VideoWidget` + `ChannelTitle`,
   optional `TitleDot` bitmap), and Format SD (`OPStorageManager`, cmd 1460)
   behind a typed `FORMAT` confirmation.
+- H.265 plays without ffmpeg where the webview decodes it: cloud live (stage
+  and grid tiles), LAN passthrough and device playback mux the camera's HEVC
+  in-process into fragmented MP4 (`hvc1`) for the MediaSource player. The
+  client asks for it only when `MediaSource.isTypeSupported` and, where present,
+  `VideoDecoder.isConfigSupported` accept the stream's real codec string at its
+  coded size, and falls back to the H.264 transcode when the buffer refuses it
+  or no frame is decoded within 4 s of a visible page, remembering the verdict
+  per session (a later success never overwrites a refusal). The hello names the
+  mode actually served: an H.264 camera asked for H.265 gets its own stream
+  remuxed natively, and a stream that reorders frames (B-frames) is transcoded,
+  because the muxers write no composition offsets.
+  Measured over the cloud relay on the dual-lens camera: 0.3-0.4 % of a core and
+  no child process for the main stream against 76-81 % with ffmpeg, first
+  fragment 2.17-2.27 s against 2.88-3.08 s. ffmpeg stays a hidden fallback and
+  is never bundled.
+- Clip downloads are playable MP4 files
+  (`2026-10-30_05.20.31-05.25.00[R]...mp4`) muxed natively for H.264 and H.265
+  while the file arrives, so the server holds about one copy of it, and timed
+  from the record stamps: a 269 s file reads as 269.2 s at 12.5 fps in
+  `ffprobe`, where the header byte's 12 fps would have stretched it to 280 s.
+  A stream with B-frames downloads as its raw `.hevc`/`.h264` stream instead.
+- A test fails when any shipped `Command::new` lacks `hide_console`, so no
+  child process can open a console window on Windows.
+
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
@@ -125,6 +149,9 @@ stability before 1.0.
 
 ### Fixed
 
+- Fragmented MP4 from the native muxers no longer marks the first sample of a
+  delta fragment as a sync sample (`trun` first-sample flags), which let
+  MediaSource treat a delta as a random access point.
 - Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
   every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
   only its own window.

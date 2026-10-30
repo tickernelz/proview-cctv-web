@@ -152,17 +152,14 @@ Every run writes `~/re/proview-cctv/acceptance/<sha>-<timestamp>/`:
 | `report.md` | the human summary: stage table, numbers, samples, dump path |
 | `report.json` | the same data for a script; schema `proview-live-acceptance/1` |
 | `server.log` | the server's own log for the run |
-| `dump/frames.hevc` (`frames.h264` if a future framed path announced H.264) | elementary stream from the first keyframe, when the socket framed its messages (one type byte, eight bytes of pts). Framed is HEVC passthrough: each access unit arrives as NALs with a four-byte big-endian length prefix, and the dump rewrites every prefix as a `00 00 00 01` start code. The server reinserts VPS/SPS/PPS on every keyframe, so the file decodes with `ffprobe -f hevc` and needs nothing from the config record |
-| `dump/frames.mp4` | the whole fMP4 box stream, when the socket sent raw fragments, which is what transcode does. Keyframe counts then come from `/api/live/stats` alone |
-| `dump/config.bin` | the hvcC record the socket sent, kept untouched for inspection; the dump does not read it |
+| `dump/frames.mp4` | the whole fMP4 box stream from the init segment on. Both transports send fMP4: transcode carries H.264 (`avc1`), passthrough (`codec=hevc`) carries the camera's H.265 untouched in an `hvc1` track whose `hvcC` holds VPS/SPS/PPS |
 | `dump/frames.tsv` | one row per dumped frame: kind, pts, bytes, seconds into the run |
 
-The report names the framing it saw (`live.framing`): `framed` means each binary message starts with a
-one-byte type (`1` config, `2` keyframe, `3` delta; `2` and `3` carry eight bytes of pts) and the dump
-strips those nine bytes, then rewrites the four-byte length prefix of every NAL as an Annex-B start
-code so the file is a decodable elementary stream; `raw` means the socket carried whole fMP4 boxes, the
-dump keeps them untouched, and the keyframe count comes from `/api/live/stats` alone. The config record
-stays in `dump/config.bin` untouched either way.
+The first binary message is the init segment (`live.inits`); every later one is a `moof`+`mdat`
+fragment. Its `trun` (flags `0x705`: data offset, first-sample flags, then duration, size and
+flags per sample) carries sample 0's own flags 28 bytes after the `trun` type; bit `0x02000000`
+(does not depend on others) marks a keyframe, which is how the harness counts
+`live.keyframes_ws` and `live.deltas`. The dump keeps the boxes untouched.
 `report.md` always prints the exact `ffprobe` line for the file that run wrote, so there is no second
 place to keep in sync.
 
@@ -175,8 +172,7 @@ ffprobe -v error -f <demuxer> -count_frames \
 ```
 
 `<file>` and `<demuxer>` are not guesses: `report.md` prints the line for the
-file that run actually wrote, `frames.mp4` for a raw run and `frames.h264` or
-`frames.hevc` for a framed one.
+file that run actually wrote, which is always `frames.mp4` with `-f mp4`.
 
 The report keeps `frames`, `keyframes`, `bytes`, `fps_avg`, `first_frame_s`,
 `longest_gap_s` and one sample row every ten seconds by default. `fps_avg` is

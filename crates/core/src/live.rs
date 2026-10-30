@@ -29,8 +29,6 @@ impl LiveMode {
 pub enum PacketKind {
     Init,
     Fragment,
-    Config,
-    AccessUnit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,7 +36,6 @@ pub struct LivePacket {
     pub kind: PacketKind,
     pub bytes: Fragment,
     pub keyframe: bool,
-    pub pts_us: u64,
 }
 
 impl LivePacket {
@@ -47,7 +44,6 @@ impl LivePacket {
             kind: PacketKind::Init,
             bytes,
             keyframe: false,
-            pts_us: 0,
         }
     }
 
@@ -56,7 +52,6 @@ impl LivePacket {
             kind: PacketKind::Fragment,
             bytes,
             keyframe: true,
-            pts_us: 0,
         }
     }
 
@@ -65,25 +60,6 @@ impl LivePacket {
             kind: PacketKind::Fragment,
             bytes,
             keyframe,
-            pts_us: 0,
-        }
-    }
-
-    pub fn config(bytes: Fragment) -> Self {
-        Self {
-            kind: PacketKind::Config,
-            bytes,
-            keyframe: true,
-            pts_us: 0,
-        }
-    }
-
-    pub fn access_unit(bytes: Fragment, keyframe: bool, pts_us: u64) -> Self {
-        Self {
-            kind: PacketKind::AccessUnit,
-            bytes,
-            keyframe,
-            pts_us,
         }
     }
 }
@@ -222,7 +198,6 @@ struct Channel {
     subscribers: usize,
     publishers: usize,
     init: Arc<Mutex<Option<Fragment>>>,
-    config: Arc<Mutex<Option<Fragment>>>,
     replay: Mutex<Replay>,
     meta: Arc<Mutex<StreamMeta>>,
     counters: Arc<Counters>,
@@ -236,7 +211,6 @@ impl Channel {
             subscribers: 0,
             publishers: 0,
             init: Arc::new(Mutex::new(None)),
-            config: Arc::new(Mutex::new(None)),
             replay: Mutex::new(Replay::default()),
             meta: Arc::new(Mutex::new(StreamMeta::default())),
             counters: Arc::new(Counters::default()),
@@ -246,7 +220,6 @@ impl Channel {
 
 pub struct Subscription {
     pub init: Arc<Mutex<Option<Fragment>>>,
-    pub config: Arc<Mutex<Option<Fragment>>>,
     pub replay: Vec<Arc<LivePacket>>,
     pub meta: Arc<Mutex<StreamMeta>>,
     pub receiver: broadcast::Receiver<Arc<LivePacket>>,
@@ -296,7 +269,6 @@ impl LiveHub {
             .unwrap_or_default();
         Subscription {
             init: channel.init.clone(),
-            config: channel.config.clone(),
             replay,
             meta: channel.meta.clone(),
             receiver: channel.sender.subscribe(),
@@ -331,29 +303,18 @@ impl LiveHub {
             .counters
             .bytes
             .fetch_add(packet.bytes.len() as u64, Ordering::Relaxed);
-        if packet.keyframe && packet.kind != PacketKind::Config {
+        if packet.keyframe && packet.kind == PacketKind::Fragment {
             channel.counters.keyframes.fetch_add(1, Ordering::Relaxed);
         }
-        match packet.kind {
-            PacketKind::Init => {
-                if let Ok(mut slot) = channel.init.lock() {
-                    *slot = Some(packet.bytes);
-                }
-                return;
+        if packet.kind == PacketKind::Init {
+            if let Ok(mut slot) = channel.init.lock() {
+                *slot = Some(packet.bytes);
             }
-            PacketKind::Config => {
-                if let Ok(mut slot) = channel.config.lock() {
-                    *slot = Some(packet.bytes);
-                }
-                return;
-            }
-            PacketKind::Fragment | PacketKind::AccessUnit => {}
+            return;
         }
         let shared = Arc::new(packet);
-        if shared.kind == PacketKind::Fragment {
-            if let Ok(mut replay) = channel.replay.lock() {
-                replay.record(shared.clone());
-            }
+        if let Ok(mut replay) = channel.replay.lock() {
+            replay.record(shared.clone());
         }
         let _ = channel.sender.send(shared);
     }
@@ -653,11 +614,12 @@ mod tests {
         hub.note_audio(&stream);
         hub.note_audio(&stream);
         hub.note_drop(&stream);
-        hub.publish_packet(&stream, LivePacket::config(Fragment::from_static(b"hvcc")));
         hub.publish_packet(
             &stream,
-            LivePacket::access_unit(Fragment::from_static(b"idr"), true, 0),
+            LivePacket::init(Fragment::from_static(b"ftypmoov")),
         );
+        hub.publish_media(&stream, Fragment::from_static(b"moofmdat"), true);
+        hub.publish_media(&stream, Fragment::from_static(b"moofmdat"), false);
         let snapshot = hub.snapshots().pop().expect("one stream");
         assert_eq!(snapshot.audio_packets, 2);
         assert_eq!(snapshot.drops, 1);
