@@ -12,6 +12,7 @@ pub const TOKEN_BASE: &str = "https://pub-token.xmeye.net";
 pub const TOKEN_PATH: &str = "/reqToken";
 pub const TOKEN_SERVICE: &str = "dss";
 pub const PMS_BASE: &str = "http://access-pms.secu100.net:6602";
+pub const PMS_BASE_ENV: &str = "PROVIEW_PMS_BASE";
 const TIMEOUT_SECONDS: u64 = 20;
 const USER_AGENT: &str = "proview-cctv-web/0.3";
 
@@ -201,6 +202,8 @@ pub struct CloudRecording {
     pub size_bytes: Option<u64>,
     pub index_file: String,
     pub storage_bucket: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -259,7 +262,20 @@ pub fn read_recordings(text: &str) -> CloudResult<RecordingPage> {
             recordings.extend(items.iter().filter_map(item_of));
         }
     }
-    recordings.sort_by(|left, right| left.start.cmp(&right.start));
+    if let Some(items) = body.get("vidlist").and_then(|value| value.as_array()) {
+        recordings.extend(items.iter().filter_map(native_item_of));
+    }
+    for key in ["tmaix", "dt"] {
+        if let Some(value) = body.get(key) {
+            axis_items(value, 0, &mut recordings);
+        }
+    }
+    recordings.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| right.index_file.len().cmp(&left.index_file.len()))
+    });
+    recordings.dedup_by(|later, kept| later.start == kept.start && later.end == kept.end);
     let notice = recordings
         .is_empty()
         .then(|| "the cloud returned no clips for that day".to_string());
@@ -277,7 +293,49 @@ fn item_of(item: &serde_json::Value) -> Option<CloudRecording> {
         size_bytes: size_of(item.get("VideoSize")),
         index_file: text_field(item, &["IndexFile"]).unwrap_or_default(),
         storage_bucket: text_field(item, &["StorageBucket"]).unwrap_or_default(),
+        label: String::new(),
     })
+}
+
+fn native_item_of(item: &serde_json::Value) -> Option<CloudRecording> {
+    let start = text_field(item, &["st"])?;
+    let end = text_field(item, &["et"]).unwrap_or_default();
+    let duration_secs = duration_between(&start, &end).unwrap_or_default();
+    Some(CloudRecording {
+        start,
+        end,
+        duration_secs,
+        size_bytes: size_of(item.get("size")),
+        index_file: text_field(item, &["indx"]).unwrap_or_default(),
+        storage_bucket: text_field(item, &["bucket"]).unwrap_or_default(),
+        label: label_of(item.get("label").or_else(|| item.get("tp"))),
+    })
+}
+
+fn axis_items(value: &serde_json::Value, depth: u8, out: &mut Vec<CloudRecording>) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for item in items {
+        if item.get("st").is_some() {
+            out.extend(native_item_of(item));
+        } else if depth == 0 {
+            for key in ["tmaix", "dt"] {
+                if let Some(inner) = item.get(key) {
+                    axis_items(inner, 1, out);
+                }
+            }
+        }
+    }
+}
+
+fn label_of(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+        Some(serde_json::Value::Number(number)) => number.to_string(),
+        Some(serde_json::Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    }
 }
 
 fn size_of(value: Option<&serde_json::Value>) -> Option<u64> {
@@ -335,12 +393,23 @@ pub fn envelope_client() -> Option<super::envelope::EnvelopeClient> {
         .then(|| super::envelope::EnvelopeClient::new(identity))
 }
 
+pub fn pms_base() -> String {
+    std::env::var(PMS_BASE_ENV)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| PMS_BASE.to_string())
+}
+
 pub async fn cloud_recordings(
+    client: &super::envelope::EnvelopeClient,
     request: RecordingQuery<'_>,
 ) -> Result<RecordingPage, RecordingError> {
-    let client = envelope_client().ok_or_else(|| {
-        CloudError::Malformed(super::envelope::MISSING_CLOUD_IDENTITY.to_string())
-    })?;
+    if !client.identity().is_complete() {
+        return Err(
+            CloudError::Malformed(super::envelope::MISSING_CLOUD_IDENTITY.to_string()).into(),
+        );
+    }
     let devices = client.device_list(request.access).await?;
     let wanted = request.sn.trim();
     let device = if wanted.is_empty() {
@@ -363,7 +432,7 @@ pub async fn cloud_recordings(
         .to_string();
     let body = query_body(&request, device.uuid.as_str(), &auth);
     let response = http_client()
-        .post(format!("{PMS_BASE}/v2"))
+        .post(format!("{}/v2", pms_base()))
         .header("Content-Type", "application/json")
         .body(body)
         .send()
@@ -488,6 +557,39 @@ mod tests {
     fn numeric_reply_code_is_accepted() {
         let page = read_recordings(r#"{"msg":"video_query","code":200}"#).unwrap();
         assert!(page.recordings.is_empty());
+    }
+
+    #[test]
+    fn native_vidlist_items_carry_index_and_bucket() {
+        let text = r#"{"code":"200","msg":"video_query","vidlist":[{"indx":"SN0001/20261029/index_b.m3u8","bucket":"OSS_vid-01","label":"human","st":"2026-10-29 09:00:00","et":"2026-10-29 09:00:40"},{"indx":"SN0001/20261029/index_a.m3u8","bucket":"OSS_vid-01","st":"2026-10-29 08:00:00","et":"2026-10-29 08:01:30"}]}"#;
+        let page = read_recordings(text).unwrap();
+        assert_eq!(page.recordings.len(), 2);
+        assert_eq!(page.recordings[0].start, "2026-10-29 08:00:00");
+        assert_eq!(
+            page.recordings[0].index_file,
+            "SN0001/20261029/index_a.m3u8"
+        );
+        assert_eq!(page.recordings[0].storage_bucket, "OSS_vid-01");
+        assert_eq!(page.recordings[0].duration_secs, 90);
+        assert_eq!(page.recordings[1].label, "human");
+        assert!(page.notice.is_none());
+    }
+
+    #[test]
+    fn time_axis_entries_list_without_an_index_and_yield_to_a_clip() {
+        let text = r#"{"code":200,"dt":[{"tmaix":[{"st":"2026-10-29 08:00:00","et":"2026-10-29 08:01:30","tp":1},{"st":"2026-10-29 10:00:00","et":"2026-10-29 10:00:20","tp":2}]}],"vidlist":[{"indx":"SN0001/a.m3u8","bucket":"OSS_vid-01","st":"2026-10-29 08:00:00","et":"2026-10-29 08:01:30"}]}"#;
+        let page = read_recordings(text).unwrap();
+        assert_eq!(page.recordings.len(), 2);
+        assert_eq!(page.recordings[0].index_file, "SN0001/a.m3u8");
+        assert_eq!(page.recordings[1].start, "2026-10-29 10:00:00");
+        assert!(page.recordings[1].index_file.is_empty());
+        assert_eq!(page.recordings[1].label, "2");
+        let flat = read_recordings(
+            r#"{"code":"200","tmaix":[{"st":"2026-10-29 11:00:00","et":"2026-10-29 11:00:05"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(flat.recordings.len(), 1);
+        assert_eq!(flat.recordings[0].duration_secs, 5);
     }
 
     #[test]

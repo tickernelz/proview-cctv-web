@@ -22,6 +22,7 @@ pub mod cloud_bind;
 
 #[path = "routes/playback.rs"]
 pub mod playback;
+pub mod playback_mux;
 
 #[path = "routes/playback_plus.rs"]
 pub mod playback_plus;
@@ -49,10 +50,18 @@ pub mod audio;
 pub mod control;
 pub mod detect;
 pub mod image;
+pub mod ptz;
 pub mod settings_write;
+pub mod system;
 
 #[path = "routes/recordings.rs"]
 pub mod recordings;
+
+#[path = "routes/account.rs"]
+pub mod account;
+
+#[path = "routes/cloud_clips.rs"]
+pub mod cloud_clips;
 
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, media_clip, bundled_asset, font]
@@ -75,6 +84,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(ptz::routes())
     .chain(alarms::routes())
     .chain(fisheye::api())
     .chain(recordings::routes())
@@ -83,9 +93,12 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(device_admin::routes())
     .chain(apmode::routes())
     .chain(settings_write::routes())
+    .chain(system::routes())
     .chain(playback_plus::routes())
     .chain(detect::routes())
     .chain(image::routes())
+    .chain(account::routes())
+    .chain(cloud_clips::routes())
     .collect()
 }
 
@@ -480,7 +493,7 @@ pub async fn ws_live(
             device.clone(),
             channel,
             sub_stream,
-            LiveMode::Transcode,
+            crate::stream::requested_mode(codec.as_deref()),
         );
         let subscription = live.hub.subscribe(key.clone());
         live.ensure_cloud_source(

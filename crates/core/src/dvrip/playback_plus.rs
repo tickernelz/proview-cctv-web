@@ -612,6 +612,7 @@ mod tests {
                 kind: RecordKind::Key,
                 stamp: Some(0x6AB36607),
                 bytes: vec![1],
+                rate: None,
             },
             36,
         );
@@ -621,6 +622,7 @@ mod tests {
                     kind: RecordKind::Pad,
                     stamp: None,
                     bytes: vec![0xd5; 320],
+                    rate: None,
                 },
                 40 + index,
             );
@@ -630,6 +632,7 @@ mod tests {
                 kind: RecordKind::Delta,
                 stamp: None,
                 bytes: vec![2],
+                rate: None,
             },
             50,
         );
@@ -652,6 +655,7 @@ mod tests {
                 kind: RecordKind::Pad,
                 stamp: None,
                 bytes: vec![0xd5; 320],
+                rate: None,
             },
             60,
         );

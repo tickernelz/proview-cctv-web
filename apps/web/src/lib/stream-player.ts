@@ -1,6 +1,7 @@
+import { AVC_TYPE, decodes, mimeOf, rememberHevc, shouldAskForHevc, watchFirstFrame, type StreamShape } from './hevc'
+
 export const LIVE_WINDOW_SECONDS = 12
 export const LIVE_TARGET_LAG_SECONDS = 1.0
-export const MEDIA_SOURCE_TYPE = 'video/mp4; codecs="avc1.42E01E"'
 
 export type StreamTicket = { kind: string; url: string }
 export type PlayerState = 'playing' | 'stalled' | 'error'
@@ -25,6 +26,8 @@ export class StreamPlayer {
   metadataTimer: number | null = null
   announced = false
   onMetadata: (() => void) | null = null
+  transport: 'hevc' | 'avc' | null = null
+  stopHevcWatch: (() => void) | null = null
 
   constructor(video: HTMLVideoElement, onState?: (name: PlayerState, message: string) => void, muted: () => boolean = () => true) {
     this.video = video
@@ -101,7 +104,16 @@ export class StreamPlayer {
     }
   }
 
+  clearHevcWatch() {
+    if (this.stopHevcWatch) this.stopHevcWatch()
+    this.stopHevcWatch = null
+  }
+
   destroy() {
+    this.clearHevcWatch()
+    this.ticket = null
+    this.transport = null
+    delete this.video.dataset.transport
     this.stopWatchdog()
     if (this.onMetadata) {
       this.video.removeEventListener('loadedmetadata', this.onMetadata)
@@ -173,14 +185,92 @@ export class StreamPlayer {
     try {
       buffer.appendBuffer(next as BufferSource)
     } catch (error) {
+      if (this.transport === 'hevc' && this.stopHevcWatch) {
+        this.fallBack('the H.265 fragment was refused')
+        return
+      }
       console.error('append failed, dropping to the next keyframe', error)
       this.queue = []
     }
   }
 
-  playOverSocket(ticket: StreamTicket) {
+  ticket: StreamTicket | null = null
+
+  fallBack(reason: string) {
+    const ticket = this.ticket
+    rememberHevc('no')
+    console.warn('H.265 passthrough failed, switching to the H.264 transcode:', reason)
+    this.destroy()
+    if (ticket) this.playOverSocket(ticket, false)
+  }
+
+  openBuffer(media: MediaSource, type: string): boolean {
+    let buffer: SourceBuffer
+    try {
+      buffer = media.addSourceBuffer(type)
+    } catch (error) {
+      if (this.transport === 'hevc') {
+        this.fallBack('the browser refused ' + type)
+        return false
+      }
+      this.onState('error', 'This browser cannot decode the stream codec: ' + (error as Error).message)
+      return false
+    }
+    this.buffer = buffer
+    buffer.addEventListener('updateend', () => {
+      this.pump()
+      this.followEdge()
+    })
+    buffer.addEventListener('error', () => {
+      if (this.transport === 'hevc' && this.buffer === buffer) this.fallBack('the source buffer reported an error')
+    })
+    return true
+  }
+
+  watchHevc(media: MediaSource, shape: StreamShape) {
+    this.stopHevcWatch = watchFirstFrame(
+      this.video,
+      () => this.media === media && this.transport === 'hevc',
+      (ok, reason) => {
+        this.stopHevcWatch = null
+        if (ok) rememberHevc('yes', shape)
+        else this.fallBack(reason)
+      },
+    )
+  }
+
+  onHello(media: MediaSource, text: string) {
+    let hello: { type?: string; mode?: string; codec?: string | null; width?: number | null; height?: number | null } | null = null
+    try {
+      hello = JSON.parse(text)
+    } catch {
+      hello = null
+    }
+    if (!hello || hello.type !== 'hello' || this.buffer) return
+    if (hello.mode !== 'passthrough' || !hello.codec) {
+      this.transport = 'avc'
+      this.video.dataset.transport = 'avc'
+      if (this.openBuffer(media, hello.codec && hello.codec.startsWith('avc1') ? mimeOf(hello.codec) : AVC_TYPE)) this.pump()
+      return
+    }
+    const shape: StreamShape = { codec: hello.codec, width: hello.width, height: hello.height }
+    this.transport = 'hevc'
+    this.video.dataset.transport = 'hevc'
+    this.watchHevc(media, shape)
+    decodes(shape).then((ok) => {
+      if (this.media !== media) return
+      if (!ok) {
+        this.fallBack('the browser cannot decode ' + shape.codec + ' at ' + shape.width + 'x' + shape.height)
+        return
+      }
+      if (this.openBuffer(media, mimeOf(shape.codec))) this.pump()
+    })
+  }
+
+  playOverSocket(ticket: StreamTicket, askHevc: boolean) {
     const video = this.video
     const media = new MediaSource()
+    this.ticket = ticket
     this.media = media
     this.url = URL.createObjectURL(media)
     video.src = this.url
@@ -191,26 +281,23 @@ export class StreamPlayer {
         if (this.media !== media) {
           return
         }
-        let buffer: SourceBuffer
-        try {
-          buffer = media.addSourceBuffer(MEDIA_SOURCE_TYPE)
-        } catch (error) {
-          this.onState('error', 'This browser cannot decode the stream codec: ' + (error as Error).message)
-          return
-        }
-        this.buffer = buffer
-        buffer.addEventListener('updateend', () => {
-          this.pump()
-          this.followEdge()
-        })
-
         const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
-        const target = ticket.url.startsWith('/') ? scheme + '://' + location.host + ticket.url : ticket.url.replace(/^http/, 'ws')
+        const base = ticket.url.startsWith('/') ? scheme + '://' + location.host + ticket.url : ticket.url.replace(/^http/, 'ws')
+        const target = askHevc ? base + (base.includes('?') ? '&' : '?') + 'codec=hevc' : base
         const socket = new WebSocket(target)
         socket.binaryType = 'arraybuffer'
         this.socket = socket
         socket.onmessage = (event) => {
+          if (typeof event.data === 'string') {
+            this.onHello(media, event.data)
+            return
+          }
           this.queue.push(new Uint8Array(event.data as ArrayBuffer))
+          if (!this.buffer && !this.transport) {
+            this.transport = 'avc'
+            this.video.dataset.transport = 'avc'
+            this.openBuffer(media, AVC_TYPE)
+          }
           this.pump()
         }
         socket.onerror = () => this.onState('error', 'The live socket failed to connect.')
@@ -234,7 +321,10 @@ export class StreamPlayer {
         this.onState('error', 'This browser cannot play the live socket (no MediaSource).')
         return
       }
-      this.playOverSocket(ticket)
+      this.ticket = ticket
+      const askHevc = await shouldAskForHevc()
+      if (this.ticket !== ticket) return
+      this.playOverSocket(ticket, askHevc)
       return
     }
     if (ticket.kind === 'mp4' || ticket.url.endsWith('.mp4')) {

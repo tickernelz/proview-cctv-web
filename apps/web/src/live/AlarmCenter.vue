@@ -6,9 +6,11 @@ import { live } from './store'
 
 type Picture = { object?: string; bucket?: string }
 type Alarm = { id: string; name?: string; event?: string; time?: string; utcTime?: number; channel?: string; picture?: Picture }
-type Listing = { entries?: Alarm[]; total?: number; finished?: boolean; pollSeconds?: number; latencyMs?: number; message?: string }
+type Listing = { entries?: Alarm[]; total?: number; finished?: boolean; pollSeconds?: number; latencyMs?: number; message?: string; canDelete?: boolean; deleteReason?: string }
 type Device = { id: string; name?: string; channels?: number }
-type Query = { serial: string; hours: number }
+type Query = { serial: string; hours: number; event: string; day: string }
+type Day = { day: string; count: number }
+type Filter = { id: string; label: string }
 
 const desktop = Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__)
 const watching = ref(false)
@@ -18,10 +20,28 @@ const sheet = ref<HTMLElement>()
 const devicePick = ref<HTMLSelectElement>()
 const devices = ref<Device[]>([])
 const extra = ref<Device | null>(null)
-const query = reactive<Query>({ serial: '', hours: 24 })
+const query = reactive<Query>({ serial: '', hours: 24, event: '', day: '' })
+const filters: Filter[] = [
+  { id: 'VideoMotion', label: 'Motion detection' },
+  { id: 'appEventHumanDetectAlarm', label: 'Human detection' },
+]
+const tools = reactive({
+  calendar: false,
+  manage: false,
+  month: '',
+  monthPhase: 'idle' as 'idle' | 'loading' | 'ok' | 'error',
+  monthError: '',
+  days: [] as Day[],
+  selected: new Set<string>(),
+  confirmAll: false,
+  busy: false,
+  note: '',
+  push: '',
+  refused: '',
+})
 const view = reactive({
   phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error',
-  asked: { serial: '', hours: 24 } as Query,
+  asked: { serial: '', hours: 24, event: '', day: '' } as Query,
   entries: [] as Alarm[],
   error: '',
   total: 0,
@@ -46,7 +66,35 @@ let alertsOn = false
 const cameras = computed(() => (extra.value && !devices.value.some((device) => device.id === extra.value!.id) ? [...devices.value, extra.value] : devices.value))
 const rows = computed(() => [...view.entries].sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0)))
 const nameOf = (serial: string) => cameras.value.find((device) => device.id === serial)?.name || serial
-const span = (hours: number) => (hours === 168 ? 'the last 7 days' : 'the last 24 hours')
+const span = (asked: Query) => (asked.day ? 'on ' + asked.day : asked.hours === 168 ? 'the last 7 days' : 'the last 24 hours')
+const same = (left: Query, right: Query) => left.serial === right.serial && left.hours === right.hours && left.event === right.event && left.day === right.day
+const two = (value: number) => String(value).padStart(2, '0')
+const monthOf = (when: Date) => when.getFullYear() + '-' + two(when.getMonth() + 1)
+const monthLabel = computed(() => {
+  const [year, month] = tools.month.split('-').map(Number)
+  if (!year || !month) return ''
+  return new Date(year, month - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+})
+const monthCells = computed(() => {
+  const [year, month] = tools.month.split('-').map(Number)
+  if (!year || !month) return [] as { key: string; day: string; label: number; count: number }[]
+  const lead = (new Date(year, month - 1, 1).getDay() + 6) % 7
+  const length = new Date(year, month, 0).getDate()
+  const counts = new Map(tools.days.map((item) => [item.day, item.count]))
+  const cells: { key: string; day: string; label: number; count: number }[] = []
+  for (let index = 0; index < lead; index += 1) cells.push({ key: 'lead-' + index, day: '', label: 0, count: 0 })
+  for (let date = 1; date <= length; date += 1) {
+    const day = tools.month + '-' + two(date)
+    cells.push({ key: day, day, label: date, count: counts.get(day) || 0 })
+  }
+  return cells
+})
+const deleteReason = computed(() => {
+  if (tools.refused) return tools.refused
+  if (tools.busy) return 'Deleting…'
+  if (!tools.selected.size) return 'Select alarms to delete'
+  return ''
+})
 const plural = (count: number) => count + (count === 1 ? ' alarm' : ' alarms')
 
 const status = computed(() => {
@@ -62,7 +110,6 @@ function clock(when: Date) {
 }
 
 function stamp(when: Date) {
-  const two = (value: number) => String(value).padStart(2, '0')
   return when.getFullYear() + '-' + two(when.getMonth() + 1) + '-' + two(when.getDate()) + ' ' + two(when.getHours()) + ':' + two(when.getMinutes()) + ':' + two(when.getSeconds())
 }
 
@@ -135,13 +182,13 @@ function fail(message: string) {
 async function poll() {
   if (!watching.value || !query.serial) return
   if (document.hidden && !alertsOn) return
-  const asked: Query = { serial: query.serial, hours: query.hours }
-  if (inflight && inflight.serial === asked.serial && inflight.hours === asked.hours) return
+  const asked: Query = { serial: query.serial, hours: query.hours, event: query.event, day: query.day }
+  if (inflight && same(inflight, asked)) return
   const mine = ++ticket
   inflight = asked
   clearTimeout(timer)
   timer = 0
-  if (view.asked.serial !== asked.serial || view.asked.hours !== asked.hours || view.phase === 'idle') {
+  if (!same(view.asked, asked) || view.phase === 'idle') {
     view.asked = asked
     view.entries = []
     view.checked = ''
@@ -151,7 +198,10 @@ async function poll() {
   try {
     const until = new Date()
     const since = new Date(until.getTime() - asked.hours * 3600 * 1000)
-    const url = '/api/cloud/alarms?sn=' + encodeURIComponent(asked.serial) + '&start=' + encodeURIComponent(stamp(since)) + '&end=' + encodeURIComponent(stamp(until))
+    const start = asked.day ? asked.day + ' 00:00:00' : stamp(since)
+    const end = asked.day ? asked.day + ' 23:59:59' : stamp(until)
+    let url = '/api/cloud/alarms?sn=' + encodeURIComponent(asked.serial) + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end)
+    if (asked.event) url += '&event=' + encodeURIComponent(asked.event)
     const reply = await fetch(url, { credentials: 'same-origin' })
     const body: Listing = await reply.json().catch(() => ({}))
     if (mine !== ticket) return
@@ -167,6 +217,7 @@ async function poll() {
     if (!first) notify(entries)
     for (const entry of entries) seen.add(entry.id)
     view.entries = entries
+    tools.refused = body.canDelete === false ? body.deleteReason || 'This account may not delete alarms of this camera' : ''
     view.total = body.total || entries.length
     view.finished = body.finished !== false
     view.checked = clock(new Date())
@@ -205,6 +256,127 @@ function forget() {
   primed = ''
   missing.clear()
   pictures.state = 'unknown'
+  tools.selected.clear()
+  tools.confirmAll = false
+  tools.note = ''
+  tools.push = ''
+  tools.refused = ''
+  tools.days = []
+  tools.monthPhase = 'idle'
+}
+
+async function readJson(reply: Response) {
+  return (await reply.json().catch(() => ({}))) as Record<string, unknown>
+}
+
+async function loadMonth() {
+  const serial = query.serial
+  const month = tools.month
+  if (!serial || !month) return
+  tools.monthPhase = 'loading'
+  tools.monthError = ''
+  try {
+    const reply = await fetch('/api/cloud/alarms/calendar?sn=' + encodeURIComponent(serial) + '&month=' + encodeURIComponent(month), { credentials: 'same-origin' })
+    const body = await readJson(reply)
+    if (serial !== query.serial || month !== tools.month) return
+    if (!reply.ok) {
+      tools.monthPhase = 'error'
+      tools.monthError = String(body.message || 'the alarm centre answered ' + reply.status)
+      return
+    }
+    tools.days = (body.days as Day[]) || []
+    tools.monthPhase = 'ok'
+  } catch (error) {
+    if (serial !== query.serial || month !== tools.month) return
+    tools.monthPhase = 'error'
+    tools.monthError = 'the alarm centre could not be reached: ' + (error instanceof Error ? error.message : String(error))
+  }
+}
+
+function toggleCalendar() {
+  tools.calendar = !tools.calendar
+  if (!tools.calendar) return
+  tools.month = (query.day || stamp(new Date())).slice(0, 7)
+  loadMonth()
+}
+
+function stepMonth(delta: number) {
+  const [year, month] = tools.month.split('-').map(Number)
+  tools.month = monthOf(new Date(year, month - 1 + delta, 1))
+  tools.days = []
+  loadMonth()
+}
+
+function pickDay(day: string) {
+  if (!day) return
+  query.day = day
+  query.hours = 0
+  tools.calendar = false
+}
+
+async function loadPush() {
+  const serial = query.serial
+  if (!serial) return
+  tools.push = 'Checking push subscription…'
+  try {
+    const reply = await fetch('/api/cloud/alarms/subscription?sn=' + encodeURIComponent(serial), { credentials: 'same-origin' })
+    const body = await readJson(reply)
+    if (serial !== query.serial) return
+    if (!reply.ok) {
+      tools.push = 'Push subscription unknown: ' + String(body.message || reply.status)
+      return
+    }
+    const tokens = Number(body.count) || 0
+    tools.push = tokens ? 'The alarm centre pushes this camera to ' + tokens + (tokens === 1 ? ' phone' : ' phones') + '. This app checks every ' + pollSeconds + ' s instead.' : 'No phone is subscribed to push alarms for this camera. This app checks every ' + pollSeconds + ' s instead.'
+  } catch {
+    if (serial === query.serial) tools.push = 'Push subscription unknown: the alarm centre could not be reached'
+  }
+}
+
+function toggleManage() {
+  tools.manage = !tools.manage
+  tools.selected.clear()
+  tools.confirmAll = false
+  tools.note = ''
+  if (tools.manage) loadPush()
+}
+
+function toggleRow(id: string) {
+  if (tools.selected.has(id)) tools.selected.delete(id)
+  else tools.selected.add(id)
+  tools.confirmAll = false
+}
+
+async function remove(all: boolean) {
+  const serial = view.asked.serial
+  const ids = all ? [] : [...tools.selected]
+  if (!serial || (!all && !ids.length)) return
+  tools.busy = true
+  tools.note = ''
+  try {
+    const reply = await fetch('/api/cloud/alarms/delete', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sn: serial, ids, all }),
+    })
+    const body = await readJson(reply)
+    if (!reply.ok) {
+      tools.note = String(body.message || 'the alarm centre answered ' + reply.status)
+      return
+    }
+    tools.note = all ? 'Every alarm of ' + nameOf(serial) + ' was deleted.' : plural(ids.length) + ' deleted.'
+    tools.selected.clear()
+    tools.confirmAll = false
+    if (all) view.entries = []
+    else view.entries = view.entries.filter((entry) => !ids.includes(entry.id))
+    tools.days = []
+    poll()
+  } catch (error) {
+    tools.note = 'the alarm centre could not be reached: ' + (error instanceof Error ? error.message : String(error))
+  } finally {
+    tools.busy = false
+  }
 }
 
 function syncDevices() {
@@ -262,7 +434,7 @@ function reset() {
   extra.value = null
   query.serial = ''
   view.phase = 'idle'
-  view.asked = { serial: '', hours: query.hours }
+  view.asked = { serial: '', hours: query.hours, event: query.event, day: query.day }
   view.entries = []
   view.checked = ''
   forget()
@@ -293,6 +465,19 @@ watch(
 
 watch(
   () => query.hours,
+  (hours) => {
+    if (hours) query.day = ''
+    poll()
+  },
+)
+
+watch(
+  () => query.event,
+  () => poll(),
+)
+
+watch(
+  () => query.day,
   () => poll(),
 )
 
@@ -369,14 +554,52 @@ onMounted(() => {
         <select v-model.number="query.hours" data-hours data-testid="alarm-window" aria-label="Window">
           <option :value="24">Last 24 hours</option>
           <option :value="168">Last 7 days</option>
+          <option v-if="query.day" :value="0">On {{ query.day }}</option>
         </select>
+      </div>
+      <div class="alarm-bar alarm-tools">
+        <select v-model="query.event" data-testid="alarm-type" aria-label="Alarm type">
+          <option value="">All types</option>
+          <option v-for="filter in filters" :key="filter.id" :value="filter.id">{{ filter.label }}</option>
+        </select>
+        <button class="btn btn-line" type="button" data-testid="alarm-calendar-toggle" aria-controls="alarm-month" :aria-expanded="tools.calendar" :disabled="!query.serial" @click="toggleCalendar">Calendar</button>
+        <button class="btn btn-line" type="button" data-testid="alarm-manage" :aria-pressed="tools.manage" :disabled="!query.serial" @click="toggleManage">{{ tools.manage ? 'Done' : 'Select' }}</button>
+      </div>
+      <div v-if="tools.calendar" id="alarm-month" class="alarm-month" data-testid="alarm-month">
+        <div class="alarm-month-head">
+          <button class="iconbtn" type="button" aria-label="Previous month" data-testid="alarm-month-prev" @click="stepMonth(-1)"><Icon name="chevron-left" /></button>
+          <strong>{{ monthLabel }}</strong>
+          <button class="iconbtn" type="button" aria-label="Next month" data-testid="alarm-month-next" @click="stepMonth(1)"><Icon name="chevron-right" /></button>
+        </div>
+        <p v-if="tools.monthPhase === 'error'" class="err" role="alert"><Icon name="warning" small /><span>{{ tools.monthError }}</span></p>
+        <p v-else-if="tools.monthPhase === 'loading'" class="alarm-month-note">Loading the days with alarms…</p>
+        <p v-else-if="tools.monthPhase === 'ok' && !tools.days.length" class="alarm-month-note" data-testid="alarm-month-empty">No alarms in {{ monthLabel }}.</p>
+        <div class="alarm-days" role="grid" :aria-busy="tools.monthPhase === 'loading'">
+          <span v-for="name in ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']" :key="name" class="alarm-dow" aria-hidden="true">{{ name }}</span>
+          <template v-for="cell in monthCells" :key="cell.key">
+            <span v-if="!cell.day" aria-hidden="true" />
+            <button
+              v-else
+              type="button"
+              :class="['alarm-day', { has: cell.count, on: cell.day === query.day }]"
+              data-testid="alarm-day"
+              :data-day="cell.day"
+              :disabled="!cell.count"
+              :title="cell.count ? plural(cell.count) : 'No alarms'"
+              :aria-label="cell.day + ', ' + (cell.count ? plural(cell.count) : 'no alarms')"
+              @click="pickDay(cell.day)"
+            >
+              {{ cell.label }}<small v-if="cell.count">{{ cell.count }}</small>
+            </button>
+          </template>
+        </div>
       </div>
       <p v-if="view.phase === 'error'" class="err alarm-err" data-testid="alarm-error" role="alert">
         <Icon name="warning" small /><span>{{ view.error }}</span>
       </p>
       <div class="alarm-list" data-list role="list" :aria-busy="view.phase === 'loading'">
         <p v-if="view.phase === 'loading' && !rows.length" data-testid="alarm-loading">Loading alarms for {{ nameOf(view.asked.serial) }}…</p>
-        <p v-else-if="view.phase === 'ok' && !rows.length" data-testid="alarm-empty">No alarms for {{ nameOf(view.asked.serial) }} in {{ span(view.asked.hours) }}.</p>
+        <p v-else-if="view.phase === 'ok' && !rows.length" data-testid="alarm-empty">No alarms for {{ nameOf(view.asked.serial) }} {{ view.asked.day ? '' : 'in ' }}{{ span(view.asked) }}.</p>
         <div
           v-for="entry in rows"
           :key="entry.id"
@@ -385,6 +608,9 @@ onMounted(() => {
           :data-id="entry.id"
           role="listitem"
         >
+          <label v-if="tools.manage" class="alarm-pick">
+            <input type="checkbox" data-testid="alarm-select" :checked="tools.selected.has(entry.id)" :aria-label="'Select ' + (entry.name || 'alarm') + ' at ' + when(entry.time)" @change="toggleRow(entry.id)">
+          </label>
           <img v-if="srcOf(entry)" class="thumb" alt="" loading="lazy" :src="srcOf(entry)" @error="missing.add(entry.id)">
           <div v-else class="thumb"><Icon name="no-picture" small /></div>
           <div>
@@ -393,6 +619,20 @@ onMounted(() => {
             <div v-if="channelOf(entry)" class="chan">{{ channelOf(entry) }}</div>
           </div>
         </div>
+      </div>
+      <div v-if="tools.manage" class="alarm-manage" data-testid="alarm-manage-panel">
+        <p class="alarm-push" data-testid="alarm-push">{{ tools.push }}</p>
+        <div v-if="!tools.confirmAll" class="alarm-manage-row">
+          <button class="btn btn-line" type="button" data-testid="alarm-delete" :disabled="Boolean(deleteReason)" :aria-busy="tools.busy" @click="remove(false)">Delete selected ({{ tools.selected.size }})</button>
+          <button class="btn-text danger" type="button" data-testid="alarm-clear" :disabled="tools.busy || !query.serial || Boolean(tools.refused)" @click="tools.confirmAll = true">Clear all…</button>
+          <span v-if="deleteReason && !tools.busy" class="alarm-reason" data-testid="alarm-delete-reason">{{ deleteReason }}</span>
+        </div>
+        <div v-else class="alarm-manage-row" role="alertdialog" aria-labelledby="alarm-clear-ask">
+          <span id="alarm-clear-ask" class="alarm-reason">Delete every alarm of {{ nameOf(query.serial) }} from the cloud? This cannot be undone.</span>
+          <button class="btn btn-line danger" type="button" data-testid="alarm-clear-confirm" :aria-busy="tools.busy" :disabled="tools.busy" @click="remove(true)">Delete all</button>
+          <button class="btn-text" type="button" data-testid="alarm-clear-cancel" @click="tools.confirmAll = false">Cancel</button>
+        </div>
+        <p v-if="tools.note" class="alarm-push" data-testid="alarm-manage-note" role="status">{{ tools.note }}</p>
       </div>
       <div class="alarm-foot">
         <span data-status data-testid="alarm-status" :title="view.timing" role="status">{{ status }}</span>

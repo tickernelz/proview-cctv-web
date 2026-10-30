@@ -15,6 +15,40 @@ stability before 1.0.
 
 ### Added
 
+- About device in Settings, over the vendor cloud relay (`/api/device/system*`):
+  model, serial, firmware, build time, hardware, run time, `SystemInfoEx` and the
+  `SystemFunction` flags; camera clock and time zone with a sync to this
+  computer that writes the standard offset and the daylight-saving rule the way
+  the app does (`OPTimeQuery` 1452, `OPTimeSetting` 1450, `System.TimeZone`,
+  `General.Location` `DSTRule`/`DSTStart`/`DSTEnd`); the camera UI language
+  from its `MultiLanguage` list;
+  a firmware check that asks the camera (`OPVersionReq` 2016, only when it
+  reports `SupportCfgCloudupgrade`) and the vendor upgrade server
+  (`POST upgrade.secu100.net:9083/list`, 204 means no newer build); a network
+  check (`Ping` 1052 to the app's hosts plus the gateway, `XmCloudStatus`,
+  `Status.NatInfo`, `WifiRouteInfo` gated by `WifiRouteSignalLevel`, 60 s
+  in total); the device user list without password hashes; restart
+  (`OPMachine`, session held 5 s before logout). Factory defaults (typed RESET)
+  and cloud and file firmware upgrade (typed UPGRADE) are wired with the app's
+  wire JSON and proven against a fake device only. Device password, user and
+  recovery writes over DVRIP are not offered; the cloud `mdeditPass` route
+  stays the way to change the camera password.
+
+- PTZ at parity with the phone app's live and preset screens, over the cloud
+  relay: the pad keys, arrow keys and zoom/focus buttons now move while held and
+  stop on release (`/api/device/controls/ptz/press` and `/ptz/release` keep one
+  DVRIP session per hold; a tap keeps moving 800 ms like the app); a click on the
+  top lens picture aims the moving lens there (`/ptz/locate`, `OPPtzLocate`);
+  "Edit presets" in the pad saves the current position as a preset, renames and
+  deletes presets and edits the tour stops (`/preset/add`, `/preset/rename`,
+  `/preset/delete`, `/tour/remove`). Zoom, focus, calibration
+  (`/ptz/calibrate`) and the panoramic PTZ range (`/panorama`) follow the
+  device's ability flags and stay hidden on this camera, which reports none of
+  them; the capability table shows why. Every one of these writes reads the
+  device's ability on its session first and answers 501 with the device's
+  wording when the flag is missing, before anything is sent. A hold stops by
+  itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
+  sends the release as a beacon.
 - Playback parity with the mobile app over the cloud relay: a month calendar
   (`OPSCalendar`, `GET /api/playback/calendar`) marks the days with
   recordings; playback runs by time (`OPPlayBack` `ByTime`,
@@ -59,6 +93,50 @@ stability before 1.0.
   time overlay (`/api/device/settings/osd`, `AVEnc.VideoWidget` + `ChannelTitle`,
   optional `TitleDot` bitmap), and Format SD (`OPStorageManager`, cmd 1460)
   behind a typed `FORMAT` confirmation.
+- H.265 plays without ffmpeg where the webview decodes it: cloud live (stage
+  and grid tiles), LAN passthrough and device playback mux the camera's HEVC
+  in-process into fragmented MP4 (`hvc1`) for the MediaSource player. The
+  client asks for it only when `MediaSource.isTypeSupported` and, where present,
+  `VideoDecoder.isConfigSupported` accept the stream's real codec string at its
+  coded size, and falls back to the H.264 transcode when the buffer refuses it
+  or no frame is decoded within 4 s of a visible page, remembering the verdict
+  per session (a later success never overwrites a refusal). The hello names the
+  mode actually served: an H.264 camera asked for H.265 gets its own stream
+  remuxed natively, and a stream that reorders frames (B-frames) is transcoded,
+  because the muxers write no composition offsets.
+  Measured over the cloud relay on the dual-lens camera: 0.3-0.4 % of a core and
+  no child process for the main stream against 76-81 % with ffmpeg, first
+  fragment 2.17-2.27 s against 2.88-3.08 s. ffmpeg stays a hidden fallback and
+  is never bundled.
+- Clip downloads are playable MP4 files
+  (`2026-10-30_05.20.31-05.25.00[R]...mp4`) muxed natively for H.264 and H.265
+  while the file arrives, so the server holds about one copy of it, and timed
+  from the record stamps: a 269 s file reads as 269.2 s at 12.5 fps in
+  `ffprobe`, where the header byte's 12 fps would have stretched it to 280 s.
+  A stream with B-frames downloads as its raw `.hevc`/`.h264` stream instead.
+- A test fails when any shipped `Command::new` lacks `hide_console`, so no
+  child process can open a console window on Windows.
+- Alarm messages can be deleted (selected ones, or every alarm of a camera after
+  a confirm), shown for one day picked from a month calendar of the days that
+  have alarms, filtered by type (motion or human detection, as the app offers),
+  and show whether any phone is subscribed to push for the camera. The routes
+  are `POST /api/cloud/alarms/delete`, `GET /api/cloud/alarms/calendar`,
+  `GET /api/cloud/alarms/subscription`, `GET /api/cloud/alarms/filters` and an
+  `event` filter on `GET /api/cloud/alarms`; every alarm-centre call has a
+  deadline (`PROVIEW_ALARM_WINDOW_MS`) that answers 504 naming the stage.
+- Sharing with permissions (pan and tilt, talk, card recordings, settings, alarm
+  messages, cloud video) through `mdshareadd`, with the owner's share list,
+  permission edits and revoke, the receiver's list with accept or refuse, and
+  share by QR code: `appInfoSave` keeps a 30-minute code, the sheet draws the
+  QR, and adding a camera from a `shareKey` link resolves it through
+  `appInfoQueryLimit` first.
+- Cloud account: profile from the normal sign-in (`userinfo2`), change
+  password, forgot-password and register code flows, and delete account
+  (Settings, Account; sign-in screen links).
+- Cloud recordings show whether the camera has a cloud storage plan, read the
+  native clip list fields, and can play or download a clip (signed HLS index
+  and segments, joined TS or MP4), with per-stage deadlines that answer 504
+  naming the stage.
 
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
@@ -104,6 +182,9 @@ stability before 1.0.
 
 ### Fixed
 
+- Fragmented MP4 from the native muxers no longer marks the first sample of a
+  delta fragment as a sync sample (`trun` first-sample flags), which let
+  MediaSource treat a delta as a random access point.
 - Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
   every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
   only its own window.

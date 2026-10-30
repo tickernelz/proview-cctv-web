@@ -262,3 +262,51 @@ async fn a_viewer_that_falls_behind_resumes_on_a_keyframe_fragment() {
     stop.store(true, Ordering::Relaxed);
     server.await.expect("camera task");
 }
+
+#[tokio::test]
+async fn an_h264_camera_asked_for_passthrough_streams_its_own_remux() {
+    let units = access_units();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listen");
+    let addr = listener.local_addr().expect("addr");
+    let sent = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let server = tokio::spawn(serve(listener, units, 12, sent.clone(), resume.clone()));
+
+    let hub = Arc::new(LiveHub::default());
+    let key = StreamKey::new("cam-0003", 1, false, LiveMode::Passthrough);
+    let stop = Arc::new(AtomicBool::new(false));
+    let target = RtspTarget::from_host_port(&addr.ip().to_string(), addr.port())
+        .with_credentials("admin", "secret");
+    let running = tokio::spawn(pump(hub.clone(), key.clone(), target, stop.clone()));
+
+    tokio::time::timeout(Duration::from_secs(10), sent.notified())
+        .await
+        .expect("the camera reached the pause");
+    let subscription = tokio::time::timeout(
+        Duration::from_secs(10),
+        subscribe_when_fragments_exist(&hub, &key),
+    )
+    .await
+    .expect("fragments reach a passthrough key served by an H.264 camera");
+    let init = subscription
+        .init
+        .lock()
+        .expect("init slot")
+        .clone()
+        .expect("an init segment");
+    assert!(init.windows(4).any(|window| window == b"avcC"));
+    assert!(!init.windows(4).any(|window| window == b"hvcC"));
+    assert!(opens_on_idr(&subscription.replay[0].bytes));
+    let meta = hub.meta(&key).expect("meta");
+    assert!(
+        meta.codec_string
+            .as_deref()
+            .is_some_and(|codec| codec.starts_with("avc1")),
+        "the hello must name the H.264 the socket carries: {:?}",
+        meta.codec_string
+    );
+    resume.notify_one();
+    stop.store(true, Ordering::Relaxed);
+    running.abort();
+    let _ = tokio::time::timeout(Duration::from_secs(10), server).await;
+}

@@ -6,6 +6,7 @@ import { api } from '../lib/api'
 import { hm, hms } from '../app/format'
 import { openSettings, signedIn } from '../app/shell'
 import { live } from './store'
+import AccountFlows from './AccountFlows.vue'
 
 type Probe = { host: string; session: number | string; device_type?: string; video_codec?: string; audio_codec?: string; framerate?: number }
 type Remembered = { email?: string; restored?: boolean }
@@ -18,6 +19,8 @@ const cloud = reactive({ email: '', password: '', busy: false, error: '' })
 const local = reactive({ user: '', password: '', busy: false, error: '' })
 const probe = reactive({ busy: false, report: null as Probe | null, error: '' })
 const remember = reactive({ on: false, note: '' })
+const flow = ref<'' | 'forgot' | 'register'>('')
+const flowNote = ref('')
 
 const s = live.signin
 const expired = computed(() => s.expired)
@@ -112,6 +115,19 @@ async function runProbe() {
   }
 }
 
+function openFlow(kind: 'forgot' | 'register') {
+  flowNote.value = ''
+  cloud.error = ''
+  flow.value = kind
+}
+
+async function closeFlow(account: string, note: string) {
+  if (account) cloud.email = account
+  flowNote.value = note
+  flow.value = ''
+  await focusFirst()
+}
+
 async function focusFirst() {
   await nextTick()
   if (tab.value !== 'cloud') return
@@ -147,7 +163,8 @@ onMounted(async () => {
     <div v-if="expired" id="signin-notice" class="notice" data-testid="signin-notice">
       <Icon name="clock" small /><span>Nothing is being recorded while you are signed out.</span>
     </div>
-    <TabsRoot v-model="tab">
+    <AccountFlows v-if="flow" :kind="flow" :email="cloud.email" @close="closeFlow" />
+    <TabsRoot v-else v-model="tab">
       <TabsList class="tabs" aria-label="Sign-in method">
         <TabsTrigger value="cloud" data-testid="signin-tab-account">Account</TabsTrigger>
         <TabsTrigger value="local" data-testid="signin-tab-local">This network</TabsTrigger>
@@ -182,6 +199,11 @@ onMounted(async () => {
           <button id="login-submit" data-testid="signin-submit" class="btn btn-fill" type="submit" :aria-busy="cloud.busy">
             {{ cloud.busy ? 'Signing in…' : expired ? 'Sign in to resume' : 'Sign in' }}
           </button>
+          <p v-if="flowNote" class="hint signin-flow-note" data-testid="signin-flow-note" role="status">{{ flowNote }}</p>
+          <p class="auth-note signin-account-links">
+            <button class="btn-text" type="button" data-testid="signin-forgot" @click="openFlow('forgot')">Forgot password</button>
+            <button class="btn-text" type="button" data-testid="signin-register" @click="openFlow('register')">Create account</button>
+          </p>
         </form>
       </TabsContent>
       <TabsContent value="local">

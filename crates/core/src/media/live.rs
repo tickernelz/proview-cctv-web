@@ -57,6 +57,16 @@ struct Pending {
     kind: PendingKind,
     declared: usize,
     payload: Vec<u8>,
+    rate: Option<u8>,
+    stamp: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveFrame {
+    pub keyframe: bool,
+    pub rate: Option<u8>,
+    pub stamp: Option<u32>,
+    pub bytes: Vec<u8>,
 }
 
 const KEYFRAME_HEADER: usize = 16;
@@ -81,6 +91,10 @@ impl LiveDemux {
     }
 
     pub fn push(&mut self, body: &[u8]) -> Vec<u8> {
+        join(self.push_frames(body))
+    }
+
+    pub fn push_frames(&mut self, body: &[u8]) -> Vec<LiveFrame> {
         let mut out = Vec::new();
         match classify(body) {
             LiveClass::GopMarker => {
@@ -105,6 +119,8 @@ impl LiveDemux {
                     kind: PendingKind::Keyframe,
                     declared,
                     payload: body[KEYFRAME_HEADER..].to_vec(),
+                    rate: Some(body[5]).filter(|fps| *fps > 0),
+                    stamp: Some(u32::from_le_bytes([body[8], body[9], body[10], body[11]])),
                 });
                 self.drain_pending(&mut out);
             }
@@ -124,13 +140,20 @@ impl LiveDemux {
                     let payload = &body[DELTA_HEADER..DELTA_HEADER + declared];
                     self.stats.deltas += 1;
                     self.stats.elementary_bytes += payload.len() as u64;
-                    out.extend_from_slice(payload);
+                    out.push(LiveFrame {
+                        keyframe: false,
+                        rate: None,
+                        stamp: None,
+                        bytes: payload.to_vec(),
+                    });
                 } else {
                     self.flush_pending(&mut out, true);
                     self.pending = Some(Pending {
                         kind: PendingKind::Delta,
                         declared,
                         payload: body[DELTA_HEADER..].to_vec(),
+                        rate: None,
+                        stamp: None,
                     });
                 }
             }
@@ -151,7 +174,7 @@ impl LiveDemux {
         out
     }
 
-    fn drain_pending(&mut self, out: &mut Vec<u8>) {
+    fn drain_pending(&mut self, out: &mut Vec<LiveFrame>) {
         let complete = self
             .pending
             .as_ref()
@@ -162,7 +185,7 @@ impl LiveDemux {
         }
     }
 
-    fn flush_pending(&mut self, out: &mut Vec<u8>, truncated: bool) {
+    fn flush_pending(&mut self, out: &mut Vec<LiveFrame>, truncated: bool) {
         let Some(mut pending) = self.pending.take() else {
             return;
         };
@@ -183,14 +206,31 @@ impl LiveDemux {
             }
         }
         self.stats.elementary_bytes += pending.payload.len() as u64;
-        out.extend_from_slice(&pending.payload);
+        out.push(LiveFrame {
+            keyframe: pending.kind == PendingKind::Keyframe,
+            rate: pending.rate,
+            stamp: pending.stamp,
+            bytes: pending.payload,
+        });
     }
 
     pub fn finish(&mut self) -> Vec<u8> {
         let mut out = Vec::new();
         self.flush_pending(&mut out, true);
-        out
+        join(out)
     }
+}
+
+fn join(frames: Vec<LiveFrame>) -> Vec<u8> {
+    let mut frames = frames.into_iter();
+    let Some(first) = frames.next() else {
+        return Vec::new();
+    };
+    let mut out = first.bytes;
+    for frame in frames {
+        out.extend_from_slice(&frame.bytes);
+    }
+    out
 }
 
 pub fn start_body(session: u32, channel: u8, stream: &str) -> Value {
@@ -231,6 +271,44 @@ mod tests {
         body[4..8].copy_from_slice(&(payload.len() as u32).to_le_bytes());
         body.extend_from_slice(payload);
         body
+    }
+
+    #[test]
+    fn frames_keep_their_boundaries_rate_and_stamp() {
+        let mut demux = LiveDemux::new();
+        let mut head = keyframe_head(6, &[0, 0, 0, 1, 0x26, 0x01]);
+        head[5] = 12;
+        head[8..12].copy_from_slice(&0x6ab3_6607u32.to_le_bytes());
+        let key = demux.push_frames(&head);
+        assert_eq!(
+            key,
+            vec![LiveFrame {
+                keyframe: true,
+                rate: Some(12),
+                stamp: Some(0x6ab3_6607),
+                bytes: vec![0, 0, 0, 1, 0x26, 0x01],
+            }]
+        );
+        let frames = demux.push_frames(&delta(&[0, 0, 0, 1, 0x02, 0x01]));
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].keyframe);
+        assert_eq!(frames[0].rate, None);
+        let mut joined = LiveDemux::new();
+        let mut split = keyframe_head(6, &[0, 0, 0, 1]);
+        split[5] = 12;
+        assert!(joined.push_frames(&split).is_empty());
+        let both = joined.push_frames(&delta(&[0, 0, 0, 1, 0x02]));
+        assert_eq!(
+            both.len(),
+            1,
+            "an incomplete keyframe is dropped, the delta kept"
+        );
+        let mut whole = LiveDemux::new();
+        assert!(whole.push_frames(&split).is_empty());
+        let completed = whole.push_frames(&[0x26, 0x01]);
+        assert_eq!(completed.len(), 1);
+        assert!(completed[0].keyframe);
+        assert_eq!(completed[0].rate, Some(12));
     }
 
     #[test]

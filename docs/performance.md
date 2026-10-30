@@ -65,6 +65,52 @@ fragmented MP4. `pump_h264` now depacketizes RTP itself and muxes with the same
 The muxing cost is therefore noise next to the RTSP work it shares a task with,
 and the stream no longer depends on an ffmpeg binary being installed.
 
+## H.265 without ffmpeg over the cloud relay (measured 2026-10-30, `par/hevc-native`)
+
+Owner decision: video must not depend on an external ffmpeg where the webview
+can decode H.265. A client that reports HEVC support now gets the camera's
+H.265 muxed in-process into fMP4 (`hvc1`); ffmpeg only serves a client that
+cannot decode it. Real camera (dual-lens XM535, main 2304x2592, sub 640x720,
+H.265) over the cloud RPS relay only, release build, one fresh server per row,
+30 s sampled after the first media fragment, load average 9-15. CPU is the
+server's whole process tree (server plus any ffmpeg child) from `/proc` ticks;
+first fragment is seconds from the WebSocket handshake to the first
+`moof`+`mdat`, the first frame a decoder can show. Script:
+`~/re/proview-cctv/parity/hevc-native/hevc_sweep.py` (two rounds, both shown).
+
+| Path | Child processes | CPU (one core = 100 %) | Peak RSS of the tree | First fragment | Bytes in 30 s |
+|---|---|---|---|---|---|
+| live main, passthrough (`codec=hevc`) | none | 0.3 / 0.4 % | 27 MB | 2.27 / 2.17 s | 4.0 / 4.2 MB |
+| live main, transcode | ffmpeg | 76.4 / 81.4 % | 287 / 316 MB | 3.08 / 2.88 s | 35.3 / 36.1 MB |
+| live sub (grid tile), passthrough | none | 0.2 % | 24 MB | 0.93 s | 0.46 MB |
+| live sub (grid tile), transcode | ffmpeg | 9.4 % | 70 MB | 2.74 s | 4.4 MB |
+| playback, 30 s window, native mux | none | 0.8 / 1.0 % | 27-28 MB | 2.42 / 2.64 s | 4.3 MB, done in 3.7 s |
+| playback, 30 s window, transcode | ffmpeg | 376 / 427 % | 316-332 MB | 3.95 / 2.84 s | 42.2 MB, done in 8-9 s |
+
+Every received stream was written to disk and decoded with `ffprobe
+-count_frames` and `ffmpeg -f null`: 381-384 HEVC frames at 2304x2592 per 30 s
+of passthrough, 530 frames for each playback window, no decoder error on any
+row. The first binary message (the init segment) depends on where the camera's
+3 s GOP is when the tunnel opens, so it varies run to run; the first fragment
+is the number a viewer sees. The passthrough sends about a ninth of the bytes
+because it forwards the camera's own bitstream instead of a veryfast x264
+re-encode at the same size.
+
+Timing: the key-record header byte says 12 fps, the record stamps say 12.5
+(a 269 s `[R]` file holds 3,365 frames). Live uses the header until four
+keyframe stamps span 9 s, then the snapped measured rate; the download uses
+the stamps of the whole file. That file downloads as a 26.3 MB MP4 that
+`ffprobe` reads as HEVC 2304x2592, 3,365 frames, 269.2 s, against the file's
+own 05:20:31-05:25:00 span of 269 s; at the header's 12 fps it would have
+read 280.4 s.
+
+What this box cannot show: its Chrome 156 reports
+`MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L63"')` false, so a
+browser here takes the transcode, which `tests/web/hevc-fallback.test.mjs`
+proves (unsupported browser plays the transcode; a browser that claims HEVC but
+cannot decode falls back within 4 s and remembers it). The passthrough rows
+above are a raw WebSocket client.
+
 ## Recorded clip path (measured 2026-10-26, commit `a2a87ae`)
 
 ```sh
@@ -143,6 +189,14 @@ for i in 1 2 3; do curl -s -o /dev/null -w '%{time_total}\n' http://127.0.0.1:87
 
 ## Stream 2 live transports (measured 2026-10-26, `feat/stream2`)
 
+> Superseded for the passthrough column on 2026-10-30 (`par/hevc-native`):
+> passthrough now carries the H.265 in fragmented MP4 (`hvc1`) into the same
+> MediaSource player as the transcode, the hub replays its current GOP to a late
+> viewer exactly as it does for the transcode, and the WebCodecs framing
+> described at the end of this section is gone. Current numbers are in
+> "H.265 without ffmpeg over the cloud relay". The figures below stay as they
+> were measured on 2026-10-26.
+
 Same camera as above (PROVIEW IPC, `192.168.0.100`, main stream 2304×2592
 H.265, ~12 fps delivered), same workstation under WSL2, release build, Chrome
 156 headless driven over CDP. One run per row. The box was also running four
@@ -175,7 +229,7 @@ collide with the provider switch.
 |---|---|---|
 | processes serving the stream | server + 1 `ffmpeg` | server only |
 | click → first painted frame, cold source | 2.6 s, 5.0 s, 5.3 s (three runs) | first keyframe on the socket 0.56–0.78 s |
-| click → first painted frame, warm source | 240 / 120 / 120 / 111 ms | not offered: a passthrough viewer always joins at the next IDR |
+| click → first painted frame, warm source | 240 / 120 / 120 / 111 ms | not offered on 2026-10-26: a passthrough viewer joined at the next IDR (replayed since 2026-10-30) |
 | CPU, 1 viewer | 63.5–85.4 % of one core | 0.1–0.2 % |
 | CPU, 2 viewers | 83.3 % (41.7 % per viewer) | not measured |
 | CPU, 3 viewers | 79.5–81.5 % (26.5–27.2 % per viewer) | 0.5 % (0.2 % per viewer) |
@@ -210,8 +264,8 @@ Reading the numbers:
    **on the socket** (0.56–0.78 s), which is the camera's own IDR cadence with
    a warm RTSP session — a different stopwatch, not a cheaper cold start.
    Warm starts are 111–240 ms because the hub replays the fragments since the
-   last keyframe (transcode); passthrough has no replay and always waits for the
-   camera's next IDR. On the H.264 remux path the first fragment also waits for
+   last keyframe (transcode); passthrough had no replay then and waited for the
+   camera's next IDR (it replays like the transcode since 2026-10-30). On the H.264 remux path the first fragment also waits for
    up to 10 access units after the first keyframe, 0.4 s at 25 fps.
 4. The frame really painted on this machine: Chromium reported `readyState 4`,
    `videoWidth 2304`, `videoHeight 2592` and an advancing `currentTime`, and a
@@ -226,9 +280,10 @@ Defect found by measuring, fixed here: the MSE transport was receiving its init
 segment wrapped in the passthrough config framing (one leading `0x01` byte), so
 `MediaSource` rejected the segment and the element stayed at `readyState 0`
 behind a blob URL. Before: zero frames, every run. After: 111–240 ms to the
-first painted frame on a warm source. Framing is now chosen by transport —
+first painted frame on a warm source. Framing was then chosen by transport —
 init and fragments raw for MSE, `0x01`-prefixed hvcC plus `0x02`/`0x03` access
-units for WebCodecs.
+units for WebCodecs. Since 2026-10-30 both transports send raw fMP4 and that
+framing no longer exists.
 
 ## Cloud account login, Rust envelope (measured 2026-10-27)
 

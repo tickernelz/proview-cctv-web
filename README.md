@@ -26,7 +26,7 @@ proven and what is not.
 | Annex-B NAL splitter, H.264/H.265 detection, SPS parse | works, tested |
 | Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
 | Device caps from the app cloud | works: `GET /api/cloud/device-caps?sn=<serial>` answers model, firmware, WAN address and the capability block, no account session needed; unknown serial is a 404 |
-| Live video to the browser | works: RTSP pull + H.265 depacketize, then either one transcode per stream (fMP4 over WebSocket into MSE) or HEVC passthrough into WebCodecs |
+| Live video to the browser | works: RTSP pull + H.265 depacketize, then either H.265 passthrough muxed in-process into fMP4 (no ffmpeg) for a webview that decodes HEVC, or one transcode per stream as the fallback, both over WebSocket into MSE |
 | Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
 | Provider seam (cloud / local / fixture) | works: the same UI over the vendor cloud, a camera on the LAN, or recorded sample data |
 | Fixture provider (no camera, no account) | works, opt-in (`PROVIEW_PROVIDER=fixture`); the default provider is the vendor cloud |
@@ -123,8 +123,9 @@ derivation and the shipped implementation.
 ## Live view from a LAN camera
 
 The local provider needs no cloud account: point the server at the camera and it
-pulls, depacketizes and either transcodes once per channel or forwards HEVC to a
-WebCodecs client, then fans the fragments out over a WebSocket.
+pulls, depacketizes and either muxes the HEVC into fMP4 for a client that can
+decode it or transcodes once per channel, then fans the fragments out over a
+WebSocket.
 
 ```sh
 PROVIEW_DEVICE_RTSP=192.168.0.100:554 \

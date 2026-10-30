@@ -19,9 +19,6 @@ import time
 from pathlib import Path
 
 SCHEMA = "proview-live-acceptance/1"
-FRAME_CONFIG = 1
-FRAME_KEYFRAME = 2
-FRAME_DELTA = 3
 GAP_LIMIT = 5.0
 FIRST_FRAME_LIMIT = 30.0
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -345,34 +342,14 @@ def wait_ready(process, http: Http, deadline: float) -> float:
     raise StageError("serve", f"/api/health did not answer within {deadline:.0f}s")
 
 
-def to_annexb(data: bytes) -> bytes:
-    out = bytearray()
-    cursor = 0
-    while cursor < len(data):
-        if cursor + 4 > len(data):
-            return data
-        size = int.from_bytes(data[cursor:cursor + 4], "big")
-        if size == 0 or cursor + 4 + size > len(data):
-            return data
-        out.extend(b"\x00\x00\x00\x01")
-        out.extend(data[cursor + 4:cursor + 4 + size])
-        cursor += 4 + size
-    return bytes(out) if out else data
-
-
-def classify(payload: bytes, framing: str) -> str:
-    if framing == "raw":
+def classify(payload: bytes, seen_init: bool) -> str:
+    if not seen_init:
+        return "init"
+    trun = payload.find(b"trun")
+    if trun < 0 or trun + 32 > len(payload):
         return "fragment"
-    if not payload:
-        return "empty"
-    kind = payload[0]
-    if kind == FRAME_CONFIG:
-        return "config"
-    if kind == FRAME_KEYFRAME:
-        return "keyframe"
-    if kind == FRAME_DELTA:
-        return "delta"
-    return "fragment"
+    flags = int.from_bytes(payload[trun + 28:trun + 32], "big")
+    return "keyframe" if flags & 0x02000000 else "delta"
 
 
 def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, report: dict) -> dict:
@@ -381,7 +358,7 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
     frames = 0
     keyframes = 0
     deltas = 0
-    configs = 0
+    inits = 0
     fragments = 0
     other = 0
     bytes_total = 0
@@ -391,7 +368,6 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
     samples = []
     stalls = []
     hello = None
-    framing = None
     server_last = None
     dumped = bytearray()
     dump_rows = []
@@ -432,9 +408,7 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             continue
         if opcode != 0x2:
             continue
-        if framing is None:
-            framing = "framed" if payload and payload[0] in (FRAME_CONFIG, FRAME_KEYFRAME, FRAME_DELTA) else "raw"
-        kind = classify(payload, framing)
+        kind = classify(payload, inits > 0)
         if first_frame_at is None:
             first_frame_at = moment
         if last_frame_at is not None:
@@ -446,26 +420,18 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             keyframes += 1
         elif kind == "delta":
             deltas += 1
-        elif kind == "config":
-            configs += 1
-            if not (dump_dir / "config.bin").exists():
-                (dump_dir / "config.bin").write_bytes(payload[1:])
+        elif kind == "init":
+            inits += 1
         elif kind == "fragment":
             fragments += 1
         else:
             other += 1
-        if kind in ("keyframe", "delta", "fragment") and len(dumped) < args.dump_bytes:
-            if kind == "keyframe" or framing == "raw":
+        if len(dumped) < args.dump_bytes:
+            if kind in ("init", "keyframe", "fragment"):
                 waiting_keyframe = False
             if not waiting_keyframe:
-                if framing == "framed" and len(payload) > 9:
-                    body = to_annexb(payload[9:])
-                    pts = int.from_bytes(payload[1:9], "big")
-                else:
-                    body = payload
-                    pts = 0
-                dumped.extend(body)
-                dump_rows.append((kind, pts, len(body), round(moment - started, 3)))
+                dumped.extend(payload)
+                dump_rows.append((kind, 0, len(payload), round(moment - started, 3)))
         now = time.monotonic()
         if now >= next_sample:
             status, stats, _ = http.call("GET", stats_path, timeout=10.0)
@@ -490,11 +456,7 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             next_sample += args.sample
 
     codec = (hello or {}).get("codec") if isinstance(hello, dict) else None
-    if framing == "raw":
-        dump_name, demuxer = "frames.mp4", "mp4"
-    else:
-        elementary = "hevc" if codec and any(tag in str(codec).lower() for tag in ("hev", "hvc")) else "h264"
-        dump_name, demuxer = f"frames.{elementary}", elementary
+    dump_name, demuxer = "frames.mp4", "mp4"
     if dumped:
         (dump_dir / dump_name).write_bytes(bytes(dumped))
     if dump_rows:
@@ -505,12 +467,12 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
     server_keyframes = (server_last or {}).get("keyframes")
     report["live"] = {
         "hello": hello,
-        "framing": framing or "none",
-        "unit": "access_unit" if framing == "framed" else "fragment",
+        "framing": "fmp4",
+        "unit": "fragment",
         "frames": frames,
         "keyframes_ws": keyframes,
         "deltas": deltas,
-        "configs": configs,
+        "inits": inits,
         "fragments": fragments,
         "other": other,
         "bytes": bytes_total,
@@ -527,7 +489,6 @@ def run_live(live: Live, http: Http, args, stats_path: str, dump_dir: Path, repo
             "dir": str(dump_dir),
             "file": str(dump_dir / dump_name),
             "bytes": len(dumped),
-            "config_bytes": (dump_dir / "config.bin").stat().st_size if (dump_dir / "config.bin").is_file() else 0,
             "demuxer": demuxer,
             "codec": codec,
             "ffprobe": (
@@ -606,7 +567,7 @@ def render(report: dict) -> str:
         lines.append(f"| keyframes seen on the socket | {live['keyframes_ws']} |")
         lines.append(f"| keyframes reported by the server | {live['server_keyframes']} |")
         lines.append(f"| deltas | {live['deltas']} |")
-        lines.append(f"| config packets | {live['configs']} |")
+        lines.append(f"| init segments | {live['inits']} |")
         lines.append(f"| payload bytes | {live['bytes']} ({live['mb']} MB) |")
         lines.append(f"| seconds measured | {live['seconds']} |")
         lines.append(f"| fps average | {live['fps_avg']} |")
@@ -628,7 +589,6 @@ def render(report: dict) -> str:
         lines.append("## Payload dump")
         lines.append("")
         lines.append(f"- {live['dump']['bytes']} payload bytes in `{live['dump']['file']}`")
-        lines.append(f"- config record: {live['dump']['config_bytes']} bytes")
         lines.append(f"- verify outside the harness: `{live['dump']['ffprobe']}`")
         lines.append("")
     http_stages = report.get("http")

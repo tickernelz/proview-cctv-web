@@ -775,7 +775,7 @@ impl DeviceControl for OnvifControl {
     }
 }
 
-fn op_window() -> Duration {
+pub fn op_window() -> Duration {
     match std::env::var(OP_WINDOW_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
@@ -934,6 +934,10 @@ impl DvripControl {
         self.session_within(SESSION_WINDOW).await
     }
 
+    pub fn address(&self) -> String {
+        self.address.clone()
+    }
+
     pub async fn session_within(&self, window: Duration) -> Result<DvripConnection, SessionError> {
         let open = async {
             match &self.link {
@@ -1081,6 +1085,11 @@ impl DeviceControl for DvripControl {
             } else {
                 LensCapability::blocked(Lens::Device, "ptz locate", Backend::Dvrip, locate.evidence)
             },
+            ability_row(Lens::Top, "ptz aim", &reported.ptz_aim, "MonitorActivity sends OPPtzLocate for a tap on the wide lens only when the device reports it"),
+            ability_row(Lens::Bottom, "ptz zoom", &reported.ptz_zoom, "MonitorFragment shows zoom only when the device reports it"),
+            ability_row(Lens::Bottom, "ptz focus", &reported.ptz_zoom, "MonitorFragment shows focus only when the device reports it"),
+            ability_row(Lens::Bottom, "ptz preset edit", &reported.ptz_preset_edit, "the app builds its preset page only when the device reports it"),
+            ability_row(Lens::Bottom, "ptz calibrate", &reported.ptz_auto_adjust, "MonitorFragment shows the calibration button only when the device reports it"),
         ];
         rows.extend(reported_talk_capability(&reported.talk));
         Ok(rows)
@@ -1384,6 +1393,20 @@ impl DeviceControl for DvripControl {
         .await;
         let _ = connection.logout_within(self.window).await;
         result
+    }
+}
+
+fn ability_row(
+    lens: Lens,
+    feature: &str,
+    reported: &crate::dvrip::control::Capability,
+    gate: &str,
+) -> LensCapability {
+    let evidence = format!("{}; {gate}", reported.evidence);
+    if reported.supported {
+        LensCapability::supported(lens, feature, Backend::Dvrip, evidence)
+    } else {
+        LensCapability::blocked(lens, feature, Backend::Dvrip, evidence)
     }
 }
 
