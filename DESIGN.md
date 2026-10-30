@@ -148,8 +148,8 @@ by margin over their floor:
 | accent-ink on accent (primary button) | 4.5 | 8.22 | 6.11 |
 | ink-3 on page | 4.5 | 7.68 | 6.00 |
 
-A new token or a new pair goes into `tools/contrast.py` (a frozen file, so
-through the integrator) in the same change that uses it.
+A new token or a new pair goes into `tools/contrast.py` in the same change that
+uses it.
 
 ## Type
 
@@ -245,8 +245,8 @@ Key set (RESEARCH section 6):
 | Warning, error | `triangle-alert` | `warning` |
 | Done, supported | `check` | `check` |
 
-The status dot is CSS, not an icon. Adding a sprite id changes `icons.ts`, a
-frozen file, so it goes through the integrator.
+The status dot is CSS, not an icon. A new sprite id goes into
+`apps/web/icons.ts`.
 
 ## Motion
 
@@ -307,9 +307,17 @@ playback 5 s before it. While the playhead is in the past, Back to live returns
 to the live edge. An empty day is a sentence on the track ("No recording on 30
 Oct."), not an empty bar.
 
-**Dock.** 56 px under the stage. Labelled main actions Talk, Sound, Snapshot,
-Record and Move; every other action sits under More. A control the camera cannot
-use right now stays in place, disabled, with its reason in words on screen.
+**Dock.** 56 px under the stage, one row: Talk, Sound | Snapshot, Record, Move
+on the left, Lens, Quality, More, Full screen on the right (mockup H01). Every
+other action sits under More: lens swap, flip, white light, low light,
+Recordings, Cloud recordings, Camera info, Camera settings and Manage cameras.
+Under 640 px (`shell.narrow`) the dock is Talk, Sound, Snapshot, Move and More
+in one row (mockup A14); Record, Full screen and the Quality and Lens choices
+move into More as plain rows, not submenus, so a tap picks them; the keys stay
+the same. A control the camera cannot use right now stays
+in place, disabled, with its reason in words on screen. A sheet opened from a
+menu or a button hands focus back to that menu's trigger or that button when it
+closes.
 
 **PTZ pad.** Shown on the stage while Move is on; click-to-aim works only while
 Move is on, so a click on the picture never moves the camera by surprise. Speed is
@@ -374,7 +382,7 @@ are the one thing allowed to scroll sideways, inside their own box.
 |---|---|---|
 | Live | `#/live` (default) | One camera, dual-lens picture in picture, dock, PTZ under Move, the ruler timeline with playback in it. |
 | Live, grid | `#/live/grid` | Every camera as tiles: a view mode of Live, switched by the Single / Grid segmented control in the header, not a page. |
-| Live, playback | `#/live/playback` | The playback screen until the timeline slice folds it into the timeline. |
+| Live, recordings | `#/live/playback` | Live with the Recordings sheet open on the camera files (the Cloud tab beside them); the address returns to `#/live`. The sheet also opens from Recordings on the timeline and from More. |
 | Events | `#/events` | Full-page review; on wide windows also the docked side panel. |
 | Settings | `#/settings/<section>` | Three groups, below. |
 | Sign in | gate | Before everything; Settings stays reachable from it. |
@@ -437,33 +445,3 @@ state messages and the full-screen line; a reason that lives only in a tooltip;
 file lists as the way into recordings; the 1-5 PTZ speed scale; Direction B's
 warm palette, teal signal colour, Geist and redrawn icons; numbers that were not
 measured.
-
-## File ownership for the next phase
-
-Five slices run in parallel after the foundation PR. Shared files change only
-through the integrator: a slice that needs one changed (a new store field, a new
-icon, a new contrast pair) asks the integrator instead of editing it.
-
-Frozen after the foundation PR, changed only through the integrator:
-`apps/web/index.html`, `src/main.ts`, `src/tokens.css`, `src/tailwind.css`,
-`src/styles/base.css`, `src/shell/**`, `src/components/ui/**`,
-`src/components/Icon.vue`, `apps/web/icons.ts`, `src/live/store.ts` (slices may
-ask the integrator for new fields), `src/app/state.ts`, `src/app/shell.ts`,
-`src/app/view.ts`, `src/app/chrome.ts`, `src/app/keys.ts`, `src/app/boot.ts`,
-`src/app/devices.ts`, `src/app/theme.ts`,
-`src/lib/api.ts`, `tools/contrast.py`, `e2e/tests/app.ts`, `e2e/tests/layout.ts`,
-`e2e/tests/visual.spec.ts` (and its snapshots, regenerated once by the
-integrator), `e2e/tests/shell.spec.ts`, `chrome.spec.ts`, `menus.spec.ts`,
-`responsive.spec.ts`, `touch.spec.ts` (and their snapshots),
-`tests/web/cdp.mjs`, `tests/web/ui.test.mjs`, `.github/workflows/**`,
-`package.json` and its lockfile.
-
-| Slice | Owns |
-|---|---|
-| 1. live-stage | `src/live/LiveMain.vue`, `LiveBar.vue`, `AlarmStop.vue`, `ImageLive.vue`, `FisheyeOverlay.vue`, `PtzEditor.vue`, `fisheye.ts`, `talk.ts`, new `src/live/stage/**`; `src/app/stage.ts`, `controls.ts`, `lens.ts`, `media.ts`, `caption.ts`, `dst.ts`, `format.ts`; `src/lib/stream-player.ts`, `hevc.ts`; `src/styles/live.css`; e2e live, stage, controls, talk, talk-race, lens, fisheye, live-audio; tests/web snapshot, stream-orphan, stream-misconfigured, live-late-viewer, hevc-fallback, hevc-verdict |
-| 2. timeline-playback | `src/live/PlaybackScreen.vue`, `PlaybackStrip.vue`, `PlaybackRows.vue`, `PlaybackCalendar.vue`, `RecordingsPanel.vue`, `playback-audio.ts`, `playback-clips.ts`, new `src/live/timeline/**`; `src/styles/playback.css`; e2e playback, playback-audio, recordings |
-| 3. events | `src/live/AlarmCenter.vue`, new `src/events/**`; `src/styles/events.css`; e2e alarms; tests/web alarms-pictures |
-| 4. settings | `src/live/SettingsScreen.vue`, `DeviceSettings.vue`, `AlarmSettings.vue`, `ImageSettings.vue`, `OsdSettings.vue`, `RecordSettings.vue`, `CardFormat.vue`, `SystemAbout.vue`, `AccountPanel.vue`, `DevicesSheet.vue`, new `src/settings/**`; `src/styles/settings.css`; e2e settings, device-settings, alarm-settings, image-settings, system-about, device-admin, devices, add-camera; tests/web device-settings, restart, settings-boot, desktop-settings |
-| 5. signin-states-grid-mobile | `src/live/SignInScreen.vue`, `AccountFlows.vue`, `account-flows.ts`, `AddCamera.vue`, `GridView.vue`, `GridTile.vue`, `grid-clock.ts`, new `src/states/**`; `src/styles/signin.css`, `grid.css`; e2e signin, grid; tests/web grid |
-
-Paths under `src/` are relative to `apps/web/`.

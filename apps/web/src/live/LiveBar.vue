@@ -14,10 +14,9 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu'
 import { live } from './store'
-import { PLAYBACK_NOTE } from './stage/notes'
+import { PLAYBACK_NOTE, QUALITIES } from './stage/notes'
+import { shell } from '../shell/layout'
 
-const start = computed(() => live.launchers.filter((item) => item.slot === 'start'))
-const end = computed(() => live.launchers.filter((item) => item.slot === 'end'))
 const quality = computed(() => (live.quality === 'sub' ? 'SD' : 'HD'))
 const SOUND_TITLES: Record<string, string> = {
   waiting: 'Sound is on, waiting for the camera audio',
@@ -45,10 +44,6 @@ const moveWhy = computed(() => (playback.value ? 'playback-note' : live.gate.mov
 function clickSound() {
   if (live.sound !== 'blocked') live.actions.toggleMute()
 }
-const QUALITIES = [
-  { value: 'main', name: 'HD', sub: 'the main stream' },
-  { value: 'sub', name: 'SD', sub: 'the sub stream, lighter on the network' },
-]
 
 function pressTalk(event: PointerEvent) {
   if (event.button !== 0) return
@@ -65,7 +60,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
 </script>
 
 <template>
-  <div id="controls" class="controls dock" data-testid="live-controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
+  <div id="controls" :class="['controls', 'dock', { 'dock-row': shell.narrow && !playback }]" data-testid="live-controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
     <button
       id="talk"
       data-testid="ctl-talk"
@@ -101,6 +96,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       <Icon name="camera" /><span class="dk-label">Snapshot</span>
     </button>
     <button
+      v-if="!shell.narrow"
       id="record"
       data-testid="ctl-record"
       :class="['dk', 'rec', { 'rec-on': live.record.on }]"
@@ -131,36 +127,8 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       <Icon name="move" /><span class="dk-label">Move</span>
     </button>
     <AlarmStop />
-    <button
-      v-for="item in start"
-      :id="item.id"
-      :key="item.id"
-      :data-testid="item.id"
-      class="dk"
-      type="button"
-      :title="item.title"
-      :aria-pressed="item.pressed ?? undefined"
-      :aria-controls="item.controls"
-      @click="item.onClick()"
-    >
-      <Icon :name="item.icon" /><span class="dk-label">{{ item.label }}</span>
-    </button>
     <span class="spacer" />
-    <button
-      v-for="item in end"
-      :id="item.id"
-      :key="item.id"
-      :data-testid="item.id"
-      class="dk"
-      type="button"
-      :title="item.title"
-      :aria-pressed="item.pressed ?? undefined"
-      :aria-controls="item.controls"
-      @click="item.onClick()"
-    >
-      <Icon :name="item.icon" /><span class="dk-label">{{ item.label }}</span>
-    </button>
-    <DropdownMenu v-if="live.lens.shown" :modal="false">
+    <DropdownMenu v-if="live.lens.shown && !shell.narrow" :modal="false">
       <DropdownMenuTrigger id="lens-pick" data-testid="lens-pick" class="dk" aria-keyshortcuts="L" title="Lens (L)">
         <Icon name="layers" /><span class="dk-label">Lens</span>
       </DropdownMenuTrigger>
@@ -173,7 +141,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
         <p class="menu-note">{{ live.lens.note }}</p>
       </DropdownMenuContent>
     </DropdownMenu>
-    <DropdownMenu v-if="!playback" :modal="false">
+    <DropdownMenu v-if="!playback && !shell.narrow" :modal="false">
       <DropdownMenuTrigger id="quality-pick" data-testid="quality-pick" class="dk" aria-keyshortcuts="Q" title="Quality (Q)">
         <span class="dk-label">Quality</span> <span class="dk-q" data-testid="quality-value">{{ quality }}</span>
       </DropdownMenuTrigger>
@@ -185,7 +153,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       </DropdownMenuContent>
     </DropdownMenu>
     <MoreMenu />
-    <button id="fullscreen" data-testid="ctl-fullscreen" class="dk" type="button" title="Full screen (F)" aria-keyshortcuts="F" @click="live.actions.toggleFullscreen()">
+    <button v-if="!shell.narrow" id="fullscreen" data-testid="ctl-fullscreen" class="dk" type="button" title="Full screen (F)" aria-keyshortcuts="F" @click="live.actions.toggleFullscreen()">
       <Icon name="expand" /><span class="dk-label">Full screen</span>
     </button>
   </div>

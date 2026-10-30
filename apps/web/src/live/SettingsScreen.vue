@@ -489,7 +489,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
         ><Icon :name="item.icon" small />{{ item.name }}</a>
       </template>
       <div class="set-nav-foot">
-        <button class="btn" type="button" data-testid="settings-cameras" :disabled="!s.signedIn" @click="openDevices"><Icon name="cctv" small />Manage cameras</button>
+        <button class="btn" type="button" data-testid="settings-cameras" :disabled="!s.signedIn" @click="openDevices()"><Icon name="cctv" small />Manage cameras</button>
         <p v-if="!s.signedIn" class="hint">Sign in to manage the cameras on the account.</p>
       </div>
     </nav>
@@ -610,7 +610,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                 <div class="set-card-h"><div><h3 class="set-card-t">Cameras on this account</h3><p class="set-card-d">Rename, group, share with permissions or by QR code, transfer and remove.</p></div></div>
                 <div class="row">
                   <div class="lab">Manage cameras<span v-if="!s.signedIn" class="hint">Sign in to manage the cameras on the account.</span></div>
-                  <div class="ctl-col"><button class="btn" type="button" data-testid="camera-manage" :disabled="!s.signedIn" @click="openDevices"><Icon name="cctv" small />Open the camera list</button></div>
+                  <div class="ctl-col"><button class="btn" type="button" data-testid="camera-manage" :disabled="!s.signedIn" @click="openDevices()"><Icon name="cctv" small />Open the camera list</button></div>
                 </div>
               </div>
             </div>
