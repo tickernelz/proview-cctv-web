@@ -61,8 +61,8 @@ pub const FIELDS: &[Field] = &[
         "Provider",
         "Cloud",
         Kind::Select,
-        &["proview", "local", "fixture"],
-        "Who answers device, stream and settings calls: the vendor cloud, this network, or built-in sample data.",
+        &["proview", "fixture"],
+        "Who answers device, stream and settings calls: the camera, through the cloud or local mode, or built-in sample data.",
         true,
     ),
     field(
@@ -70,9 +70,9 @@ pub const FIELDS: &[Field] = &[
         "Default mode",
         "Cloud",
         Kind::Select,
-        &["cloud", "local", "fixture"],
-        "Mode a new session starts in.",
-        false,
+        &["cloud", "local"],
+        "Mode the server starts in until a mode is chosen in the app.",
+        true,
     ),
     field(
         "PROVIEW_CLOUD_BASE",
@@ -90,7 +90,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Address used by the account login.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_CAPS_BASE",
@@ -99,7 +99,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Text,
         &[],
         "Address that answers device capabilities by serial.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_CLOUD_SESSION_TTL",
@@ -108,7 +108,7 @@ pub const FIELDS: &[Field] = &[
         Kind::Number,
         &[],
         "Seconds before a cloud session must sign in again.",
-        false,
+        true,
     ),
     field(
         "PROVIEW_DEVICE_HOST",
@@ -179,7 +179,7 @@ pub const FIELDS: &[Field] = &[
         "Server",
         Kind::Text,
         &[],
-        "Address the standalone server listens on; the desktop app picks its own.",
+        "IP address and port the standalone server listens on, such as 127.0.0.1:8787 or [::1]:8787. A saved value is used only when it is a loopback address; listening on the network needs --listen or PROVIEW_LISTEN in the environment, which both win over it. The desktop app picks its own.",
         true,
     ),
     field(
@@ -242,7 +242,7 @@ pub const FIELDS: &[Field] = &[
         "Advanced",
         Kind::Secret,
         &[],
-        "Signs the sign-in cookie; leave empty to let the app generate one.",
+        "Signs the sign-in cookie: 256-bit base64, e.g. from openssl rand -base64 32. A release server refuses to start without one; the environment wins over the saved value.",
         true,
     ),
     field(
@@ -325,6 +325,14 @@ pub fn bounds_of(key: &str) -> Option<(u64, u64)> {
         "PROVIEW_DESKTOP_ALARM_INTERVAL" => Some((15, 3600)),
         _ => None,
     }
+}
+
+pub const LISTEN_KEY: &str = "PROVIEW_LISTEN";
+
+const DESKTOP_IGNORES: &[&str] = &["ROCKET_SECRET_KEY"];
+
+pub fn shown_on(key: &str, desktop: bool) -> bool {
+    !(desktop && DESKTOP_IGNORES.contains(&key))
 }
 
 fn exports_env(key: &str) -> bool {
@@ -456,10 +464,11 @@ impl SettingsStore {
         }
     }
 
-    pub fn view(&self) -> SettingsView {
+    pub fn view(&self, desktop: bool) -> SettingsView {
         let values = self.values.read().expect("settings lock");
         let fields = FIELDS
             .iter()
+            .filter(|field| shown_on(field.key, desktop))
             .map(|field| {
                 let secret = field.kind == Kind::Secret;
                 let current = env::var(field.key)
@@ -515,6 +524,12 @@ impl SettingsStore {
             if trimmed.is_empty() {
                 continue;
             }
+            if field.key == LISTEN_KEY && trimmed.parse::<SocketAddr>().is_err() {
+                return Err(format!(
+                    "{} must be an IP address and port, such as 127.0.0.1:8787 or [::1]:8787",
+                    field.label
+                ));
+            }
             match field.kind {
                 Kind::Number => {
                     let number = trimmed
@@ -566,7 +581,7 @@ impl SettingsStore {
         *guard = next;
         drop(grid);
         drop(guard);
-        Ok(self.view())
+        Ok(self.view(false))
     }
 }
 
@@ -702,7 +717,7 @@ fn read_settings(
         sessions.inner(),
         peer.0,
     )?;
-    Ok(Json(settings.view()))
+    Ok(Json(settings.view(control.is_some())))
 }
 
 #[post("/settings", data = "<body>")]
@@ -727,10 +742,18 @@ fn write_settings(
         sessions.inner(),
         peer.0,
     )?;
+    let desktop = control.is_some();
+    let values = body.into_inner().values;
+    if let Some(key) = values.keys().find(|key| !shown_on(key, desktop)) {
+        return Err(fail(
+            Status::BadRequest,
+            format!("{key} is not used by the desktop app"),
+        ));
+    }
     settings
         .inner()
-        .update(body.into_inner().values)
-        .map(Json)
+        .update(values)
+        .map(|_| Json(settings.view(desktop)))
         .map_err(|error| fail(Status::BadRequest, error))
 }
 
@@ -757,11 +780,11 @@ mod tests {
     #[test]
     fn the_view_says_whether_a_settings_file_exists() {
         let (store, dir) = temp_store("exists");
-        assert!(!store.view().exists, "nothing is written yet");
+        assert!(!store.view(false).exists, "nothing is written yet");
         let mut values = BTreeMap::new();
         values.insert("PROVIEW_DEVICE_USER".to_string(), "admin".to_string());
         store.update(values).expect("update");
-        assert!(store.view().exists, "the save wrote the file");
+        assert!(store.view(false).exists, "the save wrote the file");
         env::remove_var("PROVIEW_DEVICE_USER");
         let _ = fs::remove_dir_all(dir);
     }
@@ -830,7 +853,7 @@ mod tests {
             "the second save dropped the first: {raw}"
         );
         assert!(raw.contains("PROVIEW_CLOUD_BASE"));
-        let view = store.view();
+        let view = store.view(false);
         let host = view
             .fields
             .iter()
@@ -856,26 +879,106 @@ mod tests {
             "PROVIEW_PROFILE",
             "PROVIEW_PROVIDER",
             "PROVIEW_CLOUD_BASE",
+            "PROVIEW_MODE",
+            "PROVIEW_PORTAL_BASE",
+            "PROVIEW_CAPS_BASE",
+            "PROVIEW_CLOUD_SESSION_TTL",
+            "PROVIEW_LISTEN",
+            "ROCKET_SECRET_KEY",
         ] {
             assert!(
                 restart.contains(&key),
                 "{key} feeds startup config and must say it needs a restart"
             );
         }
-        for key in [
-            "PROVIEW_MODE",
-            "PROVIEW_PORTAL_BASE",
-            "PROVIEW_CAPS_BASE",
-            "PROVIEW_CLOUD_SESSION_TTL",
-            "PROVIEW_APP_UUID",
-            "PROVIEW_APP_KEY",
-            "PROVIEW_APP_SECRET",
-        ] {
+        for key in ["PROVIEW_APP_UUID", "PROVIEW_APP_KEY", "PROVIEW_APP_SECRET"] {
             assert!(
                 !restart.contains(&key),
                 "{key} is read per request and must not claim a restart"
             );
         }
+    }
+
+    #[test]
+    fn selects_offer_only_values_the_server_acts_on() {
+        let provider = field_for("PROVIEW_PROVIDER").expect("provider");
+        assert_eq!(provider.options, ["proview", "fixture"]);
+        let mode = field_for("PROVIEW_MODE").expect("mode");
+        assert_eq!(mode.options, ["cloud", "local"]);
+        for raw in mode.options {
+            assert!(
+                proview_core::provider::Mode::parse(raw).is_some(),
+                "{raw} is a mode the server parses"
+            );
+        }
+        let (store, dir) = temp_store("selects");
+        for (key, value) in [("PROVIEW_PROVIDER", "local"), ("PROVIEW_MODE", "fixture")] {
+            let mut values = BTreeMap::new();
+            values.insert(key.to_string(), value.to_string());
+            assert!(store.update(values).is_err(), "{key}={value} is refused");
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_listen_address_saves_only_as_an_ip_address_and_port() {
+        let (store, dir) = temp_store("listen");
+        for good in ["127.0.0.1:8787", "[::1]:8788", "0.0.0.0:8789"] {
+            let mut values = BTreeMap::new();
+            values.insert(LISTEN_KEY.to_string(), good.to_string());
+            store.update(values).expect(good);
+        }
+        for bad in ["localhost:8787", "nope", "8787", "127.0.0.1", "::1:8787"] {
+            let mut values = BTreeMap::new();
+            values.insert(LISTEN_KEY.to_string(), bad.to_string());
+            let error = store.update(values).expect_err(bad);
+            assert!(error.contains("IP address and port"), "{bad}: {error}");
+        }
+        assert_eq!(store.value(LISTEN_KEY).as_deref(), Some("0.0.0.0:8789"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unparsable_listen_address_is_a_400_that_writes_nothing() {
+        let app = tower("listen-route", None);
+        let (status, body) = app.save_body(
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:8787"),
+            None,
+            r#"{"values":{"PROVIEW_LISTEN":"localhost:8787"}}"#,
+        );
+        assert_eq!(status, Status::BadRequest, "{body}");
+        assert!(body.contains("IP address and port"), "{body}");
+        assert!(
+            !app.data.join(FILE).exists(),
+            "the refused save wrote nothing"
+        );
+    }
+
+    #[test]
+    fn the_desktop_hides_the_cookie_secret_it_never_reads() {
+        let desk = tower("secret-desk", Some("127.0.0.1:8787"));
+        let token = Some("desk-token-0123456789");
+        let (status, body) = desk.get("127.0.0.1:8787", None, token);
+        assert_eq!(status, Status::Ok, "{body}");
+        assert!(body.contains("PROVIEW_DEVICE_PASS"), "{body}");
+        assert!(!body.contains("ROCKET_SECRET_KEY"), "{body}");
+        let (status, body) = desk.save_body(
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:8787"),
+            token,
+            r#"{"values":{"ROCKET_SECRET_KEY":"aGVsbG8gd29ybGQgdGhpcyBpcyBhIHRlc3Qga2V5ISE="}}"#,
+        );
+        assert_eq!(status, Status::BadRequest, "{body}");
+        assert!(body.contains("not used by the desktop app"), "{body}");
+        assert!(
+            !desk.data.join(FILE).exists(),
+            "the refused save wrote nothing"
+        );
+        let server = tower("secret-server", None);
+        let (status, body) = server.get("127.0.0.1:8787", None, None);
+        assert_eq!(status, Status::Ok, "{body}");
+        assert!(body.contains("ROCKET_SECRET_KEY"), "{body}");
     }
 
     #[test]
@@ -959,7 +1062,7 @@ mod tests {
             store.value("PROVIEW_DESKTOP_ALARM_INTERVAL").as_deref(),
             Some("90")
         );
-        let view = store.view();
+        let view = store.view(false);
         let interval = view
             .fields
             .iter()
@@ -1071,13 +1174,28 @@ mod tests {
         }
 
         fn save(&self, host: &str, origin: Option<&str>, token: Option<&str>) -> (Status, String) {
+            self.save_body(
+                host,
+                origin,
+                token,
+                r#"{"values":{"PROVIEW_DESKTOP_ALARM_INTERVAL":"90"}}"#,
+            )
+        }
+
+        fn save_body(
+            &self,
+            host: &str,
+            origin: Option<&str>,
+            token: Option<&str>,
+            body: &str,
+        ) -> (Status, String) {
             let mut request = self
                 .client
                 .post("/api/settings")
                 .remote(LOCAL.into())
                 .header(Header::new("Host", host.to_string()))
                 .header(ContentType::JSON)
-                .body(r#"{"values":{"PROVIEW_DESKTOP_ALARM_INTERVAL":"90"}}"#);
+                .body(body);
             if let Some(origin) = origin {
                 request = request.header(Header::new("Origin", origin.to_string()));
             }

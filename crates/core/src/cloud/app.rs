@@ -166,7 +166,7 @@ impl CapsClient {
 mod tests {
     use super::*;
 
-    const CAPS_REPLY: &str = r#"{"ret":200,"msg":"Success","method":"reqCaps","sn":"7f92970ddf5282743hrc","mfrsOemId":"G51","forceOemId":"G51","bossOemId":"G51","factoryOemId":"G51","lastWanIp":"103.85.122.66","productAttrs":[],"model":"XM535_X6E-WEQ_8M","hw":"A90A007F3000000C","pid":"A90A007F3000000C","sw":"V5.01.R02.G51A07F3.10010.346732.0000000","swVer":"2024-11-01 19:21:23","pwd":"47.86.110.52","caps":{"xmc.css.24h.enable":false,"xmc.css.vid.keepdays":0}}"#;
+    const CAPS_REPLY: &str = r#"{"ret":200,"msg":"Success","method":"reqCaps","sn":"AASN000000000001","mfrsOemId":"G51","forceOemId":"G51","bossOemId":"G51","factoryOemId":"G51","lastWanIp":"103.85.122.66","productAttrs":[],"model":"XM535_X6E-WEQ_8M","hw":"A90A007F3000000C","pid":"A90A007F3000000C","sw":"V5.01.R02.G51A07F3.10010.346732.0000000","swVer":"2024-11-01 19:21:23","pwd":"47.86.110.52","caps":{"xmc.css.24h.enable":false,"xmc.css.vid.keepdays":0}}"#;
 
     const FLAGS_REPLY: &str = r#"{"ret":200,"msg":"Success","stat":{"cee":true,"disk":false,"pkg":"com.szyarsor.proviewcctv","vvt":600}}"#;
 
@@ -174,7 +174,7 @@ mod tests {
     fn reads_the_reply_the_app_receives() {
         let caps: AppCaps = serde_json::from_str(CAPS_REPLY).expect("captured reply");
         assert_eq!(caps.ret, 200);
-        assert_eq!(caps.sn, "7f92970ddf5282743hrc");
+        assert_eq!(caps.sn, "AASN000000000001");
         assert_eq!(caps.model, "XM535_X6E-WEQ_8M");
         assert_eq!(caps.pid, "A90A007F3000000C");
         assert_eq!(caps.last_wan_ip, "103.85.122.66");

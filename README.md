@@ -82,7 +82,7 @@ The essentials:
 | Variable | Default | Meaning |
 |---|---|---|
 | `ROCKET_SECRET_KEY` | generated in debug builds | server only: signs the session cookie; required by a release build |
-| `PROVIEW_LISTEN` | `127.0.0.1:8787` | server only: bind address, environment or `--listen` (which wins) |
+| `PROVIEW_LISTEN` | `127.0.0.1:8787` | server only: bind address as IP and port; `--listen` wins over the environment, which wins over a loopback value saved in Settings (a saved network address is ignored) |
 | `PROVIEW_DATA_DIR` | unset | server only: where `settings.json` and `mode.json` live (the desktop app always uses its own app data folder) |
 | `PROVIEW_PROVIDER` | the vendor cloud | `fixture` for sample data |
 | `PROVIEW_DEVICE_RTSP`, `_HOST`, `_ONVIF`, `_USER`, `_PASS` | unset | a camera on the LAN (video, DVRIP, ONVIF, credentials) |

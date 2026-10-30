@@ -40,7 +40,7 @@ const SECTIONS = [
 ]
 const OWN = new Set(SECTIONS.map((item) => item.id))
 const OPTION_LABELS: Record<string, string> = {
-  proview: 'Vendor cloud',
+  proview: 'ProView camera',
   cloud: 'Cloud account',
   local: 'This network',
   fixture: 'Built-in sample data',

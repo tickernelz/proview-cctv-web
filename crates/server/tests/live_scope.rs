@@ -11,7 +11,7 @@ use rocket::post;
 use rocket::routes;
 use rocket::State;
 
-const OWN_SERIAL: &str = "7f92970ddf5282743hrc";
+const OWN_SERIAL: &str = "AASN000000000001";
 const OTHER_SERIAL: &str = "00000000000000000001";
 
 type Rows = Arc<Mutex<Vec<String>>>;
