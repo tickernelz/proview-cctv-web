@@ -77,6 +77,18 @@ stability before 1.0.
   abnormal sound, intelligent vigilance, one-key call) are listed with the
   ability flag that hides them, the same gate the phone app uses. The live bar
   offers Stop alarm only on cameras that report the manual alarm ability.
+- Image, light and sound settings over the vendor cloud relay: `GET /api/device/image`
+  reads day/night mode (on double-light box cameras the white-light work mode,
+  as the app's picker does), scene, low-lux, the white-light schedule and
+  light-on-motion, privacy shading, timed sleep, status LED, voice tip and the
+  speaker and microphone volumes, each gated on the same `SystemFunction` flag
+  the Android app checks, with the device's answer as evidence; `POST
+  /api/device/image/{day-night,light-mode,scene,low-lux,light,privacy,sleep,indicators,volume}`
+  write one block, read it back, and answer 409 when the device keeps a
+  different value, 501 for a control the camera does not offer, and 504
+  naming the stage that did not answer. A new settings section edits them and
+  the live view gains a low-lux button and a lens-covered / asleep notice when
+  the camera offers those.
 - Device settings work through the vendor cloud: `/api/device/settings/{encode,network,storage}`
   and `/api/device/controls/settings` take `device` and open DVRIP over the relay,
   so they answer without the camera on the local network. New blocks with the

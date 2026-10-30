@@ -6,6 +6,7 @@ pub mod encode_osd;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod frame;
+pub mod image;
 pub mod playback;
 pub mod playback_plus;
 pub mod ptz;
