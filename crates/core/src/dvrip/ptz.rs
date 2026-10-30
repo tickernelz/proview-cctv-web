@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -9,7 +13,149 @@ pub const LOCATE_SPAN: i32 = 4096;
 pub const PRESET_NAME_MAX: usize = 16;
 pub const PRESET_LIMIT: usize = 32;
 pub const PRESET_WORD: &str = "Preset";
-pub const PRESS_STEP: u8 = 4;
+pub const LENS_STEP: u8 = 4;
+pub const ORIENTATION_CONFIG: &str = "Uart.PTZControlCmd";
+pub const ORIENTATION_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PtzSpeed {
+    Slow,
+    #[default]
+    Normal,
+    Fast,
+}
+
+impl PtzSpeed {
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw.trim().to_ascii_lowercase().as_str() {
+            "slow" => PtzSpeed::Slow,
+            "normal" => PtzSpeed::Normal,
+            "fast" => PtzSpeed::Fast,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            PtzSpeed::Slow => "slow",
+            PtzSpeed::Normal => "normal",
+            PtzSpeed::Fast => "fast",
+        }
+    }
+
+    fn tilt_step(self) -> u8 {
+        match self {
+            PtzSpeed::Slow => 1,
+            PtzSpeed::Normal => 2,
+            PtzSpeed::Fast => 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PtzOrientation {
+    pub mirror: bool,
+    pub flip: bool,
+    pub evidence: String,
+}
+
+impl PtzOrientation {
+    pub fn as_is(evidence: impl Into<String>) -> Self {
+        PtzOrientation {
+            mirror: false,
+            flip: false,
+            evidence: evidence.into(),
+        }
+    }
+}
+
+fn flag(value: &Value, key: &str) -> bool {
+    match value.get(key) {
+        Some(Value::Bool(set)) => *set,
+        Some(Value::Number(number)) => number.as_i64().unwrap_or(0) > 0,
+        _ => false,
+    }
+}
+
+fn ability(abilities: &Value, group: &str, name: &str) -> bool {
+    abilities
+        .get(group)
+        .map(|block| flag(block, name))
+        .unwrap_or(false)
+}
+
+pub fn orientation_from_config(reply: &Value) -> Option<PtzOrientation> {
+    let raw = reply
+        .get(ORIENTATION_CONFIG)
+        .or_else(|| reply.get("Uart").and_then(|uart| uart.get("PTZControlCmd")))?;
+    let block = match raw {
+        Value::Array(entries) => entries.first()?,
+        other => other,
+    };
+    if !flag(block, "ModifyCfg") {
+        return None;
+    }
+    let mirror = flag(block, "MirrorOperation");
+    let flip = flag(block, "FlipOperation");
+    Some(PtzOrientation {
+        mirror,
+        flip,
+        evidence: format!(
+            "{ORIENTATION_CONFIG}[0] ModifyCfg=true MirrorOperation={mirror} FlipOperation={flip}"
+        ),
+    })
+}
+
+fn version_marks_traditional_ptz(software_version: &str) -> bool {
+    let parts: Vec<&str> = software_version.split('.').collect();
+    if parts.len() < 3 {
+        return false;
+    }
+    let field = parts[parts.len() - 3];
+    field.len() == 5 && field.as_bytes()[3] == b'1'
+}
+
+pub fn orientation_from_abilities(
+    abilities: &Value,
+    software_version: Option<&str>,
+) -> PtzOrientation {
+    if ability(
+        abilities,
+        "OtherFunction",
+        "SupportTraditionalPtzNormalDirect",
+    ) {
+        return PtzOrientation::as_is("no ModifyCfg; SupportTraditionalPtzNormalDirect=true");
+    }
+    let Some(version) = software_version else {
+        return PtzOrientation::as_is("no ModifyCfg and no SystemInfo.SoftWareVersion");
+    };
+    let mirror = ability(abilities, "OtherFunction", "SupportConsumerPtzMirrorDirect")
+        || ability(abilities, "NetServerFunction", "NetWifi")
+        || !version_marks_traditional_ptz(version);
+    PtzOrientation {
+        mirror,
+        flip: false,
+        evidence: format!("no ModifyCfg; app default from SystemFunction and SoftWareVersion gives MirrorOperation={mirror}"),
+    }
+}
+
+fn orientations() -> &'static Mutex<HashMap<String, (Instant, PtzOrientation)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, PtzOrientation)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_orientation(address: &str) -> Option<PtzOrientation> {
+    let cache = orientations().lock().ok()?;
+    let (at, orientation) = cache.get(address)?;
+    (at.elapsed() < ORIENTATION_TTL).then(|| orientation.clone())
+}
+
+fn store_orientation(address: &str, orientation: &PtzOrientation) {
+    if let Ok(mut cache) = orientations().lock() {
+        cache.insert(address.to_string(), (Instant::now(), orientation.clone()));
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PtzAction {
@@ -68,6 +214,23 @@ impl PtzAction {
 
     pub fn moves_the_lens(self) -> bool {
         !matches!(self, PtzAction::Direction(_))
+    }
+
+    pub fn step(self, speed: PtzSpeed) -> u8 {
+        match self {
+            PtzAction::Direction(PtzDirection::Left | PtzDirection::Right) => speed.tilt_step() * 2,
+            PtzAction::Direction(_) => speed.tilt_step(),
+            _ => LENS_STEP,
+        }
+    }
+
+    pub fn oriented(self, orientation: &PtzOrientation) -> Self {
+        match self {
+            PtzAction::Direction(direction) => {
+                PtzAction::Direction(direction.oriented(orientation))
+            }
+            other => other,
+        }
     }
 }
 
@@ -175,6 +338,30 @@ impl Connection {
         self.ptz_control(action.wire(), 0, parameter)
             .await
             .map(|_| ())
+    }
+
+    pub async fn ptz_orientation(&mut self, address: &str) -> Result<PtzOrientation, DvrError> {
+        if let Some(orientation) = cached_orientation(address) {
+            return Ok(orientation);
+        }
+        let orientation = match self.config_get(ORIENTATION_CONFIG).await {
+            Ok(reply) => orientation_from_config(&reply),
+            Err(DvrError::Rejected { .. }) => None,
+            Err(other) => return Err(other),
+        };
+        let orientation = match orientation {
+            Some(orientation) => orientation,
+            None => {
+                let abilities = self.abilities().await?;
+                let info = self.system_info().await.unwrap_or(Value::Null);
+                orientation_from_abilities(
+                    &abilities,
+                    info.get("SoftWareVersion").and_then(Value::as_str),
+                )
+            }
+        };
+        store_orientation(address, &orientation);
+        Ok(orientation)
     }
 
     pub async fn ptz_press(&mut self, action: PtzAction, step: u8) -> Result<(), DvrError> {
@@ -384,11 +571,11 @@ mod tests {
         .await;
         let mut connection = connect(&peer).await;
         connection
-            .ptz_press(PtzAction::ZoomIn, PRESS_STEP)
+            .ptz_press(PtzAction::ZoomIn, LENS_STEP)
             .await
             .unwrap();
         connection
-            .ptz_release(PtzAction::ZoomIn, PRESS_STEP)
+            .ptz_release(PtzAction::ZoomIn, LENS_STEP)
             .await
             .unwrap();
         let seen = server.await.unwrap();
@@ -467,5 +654,117 @@ mod tests {
             matches!(error, DvrError::Rejected { ret: 607, .. }),
             "{error:?}"
         );
+    }
+
+    const MIRROR_EVIDENCE: &str = "MonitorFragment.m1 turns PAN_LEFT (2) into PAN_RIGHT (3) and back when x2() holds, and x2() is U9.o.h(): Uart.PTZControlCmd MirrorOperation once ModifyCfg is set (MonitorFragment.java:625-641,1181-1210, U9/o.java:153-180)";
+    const SPEED_EVIDENCE: &str = "G7.c.x sends DevPTZControl speed max(1, b*4) for PAN_LEFT/PAN_RIGHT and max(1, b*2) for every other command, b = 0.5/1/2 for turn_around_speed 0/1/2, default 1 (G7/c.java:433-445, G7/c.java:140-156)";
+
+    fn mirrored() -> PtzOrientation {
+        orientation_from_config(&json!({
+            "Ret": 100,
+            "Uart.PTZControlCmd": [{ "FlipOperation": false, "MirrorOperation": true, "ModifyCfg": true }]
+        }))
+        .expect("ModifyCfg=true is the device's own orientation")
+    }
+
+    #[test]
+    fn a_mirrored_camera_turns_the_pad_left_into_direction_right() {
+        let orientation = mirrored();
+        assert!(orientation.mirror && !orientation.flip, "{MIRROR_EVIDENCE}");
+        let wire = |name: &str| {
+            PtzAction::parse(name)
+                .unwrap()
+                .oriented(&orientation)
+                .wire()
+        };
+        assert_eq!(wire("left"), "DirectionRight", "{MIRROR_EVIDENCE}");
+        assert_eq!(wire("right"), "DirectionLeft", "{MIRROR_EVIDENCE}");
+        assert_eq!(wire("up"), "DirectionUp");
+        assert_eq!(wire("down"), "DirectionDown");
+        assert_eq!(wire("up-left"), "DirectionRightUp");
+        assert_eq!(wire("down-right"), "DirectionLeftDown");
+        assert_eq!(wire("zoom-in"), "ZoomTile");
+    }
+
+    #[test]
+    fn a_flipped_camera_swaps_up_and_down_only() {
+        let orientation = orientation_from_config(&json!({
+            "Uart": { "PTZControlCmd": [{ "FlipOperation": true, "MirrorOperation": false, "ModifyCfg": true }] }
+        }))
+        .unwrap();
+        let wire = |name: &str| {
+            PtzAction::parse(name)
+                .unwrap()
+                .oriented(&orientation)
+                .wire()
+        };
+        assert_eq!(wire("up"), "DirectionDown");
+        assert_eq!(wire("down-left"), "DirectionLeftUp");
+        assert_eq!(wire("left"), "DirectionLeft");
+    }
+
+    #[test]
+    fn without_modify_cfg_the_app_default_decides_the_mirror() {
+        let unset =
+            json!({ "Uart.PTZControlCmd": [{ "MirrorOperation": true, "ModifyCfg": false }] });
+        assert_eq!(orientation_from_config(&unset), None);
+        assert_eq!(orientation_from_config(&json!({ "Ret": 100 })), None);
+        let wifi = json!({ "NetServerFunction": { "NetWifi": true }, "OtherFunction": {} });
+        assert!(
+            orientation_from_abilities(&wifi, Some("V5.00.R02.000529G4.10010.346917.0000000"))
+                .mirror
+        );
+        let wired = json!({ "NetServerFunction": { "NetWifi": false }, "OtherFunction": {} });
+        assert!(
+            !orientation_from_abilities(&wired, Some("V5.00.R02.000529G4.10010.346917.0000000"))
+                .mirror
+        );
+        assert!(
+            orientation_from_abilities(&wired, Some("V5.00.R02.000529G4.10000.346917.0000000"))
+                .mirror
+        );
+        let traditional = json!({ "NetServerFunction": { "NetWifi": true }, "OtherFunction": { "SupportTraditionalPtzNormalDirect": true } });
+        assert!(
+            !orientation_from_abilities(
+                &traditional,
+                Some("V5.00.R02.000529G4.10000.346917.0000000")
+            )
+            .mirror
+        );
+        assert!(!orientation_from_abilities(&wifi, None).mirror);
+    }
+
+    #[test]
+    fn the_speed_levels_send_the_app_steps() {
+        let step = |name: &str, speed| PtzAction::parse(name).unwrap().step(speed);
+        assert_eq!(step("left", PtzSpeed::Normal), 4, "{SPEED_EVIDENCE}");
+        assert_eq!(step("right", PtzSpeed::Slow), 2, "{SPEED_EVIDENCE}");
+        assert_eq!(step("right", PtzSpeed::Fast), 8, "{SPEED_EVIDENCE}");
+        assert_eq!(step("up", PtzSpeed::Normal), 2, "{SPEED_EVIDENCE}");
+        assert_eq!(step("down", PtzSpeed::Slow), 1, "{SPEED_EVIDENCE}");
+        assert_eq!(step("up-left", PtzSpeed::Fast), 4, "{SPEED_EVIDENCE}");
+        assert_eq!(step("zoom-in", PtzSpeed::Slow), LENS_STEP);
+        assert_eq!(step("focus-far", PtzSpeed::Fast), LENS_STEP);
+        assert_eq!(PtzSpeed::default(), PtzSpeed::Normal);
+        assert_eq!(PtzSpeed::parse(" FAST "), Some(PtzSpeed::Fast));
+        assert_eq!(PtzSpeed::parse("4"), None);
+    }
+
+    #[tokio::test]
+    async fn the_orientation_is_read_once_and_then_served_from_the_cache() {
+        let (peer, server) = serve(vec![json_reply(json!({
+            "Ret": 100,
+            "Name": "Uart.PTZControlCmd",
+            "Uart.PTZControlCmd": [{ "FlipOperation": false, "MirrorOperation": true, "ModifyCfg": true }]
+        }))])
+        .await;
+        let mut connection = connect(&peer).await;
+        let first = connection.ptz_orientation(&peer).await.unwrap();
+        let second = connection.ptz_orientation(&peer).await.unwrap();
+        assert_eq!(first, mirrored());
+        assert_eq!(second, first);
+        let seen = server.await.unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(body(&seen[0])["Name"], ORIENTATION_CONFIG);
     }
 }

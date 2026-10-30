@@ -4,8 +4,10 @@ use std::time::{Duration, Instant};
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
 use proview_core::provider::Mode;
+use proview_core::provider::VendorSession;
+use proview_core::session::Store;
 use proview_server::config::ModeStore;
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, Cookie, Status};
 use rocket::local::asynchronous::Client;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -23,6 +25,8 @@ enum Mood {
     SilentOnLocate,
     NoPanorama,
     SlowAbility,
+    DropsAfterStop,
+    StallsParkedThenRefusesLogin,
 }
 
 #[derive(Clone)]
@@ -41,6 +45,7 @@ struct Device {
     tour: Arc<Mutex<Vec<i64>>>,
     connections: Arc<Mutex<usize>>,
     dropped: Option<&'static str>,
+    mirrored: bool,
 }
 
 const ABILITIES: [&str; 5] = [
@@ -54,6 +59,11 @@ const ABILITIES: [&str; 5] = [
 impl Device {
     fn without(mut self, ability: &'static str) -> Self {
         self.dropped = Some(ability);
+        self
+    }
+
+    fn mirrored(mut self) -> Self {
+        self.mirrored = true;
         self
     }
 
@@ -149,6 +159,7 @@ fn device(mood: Mood, presets: &[(i64, &str)], tour: &[i64]) -> Device {
         tour: Arc::new(Mutex::new(tour.to_vec())),
         connections: Arc::new(Mutex::new(0)),
         dropped: None,
+        mirrored: false,
     }
 }
 
@@ -195,6 +206,7 @@ fn reply(header: &Header, value: &Value) -> Vec<u8> {
 }
 
 async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
+    let mut stopped = false;
     loop {
         let mut header_bytes = [0u8; HEADER_LEN];
         if socket.read_exact(&mut header_bytes).await.is_err() {
@@ -214,8 +226,18 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
             id: header.id,
             body: body.clone(),
         });
+        let stalls = device.mood == Mood::StallsParkedThenRefusesLogin;
         let answer = match header.id {
+            msg::LOGIN if stalls && connection == 2 => Some(json!({ "Ret": 203 })),
             msg::LOGIN => Some(json!({ "Ret": 100, "SessionID": "0x11223344" })),
+            msg::PTZ_CONTROL if stalls && stopped => None,
+            msg::CONFIG_GET if body["Name"] == "Uart.PTZControlCmd" && device.mirrored => {
+                Some(json!({
+                    "Ret": 100,
+                    "Name": "Uart.PTZControlCmd",
+                    "Uart.PTZControlCmd": [{ "FlipOperation": false, "MirrorOperation": true, "ModifyCfg": true }]
+                }))
+            }
             msg::CONFIG_GET if body["Name"] == "Uart" => {
                 Some(json!({ "Ret": 100, "Uart": device.uart() }))
             }
@@ -246,6 +268,12 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
         if socket.write_all(&reply(&header, &value)).await.is_err() {
             return;
         }
+        let stop =
+            header.id == msg::PTZ_CONTROL && body["OPPTZControl"]["Parameter"]["Preset"] == -1;
+        if device.mood == Mood::DropsAfterStop && stop {
+            return;
+        }
+        stopped |= stop;
     }
 }
 
@@ -337,7 +365,6 @@ async fn a_held_move_starts_on_press_and_stops_on_release_over_one_session() {
     let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=2000").await;
     assert_eq!(status, Status::Ok, "{body}");
     assert_eq!(body["held"], true);
-    assert_eq!(body["times"]["tail_ms"], 0);
     assert_eq!(body["times"]["fresh_session"], false);
     let frames = fake.ptz();
     assert_eq!(frames.len(), 2);
@@ -357,25 +384,230 @@ async fn a_held_move_starts_on_press_and_stops_on_release_over_one_session() {
 }
 
 #[tokio::test]
-async fn a_tap_keeps_the_motor_running_for_the_app_tail_before_the_stop() {
+async fn a_tap_stops_as_soon_as_the_press_is_acked_like_the_app_pad() {
     let fake = device(Mood::Answers, &[], &[]);
     let client = client(&listen(fake.clone()).await).await;
-    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=zoom-in").await;
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
     assert_eq!(status, Status::Ok);
     let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=100").await;
     assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["times"]["held_ms"], 100);
     let frames = fake.ptz();
-    assert_eq!(command(&frames[0]), "ZoomTile");
+    assert_eq!(preset_of(&frames[0]), 65535);
     assert_eq!(preset_of(&frames[1]), -1);
     let ran = frames[1].at - frames[0].at;
     assert!(
-        ran >= Duration::from_millis(880),
-        "the stop came {ran:?} after the start"
+        ran < Duration::from_millis(300),
+        "PtzView ACTION_UP sends the stop at once, but it came {ran:?} after the start"
     );
+}
+
+#[tokio::test]
+async fn the_next_press_reuses_the_parked_session_instead_of_logging_in_again() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["reused_session"], false);
+    let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=right").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["reused_session"], true);
+    assert_eq!(body["session_ms"], 0);
+    let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let frames = fake.ptz();
+    assert_eq!(frames.len(), 4);
+    assert!(frames
+        .iter()
+        .all(|frame| frame.connection == frames[0].connection));
+    let logins = fake
+        .frames()
+        .iter()
+        .filter(|frame| frame.id == msg::LOGIN)
+        .count();
+    assert_eq!(logins, 1);
+}
+
+async fn second_account(address: &str) -> (Client, Cookie<'static>) {
+    let client = Client::untracked(proview_server::build_with_modes(
+        figment(),
+        config(address),
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .await
+    .expect("valid rocket instance");
+    client
+        .rocket()
+        .state::<Store>()
+        .expect("session store")
+        .put(
+            "account-b".to_string(),
+            VendorSession {
+                account: "other@example.invalid".to_string(),
+                token: None,
+            },
+            Duration::from_secs(3600),
+        );
+    (client, Cookie::new("pvw_session", "account-b"))
+}
+
+async fn post_as(client: &Client, cookie: &Cookie<'static>, path: &str) -> (Status, Value) {
+    let response = tokio::time::timeout(
+        OUTER,
+        client
+            .post(path.to_string())
+            .private_cookie(cookie.clone())
+            .dispatch(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{path} never answered inside {OUTER:?}"));
+    let status = response.status();
+    let text = response.into_string().await.unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(json!({ "raw": text })),
+    )
+}
+
+#[tokio::test]
+async fn another_account_never_takes_the_session_a_stop_parked() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let address = listen(fake.clone()).await;
+    let owner = client(&address).await;
+    let (status, _, _) = post(&owner, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok);
+    let _ = post(&owner, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (other, cookie) = second_account(&address).await;
+    let (status, body) = post_as(
+        &other,
+        &cookie,
+        "/api/device/controls/ptz/press?action=right",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(
+        body["reused_session"], false,
+        "account B rode account A's parked login: {body}"
+    );
+    let _ = post_as(
+        &other,
+        &cookie,
+        "/api/device/controls/ptz/release?pressed_ms=900",
+    )
+    .await;
+    let frames = fake.ptz();
+    assert_ne!(frames[2].connection, frames[0].connection);
+    let (status, body, _) = post(&owner, "/api/device/controls/ptz/press?action=up").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["reused_session"], true, "{body}");
+    let _ = post(&owner, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(fake.ptz()[4].connection, frames[0].connection);
+}
+
+#[tokio::test]
+async fn a_parked_press_that_times_out_still_gets_a_stop_when_the_fresh_login_fails() {
+    let fake = device(Mood::StallsParkedThenRefusesLogin, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok);
+    let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=right").await;
+    assert_ne!(status, Status::Ok, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let stop_after_stall = || {
+        fake.ptz().iter().any(|frame| {
+            frame.connection >= 3 && preset_of(frame) == -1 && command(frame) == "DirectionRight"
+        })
+    };
+    while Instant::now() < deadline && !stop_after_stall() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
-        ran < Duration::from_millis(1600),
-        "the stop came {ran:?} after the start"
+        stop_after_stall(),
+        "the stalled parked press never got its stop"
     );
+}
+
+#[tokio::test]
+async fn a_parked_session_the_camera_dropped_falls_back_to_a_fresh_login() {
+    let fake = device(Mood::DropsAfterStop, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok);
+    let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (status, body, took) = post(&client, "/api/device/controls/ptz/press?action=right").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["reused_session"], false);
+    assert!(
+        took < Duration::from_millis(1500),
+        "the fallback took {took:?}"
+    );
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let frames = fake.ptz();
+    let last = frames.last().unwrap();
+    assert_eq!(command(last), "DirectionRight");
+    assert_eq!(preset_of(last), -1);
+    assert_ne!(last.connection, frames[0].connection);
+}
+
+#[tokio::test]
+async fn a_mirrored_camera_gets_direction_right_for_the_left_key_with_the_app_steps() {
+    let fake = device(Mood::Answers, &[], &[]).mirrored();
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["action"], "left");
+    assert_eq!(body["command"], "DirectionRight");
+    assert_eq!(body["speed"], "normal");
+    assert_eq!(body["step"], 4);
+    assert_eq!(body["orientation"]["mirror"], true);
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(status, Status::Ok);
+    let (status, body, _) = post(
+        &client,
+        "/api/device/controls/ptz/press?action=up&speed=slow",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["command"], "DirectionUp");
+    assert_eq!(body["step"], 1);
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(status, Status::Ok);
+    let frames: Vec<(String, i64, i64)> = fake
+        .ptz()
+        .iter()
+        .map(|frame| {
+            (
+                command(frame),
+                preset_of(frame),
+                frame.body["OPPTZControl"]["Parameter"]["Step"]
+                    .as_i64()
+                    .unwrap_or(0),
+            )
+        })
+        .collect();
+    assert_eq!(
+        frames,
+        [
+            ("DirectionRight".to_string(), 65535, 4),
+            ("DirectionRight".to_string(), -1, 4),
+            ("DirectionUp".to_string(), 65535, 1),
+            ("DirectionUp".to_string(), -1, 1),
+        ]
+    );
+    let reads = fake
+        .frames()
+        .iter()
+        .filter(|frame| frame.id == msg::CONFIG_GET && frame.body["Name"] == "Uart.PTZControlCmd")
+        .count();
+    assert_eq!(reads, 1, "the orientation is cached after the first press");
+    let (status, body, _) = post(
+        &client,
+        "/api/device/controls/ptz/press?action=left&speed=4",
+    )
+    .await;
+    assert_eq!(status, Status::BadRequest, "{body}");
 }
 
 #[tokio::test]

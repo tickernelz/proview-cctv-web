@@ -13,7 +13,7 @@ export type Launcher = {
   onClick: () => void
 }
 export type LensOption = { value: string; name: string; sub: string }
-export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean }
+export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean; ptzSpeed: Record<string, string> }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type Preset = { token: string; name: string }
@@ -36,7 +36,7 @@ export const live = reactive({
     ['intercom', 'move', 'up', 'down', 'left', 'right', 'home', 'cruise', 'aim', 'zoom', 'focus', 'presetEdit', 'calibrate'].map((act) => [act, { ok: false, why: 'Device controls have not been checked yet.' } as Gate]),
   ) as Record<string, Gate>,
   padOpen: false,
-  pad: { presets: [] as Preset[], presetsShown: false, tour: false, status: '', editing: false, busy: false, edit: { loaded: false, presets: [] as Preset[], lines: [] as TourLine[] } },
+  pad: { speed: 'normal', presets: [] as Preset[], presetsShown: false, tour: false, status: '', editing: false, busy: false, edit: { loaded: false, presets: [] as Preset[], lines: [] as TourLine[] } },
   panes: { empty: false, live: true, grid: false },
   stage: {
     name: 'idle',
