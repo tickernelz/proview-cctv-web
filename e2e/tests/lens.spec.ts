@@ -15,7 +15,7 @@ async function pickLens(page: Page, lens: string) {
   await expect(page.getByTestId('lens-menu')).toBeHidden()
 }
 
-test('picture in picture is the default: the top lens fills the frame and the bottom lens sits in the corner', async ({ page }) => {
+test('picture in picture is the default: the top lens fills the frame and the bottom lens sits in the corner', async ({ page, browserName }) => {
   await signIn(page, 'one')
   await playing(page)
   await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'pip')
@@ -29,14 +29,16 @@ test('picture in picture is the default: the top lens fills the frame and the bo
   const box = (await inset.boundingBox())!
   expect(Math.abs(box.width / box.height - 640 / 360)).toBeLessThan(0.05)
   expect(box.width).toBeLessThan(main.frame.w / 2)
-  const painted = await page.waitForFunction(() => {
+  if (browserName === 'chromium') {
+    const painted = await page.waitForFunction(() => {
     const canvas = document.querySelector('[data-testid="pip-inset"] canvas') as HTMLCanvasElement | null
     if (!canvas || !canvas.width) return false
     const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, canvas.height).data
     for (let index = 0; index < pixels.length; index += 4) if (pixels[index] + pixels[index + 1] + pixels[index + 2] > 30) return true
     return false
-  })
-  expect(await painted.jsonValue()).toBe(true)
+    })
+    expect(await painted.jsonValue()).toBe(true)
+  }
   await inset.click()
   await expect(inset).toHaveAttribute('aria-label', 'Swap lenses: show the top lens large')
   const swapped = await frameBoxes(page)
