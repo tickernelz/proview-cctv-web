@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../lib/api'
-import { StreamPlayer } from '../lib/stream-player'
+import { StreamPlayer, type SoundState } from '../lib/stream-player'
 import { deviceStatus, statusLine } from '../app/devices'
 import { hms } from '../app/format'
 import { sessionLost } from '../app/shell'
-import { state as page } from '../app/state'
 import { shortStreamError } from '../app/stage'
 import { gridNow } from './grid-clock'
+import { live } from './store'
 
 type View = { device: string; channel: number; quality: 'main' | 'sub' }
 type Camera = { key: string; name: string; channel: number; device: { id: string; online?: boolean } }
@@ -19,7 +19,8 @@ const emit = defineEmits<{ state: [name: TileState]; toggle: []; open: [] }>()
 const WORDS: Record<TileState, string> = { loading: 'connecting', playing: 'live', stalled: 'frozen', error: 'failed', offline: 'offline' }
 
 const video = ref<HTMLVideoElement>()
-const status = reactive({ name: 'loading' as TileState, detail: '', title: '', at: 0 })
+const status = reactive({ name: 'loading' as TileState, detail: '', title: '', at: 0, sound: 'off' as SoundState })
+const SOUND_WORDS: Partial<Record<SoundState, string>> = { playing: ' · sound', silent: ' · no sound' }
 let player: StreamPlayer | null = null
 let nonce = 0
 
@@ -46,7 +47,10 @@ async function start() {
   status.title = ''
   if (deviceStatus(props.camera.device).known && !props.camera.device.online) return set('offline')
   if (!video.value) return
-  const own = new StreamPlayer(video.value, (name, message) => player === own && set(name, message), () => page.muted)
+  const own = new StreamPlayer(video.value, (name, message) => player === own && set(name, message), () => live.muted || !props.selected)
+  own.onSound = (sound) => {
+    if (player === own) status.sound = sound
+  }
   player = own
   set('loading')
   try {
@@ -82,7 +86,7 @@ onBeforeUnmount(stop)
       </div>
     </div>
     <div class="tile-meta">
-      <p><strong>{{ camera.name }}</strong><span class="tile-state">{{ WORDS[status.name] }}</span></p>
+      <p><strong>{{ camera.name }}</strong><span class="tile-state" data-testid="grid-tile-state" :data-sound="status.sound">{{ WORDS[status.name] + (SOUND_WORDS[status.sound] || '') }}</span></p>
       <button
         class="tile-pick"
         type="button"

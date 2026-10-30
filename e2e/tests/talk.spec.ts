@@ -9,7 +9,11 @@ test.use({
 
 type Peer = { pcm: Buffer[]; text: string[]; closed: boolean }
 
-async function openWithPeer(page: Page, first: object): Promise<Peer> {
+function alaw(frame: number) {
+  return JSON.stringify({ type: 'audio', frame, codec: 'alaw', rate: 8000, data: Buffer.alloc(320, frame % 2 ? 0x55 : 0xd5).toString('base64') })
+}
+
+async function openWithPeer(page: Page, first: object, back = false): Promise<Peer> {
   const peer: Peer = { pcm: [], text: [], closed: false }
   await page.route(/\/api\/device\/controls(\?|$)/, (route) =>
     route.fulfill({
@@ -25,8 +29,11 @@ async function openWithPeer(page: Page, first: object): Promise<Peer> {
       if (typeof message === 'string') peer.text.push(message)
       else peer.pcm.push(message)
     })
+    let frame = 0
+    const timer = back ? setInterval(() => socket.send(alaw(frame++)), 40) : null
     socket.onClose(() => {
       peer.closed = true
+      if (timer) clearInterval(timer)
     })
     socket.send(JSON.stringify(first))
   })
@@ -66,6 +73,24 @@ test('holding T streams 8 kHz PCM to the talk peer and releasing it stops the up
   expect(state.active).toBe(false)
   expect(state.open).toBe(false)
   expect(state.chunks).toBe(peer.pcm.length)
+})
+
+test('the camera audio that comes back during talk plays instead of the live sound', async ({ page }) => {
+  const peer = await openWithPeer(page, { kind: 'ready', path: 'relay', channel: null, claim_ms: 4 }, true)
+  const stage = () => page.evaluate(() => (window as unknown as { state: { players: Map<string, { soundOn: boolean }> } }).state.players.get('stage')?.soundOn)
+  const talk = () => page.evaluate(() => (window as unknown as { proviewTalk: { state(): { heard: number; played: number } } }).proviewTalk.state())
+  await page.getByTestId('ctl-mute').click()
+  await expect.poll(stage).toBe(true)
+  await page.keyboard.down('t')
+  await expect(page.getByTestId('talk-note')).toContainText('sending over the cloud relay')
+  await expect.poll(stage).toBe(false)
+  await expect.poll(async () => (await talk()).played, { timeout: 10_000 }).toBeGreaterThan(5)
+  expect((await talk()).heard).toBeGreaterThan(5)
+  await expect(page.getByTestId('ctl-mute')).toHaveAttribute('data-sound', 'playing')
+  await page.keyboard.up('t')
+  await expect.poll(() => peer.closed).toBe(true)
+  expect(peer.text).toEqual([JSON.stringify({ type: 'sound', on: true }), JSON.stringify({ type: 'stop' })])
+  await expect.poll(stage).toBe(true)
 })
 
 test('the microphone is released when the button comes up', async ({ page }) => {

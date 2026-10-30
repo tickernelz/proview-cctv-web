@@ -16,6 +16,13 @@ const start = computed(() => live.launchers.filter((item) => item.slot === 'star
 const end = computed(() => live.launchers.filter((item) => item.slot === 'end'))
 const qualityLabel = computed(() => 'Quality ' + (live.quality === 'sub' ? 'SD' : 'HD'))
 const talkNote = computed(() => live.talk.note || (live.gate.intercom.ok ? '' : live.gate.intercom.why))
+const SOUND_TITLES: Record<string, string> = {
+  waiting: 'Sound is on, waiting for the camera audio',
+  playing: 'Sound is on',
+  silent: 'Sound is on, but the camera is sending no audio',
+  unsupported: 'This browser has no Web Audio, so the camera audio cannot play',
+}
+const soundTitle = computed(() => (live.muted ? 'Sound is off' : SOUND_TITLES[live.sound] || 'Sound is on') + ' (M)')
 const QUALITIES = [
   { value: 'main', name: 'HD', sub: 'the main stream' },
   { value: 'sub', name: 'SD', sub: 'the sub stream, lighter on the network' },
@@ -74,10 +81,11 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       type="button"
       aria-keyshortcuts="M"
       :aria-pressed="!live.muted"
-      :title="(live.muted ? 'Sound is off' : 'Sound is on') + ' (M)'"
+      :data-sound="live.sound"
+      :title="soundTitle"
       @click="live.actions.toggleMute()"
     >
-      <Icon :name="live.muted ? 'speaker-off' : 'speaker'" /><span>Sound</span>
+      <Icon :name="live.muted ? 'speaker-off' : 'speaker'" /><span data-testid="sound-label">{{ live.sound === 'silent' ? 'No sound' : 'Sound' }}</span>
     </button>
     <span class="sep" />
     <button

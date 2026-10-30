@@ -1,10 +1,28 @@
 import { AVC_TYPE, HEVC_FIRST_FRAME_MS, decodes, mimeOf, rememberHevc, shouldAskForHevc, type StreamShape } from './hevc'
+import { decodeAlaw, PlaybackSound } from '../live/playback-audio'
 
 export const LIVE_WINDOW_SECONDS = 12
 export const LIVE_TARGET_LAG_SECONDS = 1.0
 
 export type StreamTicket = { kind: string; url: string }
 export type PlayerState = 'playing' | 'stalled' | 'error'
+export type SoundState = 'off' | 'waiting' | 'playing' | 'silent' | 'unsupported'
+
+export const SOUND_SILENT_MS = 4000
+export const TRANSCODE_VIDEO_DELAY_SECONDS = 0.2
+const EDGE_REACH_SECONDS = 4
+
+type AudioFrame = { type: 'audio'; frame: number; codec: string; rate: number; data: string }
+
+export function audioFrame(text: string): AudioFrame | null {
+  if (!text.includes('"audio"')) return null
+  try {
+    const frame = JSON.parse(text)
+    return frame && frame.type === 'audio' && typeof frame.data === 'string' ? (frame as AudioFrame) : null
+  } catch {
+    return null
+  }
+}
 
 type HlsInstance = { on: (event: string, handler: (event: unknown, data: { fatal?: boolean; type?: string }) => void) => void; loadSource: (url: string) => void; attachMedia: (video: HTMLVideoElement) => void; destroy: () => void }
 type HlsConstructor = { new (options: { lowLatencyMode: boolean }): HlsInstance; isSupported: () => boolean; Events: { ERROR: string } }
@@ -29,6 +47,17 @@ export class StreamPlayer {
   transport: 'hevc' | 'avc' | null = null
   hevcTimer: number | null = null
   frameCallback: number | null = null
+  sound = new PlaybackSound()
+  soundOn = false
+  soundState: SoundState = 'off'
+  soundSince = 0
+  soundTimer: number | null = null
+  heardAt = 0
+  heard = 0
+  announcedAt = 0
+  edgeMedia = 0
+  edgeWall = 0
+  onSound: ((state: SoundState) => void) | null = null
 
   constructor(video: HTMLVideoElement, onState?: (name: PlayerState, message: string) => void, muted: () => boolean = () => true) {
     this.video = video
@@ -44,6 +73,7 @@ export class StreamPlayer {
         return
       }
       this.announced = true
+      this.announcedAt = performance.now()
       this.onMetadata = null
       if (this.metadataTimer) {
         window.clearTimeout(this.metadataTimer)
@@ -117,8 +147,102 @@ export class StreamPlayer {
     this.frameCallback = null
   }
 
+  setSoundState(next: SoundState) {
+    if (next === this.soundState) return
+    this.soundState = next
+    if (this.onSound) this.onSound(next)
+  }
+
+  sendSound() {
+    const socket = this.socket
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'sound', on: this.soundOn }))
+  }
+
+  applySound(on: boolean) {
+    if (on === this.soundOn) return
+    if (on && !this.sound.enable()) {
+      this.setSoundState('unsupported')
+      return
+    }
+    if (!on) {
+      this.sound.disable()
+      this.sound.clear()
+    }
+    this.soundOn = on
+    this.soundSince = performance.now()
+    this.sendSound()
+  }
+
+  soundTick() {
+    this.applySound(!this.muted())
+    this.tickSound()
+    if (!this.soundOn) {
+      if (this.soundState !== 'unsupported' || this.muted()) this.setSoundState('off')
+      return
+    }
+    const from = Math.max(this.soundSince, this.announcedAt)
+    if (this.heardAt > from) {
+      this.setSoundState(performance.now() - this.heardAt > SOUND_SILENT_MS ? 'silent' : 'playing')
+      return
+    }
+    this.setSoundState(this.announced && performance.now() - from > SOUND_SILENT_MS ? 'silent' : 'waiting')
+  }
+
+  startSound() {
+    this.stopSound()
+    this.soundTimer = window.setInterval(() => this.soundTick(), 100)
+    this.soundTick()
+  }
+
+  stopSound() {
+    if (this.soundTimer) {
+      window.clearInterval(this.soundTimer)
+      this.soundTimer = null
+    }
+  }
+
+  noteEdge() {
+    const buffer = this.buffer
+    if (!buffer || buffer.buffered.length === 0) return
+    const end = buffer.buffered.end(buffer.buffered.length - 1)
+    if (end === this.edgeMedia) return
+    this.edgeMedia = end
+    this.edgeWall = performance.now() / 1000
+  }
+
+  tickSound() {
+    this.sound.tick(this.video.currentTime, !this.video.paused)
+  }
+
+  audioTime() {
+    const reach = performance.now() / 1000 - this.edgeWall
+    if (this.edgeWall === 0 || reach > EDGE_REACH_SECONDS) return null
+    return this.edgeMedia + reach + (this.transport === 'hevc' ? 0 : TRANSCODE_VIDEO_DELAY_SECONDS)
+  }
+
+  hear(frame: AudioFrame) {
+    this.heard += 1
+    this.heardAt = performance.now()
+    if (!this.soundOn || frame.codec !== 'alaw' || !this.buffer) return
+    const at = this.audioTime()
+    if (at === null) return
+    this.sound.enqueue(at, decodeAlaw(frame.data), Number(frame.rate) || 8000)
+    this.tickSound()
+  }
+
   destroy() {
     this.clearHevcWatch()
+    this.stopSound()
+    this.sound.disable()
+    this.sound.clear()
+    if (this.sound.context) void this.sound.context.close()
+    this.sound = new PlaybackSound()
+    this.soundOn = false
+    this.heard = 0
+    this.heardAt = 0
+    this.edgeMedia = 0
+    this.edgeWall = 0
+    this.setSoundState('off')
     this.ticket = null
     this.transport = null
     delete this.video.dataset.transport
@@ -226,6 +350,7 @@ export class StreamPlayer {
     }
     this.buffer = buffer
     buffer.addEventListener('updateend', () => {
+      this.noteEdge()
       this.pump()
       this.followEdge()
     })
@@ -307,9 +432,14 @@ export class StreamPlayer {
         const socket = new WebSocket(target)
         socket.binaryType = 'arraybuffer'
         this.socket = socket
+        socket.addEventListener('open', () => {
+          if (this.socket === socket && this.soundOn) this.sendSound()
+        })
         socket.onmessage = (event) => {
           if (typeof event.data === 'string') {
-            this.onHello(media, event.data)
+            const frame = audioFrame(event.data)
+            if (frame) this.hear(frame)
+            else this.onHello(media, event.data)
             return
           }
           this.queue.push(new Uint8Array(event.data as ArrayBuffer))
@@ -328,6 +458,7 @@ export class StreamPlayer {
         }
         video.muted = this.muted()
         this.expectFirstFrame()
+        this.startSound()
         video.play().catch(() => {})
       },
       { once: true },
