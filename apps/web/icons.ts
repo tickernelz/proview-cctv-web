@@ -54,6 +54,9 @@ export const ICONS: Record<string, string> = {
   route: 'route',
   pencil: 'pencil',
   crosshair: 'crosshair',
+  eye: 'eye',
+  'eye-off': 'eye-off',
+  lock: 'lock',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

@@ -1,7 +1,8 @@
 [data-testid="live-clock"],
 [data-testid="live-lag"],
 [data-testid="grid-tile-clock"],
-[data-testid="alarm-status"] {
+[data-testid="alarm-status"],
+[data-testid="signin-server"] {
   visibility: hidden !important;
 }
 
