@@ -68,6 +68,36 @@ test('the dock keeps the main actions labelled and More turns the picture over',
   await expect(page.getByTestId('settings')).toBeVisible()
 })
 
+test('on a phone the dock is one row and More carries Record, Quality, Full screen, Recordings and cameras', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'one')
+  await playing(page)
+  const dock = page.getByTestId('live-controls')
+  const shown = dock.locator(':scope > button:visible')
+  await expect(shown).toHaveText([/Talk/, /Sound/, /Snapshot/, /Move/, /More/])
+  expect(await shown.evaluateAll((nodes) => new Set(nodes.map((node) => Math.round(node.getBoundingClientRect().top))).size)).toBe(1)
+  await page.getByTestId('ctl-more').click()
+  const menu = page.getByTestId('more-menu')
+  for (const id of ['more-record', 'more-quality', 'more-fullscreen', 'more-recordings', 'more-cloud', 'more-manage-cameras']) {
+    await expect(menu.getByTestId(id)).toBeVisible()
+  }
+  const option = (label: string) => menu.getByTestId('more-quality-option').filter({ hasText: label })
+  await expect(option('HD')).toHaveAttribute('aria-checked', 'true')
+  const stream = page.waitForRequest((request) => request.url().includes('/api/stream?') && request.url().includes('quality=sub'), { timeout: 10_000 })
+  await option('SD').click()
+  await stream
+  await expect(menu).toBeHidden()
+  await expect(page.getByTestId('ctl-more')).toBeFocused()
+  await playing(page)
+  await page.getByTestId('ctl-more').click()
+  await expect(option('SD')).toHaveAttribute('aria-checked', 'true')
+  await menu.getByTestId('more-recordings').click()
+  await expect(page.getByTestId('playback')).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('playback')).toBeHidden()
+  await expect(page.getByTestId('ctl-more')).toBeFocused()
+})
+
 test('Snapshot says where the picture went', async ({ page }) => {
   await signIn(page, 'one')
   await playing(page)

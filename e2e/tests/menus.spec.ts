@@ -66,7 +66,8 @@ test('the quality menu switches the stream to SD and back to HD', async ({ page 
 test('Escape in the quality menu over the device sheet closes only the menu', async ({ page }) => {
   await signIn(page, 'one')
   await playing(page)
-  await page.locator('#device-admin-open').click()
+  await page.getByTestId('ctl-more').click()
+  await page.getByTestId('more-manage-cameras').click()
   const sheet = page.locator('#device-admin')
   await expect(sheet).toBeVisible()
   const trigger = page.getByTestId('quality-pick')

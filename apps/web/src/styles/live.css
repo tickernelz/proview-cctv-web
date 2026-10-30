@@ -152,6 +152,8 @@
     .dock { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 2px; padding: 3px var(--s2); }
     .dock .spacer, .dock .sep { display: none; }
     .dk { min-width: 0; width: 100%; }
+    .dock.dock-row { display: flex; flex-wrap: nowrap; }
+    .dock-row > .dk { flex: 1 1 0; }
     .dock-status { padding: var(--s2) var(--s3) 0; }
     .pad[data-mode="sheet"] { margin: var(--s2) var(--s2) 0; }
     .pip-label { display: none; }

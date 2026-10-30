@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { api, type ApiError } from '../lib/api'
 import { openSettings, sessionLost } from '../app/shell'
 import { loadDevices } from '../app/view'
-import { addLauncher, live, menuOpen } from './store'
+import { live, menuOpen } from './store'
 import { settingsUi } from '../settings/ui'
 
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
@@ -48,6 +48,7 @@ const sheet = ref<HTMLElement>()
 const closeButton = ref<HTMLButtonElement>()
 const rows: (HTMLButtonElement | null)[] = []
 let opener: HTMLElement | null = null
+let openerId = ''
 let origin = 'watch'
 const list = reactive({ phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error', devices: [] as Device[], groups: [] as string[], error: '' })
 const chosen = ref('')
@@ -63,19 +64,6 @@ const shareStates: Record<string, string> = { '0': 'Not accepted yet', '1': 'Acc
 const stateOf = (state: string) => shareStates[state] || state
 const permitReason = computed(() => (!form.shareTo.trim() ? 'Type the other account email to share' : ''))
 const qrImage = computed(() => (shares.qr ? 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(shares.qr.svg) : ''))
-
-const launcher = addLauncher({
-  id: 'device-admin-open',
-  label: 'Devices',
-  icon: 'cctv',
-  slot: 'start',
-  title: 'Device names, groups, sharing, passwords',
-  pressed: false,
-  controls: 'device-admin',
-  onClick: () => (open.value ? close() : show()),
-})
-
-watch(open, (shown) => (launcher.pressed = shown))
 
 const device = computed(() => list.devices.find((entry) => entry.uuid === chosen.value) || null)
 const shownTab = computed(() => (device.value ? tab.value : 'share'))
@@ -143,9 +131,10 @@ async function refresh() {
   }
 }
 
-async function show() {
-  const from = document.activeElement
-  opener = from instanceof HTMLElement && from !== document.body && from.id !== 'device-admin-open' && !sheet.value?.contains(from) ? from : null
+async function show(from = '') {
+  const active = document.activeElement
+  openerId = from
+  opener = !from && active instanceof HTMLElement && active !== document.body && !sheet.value?.contains(active) ? active : null
   origin = live.settings.shown ? 'settings' : 'watch'
   live.sheet = 'devices'
   const loading = refresh()
@@ -160,11 +149,10 @@ async function show() {
 
 function close(returnFocus = true) {
   if (live.sheet === 'devices') live.sheet = ''
-  const back = opener
+  const back = openerId ? document.getElementById(openerId) : opener
   opener = null
-  if (!returnFocus) return
-  if (back?.isConnected && back.getClientRects().length) back.focus()
-  else document.getElementById('device-admin-open')?.focus()
+  openerId = ''
+  if (returnFocus && back?.isConnected && back.getClientRects().length) back.focus()
 }
 
 function addCamera() {
@@ -174,7 +162,7 @@ function addCamera() {
 
 watch(
   () => settingsUi.devices,
-  () => show(),
+  () => show(settingsUi.devicesFrom),
 )
 
 function onEscape(event: KeyboardEvent) {

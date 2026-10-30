@@ -9,32 +9,40 @@ const CLIPS = {
 }
 
 async function openPanel(page: Page) {
-  await page.getByTestId('recordings-launcher').click()
+  await page.getByTestId('ctl-more').click()
+  await page.getByTestId('more-cloud').click()
   const panel = page.getByTestId('recordings-panel')
   await expect(panel).toBeVisible()
   await expect(page.getByTestId('recordings-camera')).toBeEnabled()
   return panel
 }
 
-test('Cloud opens on the camera on screen, takes focus, and Escape or Close hands focus back', async ({ page }) => {
+test('Cloud recordings open from More and the timeline on the camera on screen, take focus, and Escape or Close hand focus back', async ({ page }) => {
   await signIn(page, 'many')
   await playing(page)
   await page.keyboard.press('2')
   await expect(page.getByTestId('camera-name')).toHaveText('Porch')
-  const launcher = page.getByTestId('recordings-launcher')
+  const more = page.getByTestId('ctl-more')
   const panel = await openPanel(page)
-  await expect(launcher).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.getByTestId('rec-tab-cloud')).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId('recordings-day')).toBeFocused()
   await expect(page.getByTestId('recordings-camera')).toHaveValue('porch')
   await page.keyboard.press('Escape')
   await expect(panel).toBeHidden()
-  await expect(launcher).toBeFocused()
-  await expect(launcher).toHaveAttribute('aria-pressed', 'false')
+  await expect(more).toBeFocused()
   await expect(page.getByTestId('live-well')).toBeVisible()
   await openPanel(page)
   await page.getByTestId('recordings-panel').getByRole('button', { name: 'Close', exact: true }).click()
   await expect(panel).toBeHidden()
-  await expect(launcher).toBeFocused()
+  await expect(more).toBeFocused()
+  const timeline = page.getByTestId('tl-recordings')
+  await timeline.click()
+  await expect(panel).toBeVisible()
+  await page.getByTestId('rec-tab-cloud').click()
+  await expect(page.getByTestId('recordings-camera')).toHaveValue('porch')
+  await page.keyboard.press('Escape')
+  await expect(panel).toBeHidden()
+  await expect(timeline).toBeFocused()
 })
 
 test('Load shows that it is loading, lists the clips, and sends one request', async ({ page }) => {

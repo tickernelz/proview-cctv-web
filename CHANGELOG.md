@@ -9,22 +9,32 @@ stability before 1.0.
 
 ### Changed
 
-- New design foundation (ADR 0003): Graphite tokens in dark and light, one app
-  shell with a 48 px header (camera switcher, Single/Grid, Events, Settings),
-  an Events panel docked and open from 1280 px wide (closed below, remembered
-  in the browser), a bottom tab bar under 640 px, and addresses `#/live`,
-  `#/live/grid`, `#/live/playback`, `#/events` and `#/settings/<section>`.
-  Every screen keeps its features; the screens get their new look next.
-- Alarms are now Events. The side panel groups today's events into Evening,
-  Afternoon and Morning with a picture, the kind in words (Motion, Alarm,
-  Human), the time and how long ago, filter chips with counts, and a day
-  picker with the month calendar. Opening an event returns to Live on that
-  camera and plays from 5 s before it. `#/events` is the full page: picture
-  cards, a preview of the chosen event, Select to delete chosen events or
-  clear all (each asks first, and an account that may not delete sees why),
-  the phone push state, and a Notify me switch. The Events badge counts only
-  events newer than the last ones you saw. A failed check leads with a plain
-  sentence and keeps the server's words under Details.
+- The web UI is redesigned (ADR 0003, `DESIGN.md`; #119-#124 and the dock
+  clean-up after them). Graphite tokens in dark and light and one app shell: a
+  48 px header (camera switcher, Single/Grid, Events, Settings), a bottom tab
+  bar under 640 px, and the addresses `#/live`, `#/live/grid`,
+  `#/live/playback`, `#/events` and `#/settings/<section>`. Sign-in is one
+  column with Account / This network tabs and says when and why a session
+  ended; the grid and every stage state (loading, slow relay, offline, error,
+  no recordings) share one set of components. Live is one stage with a status
+  plate, the dual-lens picture in picture, the move pad on the picture with
+  Slow / Normal / Fast, and a dock of labelled actions: Talk, Sound, Snapshot,
+  Record, Move, then Lens, Quality, More and Full screen; on a phone Talk,
+  Sound, Snapshot, Move and More fit one row and Record, Lens, Quality and
+  Full screen sit under More. Recorded video lives in the ruler timeline under
+  the dock (recording segments and event markers on the day, 24 h to 10 min
+  zoom, a calendar, playback controls in the dock) with a Recordings sheet for
+  the camera files and the Cloud tab, opened from the timeline or from More.
+  Alarms are now Events: a side panel that groups the day into Evening,
+  Afternoon and Morning with a picture, the kind in words, the time and how
+  long ago, filter chips and a day picker, and the `#/events` page with
+  cards, a preview, delete and clear all (each asks first), the phone push
+  state and Notify me; opening an event plays from 5 s before it. Settings
+  has three groups (Camera, App, Account & server) with cards and one save
+  bar. The Playback, Cloud and Devices dock buttons are gone: recordings open
+  from the timeline and More, and cameras are managed from Settings > Manage
+  cameras, the camera switcher and More, each handing focus back to what
+  opened it.
 
 ### Fixed
 

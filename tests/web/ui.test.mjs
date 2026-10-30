@@ -226,7 +226,9 @@ const ATTRIBUTE_STUB = {
 test('the devices panel lists the account devices and saves a group through the API', async () => {
   const page = await open({ intercept: ATTRIBUTE_STUB });
   try {
-    await page.evaluate("document.getElementById('device-admin-open').click()");
+    await page.evaluate("document.getElementById('open-settings').click()");
+    await page.wait("Boolean(document.querySelector('[data-testid=settings-cameras]:not(:disabled)'))", 'the Manage cameras button in Settings');
+    await page.evaluate("document.querySelector('[data-testid=settings-cameras]').click()");
     await page.wait("document.querySelectorAll('#device-admin-list .menu-row').length === 2", 'the device rows', 10000);
     const rows = await page.evaluate("[...document.querySelectorAll('#device-admin-list .menu-row .name')].map((node) => node.textContent)");
     assert.deepEqual(rows, ['Pintu keluar masuk', 'Teras']);
@@ -326,10 +328,12 @@ const TOOLBAR_HITS = `(() => {
     const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
     if (hit?.closest('button') !== button) misses.push(name + ' centre hits ' + (hit?.closest('button')?.id || hit?.tagName));
   }
+  const rows = new Set([...document.querySelectorAll('#controls > button')].filter((button) => button.getClientRects().length).map((button) => Math.round(button.getBoundingClientRect().top)));
+  if (matchMedia('(max-width: 640px) and (min-height: 481px)').matches && rows.size !== 1) misses.push('the phone dock wraps to ' + rows.size + ' rows');
   return misses;
 })()`;
 const EXTRA_BUTTON = `(() => {
-  const extra = document.getElementById('record').cloneNode(true);
+  const extra = document.getElementById('snapshot').cloneNode(true);
   extra.id = 'extra-ctl';
   extra.querySelector('span').textContent = 'Cloud';
   const controls = document.getElementById('controls');
@@ -341,7 +345,7 @@ for (const touch of [false, true]) {
     for (const width of [360, 390, 480, 600, 700]) {
       const page = await open({ width, height: 844 });
       try {
-        await page.wait("document.getElementById('lens-pick')?.hidden === false", 'the lens picker of the dual-lens clip');
+        await page.wait(width <= 640 ? "Boolean(document.querySelector('[data-testid=pip-inset]'))" : "document.getElementById('lens-pick')?.hidden === false", 'the lens control of the dual-lens clip');
         if (touch) {
           await page.call('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
           await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'pointer', value: 'coarse' }] });
@@ -438,7 +442,7 @@ async function clickTrack(page, x, y) {
 test('the timeline draws the whole day and plays the file under the pointer', async () => {
   const page = await open({ intercept: PLAYBACK_FILES, init: [SOCKET_LOG] });
   try {
-    await page.evaluate("document.getElementById('pb-open').click()");
+    await page.evaluate("document.getElementById('tl-recordings').click()");
     await page.wait("Boolean(document.getElementById('pb'))", 'the recordings sheet');
     await pickDay(page, '2026-10-24');
     await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the 557 file rows');
