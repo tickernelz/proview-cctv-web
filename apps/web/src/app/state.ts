@@ -16,7 +16,7 @@ const PREFS_KEY = 'pvw_prefs_v2'
 export const SECTIONS = ['playback', 'camera', 'device', 'connection', 'config', 'server', 'system', 'alarm', 'image', 'account']
 
 function defaultPrefs(): Prefs {
-  return { theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: false, ptzSpeed: 'normal' }
+  return { theme: 'system', quality: 'main', lens: 'combined', osd: true, muted: true, flip: false, ptzSpeed: {} }
 }
 
 function loadPrefs(): Prefs {
@@ -33,6 +33,7 @@ function loadPrefs(): Prefs {
     legacyTheme = null
   }
   const prefs = { ...defaultPrefs(), ...stored }
+  if (!prefs.ptzSpeed || typeof prefs.ptzSpeed !== 'object') prefs.ptzSpeed = {}
   if (!stored.theme && (legacyTheme === 'dark' || legacyTheme === 'light')) prefs.theme = legacyTheme
   return prefs
 }

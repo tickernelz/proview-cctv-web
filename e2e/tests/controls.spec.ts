@@ -51,7 +51,7 @@ test('the speed pick rides on every press and a turned picture swaps the keys', 
   await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=right&speed=fast&device=gate')
   await page.keyboard.up('ArrowRight')
   await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(1)
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').ptzSpeed)).toBe('fast')
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').ptzSpeed)).toEqual({ gate: 'fast' })
   await page.evaluate(() => {
     const prefs = JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}')
     localStorage.setItem('pvw_prefs_v2', JSON.stringify({ ...prefs, flip: true }))

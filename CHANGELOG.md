@@ -23,11 +23,13 @@ stability before 1.0.
 
 ### Added
 
-- PTZ speed pick on the pad (Slow, Normal, Fast), saved in the browser: the
+- PTZ speed pick on the pad (Slow, Normal, Fast), saved in the browser per camera: the
   app's pan steps 2/4/8 and tilt steps 1/2/4; `speed` on
   `POST /api/device/controls/ptz/press` takes `slow`, `normal` or `fast`.
-- A PTZ press reuses the session the last stop left open for 20 s, so a press
-  reaches the camera in 82-295 ms instead of 605-989 ms over the cloud relay.
+- A PTZ press reuses the session the last stop of the same vendor account left
+  open for 20 s, so a press reaches the camera in 82-295 ms instead of
+  605-989 ms over the cloud relay. A parked press that times out still gets a
+  stop on its own session.
 
 ## 0.4.0 — 2026-10-30
 

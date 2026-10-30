@@ -4,8 +4,10 @@ use std::time::{Duration, Instant};
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
 use proview_core::provider::Mode;
+use proview_core::provider::VendorSession;
+use proview_core::session::Store;
 use proview_server::config::ModeStore;
-use rocket::http::{ContentType, Status};
+use rocket::http::{ContentType, Cookie, Status};
 use rocket::local::asynchronous::Client;
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -24,6 +26,7 @@ enum Mood {
     NoPanorama,
     SlowAbility,
     DropsAfterStop,
+    StallsParkedThenRefusesLogin,
 }
 
 #[derive(Clone)]
@@ -203,6 +206,7 @@ fn reply(header: &Header, value: &Value) -> Vec<u8> {
 }
 
 async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
+    let mut stopped = false;
     loop {
         let mut header_bytes = [0u8; HEADER_LEN];
         if socket.read_exact(&mut header_bytes).await.is_err() {
@@ -222,8 +226,11 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
             id: header.id,
             body: body.clone(),
         });
+        let stalls = device.mood == Mood::StallsParkedThenRefusesLogin;
         let answer = match header.id {
+            msg::LOGIN if stalls && connection == 2 => Some(json!({ "Ret": 203 })),
             msg::LOGIN => Some(json!({ "Ret": 100, "SessionID": "0x11223344" })),
+            msg::PTZ_CONTROL if stalls && stopped => None,
             msg::CONFIG_GET if body["Name"] == "Uart.PTZControlCmd" && device.mirrored => {
                 Some(json!({
                     "Ret": 100,
@@ -261,12 +268,12 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
         if socket.write_all(&reply(&header, &value)).await.is_err() {
             return;
         }
-        if device.mood == Mood::DropsAfterStop
-            && header.id == msg::PTZ_CONTROL
-            && body["OPPTZControl"]["Parameter"]["Preset"] == -1
-        {
+        let stop =
+            header.id == msg::PTZ_CONTROL && body["OPPTZControl"]["Parameter"]["Preset"] == -1;
+        if device.mood == Mood::DropsAfterStop && stop {
             return;
         }
+        stopped |= stop;
     }
 }
 
@@ -419,6 +426,106 @@ async fn the_next_press_reuses_the_parked_session_instead_of_logging_in_again() 
         .filter(|frame| frame.id == msg::LOGIN)
         .count();
     assert_eq!(logins, 1);
+}
+
+async fn second_account(address: &str) -> (Client, Cookie<'static>) {
+    let client = Client::untracked(proview_server::build_with_modes(
+        figment(),
+        config(address),
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .await
+    .expect("valid rocket instance");
+    client
+        .rocket()
+        .state::<Store>()
+        .expect("session store")
+        .put(
+            "account-b".to_string(),
+            VendorSession {
+                account: "other@example.invalid".to_string(),
+                token: None,
+            },
+            Duration::from_secs(3600),
+        );
+    (client, Cookie::new("pvw_session", "account-b"))
+}
+
+async fn post_as(client: &Client, cookie: &Cookie<'static>, path: &str) -> (Status, Value) {
+    let response = tokio::time::timeout(
+        OUTER,
+        client
+            .post(path.to_string())
+            .private_cookie(cookie.clone())
+            .dispatch(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("{path} never answered inside {OUTER:?}"));
+    let status = response.status();
+    let text = response.into_string().await.unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(json!({ "raw": text })),
+    )
+}
+
+#[tokio::test]
+async fn another_account_never_takes_the_session_a_stop_parked() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let address = listen(fake.clone()).await;
+    let owner = client(&address).await;
+    let (status, _, _) = post(&owner, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok);
+    let _ = post(&owner, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (other, cookie) = second_account(&address).await;
+    let (status, body) = post_as(
+        &other,
+        &cookie,
+        "/api/device/controls/ptz/press?action=right",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(
+        body["reused_session"], false,
+        "account B rode account A's parked login: {body}"
+    );
+    let _ = post_as(
+        &other,
+        &cookie,
+        "/api/device/controls/ptz/release?pressed_ms=900",
+    )
+    .await;
+    let frames = fake.ptz();
+    assert_ne!(frames[2].connection, frames[0].connection);
+    let (status, body, _) = post(&owner, "/api/device/controls/ptz/press?action=up").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["reused_session"], true, "{body}");
+    let _ = post(&owner, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    assert_eq!(fake.ptz()[4].connection, frames[0].connection);
+}
+
+#[tokio::test]
+async fn a_parked_press_that_times_out_still_gets_a_stop_when_the_fresh_login_fails() {
+    let fake = device(Mood::StallsParkedThenRefusesLogin, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok);
+    let _ = post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=right").await;
+    assert_ne!(status, Status::Ok, "{body}");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let stop_after_stall = || {
+        fake.ptz().iter().any(|frame| {
+            frame.connection >= 3 && preset_of(frame) == -1 && command(frame) == "DirectionRight"
+        })
+    };
+    while Instant::now() < deadline && !stop_after_stall() {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        stop_after_stall(),
+        "the stalled parked press never got its stop"
+    );
 }
 
 #[tokio::test]

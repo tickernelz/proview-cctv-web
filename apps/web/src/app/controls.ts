@@ -4,7 +4,7 @@ import { renderCaption } from './caption'
 import { selectedDevice } from './devices'
 import { currentCrop, lensEntries, renderLensPicker } from './lens'
 import { sessionLost } from './shell'
-import { state, type Device } from './state'
+import { savePrefs, state, type Device } from './state'
 
 const UNCHECKED = 'Device controls have not been checked yet.'
 
@@ -235,6 +235,17 @@ export function screenAction(action: string) {
   return live.stage.crop.flipped === 'true' && TURNED[action] ? TURNED[action] : action
 }
 
+export function ptzSpeed() {
+  return state.prefs.ptzSpeed[state.selectedId || ''] || 'normal'
+}
+
+export function pickPtzSpeed(value: string) {
+  if (!state.selectedId) return
+  state.prefs.ptzSpeed = { ...state.prefs.ptzSpeed, [state.selectedId]: value }
+  savePrefs()
+  live.pad.speed = value
+}
+
 let held: string | null = null
 let pressedAt = 0
 let pressing: Promise<boolean> = Promise.resolve(false)
@@ -253,7 +264,7 @@ export function pressControl(action: string) {
   const started = pressedAt
   const previous = pressing
   pressing = previous
-    .then(() => api('/api/device/controls/ptz/press?action=' + encodeURIComponent(screenAction(action)) + '&speed=' + encodeURIComponent(state.prefs.ptzSpeed) + deviceQuery('&'), { method: 'POST' }))
+    .then(() => api('/api/device/controls/ptz/press?action=' + encodeURIComponent(screenAction(action)) + '&speed=' + encodeURIComponent(ptzSpeed()) + deviceQuery('&'), { method: 'POST' }))
     .then(() => {
       if (held === action) setControlStatus('Moving ' + action + ' (' + Math.round(performance.now() - started) + ' ms to start); release to stop.')
       return true
@@ -404,6 +415,7 @@ function openPad() {
   if (!live.gate.move.ok || state.view !== 'live') return
   state.padOpen = true
   live.padOpen = true
+  live.pad.speed = ptzSpeed()
   setControlStatus('')
   loadPresets()
   renderCaption()

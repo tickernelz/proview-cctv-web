@@ -3,9 +3,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import AddCamera from './AddCamera.vue'
 import PtzEditor from './PtzEditor.vue'
-import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
+import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pickPtzSpeed, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
-import { openSettings, setPref } from '../app/shell'
+import { openSettings } from '../app/shell'
 import { copyStageDetail, renderFsLine, requestStream } from '../app/stage'
 import { state } from '../app/state'
 import { loadDevices } from '../app/view'
@@ -32,11 +32,8 @@ const SPEEDS = [
   { value: 'normal', label: 'Normal' },
   { value: 'fast', label: 'Fast' },
 ]
-const speed = ref(state.prefs.ptzSpeed)
-
 function pickSpeed(event: Event) {
-  speed.value = (event.target as HTMLSelectElement).value
-  setPref('ptzSpeed', speed.value)
+  pickPtzSpeed((event.target as HTMLSelectElement).value)
 }
 const showing = computed(() => stage.name === 'playing' || stage.name === 'stalled')
 let lastVideoTime = -1
@@ -166,7 +163,7 @@ onBeforeUnmount(() => {
             </template>
           </span>
           <label class="pad-speed">Speed
-            <select data-testid="ptz-speed" :value="speed" @change="pickSpeed">
+            <select data-testid="ptz-speed" :value="pad.speed" @change="pickSpeed">
               <option v-for="option in SPEEDS" :key="option.value" :value="option.value">{{ option.label }}</option>
             </select>
           </label>

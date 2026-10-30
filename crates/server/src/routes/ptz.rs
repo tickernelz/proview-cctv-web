@@ -229,11 +229,15 @@ fn parked() -> &'static Mutex<HashMap<String, Parked>> {
     PARKED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn take_parked(address: &str) -> Option<Connection> {
+pub fn parked_key(account: &str, address: &str) -> String {
+    format!("{account}|{address}")
+}
+
+fn take_parked(key: &str) -> Option<Connection> {
     parked()
         .lock()
         .ok()?
-        .remove(address)
+        .remove(key)
         .map(|entry| entry.connection)
 }
 
@@ -401,9 +405,24 @@ fn answer_unpressed(release: &mut oneshot::Receiver<Release>) {
     }
 }
 
+async fn stop_orphan(control: &DvripControl, pending: Option<PtzAction>, step: u8) {
+    let Some(sent) = pending else {
+        return;
+    };
+    match send_stop(control, None, sent, step).await {
+        Ok(_) => {
+            tracing::warn!(device = %control.address(), "a parked ptz press timed out and the fresh press did not go out, so a stop went out on its own session")
+        }
+        Err(error) => {
+            tracing::error!(device = %control.address(), %error, "a parked ptz press timed out and its stop did not go out")
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn hold(
     control: DvripControl,
+    account: String,
     begun: Instant,
     gated: bool,
     action: PtzAction,
@@ -413,14 +432,22 @@ async fn hold(
     finished: impl FnOnce(),
 ) {
     let address = control.address();
+    let parking = parked_key(&account, &address);
     let mut warm = None;
-    if let Some(connection) = take_parked(&address) {
+    let mut pending = None;
+    if let Some(connection) = take_parked(&parking) {
         match start(&control, connection, gated, action, step, REUSE_WINDOW).await {
             Started::Failed {
-                connection, error, ..
+                connection,
+                error,
+                sent,
+                press_timed_out,
             } => {
                 tracing::info!(device = %address, %error, "a parked ptz session failed, so the press opens a fresh one");
                 drop(connection);
+                if press_timed_out {
+                    pending = Some(sent);
+                }
             }
             other => warm = Some(other),
         }
@@ -438,6 +465,7 @@ async fn hold(
                     finished();
                     let _ = started.send(Err(control_failure(error)));
                     answer_unpressed(&mut release);
+                    stop_orphan(&control, pending, step).await;
                     return;
                 }
             };
@@ -467,6 +495,7 @@ async fn hold(
             finished();
             let _ = started.send(Err(failure));
             answer_unpressed(&mut release);
+            stop_orphan(&control, pending, step).await;
             return;
         }
         Started::Failed {
@@ -484,8 +513,11 @@ async fn hold(
                 if let Err(error) = send_stop(&control, None, sent, step).await {
                     tracing::error!(device = %address, %error, "a ptz press that timed out did not get its stop out");
                 }
-            } else if !timed {
-                let _ = connection.logout_within(op_window()).await;
+            } else {
+                if !timed {
+                    let _ = connection.logout_within(op_window()).await;
+                }
+                stop_orphan(&control, pending, step).await;
             }
             return;
         }
@@ -510,7 +542,7 @@ async fn hold(
         .await
         .map(|(stop_ms, fresh_session, connection)| {
             if let Some(connection) = connection {
-                park(address.clone(), connection);
+                park(parking.clone(), connection);
             }
             ReleaseTimes {
                 held_ms,
@@ -594,6 +626,10 @@ async fn ptz_press(
     };
     let step = parsed.step(speed);
     let key = hold_key(cookies, device.as_deref())?;
+    let account = store
+        .get(&session_id(cookies)?)
+        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))?
+        .account;
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     if let Some(previous) = take_held(&key) {
         let _ = release_entry(previous, None).await;
@@ -615,6 +651,7 @@ async fn ptz_press(
     let owned_key = key.clone();
     tokio::spawn(hold(
         control,
+        account,
         begun,
         parsed.moves_the_lens(),
         parsed,
