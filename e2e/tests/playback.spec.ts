@@ -138,7 +138,7 @@ test('a click on a recorded point plays from that time inside Live, and Back to 
   await expect(page.getByTestId('ctl-record')).toHaveCount(0)
   await expect(page.getByTestId('tl-live')).toHaveCount(0)
   await expect(page.getByTestId('live-plate')).toHaveAttribute('data-tone', 'rec')
-  await expect(page.getByTestId('live-plate')).toContainText(/RECs*08:5d:dd/)
+  await expect(page.getByTestId('live-plate')).toContainText(/REC\s*08:5\d:\d\d/)
   await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
   await expect(page.getByTestId('pb-frame-next')).toBeEnabled()
   await expect(page.getByTestId('tl-pill')).toHaveText(/^08:5\d:\d\d$/)
