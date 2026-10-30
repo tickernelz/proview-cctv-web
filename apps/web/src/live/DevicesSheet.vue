@@ -56,6 +56,8 @@ const permissions = ref<Permission[]>(FALLBACK_PERMISSIONS)
 const granted = reactive(new Set<string>(FALLBACK_PERMISSIONS.filter((item) => item.default).map((item) => item.id)))
 const shares = reactive({ mine: [] as ShareRow[], received: [] as ShareRow[], loaded: false, qr: null as QrReply | null })
 const labelOf = (id: string) => permissions.value.find((item) => item.id === id)?.label || id
+const shareStates: Record<string, string> = { '0': 'Not accepted yet', '1': 'Accepted', '2': 'Refused' }
+const stateOf = (state: string) => shareStates[state] || state
 const permitReason = computed(() => (!form.shareTo.trim() ? 'Type the other account email to share' : ''))
 const qrImage = computed(() => (shares.qr ? 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(shares.qr.svg) : ''))
 
@@ -508,7 +510,7 @@ onMounted(() => {
               <li v-if="!shares.mine.length" class="hint">No account has this camera through a share.</li>
               <li v-for="row in shares.mine" :key="row.shareId" data-testid="share-row">
                 <strong>{{ row.account || row.userId }}</strong>
-                <span class="hint">{{ row.state ? row.state + ' · ' : '' }}{{ row.permissions.map(labelOf).join(', ') || 'no permissions' }}</span>
+                <span class="hint">{{ row.state ? stateOf(row.state) + ' · ' : '' }}{{ row.permissions.map(labelOf).join(', ') || 'no permissions' }}</span>
                 <span class="share-row-perms">
                   <label v-for="item in permissions" :key="item.id"><input type="checkbox" :checked="row.permissions.includes(item.id)" @change="toggleRowPermission(row, item.id)">{{ item.label }}</label>
                 </span>
@@ -524,7 +526,7 @@ onMounted(() => {
             <ul class="share-rows">
               <li v-for="row in shares.received" :key="row.shareId">
                 <strong>{{ row.deviceName || row.serial }}</strong>
-                <span class="hint">{{ row.account }}{{ row.permissions.length ? ' · ' + row.permissions.map(labelOf).join(', ') : '' }}</span>
+                <span class="hint">{{ row.account }}{{ row.state ? ' · ' + stateOf(row.state) : '' }}{{ row.permissions.length ? ' · ' + row.permissions.map(labelOf).join(', ') : '' }}</span>
                 <span class="sheet-actions">
                   <button class="btn btn-line" type="button" :aria-busy="action.busy === 'answer'" @click="answer(row, true)">Accept</button>
                   <button class="btn-text" type="button" @click="answer(row, false)">Refuse</button>

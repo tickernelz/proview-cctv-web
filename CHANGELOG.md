@@ -22,6 +22,13 @@ stability before 1.0.
   and a failed re-read answers `verified: false` with a message that the result
   could not be verified. The device sheet gains a typed "Remove from this
   account" control that uses it and shows either message as a red alert.
+- Share with permissions works against the live cloud: the share calls
+  (`mdshareadd`, `mdsharemylist`, `mdsharelist`, `mdsharesetpermission`,
+  `mdsharedel`, `mdshareaccept`, `mdsharerefuse`) go out the way the app sends
+  them (`v1`, query string, no body, URL-encoded reply, optional
+  `uname`/`upass`), and share rows read their permissions from the vendor's
+  `[{label, enabled}]` list, their state from `ret` and the other account from
+  `shareAccountId`, so the receiver sees the permissions the owner chose.
 - Two settings writes of the same block in the same millisecond no longer fail
   with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
   and a name that already exists is skipped instead of refused.
