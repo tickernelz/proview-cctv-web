@@ -15,6 +15,16 @@ stability before 1.0.
   in the browser), a bottom tab bar under 640 px, and addresses `#/live`,
   `#/live/grid`, `#/live/playback`, `#/events` and `#/settings/<section>`.
   Every screen keeps its features; the screens get their new look next.
+- Alarms are now Events. The side panel groups today's events into Evening,
+  Afternoon and Morning with a picture, the kind in words (Motion, Alarm,
+  Human), the time and how long ago, filter chips with counts, and a day
+  picker with the month calendar. Opening an event returns to Live on that
+  camera and plays from 5 s before it. `#/events` is the full page: picture
+  cards, a preview of the chosen event, Select to delete chosen events or
+  clear all (each asks first, and an account that may not delete sees why),
+  the phone push state, and a Notify me switch. The Events badge counts only
+  events newer than the last ones you saw. A failed check leads with a plain
+  sentence and keeps the server's words under Details.
 
 ### Fixed
 
