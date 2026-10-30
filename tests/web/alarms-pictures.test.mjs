@@ -70,6 +70,16 @@ const refusedReply = () => ({
 
 const objectOf = (url) => new URL(url, 'http://panel.invalid').searchParams.get('object');
 
+async function clickOn(page, selector) {
+  const box = await page.evaluate(
+    '(() => { const node = document.querySelector(' + JSON.stringify(selector) + '); if (!node) return null; const r = node.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()',
+  );
+  assert.ok(box, 'nothing matches ' + selector);
+  for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+    await page.call('Input.dispatchMouseEvent', { type, x: box.x, y: box.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: type === 'mouseMoved' ? 0 : 1, pointerType: 'mouse' });
+  }
+}
+
 const picturesIn = (page) => page.evaluate("document.querySelectorAll('.alarm-row img').length");
 
 const rowOf = (page, id) =>
@@ -192,7 +202,7 @@ test('an empty first window does not switch pictures off for later alarms', asyn
       polls += 1;
       return polls === 1 ? { ...ALARMS, entries: [], total: 0 } : ALARMS;
     },
-    "document.querySelector('.alarm-list p')",
+    "!document.getElementById('alarm-sheet').hidden && document.querySelector('[data-testid=\"alarm-status\"]').textContent.includes('events')",
   );
   try {
     await until(() => polls >= 2, 40000, 'a second poll with alarms in it');
@@ -221,10 +231,10 @@ test('a camera switch does not carry a picture failure from the previous camera'
   try {
     await until(() => refusedHits === 3, 20000, 'the gate camera to refuse three candidates');
     assert.equal(await picturesIn(page), 0, 'the gate camera still had thumbnails');
-    await page.wait("document.querySelectorAll('[data-device] option').length === 2", 'two cameras');
-    await page.evaluate(
-      "(() => { const pick = document.querySelector('[data-device]'); pick.value = 'yard'; pick.dispatchEvent(new Event('change')); })()",
-    );
+    await clickOn(page, '[data-device]');
+    await page.wait("document.querySelectorAll('[role=\"option\"]').length === 2", 'two cameras in the camera menu');
+    await clickOn(page, '[role="option"][data-testid="alarm-camera-option"]:nth-child(2)');
+    await page.wait("document.querySelector('[data-device]').value === 'yard'", 'the yard camera to be chosen');
     await until(async () => (await picturesIn(page)) === 3, 30000, 'the yard camera thumbnails');
     const images = await picturesIn(page);
     assert.equal(images, 3, 'the second camera showed ' + images + ' of 3 thumbnails after the first one failed');
