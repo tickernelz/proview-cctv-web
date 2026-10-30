@@ -4,6 +4,7 @@ pub mod crypto;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod frame;
+pub mod image;
 pub mod playback;
 pub mod settings;
 pub mod talk;

@@ -9,6 +9,17 @@ stability before 1.0.
 
 ### Added
 
+- Image, light and sound settings over the vendor cloud relay: `GET /api/device/image`
+  reads day/night mode, scene, defog, low-lux, the white-light schedule and
+  light-on-motion, privacy shading, timed sleep, status LED, voice tip and the
+  speaker and microphone volumes, each gated on the same `SystemFunction` flag
+  the Android app checks, with the device's answer as evidence; `POST
+  /api/device/image/{day-night,scene,defog,low-lux,light,privacy,sleep,indicators,volume}`
+  write one block, read it back, and answer 409 when the device keeps a
+  different value, 501 for a control the camera does not offer, and 504
+  naming the stage that did not answer. A new settings section edits them and
+  the live view gains a low-lux button and a lens-covered / asleep notice when
+  the camera offers those.
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the

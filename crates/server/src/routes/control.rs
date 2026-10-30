@@ -61,7 +61,7 @@ fn cloud_carries_control(cfg: &Config, mode: Mode) -> bool {
             || (LocalProvider::from_config(cfg).is_none() && cfg.device_onvif.is_none()))
 }
 
-fn controls_for(
+pub(crate) fn controls_for(
     device: Option<&str>,
     cfg: &Config,
     cloud: &Arc<CloudProvider>,
