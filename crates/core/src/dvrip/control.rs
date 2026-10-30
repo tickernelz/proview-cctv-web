@@ -467,6 +467,18 @@ impl Connection {
                     "no white light block in the camera config",
                 )
             });
+        let white_light = if flag(
+            &abilities,
+            &["OtherFunction", "SupportDoubleLightBoxCamera"],
+        ) == Some(true)
+        {
+            Capability::new(
+                false,
+                "this is a double-light box camera, so the light mode is set under Settings, Image, light and sound (the app's p048d8/n.java picker)",
+            )
+        } else {
+            white_light
+        };
 
         let params = camera
             .as_ref()

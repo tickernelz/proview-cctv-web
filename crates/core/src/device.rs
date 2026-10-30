@@ -343,6 +343,8 @@ pub const OP_WINDOW: Duration = Duration::from_secs(20);
 
 const OP_WINDOW_ENV: &str = "PROVIEW_DVRIP_WINDOW_MS";
 
+const DOUBLE_LIGHT_BLOCK: &str = "this is a double-light box camera (SupportDoubleLightBoxCamera); the app sets its light with the Full colour / General night vision / Double light picker (p048d8/n.java), which is under Settings, Image, light and sound";
+
 const PTZ_BINDING_TTL: Duration = Duration::from_secs(600);
 const PTZ_BINDING_FAILURE_TTL: Duration = Duration::from_secs(60);
 const PTZ_BINDING_BUDGET: Duration = Duration::from_secs(10);
@@ -1273,14 +1275,35 @@ impl DeviceControl for DvripControl {
     ) -> Result<Option<String>, ControlError> {
         let mut connection = self.session().await?;
         let result = match mode {
-            Some(mode) => call_within(
-                "white light write",
+            Some(mode) => match call_within(
+                "ability read",
                 &self.address,
                 self.window,
-                connection.set_white_light(mode),
+                connection.abilities(),
             )
             .await
-            .map(|_| Some(mode.wire().to_string())),
+            {
+                Ok(abilities)
+                    if crate::dvrip::image::ability(
+                        &abilities,
+                        crate::dvrip::image::DOUBLE_LIGHT,
+                    ) =>
+                {
+                    Err(ControlError::Blocked {
+                        operation: "white light write",
+                        reason: DOUBLE_LIGHT_BLOCK,
+                    })
+                }
+                Ok(_) => call_within(
+                    "white light write",
+                    &self.address,
+                    self.window,
+                    connection.set_white_light(mode),
+                )
+                .await
+                .map(|_| Some(mode.wire().to_string())),
+                Err(error) => Err(error),
+            },
             None => {
                 call_within(
                     "white light read",

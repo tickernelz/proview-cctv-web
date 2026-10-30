@@ -9,7 +9,6 @@ use super::msg;
 
 pub const CAMERA_PARAM: &str = "Camera.Param";
 pub const CAMERA_PARAM_EX: &str = "Camera.ParamEx";
-pub const CLEAR_FOG: &str = "Camera.ClearFog";
 pub const WHITE_LIGHT: &str = "Camera.WhiteLight";
 pub const FISH_EYE: &str = "Camera.FishEye";
 pub const MASK_VIDEO: &str = "General.OneKeyMaskVideo";
@@ -90,12 +89,6 @@ pub struct DayNight {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct Defog {
-    pub enable: bool,
-    pub level: i64,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Period {
     pub enable: bool,
     pub start: String,
@@ -135,8 +128,8 @@ pub struct Volume {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ImageReport {
     pub day_night: Feature<DayNight>,
+    pub light_mode: Feature<LightMode>,
     pub scene: Feature<i64>,
-    pub defog: Feature<Defog>,
     pub low_lux: Feature<bool>,
     pub white_light: Feature<LightSchedule>,
     pub privacy: Feature<bool>,
@@ -152,7 +145,6 @@ pub struct Blocks {
     pub abilities: Value,
     pub param: Option<Value>,
     pub param_ex: Option<Value>,
-    pub clear_fog: Option<Value>,
     pub white_light: Option<Value>,
     pub fish_eye: Option<Value>,
     pub mask: Option<Value>,
@@ -281,6 +273,48 @@ pub fn parse_clock(raw: &str) -> Result<(i64, i64), ImageError> {
     Ok((hour, minute))
 }
 
+pub const DOUBLE_LIGHT: &str = "SupportDoubleLightBoxCamera";
+
+const DOUBLE_LIGHT_EVIDENCE: &str = "SupportDoubleLightBoxCamera=true, so the app's day/night picker is p048d8/n.java (MonitorActivity.java:3115): Full colour, General night vision and Double light write Camera.WhiteLight.WorkMode Auto, Close and Intelligent (n.java:135-151), never DayNightColor, which the camera derives from that mode";
+
+pub const LIGHT_MODES: [(&str, &str); 3] = [
+    ("Auto", "Full colour"),
+    ("Close", "General night vision"),
+    ("Intelligent", "Double light"),
+];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ModeChoice {
+    pub mode: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct LightMode {
+    pub mode: String,
+    pub label: String,
+    pub options: Vec<ModeChoice>,
+}
+
+fn light_mode_label(mode: &str) -> Option<&'static str> {
+    LIGHT_MODES
+        .iter()
+        .find(|(wire, _)| *wire == mode)
+        .map(|(_, label)| *label)
+}
+
+fn light_mode_options(entry: &Value, current: &str) -> Vec<ModeChoice> {
+    let trigger = entry.get("MoveTrigLight").is_some_and(Value::is_object);
+    LIGHT_MODES
+        .iter()
+        .filter(|(wire, _)| *wire != "Intelligent" || trigger || *wire == current)
+        .map(|(wire, label)| ModeChoice {
+            mode: wire.to_string(),
+            label: label.to_string(),
+        })
+        .collect()
+}
+
 pub fn day_night_choice(code: i64) -> Option<Choice> {
     DAY_NIGHT
         .iter()
@@ -314,18 +348,26 @@ pub fn report_of(blocks: &Blocks) -> ImageReport {
     let abilities = &blocks.abilities;
     let param = blocks.param.as_ref().and_then(first);
     let day_code = param.and_then(|entry| int(entry, "DayNightColor"));
+    let double_light = ability(abilities, DOUBLE_LIGHT);
     let day_night = match day_code {
         Some(code) => {
             let choice = day_night_choice(code);
             Feature {
-                supported: true,
-                evidence: format!(
-                    "Camera.Param[0].DayNightColor=0x{code:08X}; choices follow p048d8/E.java:402-405 ({})",
-                    ability_evidence(abilities, "SupportSoftPhotosensitive")
-                ),
+                supported: !double_light,
+                evidence: if double_light {
+                    format!("Camera.Param[0].DayNightColor=0x{code:08X}; {DOUBLE_LIGHT_EVIDENCE}")
+                } else {
+                    format!(
+                        "Camera.Param[0].DayNightColor=0x{code:08X}; choices follow p048d8/E.java:402-405 ({})",
+                        ability_evidence(abilities, "SupportSoftPhotosensitive")
+                    )
+                },
                 value: Some(DayNight {
                     code,
-                    key: choice.as_ref().map(|choice| choice.key).unwrap_or("unknown"),
+                    key: choice
+                        .as_ref()
+                        .map(|choice| choice.key)
+                        .unwrap_or("unknown"),
                     label: choice
                         .as_ref()
                         .map(|choice| choice.label)
@@ -337,6 +379,43 @@ pub fn report_of(blocks: &Blocks) -> ImageReport {
         None => Feature {
             supported: false,
             evidence: "Camera.Param[0] carries no DayNightColor".to_string(),
+            value: None,
+        },
+    };
+
+    let light_entry = blocks.white_light.as_ref().and_then(first);
+    let light_mode = match (double_light, light_entry) {
+        (true, Some(entry)) if ability(abilities, "SupportCameraWhiteLight") => {
+            let current = entry
+                .get("WorkMode")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            Feature {
+                supported: true,
+                evidence: format!("Camera.WhiteLight.WorkMode={current}; {DOUBLE_LIGHT_EVIDENCE}"),
+                value: Some(LightMode {
+                    label: light_mode_label(&current).unwrap_or("Not one of the app's modes").to_string(),
+                    options: light_mode_options(entry, &current),
+                    mode: current,
+                }),
+            }
+        }
+        (true, _) => Feature {
+            supported: false,
+            evidence: if ability(abilities, "SupportCameraWhiteLight") {
+                missing(WHITE_LIGHT)
+            } else {
+                ability_evidence(abilities, "SupportCameraWhiteLight")
+            },
+            value: None,
+        },
+        (false, _) => Feature {
+            supported: false,
+            evidence: format!(
+                "{}; the app sets the light mode this way only on double-light box cameras (MonitorActivity.java:3115)",
+                ability_evidence(abilities, DOUBLE_LIGHT)
+            ),
             value: None,
         },
     };
@@ -356,20 +435,6 @@ pub fn report_of(blocks: &Blocks) -> ImageReport {
             ),
         },
         value: scene_value,
-    };
-
-    let fog = blocks.clear_fog.as_ref().and_then(first);
-    let defog = match fog.and_then(|entry| Some((flag(entry, "enable")?, int(entry, "level")?))) {
-        Some((enable, level)) => Feature {
-            supported: true,
-            evidence: format!("Camera.ClearFog[0] enable={enable} level={level}"),
-            value: Some(Defog { enable, level }),
-        },
-        None => Feature {
-            supported: false,
-            evidence: missing(CLEAR_FOG),
-            value: None,
-        },
     };
 
     let lux = blocks
@@ -496,8 +561,8 @@ pub fn report_of(blocks: &Blocks) -> ImageReport {
     };
     ImageReport {
         day_night,
+        light_mode,
         scene,
-        defog,
         low_lux,
         white_light,
         privacy,
@@ -547,16 +612,63 @@ where
     }
 }
 
-pub fn apply_day_night(entry: &mut Value, code: i64) -> Result<(), ImageError> {
-    if day_night_choice(code).is_none() {
+pub fn apply_light_mode(entry: &mut Value, raw: &str) -> Result<(), ImageError> {
+    let mode = LIGHT_MODES
+        .iter()
+        .find(|(wire, _)| wire.eq_ignore_ascii_case(raw.trim()))
+        .map(|(wire, _)| *wire)
+        .ok_or_else(|| {
+            ImageError::Invalid(format!(
+                "light mode {raw:?} is unknown; use Auto (full colour), Close (general night vision) or Intelligent (double light)"
+            ))
+        })?;
+    if mode == "Intelligent" && !entry.get("MoveTrigLight").is_some_and(Value::is_object) {
+        return Err(ImageError::Unsupported {
+            feature: "double light",
+            evidence: "Camera.WhiteLight carries no MoveTrigLight, and the app offers Double light only with it (p048d8/n.java:150)".to_string(),
+        });
+    }
+    if !entry.get("WorkMode").is_some_and(Value::is_string) {
+        return Err(ImageError::Unsupported {
+            feature: "light mode",
+            evidence: "Camera.WhiteLight carries no WorkMode".to_string(),
+        });
+    }
+    entry["WorkMode"] = json!(mode);
+    Ok(())
+}
+
+pub fn apply_day_night(entry: &mut Value, code: i64, abilities: &Value) -> Result<(), ImageError> {
+    if ability(abilities, DOUBLE_LIGHT) {
+        return Err(ImageError::Unsupported {
+            feature: "day/night mode",
+            evidence: DOUBLE_LIGHT_EVIDENCE.to_string(),
+        });
+    }
+    let Some(choice) = day_night_choice(code) else {
         return Err(ImageError::Invalid(format!(
             "day/night mode {code} is unknown; use 0 auto, 1 colour, 2 black and white, 3 smart alarm light, 4 white lamp auto, 5 IR lamp auto or 6 license plate"
         )));
-    }
+    };
     if !entry.get("DayNightColor").is_some_and(Value::is_string) {
         return Err(ImageError::Unsupported {
             feature: "day/night mode",
             evidence: "Camera.Param[0] carries no DayNightColor".to_string(),
+        });
+    }
+    let offered = day_night_options(abilities, int(entry, "DayNightColor"));
+    if !offered.iter().any(|option| option.code == code) {
+        let codes = offered
+            .iter()
+            .map(|option| option.code.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(ImageError::Unsupported {
+            feature: "day/night mode",
+            evidence: format!(
+                "{code} ({}) is not among the modes the app offers this camera ({codes}); 3 and 6 come only from the device's CameraDayLightModes list behind SupportListCameraDayLightModes (p048d8/g.java:421,490), 4 and 5 need SupportSoftPhotosensitive (p048d8/E.java:402-405)",
+                choice.label
+            ),
         });
     }
     entry["DayNightColor"] = Value::String(format!("0x{code:08X}"));
@@ -574,28 +686,6 @@ pub fn apply_scene(entry: &mut Value, scene: i64) -> Result<(), ImageError> {
         });
     }
     entry["Secene"] = json!(scene);
-    Ok(())
-}
-
-pub fn apply_defog(
-    entry: &mut Value,
-    enable: Option<bool>,
-    level: Option<i64>,
-) -> Result<(), ImageError> {
-    if enable.is_none() && level.is_none() {
-        return Err(ImageError::Invalid("name enable and/or level".to_string()));
-    }
-    if let Some(level) = level {
-        if !(0..=100).contains(&level) {
-            return Err(ImageError::Invalid(
-                "defog level must be 0..100".to_string(),
-            ));
-        }
-        entry["level"] = json!(level);
-    }
-    if let Some(enable) = enable {
-        entry["enable"] = json!(enable);
-    }
     Ok(())
 }
 
@@ -803,7 +893,6 @@ fn stage_read(name: &str) -> &'static str {
     match name {
         CAMERA_PARAM => "Camera.Param read",
         CAMERA_PARAM_EX => "Camera.ParamEx read",
-        CLEAR_FOG => "Camera.ClearFog read",
         WHITE_LIGHT => "Camera.WhiteLight read",
         FISH_EYE => "Camera.FishEye read",
         MASK_VIDEO => "General.OneKeyMaskVideo read",
@@ -820,7 +909,6 @@ fn stage_write(name: &str) -> &'static str {
     match name {
         CAMERA_PARAM => "Camera.Param write",
         CAMERA_PARAM_EX => "Camera.ParamEx write",
-        CLEAR_FOG => "Camera.ClearFog write",
         WHITE_LIGHT => "Camera.WhiteLight write",
         FISH_EYE => "Camera.FishEye write",
         MASK_VIDEO => "General.OneKeyMaskVideo write",
@@ -904,7 +992,6 @@ pub async fn read_report(
     };
     blocks.param = read_block(connection, CAMERA_PARAM, window).await?;
     blocks.param_ex = read_block(connection, CAMERA_PARAM_EX, window).await?;
-    blocks.clear_fog = read_block(connection, CLEAR_FOG, window).await?;
     blocks.white_light = read_block(connection, WHITE_LIGHT, window).await?;
     blocks.fish_eye = read_block(connection, FISH_EYE, window).await?;
     blocks.mask = read_block(connection, MASK_VIDEO, window).await?;
@@ -950,6 +1037,23 @@ pub async fn read_live(
     Ok(live_of(&blocks))
 }
 
+const DEVICE_OWNED: [&str; 2] = ["InSleeping", "ManualWakeUp"];
+
+pub fn kept(before: &Value, requested: &Value, after: &Value) -> bool {
+    let (Some(before), Some(requested)) = (first(before), first(requested)) else {
+        return first(after) == first(requested);
+    };
+    let Some(fields) = requested.as_object() else {
+        return first(after) == Some(requested);
+    };
+    let after = first(after);
+    fields
+        .iter()
+        .filter(|(key, _)| !DEVICE_OWNED.contains(&key.as_str()))
+        .filter(|(key, value)| before.get(key.as_str()) != Some(*value))
+        .all(|(key, value)| after.and_then(|entry| entry.get(key.as_str())) == Some(value))
+}
+
 pub struct Edit<'a> {
     pub feature: &'static str,
     pub gates: &'a [&'static str],
@@ -963,16 +1067,14 @@ pub async fn edit<F>(
     mutate: F,
 ) -> Result<WriteOutcome, ImageError>
 where
-    F: FnOnce(&mut Value) -> Result<(), ImageError>,
+    F: FnOnce(&Value, &mut Value) -> Result<(), ImageError>,
 {
-    if !edit.gates.is_empty() {
-        let abilities = read_abilities(connection, window).await?;
-        if let Some(key) = edit.gates.iter().find(|key| !ability(&abilities, key)) {
-            return Err(ImageError::Unsupported {
-                feature: edit.feature,
-                evidence: ability_evidence(&abilities, key),
-            });
-        }
+    let abilities = read_abilities(connection, window).await?;
+    if let Some(key) = edit.gates.iter().find(|key| !ability(&abilities, key)) {
+        return Err(ImageError::Unsupported {
+            feature: edit.feature,
+            evidence: ability_evidence(&abilities, key),
+        });
     }
     let mut found = None;
     for name in edit.names {
@@ -990,12 +1092,12 @@ where
         feature: edit.feature,
         evidence: format!("{block} carries no settings entry"),
     })?;
-    mutate(entry)?;
+    mutate(&abilities, entry)?;
     write_block(connection, block, requested.clone(), window).await?;
     let after = read_block(connection, block, window)
         .await?
         .unwrap_or(Value::Null);
-    let matches = first(&after) == first(&requested);
+    let matches = kept(&before, &requested, &after);
     Ok(WriteOutcome {
         block,
         before,
@@ -1025,7 +1127,6 @@ mod tests {
             abilities: abilities(),
             param: Some(json!([{ "DayNightColor": "0x00000003", "PictureFlip": "0x00000000" }])),
             param_ex: Some(json!([{ "LowLuxMode": 1, "Style": "type1" }])),
-            clear_fog: Some(json!([{ "enable": false, "level": 50 }])),
             white_light: Some(json!({
                 "Brightness": 50,
                 "MoveTrigLight": { "Duration": 60, "Level": 3 },
@@ -1055,13 +1156,6 @@ mod tests {
                 .map(|choice| choice.code)
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5]
-        );
-        assert_eq!(
-            report.defog.value,
-            Some(Defog {
-                enable: false,
-                level: 50
-            })
         );
         let light = report.white_light.value.unwrap();
         assert_eq!(
@@ -1171,17 +1265,51 @@ mod tests {
     #[test]
     fn day_night_writes_the_hex_wire_form_and_refuses_unknown_codes() {
         let mut entry = json!({ "DayNightColor": "0x00000003" });
-        apply_day_night(&mut entry, 1).unwrap();
+        apply_day_night(&mut entry, 1, &abilities()).unwrap();
         assert_eq!(entry["DayNightColor"], "0x00000001");
         assert!(matches!(
-            apply_day_night(&mut entry, 7),
+            apply_day_night(&mut entry, 7, &abilities()),
             Err(ImageError::Invalid(_))
         ));
         let mut bare = json!({});
         assert!(matches!(
-            apply_day_night(&mut bare, 1),
+            apply_day_night(&mut bare, 1, &abilities()),
             Err(ImageError::Unsupported { .. })
         ));
+    }
+
+    #[test]
+    fn day_night_refuses_modes_the_app_does_not_offer_this_camera() {
+        let mut current = json!({ "DayNightColor": "0x00000003" });
+        apply_day_night(&mut current, 3, &abilities()).unwrap();
+        let mut entry = json!({ "DayNightColor": "0x00000001" });
+        for code in [3, 6] {
+            let error = apply_day_night(&mut entry, code, &abilities()).unwrap_err();
+            assert!(
+                matches!(error, ImageError::Unsupported { .. }),
+                "{code}: {error}"
+            );
+        }
+        let plain = json!({ "OtherFunction": {} });
+        assert!(matches!(
+            apply_day_night(&mut entry, 4, &plain),
+            Err(ImageError::Unsupported { .. })
+        ));
+        apply_day_night(&mut entry, 4, &abilities()).unwrap();
+        assert_eq!(entry["DayNightColor"], "0x00000004");
+    }
+
+    #[test]
+    fn kept_ignores_device_owned_status_and_untouched_fields() {
+        let before = json!([{ "Enable": false, "InSleeping": true, "ManualWakeUp": false, "RepeatType": 0 }]);
+        let requested =
+            json!([{ "Enable": false, "InSleeping": true, "ManualWakeUp": true, "RepeatType": 0 }]);
+        let after = json!([{ "Enable": false, "InSleeping": false, "ManualWakeUp": false, "RepeatType": 1 }]);
+        assert!(kept(&before, &requested, &after));
+        let changed =
+            json!([{ "Enable": true, "InSleeping": true, "ManualWakeUp": false, "RepeatType": 0 }]);
+        assert!(!kept(&before, &changed, &after));
+        assert!(kept(&before, &changed, &changed));
     }
 
     #[test]
@@ -1268,9 +1396,6 @@ mod tests {
             apply_volume(&mut volume, Some(101), None),
             Err(ImageError::Invalid(_))
         ));
-        let mut fog = json!({ "enable": false, "level": 50 });
-        apply_defog(&mut fog, Some(true), Some(70)).unwrap();
-        assert_eq!(fog, json!({ "enable": true, "level": 70 }));
     }
 
     #[tokio::test]
@@ -1278,10 +1403,12 @@ mod tests {
         let replies = vec![
             json_reply(json!({ "Ret": 100, "SystemFunction": abilities() })),
             json_reply(
-                json!({ "Ret": 100, "Camera.ClearFog": [{ "enable": false, "level": 50 }] }),
+                json!({ "Ret": 100, SPEAKER_VOLUME: [{ "AudioMode": "Single", "LeftVolume": 50, "RightVolume": 50 }] }),
             ),
             json_reply(json!({ "Ret": 100 })),
-            json_reply(json!({ "Ret": 100, "Camera.ClearFog": [{ "enable": true, "level": 50 }] })),
+            json_reply(
+                json!({ "Ret": 100, SPEAKER_VOLUME: [{ "AudioMode": "Single", "LeftVolume": 40, "RightVolume": 40 }] }),
+            ),
         ];
         let (address, handle) = serve(replies).await;
         let mut connection = connect(&address).await;
@@ -1289,20 +1416,23 @@ mod tests {
             &mut connection,
             Duration::from_secs(2),
             Edit {
-                feature: "defog",
-                gates: &["SupportCameraWhiteLight"],
-                names: &[CLEAR_FOG],
+                feature: "speaker volume",
+                gates: &["SupportSetVolume"],
+                names: &[SPEAKER_VOLUME],
             },
-            |entry| apply_defog(entry, Some(true), None),
+            |_, entry| apply_volume(entry, Some(40), Some(40)),
         )
         .await
         .unwrap();
         assert!(outcome.matches);
-        assert_eq!(outcome.block, CLEAR_FOG);
+        assert_eq!(outcome.block, SPEAKER_VOLUME);
         let seen = handle.await.unwrap();
         let set: Value = serde_json::from_str(seen[2].trim_end_matches(['\0', '\n'])).unwrap();
-        assert_eq!(set["Name"], CLEAR_FOG);
-        assert_eq!(set[CLEAR_FOG], json!([{ "enable": true, "level": 50 }]));
+        assert_eq!(set["Name"], SPEAKER_VOLUME);
+        assert_eq!(
+            set[SPEAKER_VOLUME],
+            json!([{ "AudioMode": "Single", "LeftVolume": 40, "RightVolume": 40 }])
+        );
     }
 
     #[tokio::test]
@@ -1320,12 +1450,71 @@ mod tests {
                 gates: &["SupportStatusLed"],
                 names: &[EXTRA_STATE],
             },
-            |entry| apply_indicators(entry, Some(false), None),
+            |_, entry| apply_indicators(entry, Some(false), None),
         )
         .await
         .unwrap_err();
         assert!(matches!(error, ImageError::Unsupported { .. }), "{error}");
         assert_eq!(handle.await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_double_light_camera_gets_the_work_mode_picker_instead_of_day_night() {
+        let mut blocks = camera_blocks();
+        blocks.abilities["OtherFunction"][DOUBLE_LIGHT] = json!(true);
+        let report = report_of(&blocks);
+        assert!(!report.day_night.supported);
+        assert!(report.day_night.evidence.contains("n.java"));
+        assert_eq!(report.day_night.value.unwrap().code, 3);
+        assert!(report.light_mode.supported);
+        let mode = report.light_mode.value.unwrap();
+        assert_eq!(
+            (mode.mode.as_str(), mode.label.as_str()),
+            ("Intelligent", "Double light")
+        );
+        assert_eq!(
+            mode.options
+                .iter()
+                .map(|choice| choice.mode.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Auto", "Close", "Intelligent"]
+        );
+        let plain = report_of(&camera_blocks());
+        assert!(plain.day_night.supported);
+        assert!(!plain.light_mode.supported);
+    }
+
+    #[test]
+    fn double_light_needs_a_motion_trigger_and_day_night_is_refused() {
+        let mut light = camera_blocks().white_light.unwrap();
+        apply_light_mode(&mut light, "close").unwrap();
+        assert_eq!(light["WorkMode"], "Close");
+        assert_eq!(
+            light["MoveTrigLight"],
+            json!({ "Duration": 60, "Level": 3 })
+        );
+        assert!(matches!(
+            apply_light_mode(&mut light, "KeepOpen"),
+            Err(ImageError::Invalid(_))
+        ));
+        let mut bare = json!({ "WorkMode": "Auto", "Brightness": 50 });
+        assert!(matches!(
+            apply_light_mode(&mut bare, "Intelligent"),
+            Err(ImageError::Unsupported { .. })
+        ));
+        let mut blocks = camera_blocks();
+        blocks.white_light = Some(bare);
+        blocks.abilities["OtherFunction"][DOUBLE_LIGHT] = json!(true);
+        let options = report_of(&blocks).light_mode.value.unwrap().options;
+        assert_eq!(options.len(), 2);
+        let mut double = abilities();
+        double["OtherFunction"][DOUBLE_LIGHT] = json!(true);
+        let mut entry = json!({ "DayNightColor": "0x00000003" });
+        assert!(matches!(
+            apply_day_night(&mut entry, 1, &double),
+            Err(ImageError::Unsupported { .. })
+        ));
+        assert_eq!(entry["DayNightColor"], "0x00000003");
     }
 
     #[tokio::test]
@@ -1353,14 +1542,14 @@ mod tests {
     async fn a_silent_device_times_the_stage_out() {
         let (address, _handle) = serve_scripted(|_, _, _| Vec::new()).await;
         let mut connection = connect(&address).await;
-        let error = read_block(&mut connection, CLEAR_FOG, Duration::from_millis(200))
+        let error = read_block(&mut connection, SPEAKER_VOLUME, Duration::from_millis(200))
             .await
             .unwrap_err();
         assert!(
             matches!(
                 error,
                 ImageError::Timeout {
-                    stage: "Camera.ClearFog read",
+                    stage: "fVideo.Volume read",
                     ..
                 }
             ),

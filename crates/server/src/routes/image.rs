@@ -24,7 +24,8 @@ const DEFAULT_WINDOW: Duration = Duration::from_secs(20);
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
-        report, live, day_night, scene, defog, low_lux, light, privacy, sleep, indicators, volume
+        report, live, day_night, light_mode, scene, low_lux, light, privacy, sleep, indicators,
+        volume
     ]
 }
 
@@ -125,7 +126,9 @@ async fn report(
     let window = window();
     let mut connection = open(device.as_deref(), &gear, window).await?;
     let result = image::read_report(&mut connection, window).await;
-    let _ = connection.logout_within(window).await;
+    if !matches!(result, Err(ImageError::Timeout { .. })) {
+        let _ = connection.logout_within(window).await;
+    }
     Ok(Json(ReportBody {
         ok: true,
         report: result.map_err(image_failure)?,
@@ -158,7 +161,9 @@ async fn live(
     let window = window();
     let mut connection = open(device.as_deref(), &gear, window).await?;
     let result = image::read_live(&mut connection, window).await;
-    let _ = connection.logout_within(window).await;
+    if !matches!(result, Err(ImageError::Timeout { .. })) {
+        let _ = connection.logout_within(window).await;
+    }
     Ok(Json(LiveBody {
         ok: true,
         live: result.map_err(image_failure)?,
@@ -180,7 +185,7 @@ async fn write<F>(
     mutate: F,
 ) -> Result<(Status, Json<WriteBody>), Failure>
 where
-    F: FnOnce(&mut serde_json::Value) -> Result<(), ImageError>,
+    F: FnOnce(&serde_json::Value, &mut serde_json::Value) -> Result<(), ImageError>,
 {
     let feature = edit.feature;
     let window = window();
@@ -234,8 +239,8 @@ async fn day_night(
         gates: &[],
         names: &[image::CAMERA_PARAM],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
-        image::apply_day_night(entry, query.code)
+    write(query.device.as_deref(), gear, edit, |abilities, entry| {
+        image::apply_day_night(entry, query.code, abilities)
     })
     .await
 }
@@ -244,6 +249,39 @@ async fn day_night(
 pub struct SceneQuery {
     scene: i64,
     device: Option<String>,
+}
+
+#[derive(FromForm)]
+pub struct LightModeQuery {
+    mode: String,
+    device: Option<String>,
+}
+
+#[post("/device/image/light-mode?<query..>")]
+async fn light_mode(
+    query: LightModeQuery,
+    cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
+    store: &State<Store>,
+    cookies: &CookieJar<'_>,
+) -> Written {
+    let gear = Gear {
+        cfg,
+        cloud,
+        modes,
+        store,
+        cookies,
+    };
+    let edit = Edit {
+        feature: "light mode",
+        gates: &["SupportCameraWhiteLight", image::DOUBLE_LIGHT],
+        names: &[image::WHITE_LIGHT],
+    };
+    write(query.device.as_deref(), gear, edit, |_, entry| {
+        image::apply_light_mode(entry, &query.mode)
+    })
+    .await
 }
 
 #[post("/device/image/scene?<query..>")]
@@ -267,42 +305,8 @@ async fn scene(
         gates: &[],
         names: &[image::FISH_EYE],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_scene(entry, query.scene)
-    })
-    .await
-}
-
-#[derive(FromForm)]
-pub struct DefogQuery {
-    enable: Option<bool>,
-    level: Option<i64>,
-    device: Option<String>,
-}
-
-#[post("/device/image/defog?<query..>")]
-async fn defog(
-    query: DefogQuery,
-    cfg: &State<Config>,
-    cloud: &State<Arc<CloudProvider>>,
-    modes: &State<ModeStore>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Written {
-    let gear = Gear {
-        cfg,
-        cloud,
-        modes,
-        store,
-        cookies,
-    };
-    let edit = Edit {
-        feature: "defog",
-        gates: &[],
-        names: &[image::CLEAR_FOG],
-    };
-    write(query.device.as_deref(), gear, edit, |entry| {
-        image::apply_defog(entry, query.enable, query.level)
     })
     .await
 }
@@ -334,7 +338,7 @@ async fn low_lux(
         gates: &["SupportLowLuxMode"],
         names: &[image::CAMERA_PARAM_EX],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_low_lux(entry, query.enable)
     })
     .await
@@ -378,7 +382,7 @@ async fn light(
         gates: &["SupportCameraWhiteLight"],
         names: &[image::WHITE_LIGHT],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_light(entry, &patch)
     })
     .await
@@ -405,7 +409,7 @@ async fn privacy(
         gates: &["SupportOneKeyMaskVideo"],
         names: &[image::MASK_VIDEO],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_privacy(entry, query.enable)
     })
     .await
@@ -449,7 +453,7 @@ async fn sleep(
         gates: &["SupportTimingSleep"],
         names: &[image::TIMING_SLEEP],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_sleep(entry, &patch)
     })
     .await
@@ -495,7 +499,7 @@ async fn indicators(
         gates,
         names: &[image::EXTRA_STATE],
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_indicators(entry, query.led, query.voice_tip)
     })
     .await
@@ -542,7 +546,7 @@ async fn volume(
             names: &[image::MIC_VOLUME, image::MIC_VOLUME_ALIAS],
         },
     };
-    write(query.device.as_deref(), gear, edit, |entry| {
+    write(query.device.as_deref(), gear, edit, |_, entry| {
         image::apply_volume(entry, left, right)
     })
     .await

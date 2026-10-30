@@ -11,10 +11,11 @@ type Trigger = { level: number; duration: number }
 type Light = { mode: string | null; brightness: number | null; period: Period | null; trigger: Trigger | null }
 type Sleep = { enable: boolean; sleeping: boolean; repeat_daily: boolean; start: string; end: string }
 type Volume = { left: number; right: number; block: string }
+type LightMode = { mode: string; label: string; options: { mode: string; label: string }[] }
 type Report = {
   day_night: Feature<DayNight>
+  light_mode: Feature<LightMode>
   scene: Feature<number>
-  defog: Feature<{ enable: boolean; level: number }>
   low_lux: Feature<boolean>
   white_light: Feature<Light>
   privacy: Feature<boolean>
@@ -25,7 +26,7 @@ type Report = {
   mic_volume: Feature<Volume>
 }
 type Reply = { ok: boolean; status: number; body: any }
-type Job = '' | 'day' | 'scene' | 'defog' | 'lux' | 'light' | 'privacy' | 'sleep' | 'wake' | 'led' | 'tip' | 'speaker' | 'mic'
+type Job = '' | 'day' | 'mode' | 'scene' | 'lux' | 'light' | 'privacy' | 'sleep' | 'wake' | 'led' | 'tip' | 'speaker' | 'mic'
 
 const props = defineProps<{ host: HTMLElement }>()
 
@@ -42,9 +43,8 @@ const busy = ref<Job>('')
 const loading = ref(false)
 const form = reactive({
   day: 0,
+  lightMode: '',
   scene: 0,
-  defogOn: false,
-  defogLevel: 50,
   periodOn: false,
   start: '18:00',
   end: '06:00',
@@ -86,9 +86,8 @@ const failureText = (result: Reply) => (result.body && result.body.message) || '
 
 function fill(data: Report) {
   form.day = data.day_night.value?.code ?? 0
+  form.lightMode = data.light_mode.value?.mode ?? ''
   form.scene = data.scene.value ?? 0
-  form.defogOn = data.defog.value?.enable ?? false
-  form.defogLevel = data.defog.value?.level ?? 50
   const schedule = data.white_light.value
   form.periodOn = schedule?.period?.enable ?? false
   form.start = schedule?.period?.start ?? '18:00'
@@ -150,16 +149,19 @@ async function reload() {
 }
 
 const saveDay = () => write('day', 'day-night', { code: form.day }, 'Day/night mode saved.')
+const saveLightMode = () => write('mode', 'light-mode', { mode: form.lightMode }, 'Day/night mode saved.')
 const saveScene = () => write('scene', 'scene', { scene: form.scene }, 'Scene saved.')
-const saveDefog = () => write('defog', 'defog', { enable: form.defogOn, level: form.defogLevel }, 'Defog saved.')
 const saveLux = (on: boolean) => write('lux', 'low-lux', { enable: on }, 'Low-lux mode saved.')
-const saveLight = () =>
-  write(
-    'light',
-    'light',
-    { period: form.periodOn, start: form.start, end: form.end, level: form.level, duration: form.duration },
-    'Light schedule saved.',
-  )
+function saveLight() {
+  const query: Record<string, string | number | boolean> = {}
+  if (light.value?.period) Object.assign(query, { period: form.periodOn, start: form.start, end: form.end })
+  if (light.value?.trigger) Object.assign(query, { level: form.level, duration: form.duration })
+  if (!Object.keys(query).length) {
+    say('This camera reports neither a light schedule nor a motion trigger to save.', true)
+    return
+  }
+  return write('light', 'light', query, 'Light schedule saved.')
+}
 const savePrivacy = (on: boolean) => write('privacy', 'privacy', { enable: on }, on ? 'The lens is covered.' : 'The lens is uncovered.')
 const saveSleep = () =>
   write('sleep', 'sleep', { enable: form.sleepOn, start: form.sleepStart, end: form.sleepEnd, repeat: form.sleepRepeat }, 'Timed sleep saved.')
@@ -201,13 +203,22 @@ onBeforeUnmount(() => watcher.disconnect())
   </Teleport>
   <h2 id="h-image" class="set-h" tabindex="-1">Image, light and sound</h2>
   <p class="set-sub">
-    Picture mode, the spotlight schedule, privacy, indicators and volumes as the camera holds them now. Each save reads the block back, and a
+    Day and night mode, the spotlight schedule, privacy, indicators and volumes as the camera holds them now. Each save reads the block back, and a
     control the camera does not offer stays off with the camera's own answer beside it.
   </p>
   <p id="image-status" :class="['hint', { 'warn-text': status.bad }]" data-testid="image-status" role="status">{{ status.text }}</p>
   <div v-if="report" data-testid="image-report">
     <h3 class="set-h">Picture</h3>
-    <div class="row">
+    <div v-if="report.light_mode.supported" class="row">
+      <label class="lab" for="image-light-mode">Day and night<span class="hint">Now: {{ report.light_mode.value?.label }}. On this camera the light mode sets the picture colour.</span></label>
+      <div class="ctl-col">
+        <select id="image-light-mode" v-model="form.lightMode" data-testid="image-light-mode">
+          <option v-for="choice in report.light_mode.value?.options || []" :key="choice.mode" :value="choice.mode">{{ choice.label }}</option>
+        </select>
+        <button class="btn btn-fill" type="button" data-testid="image-save-light-mode" :aria-busy="busy === 'mode'" @click="saveLightMode">Save</button>
+      </div>
+    </div>
+    <div v-else class="row">
       <label class="lab" for="image-day-night">Day and night<span class="hint">{{ report.day_night.supported ? 'Now: ' + report.day_night.value?.label : report.day_night.evidence }}</span></label>
       <div class="ctl-col">
         <select id="image-day-night" v-model.number="form.day" data-testid="image-day-night" :disabled="!report.day_night.supported">
@@ -224,20 +235,6 @@ onBeforeUnmount(() => watcher.disconnect())
           <button class="btn btn-fill" type="button" :aria-busy="busy === 'scene'" @click="saveScene">Save</button>
         </template>
         <p v-else class="hint" data-testid="image-scene-reason">Not offered by this camera: {{ report.scene.evidence }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <div class="lab">Defog</div>
-      <div class="ctl-col">
-        <template v-if="report.defog.supported">
-          <label class="switchrow"><input id="image-defog" v-model="form.defogOn" data-testid="image-defog" type="checkbox" role="switch"><span>Clear fog from the picture</span></label>
-          <label class="field">
-            <span>Strength {{ form.defogLevel }}</span>
-            <input id="image-defog-level" v-model.number="form.defogLevel" data-testid="image-defog-level" type="range" min="0" max="100" step="1">
-          </label>
-          <button class="btn btn-fill" type="button" data-testid="image-save-defog" :aria-busy="busy === 'defog'" @click="saveDefog">Save</button>
-        </template>
-        <p v-else class="hint">Not offered by this camera: {{ report.defog.evidence }}</p>
       </div>
     </div>
     <div class="row">
@@ -262,9 +259,9 @@ onBeforeUnmount(() => watcher.disconnect())
     <template v-if="report.white_light.supported && light">
       <div class="row">
         <div class="lab">Mode</div>
-        <div class="ctl-col"><p class="val"><span class="code">{{ light.mode || 'not reported' }}</span></p><p class="hint">Change the mode from the live view's light button.</p></div>
+        <div class="ctl-col"><p class="val"><span class="code">{{ light.mode || 'not reported' }}</span></p><p class="hint">{{ report.light_mode.supported ? 'Set with Day and night above.' : 'Set with the white light switch under This camera.' }}</p></div>
       </div>
-      <div class="row">
+      <div v-if="light.period" class="row">
         <div class="lab">Schedule</div>
         <div class="ctl-col">
           <label class="switchrow"><input id="image-period" v-model="form.periodOn" data-testid="image-period" type="checkbox" role="switch"><span>Only light up inside this window</span></label>

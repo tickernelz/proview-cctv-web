@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 const OUTER: Duration = Duration::from_secs(6);
+const WINDOW: Duration = Duration::from_millis(400);
 
 #[derive(Default)]
 struct Device {
@@ -21,6 +22,7 @@ struct Device {
     sets: Vec<(String, Value)>,
     silent_reads: bool,
     ignore_sets: bool,
+    clears_status: bool,
 }
 
 type Shared = Arc<Mutex<Device>>;
@@ -32,10 +34,6 @@ fn camera() -> Device {
         json!([{ "DayNightColor": "0x00000003", "PictureFlip": "0x00000000" }]),
     );
     blocks.insert("Camera.ParamEx".to_string(), json!([{ "LowLuxMode": 1 }]));
-    blocks.insert(
-        "Camera.ClearFog".to_string(),
-        json!([{ "enable": false, "level": 50 }]),
-    );
     blocks.insert(
         "Camera.WhiteLight".to_string(),
         json!({
@@ -152,7 +150,14 @@ fn answer(state: &Shared, id: u16, body: &Value) -> Option<Value> {
             let value = body.get(&name).cloned().unwrap_or(Value::Null);
             device.sets.push((name.clone(), value.clone()));
             if !device.ignore_sets {
-                device.blocks.insert(name, value);
+                let mut stored = value;
+                if device.clears_status {
+                    if let Some(entry) = stored.get_mut(0).filter(|entry| entry.is_object()) {
+                        entry["InSleeping"] = json!(false);
+                        entry["ManualWakeUp"] = json!(false);
+                    }
+                }
+                device.blocks.insert(name, stored);
             }
             Some(json!({ "Ret": 100 }))
         }
@@ -230,10 +235,7 @@ async fn the_report_reads_every_block_and_gates_by_ability() {
     let (status, body) = call(&client, false, "/api/device/image").await;
     assert_eq!(status, Status::Ok, "{body}");
     assert_eq!(body["day_night"]["value"]["code"], 3);
-    assert_eq!(
-        body["defog"]["value"],
-        json!({ "enable": false, "level": 50 })
-    );
+    assert!(body.get("defog").is_none(), "{body}");
     assert_eq!(body["white_light"]["value"]["period"]["start"], "18:00");
     assert_eq!(body["voice_tip"]["supported"], true);
     assert_eq!(body["status_led"]["supported"], false);
@@ -334,11 +336,11 @@ async fn a_write_the_device_does_not_keep_answers_conflict() {
     let (status, body) = call(
         &client,
         true,
-        "/api/device/image/defog?enable=true&level=70",
+        "/api/device/image/volume?target=speaker&level=70",
     )
     .await;
     assert_eq!(status, Status::Ok, "{body}");
-    assert_eq!(body["after"][0]["level"], 70);
+    assert_eq!(body["after"][0]["LeftVolume"], 70);
     state.lock().unwrap().ignore_sets = true;
     let (status, body) = call(&client, true, "/api/device/image/day-night?code=1").await;
     assert_eq!(status, Status::Conflict, "{body}");
@@ -374,8 +376,8 @@ async fn a_device_silent_on_config_get_answers_504_naming_the_stage() {
         (false, "/api/device/image", "Camera.Param read"),
         (
             true,
-            "/api/device/image/defog?enable=true",
-            "Camera.ClearFog read",
+            "/api/device/image/day-night?code=1",
+            "Camera.Param read",
         ),
         (
             true,
@@ -383,8 +385,14 @@ async fn a_device_silent_on_config_get_answers_504_naming_the_stage() {
             "fVideo.Volume read",
         ),
     ] {
+        let started = Instant::now();
         let (status, body) = call(&client, post, path).await;
+        let elapsed = started.elapsed();
         assert_eq!(status, Status::GatewayTimeout, "{path}: {body}");
+        assert!(
+            elapsed < WINDOW.mul_f32(1.5),
+            "{path} answered 504 after {elapsed:?}, the window is {WINDOW:?}"
+        );
         let message = body["message"].as_str().unwrap_or("");
         assert!(message.contains(stage), "{path}: {body}");
         assert!(
@@ -392,4 +400,163 @@ async fn a_device_silent_on_config_get_answers_504_naming_the_stage() {
             "{path}: {body}"
         );
     }
+}
+
+fn sleeper() -> Device {
+    let mut device = camera();
+    device.abilities["OtherFunction"]["SupportTimingSleep"] = json!(true);
+    device.blocks.insert(
+        "General.TimingSleep".to_string(),
+        json!([{ "Enable": true, "InSleeping": true, "ManualWakeUp": false, "RepeatType": 1,
+                  "WorkPeriod": { "SHour": 0, "SMinute": 0, "EHour": 23, "EMinute": 59 } }]),
+    );
+    device.clears_status = true;
+    device
+}
+
+#[tokio::test]
+async fn a_wake_the_camera_acts_on_is_not_reported_as_a_conflict() {
+    let (address, state) = fake(sleeper()).await;
+    let client = client(&address).await;
+    let (status, body) = call(&client, true, "/api/device/image/sleep?wake=true").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["requested"][0]["ManualWakeUp"], true);
+    assert_eq!(body["after"][0]["InSleeping"], false);
+    let (status, body) = call(
+        &client,
+        true,
+        "/api/device/image/sleep?enable=true&start=01:00&end=02:00",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let device = state.lock().unwrap();
+    assert_eq!(device.sets.len(), 2);
+    assert_eq!(device.sets[0].1[0]["ManualWakeUp"], true);
+}
+
+#[tokio::test]
+async fn a_changed_field_the_camera_drops_still_answers_conflict() {
+    let mut device = sleeper();
+    device.ignore_sets = true;
+    let (address, _state) = fake(device).await;
+    let client = client(&address).await;
+    let (status, body) = call(
+        &client,
+        true,
+        "/api/device/image/sleep?start=01:00&end=02:00",
+    )
+    .await;
+    assert_eq!(status, Status::Conflict, "{body}");
+}
+
+#[tokio::test]
+async fn a_day_night_mode_the_app_does_not_offer_is_refused_before_any_write() {
+    let (address, state) = fake(camera()).await;
+    let client = client(&address).await;
+    let (status, body) = call(&client, true, "/api/device/image/day-night?code=6").await;
+    assert_eq!(status, Status::NotImplemented, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("SupportListCameraDayLightModes"),
+        "{body}"
+    );
+    assert!(state.lock().unwrap().sets.is_empty());
+    let (status, body) = call(&client, true, "/api/device/image/day-night?code=3").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(state.lock().unwrap().sets.len(), 1);
+}
+
+#[tokio::test]
+async fn a_light_without_motion_trigger_saves_its_schedule() {
+    let mut device = camera();
+    device.blocks.insert(
+        "Camera.WhiteLight".to_string(),
+        json!({ "Brightness": 50, "WorkMode": "Auto",
+                "WorkPeriod": { "EHour": 6, "EMinute": 0, "Enable": 1, "SHour": 18, "SMinute": 0 } }),
+    );
+    let (address, state) = fake(device).await;
+    let client = client(&address).await;
+    let (status, body) = call(
+        &client,
+        true,
+        "/api/device/image/light?period=false&start=19:00&end=05:30",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let (_, report) = call(&client, false, "/api/device/image").await;
+    assert!(
+        report["white_light"]["value"]["trigger"].is_null(),
+        "{report}"
+    );
+    assert_eq!(report["white_light"]["value"]["period"]["start"], "19:00");
+    assert_eq!(state.lock().unwrap().sets[0].1["WorkPeriod"]["Enable"], 0);
+}
+
+#[tokio::test]
+async fn the_live_read_times_out_inside_the_window() {
+    let mut device = sleeper();
+    device.silent_reads = true;
+    let (address, _state) = fake(device).await;
+    let client = client(&address).await;
+    let started = Instant::now();
+    let (status, body) = call(&client, false, "/api/device/image/live").await;
+    let elapsed = started.elapsed();
+    assert_eq!(status, Status::GatewayTimeout, "{body}");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("General.TimingSleep read"),
+        "{body}"
+    );
+    assert!(elapsed < WINDOW.mul_f32(1.5), "504 after {elapsed:?}");
+}
+
+#[tokio::test]
+async fn a_double_light_camera_takes_the_work_mode_and_refuses_day_night() {
+    let mut device = camera();
+    device.abilities["OtherFunction"]["SupportDoubleLightBoxCamera"] = json!(true);
+    let (address, state) = fake(device).await;
+    let client = client(&address).await;
+    let (status, report) = call(&client, false, "/api/device/image").await;
+    assert_eq!(status, Status::Ok, "{report}");
+    assert_eq!(report["day_night"]["supported"], false);
+    assert_eq!(report["light_mode"]["value"]["mode"], "Intelligent");
+    let (status, body) = call(&client, true, "/api/device/image/day-night?code=1").await;
+    assert_eq!(status, Status::NotImplemented, "{body}");
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("n.java"),
+        "{body}"
+    );
+    assert!(state.lock().unwrap().sets.is_empty());
+    let (status, body) = call(&client, true, "/api/device/image/light-mode?mode=Close").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["after"]["WorkMode"], "Close");
+    assert_eq!(body["after"]["MoveTrigLight"]["Level"], 3);
+    let (status, body) = call(
+        &client,
+        true,
+        "/api/device/image/light-mode?mode=intelligent",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let (status, body) = call(&client, true, "/api/device/controls/light?mode=always").await;
+    assert_eq!(status, Status::Conflict, "{body}");
+    let device = state.lock().unwrap();
+    assert_eq!(device.sets.len(), 2);
+    assert_eq!(
+        device.blocks["Camera.WhiteLight"]["WorkMode"],
+        "Intelligent"
+    );
+}
+
+#[tokio::test]
+async fn the_light_mode_is_refused_on_a_camera_without_the_double_light_flag() {
+    let (address, state) = fake(camera()).await;
+    let client = client(&address).await;
+    let (status, body) = call(&client, true, "/api/device/image/light-mode?mode=Close").await;
+    assert_eq!(status, Status::NotImplemented, "{body}");
+    assert!(state.lock().unwrap().sets.is_empty());
 }
