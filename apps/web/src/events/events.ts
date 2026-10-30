@@ -124,8 +124,12 @@ function parts(text?: string) {
 
 export function atOf(entry: Alarm) {
   if (entry.utcTime) return entry.utcTime * 1000
+  return atOfLocal(entry)
+}
+
+function atOfLocal(entry: Alarm) {
   const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(entry.time || '')
-  if (!match) return 0
+  if (!match) return entry.utcTime ? entry.utcTime * 1000 : 0
   const [, year, month, date, hour, minute, second] = match.map(Number)
   return new Date(year, month - 1, date, hour, minute, second).getTime()
 }
@@ -442,6 +446,9 @@ export async function poll() {
     if (!first) notify(entries)
     for (const entry of entries) notified.add(entry.id)
     ev.entries = entries
+    if (asked.range !== '24h' && asked.range !== '7d') {
+      live.alarmDay = { serial: asked.serial, day: start.slice(0, 10), entries: entries.map((entry) => ({ id: entry.id, at: atOfLocal(entry), event: entry.event || '' })), token: live.alarmDay.token + 1 }
+    }
     ev.manage.refused = body.canDelete === false ? body.deleteReason || 'This account may not delete the events of this camera.' : ''
     ev.total = body.total || entries.length
     ev.finished = body.finished !== false

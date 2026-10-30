@@ -98,6 +98,7 @@ export const live = reactive({
   grid: { open: false, generation: 0, selected: '', moveFocus: noop as (key: string) => void },
   talk: { on: false, level: 0, phase: 'idle' as TalkPhase, note: '' },
   seek: { serial: '', at: 0, kind: '' as '' | 'motion' | 'alarm' | 'human', id: '', token: 0 },
+  alarmDay: { serial: '', day: '', entries: [] as { id: string; at: number; event: string }[], token: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',
   launchers: [] as Launcher[],
