@@ -51,7 +51,7 @@ must carry this server's own origin.
    merges into what is already stored, so a second save never drops the first. Keys
    read when they are used (`PROVIEW_FFMPEG`, `PROVIEW_LENS_PTZ`,
    `PROVIEW_LENS_CAPABILITIES`, `PROVIEW_DEVICE_SERIAL`) apply immediately. Keys
-   marked *needs restart* (the `Restart` column below) are read once at startup, and
+   with the **Restart** tag (the `Restart` column below) are read once at startup, and
    the view offers a **Restart the app** button for the desktop build. Four keys carry
    no restart flag but are still read only when the server starts, so a saved value
    takes effect on the next start: `PROVIEW_MODE` (the mode store's default) and
@@ -69,7 +69,7 @@ must carry this server's own origin.
    are never returned: the API reports `set: true` and `value: null`. The view never
    sends an empty secret input, so leaving it empty keeps the stored secret; an empty
    string sent for any key clears it.
-4. The view opens from the sign-in screen (`Settings` under the form), so the cloud
+4. The view opens from the sign-in screen (the **Open Settings** button), so the cloud
    address, the camera address and the camera password can be set before anyone can
    sign in. In that mode the top-left button reads `Sign in` instead of `Live` and
    returns to the form; the Connection section asks for a session before the

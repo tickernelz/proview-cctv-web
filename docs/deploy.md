@@ -63,10 +63,14 @@ ProtectHome=true
 WantedBy=multi-user.target
 ```
 
-The settings file (`settings.json`), the mode store (`mode.json`) and the
-remembered account (`account.json`) live in the data directory
-(`PROVIEW_DATA_DIR`; `StateDirectory` above makes systemd create it, owned by
-the service user and mode 0700). Everything else the operator can set from
+The data directory (`PROVIEW_DATA_DIR`) holds the settings file
+(`settings.json`), the mode store (`mode.json`), the remembered account
+(`account.json`), the device token store (`device-tokens.json`, encrypted under
+`device-token.key`; both written automatically after a cloud login) and the
+copies of the camera's settings taken before each settings write
+(`settings-backups/`, unless `PROVIEW_SETTINGS_BACKUP_DIR` points elsewhere;
+without a data directory they go to `./settings-backups`). `StateDirectory`
+above makes systemd create it, owned by the service user and mode 0700. Everything else the operator can set from
 Settings, but the settings answer only a request from the machine itself to a
 loopback address, so they refuse through the proxy; open them over an SSH tunnel
 (`ssh -L 8787:127.0.0.1:8787 <host>`, then <http://127.0.0.1:8787>). A variable
@@ -125,10 +129,13 @@ forever, so an old installer cannot be repaired from this side.
   on **Remember this account in this browser** at sign-in: then the vendor
   access token is written to `account.json` in the data directory (0600),
   bound to a 30-day `pvw_remember` cookie in that browser, until sign-out
-  clears it. Camera credentials and `ROCKET_SECRET_KEY` are written to disk
-  **only** when the operator saves them in Settings, and then they live in
-  `settings.json` in the data directory. Treat that directory as a secret:
-  create it 0700 and let the service user own it.
+  clears it. Camera credentials and `ROCKET_SECRET_KEY` reach `settings.json`
+  only when the operator saves them in Settings. Without any action, the device
+  token a cloud login succeeds with is written to `device-tokens.json`
+  (AES-256-GCM under `device-token.key`, beside it), and every camera settings
+  write first copies the camera's current settings to `settings-backups/`.
+  Treat the whole directory as a secret: create it 0700 and let the service
+  user own it.
 - Secrets are never returned by the API: the view reports that a value is set,
   not what it is.
 - The desktop build binds an ephemeral loopback port with a per-launch secret
