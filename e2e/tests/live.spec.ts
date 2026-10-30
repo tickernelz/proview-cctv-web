@@ -145,6 +145,33 @@ for (const size of [
   })
 }
 
+test('in a window too short for 240 px of sheet above the dock, Devices falls back to the plain dock offset', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 340 })
+  await page.route(/\/api\/cloud\/device-attributes/, (route) => route.fulfill({ json: { ok: true, groups: [], devices: [] } }))
+  await eventsPanelClosed(page)
+  await signIn(page, 'one')
+  await playing(page)
+  await page.getByTestId('ctl-more').click()
+  await page.getByTestId('more-manage-cameras').click()
+  const sheet = page.getByTestId('device-admin')
+  await expect(sheet).toBeVisible()
+  const layout = await page.evaluate(() => {
+    const root = getComputedStyle(document.documentElement)
+    const sheet = document.getElementById('device-admin')!
+    return {
+      above: innerHeight - document.querySelector('[data-testid="app-header"]')!.getBoundingClientRect().bottom - (innerHeight - document.getElementById('controls')!.getBoundingClientRect().top),
+      withoutHeader: document.getElementById('controls')!.getBoundingClientRect().top,
+      clear: document.documentElement.style.getPropertyValue('--dock-clear'),
+      bottom: getComputedStyle(sheet).bottom,
+      fallback: parseFloat(root.getPropertyValue('--dock')) + parseFloat(root.getPropertyValue('--s4')) + 'px',
+    }
+  })
+  expect(layout.above).toBeLessThan(240)
+  expect(layout.withoutHeader).toBeGreaterThanOrEqual(240)
+  expect(layout.clear).toBe('')
+  expect(layout.bottom).toBe(layout.fallback)
+})
+
 test('Snapshot says where the picture went', async ({ page }) => {
   await signIn(page, 'one')
   await playing(page)

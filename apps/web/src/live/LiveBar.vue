@@ -50,7 +50,7 @@ function clearDock() {
   const dock = bar.value
   if (!dock || shell.narrow || !dock.getClientRects().length) return root.removeProperty('--dock-clear')
   const clear = Math.max(0, Math.ceil(window.innerHeight - dock.getBoundingClientRect().top))
-  const header = document.querySelector('.app-header')?.getBoundingClientRect().bottom || 0
+  const header = document.querySelector('[data-testid="app-header"]')?.getBoundingClientRect().bottom || 0
   if (window.innerHeight - header - clear < MIN_SHEET) return root.removeProperty('--dock-clear')
   root.setProperty('--dock-clear', clear + 'px')
 }
