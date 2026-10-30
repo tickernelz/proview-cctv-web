@@ -15,7 +15,8 @@
   .set-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s3) var(--s5); margin-bottom: var(--s5); }
   .set-head > div:first-child { flex: 1 1 320px; min-width: 0; }
   .set-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
-  .set-h { font-size: var(--t-21); line-height: var(--lh-head); font-weight: 600; letter-spacing: -0.01em; color: var(--ink); }
+  .set-h { font-size: var(--t-21); font-weight: 600; letter-spacing: -0.01em; }
+  #settings .set-h { line-height: var(--lh-head); color: var(--ink); }
   .set-sub { margin: var(--s1) 0 0; max-width: 72ch; font-size: var(--t-13); line-height: 1.45; color: var(--ink-3); }
   .set-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); align-items: start; }
   .set-col { display: grid; gap: var(--s4); min-width: 0; align-content: start; }
@@ -94,12 +95,17 @@
   .opt, .switchrow { display: flex; align-items: center; gap: var(--s2); min-height: var(--hit); font-size: var(--t-14); color: var(--ink-2); cursor: pointer; }
   .opt:has(input:checked), .switchrow:has(input:checked) { color: var(--ink); }
   .opt input { appearance: none; -webkit-appearance: none; margin: 0; width: 16px; height: 16px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line); flex: none; cursor: pointer; }
-  .opt input:checked { box-shadow: inset 0 0 0 4.5px var(--accent); }
-  .switchrow input, :is(#settings, #device-admin) input[type="checkbox"][role="switch"] { appearance: none; -webkit-appearance: none; margin: 0; width: 36px; height: 20px; border-radius: 999px; background: var(--bg-3); position: relative; flex: none; box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; transition: background-color var(--dur-1) var(--ease); }
-  .switchrow input::after, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: left var(--dur-1) var(--ease); }
-  .switchrow input:checked, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:checked { background: var(--accent); box-shadow: none; }
-  .switchrow input:checked::after, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:checked::after { left: 19px; background: var(--accent-ink); }
-  .switchrow input:disabled, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:disabled { opacity: 0.5; cursor: not-allowed; }
+  .opt input:checked { box-shadow: inset 0 0 0 1.5px var(--accent); background: radial-gradient(circle at center, var(--accent) 0 3.5px, transparent 4px); }
+  .switchrow input { appearance: none; -webkit-appearance: none; margin: 0; width: 34px; height: 20px; border-radius: 999px; background: var(--bg-3); position: relative; flex: none; box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; transition: background-color var(--dur-1) var(--ease); }
+  .switchrow input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: left var(--dur-1) var(--ease); }
+  .switchrow input:checked { background: var(--accent); box-shadow: none; }
+  .switchrow input:checked::after { left: 17px; background: var(--accent-ink); }
+  :is(#settings, #device-admin) .switchrow input, :is(#settings, #device-admin) input[type="checkbox"][role="switch"] { appearance: none; -webkit-appearance: none; margin: 0; width: 36px; height: 20px; border-radius: 999px; background: var(--bg-3); position: relative; flex: none; box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; transition: background-color var(--dur-1) var(--ease); }
+  :is(#settings, #device-admin) .switchrow input::after, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--ink-2); transition: left var(--dur-1) var(--ease); }
+  :is(#settings, #device-admin) .switchrow input:checked, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:checked { background: var(--accent); box-shadow: none; }
+  :is(#settings, #device-admin) .switchrow input:checked::after, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:checked::after { left: 19px; background: var(--accent-ink); }
+  :is(#settings, #device-admin) .switchrow input:disabled, :is(#settings, #device-admin) input[type="checkbox"][role="switch"]:disabled { opacity: 0.5; cursor: not-allowed; }
+  #settings .opt input:checked { box-shadow: inset 0 0 0 4.5px var(--accent); background: none; }
   .set-card .row .ctl-col .switchrow { flex-direction: row-reverse; text-align: right; }
 
   .seg { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line-soft); border-radius: var(--r-md); background: var(--bg); }
@@ -111,7 +117,7 @@
   .seg > label:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
   @media (pointer: coarse) {
     .seg > label { min-height: var(--hit); min-width: var(--hit); }
-    .switchrow { min-width: var(--hit); justify-content: flex-end; }
+    #settings .switchrow { min-width: var(--hit); justify-content: flex-end; }
   }
 
   .savebar { flex: none; min-height: var(--dock); display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s5); border-top: 1px solid var(--line-soft); background: var(--bg); }
