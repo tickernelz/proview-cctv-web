@@ -165,7 +165,7 @@ fn dvrip_of(
     controls.dvrip().cloned().map_err(control_failure)
 }
 
-type ReleaseReply = oneshot::Sender<Result<ReleaseTimes, ControlError>>;
+type ReleaseReply = oneshot::Sender<Result<Option<ReleaseTimes>, ControlError>>;
 
 struct Held {
     generation: u64,
@@ -262,21 +262,48 @@ async fn send_stop(
     Ok((ms(started.elapsed()), true))
 }
 
+fn answer_unpressed(release: &mut oneshot::Receiver<Release>) {
+    if let Ok(request) = release.try_recv() {
+        let _ = request.reply.send(Ok(None));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn hold(
     control: DvripControl,
-    opened: Opened,
     begun: Instant,
+    gated: bool,
     action: PtzAction,
     step: u8,
-    started: oneshot::Sender<Result<PressTimes, ControlError>>,
-    release: oneshot::Receiver<Release>,
+    started: oneshot::Sender<Result<PressTimes, Failure>>,
+    mut release: oneshot::Receiver<Release>,
     finished: impl FnOnce(),
 ) {
     let Opened {
-        mut connection,
+        connection,
         session_ms,
-    } = opened;
+    } = match open(&control).await {
+        Ok(opened) => opened,
+        Err(error) => {
+            finished();
+            let _ = started.send(Err(control_failure(error)));
+            answer_unpressed(&mut release);
+            return;
+        }
+    };
+    let mut connection = if gated {
+        match gate(&control, connection, &ZOOM_ABILITY, "ptz press").await {
+            Ok(connection) => connection,
+            Err(failure) => {
+                finished();
+                let _ = started.send(Err(failure));
+                answer_unpressed(&mut release);
+                return;
+            }
+        }
+    } else {
+        connection
+    };
     let press_started = Instant::now();
     match within(
         "ptz press",
@@ -294,8 +321,9 @@ async fn hold(
         }
         Err(error) => {
             let timed = matches!(error, ControlError::Timeout { .. });
-            let _ = started.send(Err(error));
             finished();
+            let _ = started.send(Err(control_failure(error)));
+            answer_unpressed(&mut release);
             if timed {
                 drop(connection);
                 if let Err(error) = send_stop(&control, None, action, step).await {
@@ -309,7 +337,7 @@ async fn hold(
     }
     let acked = Instant::now();
     let request = tokio::select! {
-        request = release => request.ok(),
+        request = &mut release => request.ok(),
         _ = tokio::time::sleep(hold_limit()) => None,
     };
     finished();
@@ -342,7 +370,7 @@ async fn hold(
         });
     match reply {
         Some(reply) => {
-            let _ = reply.send(outcome);
+            let _ = reply.send(outcome.map(Some));
         }
         None => tracing::warn!(
             device = %control.address(),
@@ -356,7 +384,7 @@ async fn hold(
 async fn release_entry(
     entry: Held,
     pressed_for: Option<Duration>,
-) -> Result<ReleaseTimes, ControlError> {
+) -> Result<Option<ReleaseTimes>, ControlError> {
     let (reply, answer) = oneshot::channel();
     let request = Release {
         asked: Instant::now(),
@@ -364,14 +392,13 @@ async fn release_entry(
         reply,
     };
     if entry.release.send(request).is_err() {
-        return Err(ControlError::Device(
-            "the held move already ended before the release arrived".to_string(),
-        ));
+        return Ok(None);
     }
     let bound = TAP_TAIL + SESSION_WINDOW + op_window() * 2 + RELEASE_MARGIN + hold_limit();
     match tokio::time::timeout(bound, answer).await {
         Ok(Ok(outcome)) => outcome,
-        _ => Err(ControlError::Device(
+        Ok(Err(_)) => Ok(None),
+        Err(_) => Err(ControlError::Device(
             "the held move ended without reporting its stop".to_string(),
         )),
     }
@@ -414,17 +441,6 @@ async fn ptz_press(
         let _ = release_entry(previous, None).await;
     }
     let begun = Instant::now();
-    let opened = open(&control).await.map_err(control_failure)?;
-    let opened = if parsed.moves_the_lens() {
-        let session_ms = opened.session_ms;
-        let connection = gate(&control, opened.connection, &ZOOM_ABILITY, "ptz press").await?;
-        Opened {
-            connection,
-            session_ms,
-        }
-    } else {
-        opened
-    };
     let generation = next_generation();
     let (release_tx, release_rx) = oneshot::channel();
     let (started_tx, started_rx) = oneshot::channel();
@@ -441,8 +457,8 @@ async fn ptz_press(
     let owned_key = key.clone();
     tokio::spawn(hold(
         control,
-        opened,
         begun,
+        parsed.moves_the_lens(),
         parsed,
         step,
         started_tx,
@@ -451,7 +467,7 @@ async fn ptz_press(
     ));
     let times = match started_rx.await {
         Ok(Ok(times)) => times,
-        Ok(Err(error)) => return Err(control_failure(error)),
+        Ok(Err(failure)) => return Err(failure),
         Err(_) => {
             return Err(fail(
                 Status::BadGateway,
@@ -502,9 +518,18 @@ async fn ptz_release(
         }));
     };
     let action = entry.action;
-    let times = release_entry(entry, pressed_ms.map(Duration::from_millis))
+    let Some(times) = release_entry(entry, pressed_ms.map(Duration::from_millis))
         .await
-        .map_err(control_failure)?;
+        .map_err(control_failure)?
+    else {
+        return Ok(Json(ReleaseBody {
+            ok: true,
+            held: false,
+            action: Some(action.name().to_string()),
+            times: None,
+            detail: "the press never reached the camera, so no stop was needed".to_string(),
+        }));
+    };
     Ok(Json(ReleaseBody {
         ok: true,
         held: true,

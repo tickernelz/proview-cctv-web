@@ -13,6 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 
 const WINDOW_MS: u64 = 400;
 const HOLD_MS: u64 = 2500;
+const SLOW_ABILITY_MS: u64 = 350;
 const OUTER: Duration = Duration::from_secs(8);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -21,6 +22,7 @@ enum Mood {
     SilentOnPtz,
     SilentOnLocate,
     NoPanorama,
+    SlowAbility,
 }
 
 #[derive(Clone)]
@@ -223,7 +225,12 @@ async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
                 Some(json!({ "Ret": 100 }))
             }
             msg::PTZ_LOCATE if device.mood == Mood::SilentOnLocate => None,
-            msg::ABILITY if body["Name"] == "SystemFunction" => Some(device.system_function()),
+            msg::ABILITY if body["Name"] == "SystemFunction" => {
+                if device.mood == Mood::SlowAbility {
+                    tokio::time::sleep(Duration::from_millis(SLOW_ABILITY_MS)).await;
+                }
+                Some(device.system_function())
+            }
             msg::ABILITY if body["Name"] == "GoToPosition" && device.mood == Mood::NoPanorama => {
                 Some(json!({ "Ret": 103 }))
             }
@@ -728,4 +735,47 @@ async fn a_hold_without_a_release_stops_itself_at_the_limit() {
     let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=4000").await;
     assert_eq!(status, Status::Ok);
     assert_eq!(body["held"], false);
+}
+
+#[tokio::test]
+async fn a_release_that_beats_the_press_ack_stops_the_motor_right_after_the_press() {
+    let fake = device(Mood::SlowAbility, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (pressed, released) = tokio::join!(
+        post(&client, "/api/device/controls/ptz/press?action=zoom-in"),
+        async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await
+        }
+    );
+    assert_eq!(pressed.0, Status::Ok, "{}", pressed.1);
+    assert_eq!(released.0, Status::Ok, "{}", released.1);
+    assert_eq!(released.1["held"], true, "{}", released.1);
+    let frames = fake.ptz();
+    assert_eq!(frames.len(), 2, "press and stop");
+    assert_eq!(command(&frames[0]), "ZoomTile");
+    assert_eq!(preset_of(&frames[0]), 65535);
+    assert_eq!(preset_of(&frames[1]), -1);
+    let gap = frames[1].at - frames[0].at;
+    assert!(
+        gap < Duration::from_millis(800),
+        "the stop came {gap:?} after the press"
+    );
+}
+
+#[tokio::test]
+async fn a_release_queued_behind_a_refused_press_sends_nothing() {
+    let fake = device(Mood::SlowAbility, &[], &[]).without("SupportBallTelescopic");
+    let client = client(&listen(fake.clone()).await).await;
+    let (pressed, released) = tokio::join!(
+        post(&client, "/api/device/controls/ptz/press?action=zoom-in"),
+        async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            post(&client, "/api/device/controls/ptz/release?pressed_ms=900").await
+        }
+    );
+    assert_eq!(pressed.0, Status::NotImplemented, "{}", pressed.1);
+    assert_eq!(released.0, Status::Ok, "{}", released.1);
+    assert_eq!(released.1["held"], false, "{}", released.1);
+    assert!(fake.writes().is_empty());
 }
