@@ -45,7 +45,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --ipc=host
@@ -80,13 +80,7 @@ jobs:
         run: npm ci --include=dev
       - name: e2e (Chromium and WebKit, fixture servers)
         working-directory: e2e
-        run: npx --no-install playwright test --update-snapshots=changed
-      - if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-snapshots
-          path: e2e/tests/**/*-snapshots/**
-          retention-days: 7
+        run: npx --no-install playwright test
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
