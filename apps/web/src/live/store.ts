@@ -2,16 +2,6 @@ import { reactive } from 'vue'
 import type { SoundState } from '../lib/stream-player'
 
 export type Gate = { ok: boolean; why: string }
-export type Launcher = {
-  id: string
-  label: string
-  icon: string
-  slot: 'start' | 'end'
-  title?: string
-  controls?: string
-  pressed?: boolean | null
-  onClick: () => void
-}
 export type LensOption = { value: string; name: string; sub: string }
 export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean; ptzSpeed: Record<string, string> }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
@@ -101,7 +91,6 @@ export const live = reactive({
   alarmDay: { serial: '', day: '', entries: [] as { id: string; at: number; event: string }[], token: 0 },
   lens: { shown: false, label: 'Both lenses', value: 'combined', options: [] as LensOption[], note: '' },
   quality: 'main',
-  launchers: [] as Launcher[],
   mode: 'live' as 'live' | 'playback',
   playback: { at: null as number | null, paused: false, speed: 1, picture: false, quality: 'HD' as 'SD' | 'HD' },
   actions: {
@@ -118,8 +107,3 @@ export const live = reactive({
 })
 
 export const menuOpen = () => document.querySelector('.menu-panel[data-state="open"]') !== null
-
-export function addLauncher(launcher: Launcher): Launcher {
-  live.launchers.push(launcher)
-  return live.launchers[live.launchers.length - 1]
-}

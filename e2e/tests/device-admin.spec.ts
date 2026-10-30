@@ -24,7 +24,8 @@ async function fakeCloud(page: Page, attributes: unknown = ATTRIBUTES) {
 }
 
 async function openSheet(page: Page) {
-  await page.getByTestId('device-admin-open').click()
+  await page.getByTestId('ctl-more').click()
+  await page.getByTestId('more-manage-cameras').click()
   const sheet = page.getByTestId('device-admin')
   await expect(sheet).toBeVisible()
   return sheet
@@ -34,9 +35,8 @@ test('Devices lists the cameras, focuses the chosen one, and Escape or Close han
   await fakeCloud(page)
   await signIn(page, 'one')
   await playing(page)
-  const launcher = page.getByTestId('device-admin-open')
+  const more = page.getByTestId('ctl-more')
   const sheet = await openSheet(page)
-  await expect(launcher).toHaveAttribute('aria-pressed', 'true')
   const rows = sheet.getByTestId('device-admin-row')
   await expect(rows).toHaveCount(2)
   await expect(rows.first()).toHaveAttribute('aria-checked', 'true')
@@ -49,12 +49,27 @@ test('Devices lists the cameras, focuses the chosen one, and Escape or Close han
   await expect(page.locator('#device-admin-favourite')).toBeChecked()
   await page.keyboard.press('Escape')
   await expect(sheet).toBeHidden()
-  await expect(launcher).toBeFocused()
-  await expect(launcher).toHaveAttribute('aria-pressed', 'false')
+  await expect(more).toBeFocused()
   await openSheet(page)
   await page.getByTestId('device-admin-close').click()
   await expect(sheet).toBeHidden()
-  await expect(launcher).toBeFocused()
+  await expect(more).toBeFocused()
+})
+
+test('Manage cameras in the camera switcher opens Devices and hands focus back to the switcher', async ({ page }) => {
+  await fakeCloud(page)
+  await signIn(page, 'many')
+  await playing(page)
+  const switcher = page.getByTestId('camera-switcher')
+  await switcher.click()
+  await page.getByTestId('camera-menu-manage').click()
+  const sheet = page.getByTestId('device-admin')
+  await expect(sheet).toBeVisible()
+  await expect(page.getByTestId('camera-menu')).toBeHidden()
+  await expect(sheet.getByTestId('device-admin-row').first()).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(sheet).toBeHidden()
+  await expect(switcher).toBeFocused()
 })
 
 test('Rename says it is working, sends one request, and reports the result where it can be seen', async ({ page }) => {
@@ -230,12 +245,17 @@ test('Devices, Cloud and the Events overlay share one corner and replace each ot
   await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: { entries: [], total: 0, pollSeconds: 60 } }))
   await signIn(page, 'one')
   await playing(page)
+  const fromMore = async (item: string) => {
+    await page.getByTestId('ctl-more').focus()
+    await page.keyboard.press('Enter')
+    await page.getByTestId(item).click()
+  }
   const sheet = await openSheet(page)
-  await page.getByTestId('recordings-launcher').click()
+  await fromMore('more-cloud')
   await expect(page.getByTestId('recordings-panel')).toBeVisible()
   await expect(sheet).toBeHidden()
-  await expect(page.getByTestId('device-admin-open')).toHaveAttribute('aria-pressed', 'false')
-  await openSheet(page)
+  await fromMore('more-manage-cameras')
+  await expect(sheet).toBeVisible()
   await expect(page.getByTestId('recordings-panel')).toBeHidden()
   await page.getByTestId('alarm-bell').click()
   await expect(page.getByTestId('alarm-center')).toBeVisible()

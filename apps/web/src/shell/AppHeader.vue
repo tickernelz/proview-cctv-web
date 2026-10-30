@@ -21,6 +21,7 @@ import { openSettings } from '../app/shell'
 import { state } from '../app/state'
 import { toggleTheme } from '../app/theme'
 import { loadDevices, openCamera, setView } from '../app/view'
+import { openDevices } from '../settings/ui'
 import { shell } from './layout'
 import { go, liveHash } from './router'
 
@@ -54,6 +55,17 @@ const count = computed(() => Math.min(9, top.cameras.length))
 const layout = computed(() => (top.inGrid ? 'grid' : 'single'))
 const themeLabel = computed(() => (live.theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'))
 let previous: HTMLElement | null = null
+let handedOff = false
+
+function manageCameras() {
+  handedOff = true
+  openDevices('switcher')
+}
+
+function keepSheetFocus(event: Event) {
+  if (handedOff) event.preventDefault()
+  handedOff = false
+}
 
 function pickLayout(value: string) {
   if (shell.screen === 'watch' && shell.view === 'live') {
@@ -129,7 +141,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside, true)
         <span id="switcher-meta" class="meta">{{ top.meta }}</span>
         <Icon name="chevron-down" small class="chev" />
       </DropdownMenuTrigger>
-      <DropdownMenuContent id="camera-menu" data-testid="camera-menu" aria-label="Cameras" side="bottom" align="start" :side-offset="6" loop @keydown="onMenuKey" @open-auto-focus="focusChecked">
+      <DropdownMenuContent id="camera-menu" data-testid="camera-menu" aria-label="Cameras" side="bottom" align="start" :side-offset="6" loop @keydown="onMenuKey" @open-auto-focus="focusChecked" @close-auto-focus="keepSheetFocus">
         <DropdownMenuLabel class="menu-h">Cameras · 1-{{ count }} on the keyboard</DropdownMenuLabel>
         <DropdownMenuRadioGroup :model-value="top.selected">
           <DropdownMenuRadioItem v-for="camera in top.cameras" :key="camera.key" :value="camera.key" class="menu-row" data-testid="camera-option" @select="openCamera(camera.index)">
@@ -140,6 +152,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside, true)
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator class="menu-sep" />
         <DropdownMenuItem class="menu-row" @select="loadDevices()"><Icon name="refresh" small /><span class="name">Refresh the list</span></DropdownMenuItem>
+        <DropdownMenuItem class="menu-row" data-testid="camera-menu-manage" @select="manageCameras"><Icon name="cctv" small /><span class="name">Manage cameras…</span></DropdownMenuItem>
         <DropdownMenuItem class="menu-row" @select="openSettings('config', { focus: true })"><Icon name="plus" small /><span class="name">Add a camera</span><span class="meta">Settings</span></DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

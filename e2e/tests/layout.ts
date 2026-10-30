@@ -253,27 +253,37 @@ export async function walkScreens(page: Page, check: Check) {
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('camera-menu')).toBeHidden()
 
-  await page.getByTestId('quality-pick').click()
-  await expect(page.getByTestId('quality-menu')).toBeVisible()
-  await check('quality menu')
-  await page.keyboard.press('Escape')
-  await expect(page.getByTestId('quality-menu')).toBeHidden()
+  if (tabBarShown(page)) {
+    await expect(page.getByTestId('quality-pick')).toHaveCount(0)
+    await page.getByTestId('ctl-more').click()
+    await expect(page.getByTestId('more-menu')).toBeVisible()
+    await expect(page.getByTestId('more-quality-option')).toHaveCount(2)
+    await check('more menu with quality')
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('more-menu')).toBeHidden()
+  } else {
+    await page.getByTestId('quality-pick').click()
+    await expect(page.getByTestId('quality-menu')).toBeVisible()
+    await check('quality menu')
+    await page.keyboard.press('Escape')
+    await expect(page.getByTestId('quality-menu')).toBeHidden()
+  }
 
   await walkEvents(page, check)
 
-  await page.locator('#recordings-launcher').click()
-  await expect(page.locator('#recordings-panel')).toBeVisible()
+  await page.getByTestId('ctl-more').click()
+  await page.getByTestId('more-recordings').click()
+  await expect(page.locator('#pb')).toBeVisible()
+  await check('playback')
+  await page.getByTestId('rec-tab-cloud').click()
+  await expect(page.getByTestId('recordings-day')).toBeVisible()
   await check('cloud recordings')
   await liveAgain(page)
 
-  await page.locator('#device-admin-open').click()
+  await page.getByTestId('camera-switcher').click()
+  await page.getByTestId('camera-menu-manage').click()
   await expect(page.locator('#device-admin')).toBeVisible()
   await check('devices sheet')
-  await liveAgain(page)
-
-  await page.locator('#pb-open').click()
-  await expect(page.locator('#pb')).toBeVisible()
-  await check('playback')
   await liveAgain(page)
 
   await page.getByTestId('view-grid').click()

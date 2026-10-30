@@ -12,8 +12,8 @@ import { state as page } from '../app/state'
 import { shell } from '../shell/layout'
 import PlaybackRows from './PlaybackRows.vue'
 import { mb, stamp, type Clip } from './playback-clips'
-import { addLauncher, live } from './store'
-import { downloadFile, loadFiles, needThumbs, openRecordings, playAt, setDay, setKind, shiftDay, takeOpener, tl, today, type Kind } from './timeline/engine'
+import { live } from './store'
+import { downloadFile, loadFiles, needThumbs, playAt, setDay, setKind, shiftDay, takeOpener, tl, today, type Kind } from './timeline/engine'
 import { dayLabel } from './timeline/time'
 
 type Camera = { id: string; name?: string }
@@ -47,16 +47,6 @@ const clip = reactive({
   url: '',
 })
 
-const launcher = addLauncher({
-  id: 'recordings-launcher',
-  label: 'Cloud',
-  icon: 'cloud',
-  slot: 'start',
-  pressed: false,
-  controls: 'recordings-panel',
-  onClick: () => (open.value ? close() : openRecordings('cloud', 'recordings-launcher')),
-})
-
 const cameraName = (id: string) => (page.devices.find((device) => device.id === id)?.name || id) as string
 const day = computed({
   get: () => tl.day,
@@ -73,11 +63,6 @@ const summary = computed(() => {
   const cap = files.cap ? ' · the device list is capped at ' + files.cap : ''
   return files.list.length + ' files · ' + mb(totalBytes.value) + ' · ' + where + filterName.value + cap
 })
-
-watch(
-  () => open.value && tl.tab === 'cloud',
-  (cloud) => (launcher.pressed = cloud),
-)
 
 watch(open, async (shown) => {
   if (!shown) {
