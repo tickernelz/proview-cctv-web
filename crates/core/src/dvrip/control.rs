@@ -82,6 +82,10 @@ pub struct DeviceCapabilities {
     pub ptz_tour: Capability,
     pub ptz_locate: Capability,
     pub ptz_direction: Capability,
+    pub ptz_zoom: Capability,
+    pub ptz_aim: Capability,
+    pub ptz_preset_edit: Capability,
+    pub ptz_auto_adjust: Capability,
     pub tour_lines: Vec<TourLine>,
     pub presets: Vec<PresetEntry>,
 }
@@ -285,7 +289,7 @@ fn locate_capability(reported: Option<PtzLocate>) -> Capability {
 }
 
 impl Connection {
-    fn session_field(&self) -> String {
+    pub(crate) fn session_field(&self) -> String {
         format!("0x{:08X}", self.session())
     }
 
@@ -543,6 +547,26 @@ impl Connection {
                 &["OtherFunction", "SupportPTZDirectionControl"],
                 "no PTZ direction control reported",
             ),
+            ptz_zoom: flag_capability(
+                &abilities,
+                &["OtherFunction", "SupportBallTelescopic"],
+                "no motorised zoom or focus reported, so the app hides zoom and focus",
+            ),
+            ptz_aim: flag_capability(
+                &abilities,
+                &["OtherFunction", "SupportGunBallTwoSensorPtzLocate"],
+                "no gun-to-ball locate reported, so the app ignores a tap on the wide lens",
+            ),
+            ptz_preset_edit: flag_capability(
+                &abilities,
+                &["OtherFunction", "SupportPTZTour"],
+                "no preset and tour editing reported, so the app shows no preset page",
+            ),
+            ptz_auto_adjust: flag_capability(
+                &abilities,
+                &["OtherFunction", "SupportPtzAutoAdjust"],
+                "no PTZ auto-adjust reported, so the app shows no calibration button",
+            ),
             tour_lines,
             presets: presets_of(uart_block),
         })
@@ -606,7 +630,7 @@ impl PtzDirection {
 }
 
 impl Connection {
-    async fn ptz_control(
+    pub(crate) async fn ptz_control(
         &mut self,
         command: &str,
         channel: usize,
