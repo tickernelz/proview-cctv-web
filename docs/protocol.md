@@ -1413,7 +1413,10 @@ start 1410, three parameter sets, ffmpeg probe.
 So the per-stream cost sits in the transcoder, not in the relay or the demuxer: the
 server side of a cloud stream is under one CPU second per five minutes, while
 libx264 at veryfast on 2304×2592 holds most of a core for the duration. A viewer
-that asks for `codec=hevc` skips that entirely (section 11).
+that asks for `codec=hevc` skips that entirely (section 11): no child process,
+0.6 % of a core for the server measured over the cloud relay on 2026-10-30.
+ffmpeg is only the fallback for a client that cannot decode H.265 and is never
+bundled.
 
 ### 4C.27 The 16-character login name is opened from the account token
 
@@ -2359,26 +2362,41 @@ immediate.
 
 ## 11. Live passthrough transport (stream 2)
 
-A second live transport skips the transcode: `/ws/live?...&codec=hevc` forwards
-the camera's HEVC access units straight to a WebCodecs client. The socket opens
-with one JSON text frame
-`{"type":"hello","mode":"passthrough","codec":"hvc1.1.6.L63","width":2304,"height":2592,"audio":"PCMA","audio_clock":8000}`
-followed by binary frames:
+A second live transport skips the transcode: `/ws/live?...&codec=hevc` carries
+the camera's H.265 untouched, muxed in-process into fragmented MP4 (no ffmpeg),
+for the same MediaSource player the transcode feeds. Both transports open with
+one JSON text frame naming the mode the server chose, which is what the client
+follows (a fixture or an H.264 camera answers `transcode` even to `codec=hevc`):
+`{"type":"hello","mode":"passthrough","codec":"hvc1.1.6.L63","width":2304,"height":2592,"audio":null,"audio_clock":null}`
+(measured on the dual-lens camera over the cloud relay, 2026-10-30). Binary
+frames follow with no header bytes: the init segment (`ftyp`+`moov`, one `hvc1`
+track whose `hvcC` holds VPS/SPS/PPS), then one `moof`+`mdat` fragment per
+frame. Samples are length-prefixed NALs with the parameter sets and AUDs taken
+out of band; the first sample's `trun` flags mark a keyframe.
 
-| first byte | payload |
-|---|---|
-| `0x01` | HEVCDecoderConfigurationRecord (`hvcC`), for `VideoDecoder.configure({codec, description})` |
-| `0x02` | keyframe access unit: `u64` pts in µs (big endian), then `u32` length + NAL, repeated |
-| `0x03` | delta access unit, same payload layout |
+Frame timing: the DHAV key record header carries the encoder rate in byte 5
+(`00 00 01 fc 53 0c ...`, `0x0c` = 12) and a packed calendar stamp at offset 8.
+The header rate is used until the stamps of four keyframes span 9 s, then the
+measured rate snapped to a standard value takes over. On this camera the two
+disagree: the header says 12 and the stamps say 12.5 (a 269 s file holds 3,365
+frames), so a stream timed by the header alone drifts 4 % behind the clock.
 
-A viewer joins at the next IDR and is resynchronised at the next IDR when it
-falls behind; an RTP sequence gap drops the partial fragment and only a NAL
-with its first-slice flag at an access-unit boundary restores the stream. The
-codec string comes from the SPS `profile_tier_level` and the SPS payload is
+A viewer joins at the last keyframe the hub replays, or at the next keyframe
+when it falls behind; an RTP sequence gap drops the partial fragment and only a
+NAL with its first-slice flag at an access-unit boundary restores the stream.
+The codec string comes from the SPS `profile_tier_level` and the SPS payload is
 de-escaped (`00 00 03` → `00 00`) before it is parsed, otherwise the camera's
-SPS yields a zero size. Every keyframe access unit repeats VPS, SPS and PPS in
-band. The MSE transport keeps the raw fMP4 framing: init segment first, then
-fragments with no header bytes.
+SPS yields a zero size.
+
+The browser asks for `codec=hevc` only when `MediaSource.isTypeSupported` accepts
+the codec string and, where `VideoDecoder` exists, `isConfigSupported` accepts it
+at the coded size (2304x2592 for the main stream). It checks again against the
+real `hello`, and falls back to the transcode when the source buffer refuses
+the type, reports an error, or no frame is presented within 4 s; the verdict is
+kept in `sessionStorage` (`proview.hevc`) for the rest of the session.
+`/ws/playback` takes the same `codec=hevc` query: an H.264 recording is always
+muxed natively, an H.265 one natively when the client asked for it, otherwise
+through ffmpeg; its status frame names the `pipeline`, `transport` and `mime`.
 
 `GET /api/live/stats` (session required) reports one row per active hub key:
 transport, subscribers, publishers, packets, keyframes, bytes, audio packets,

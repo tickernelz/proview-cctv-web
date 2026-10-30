@@ -8,13 +8,12 @@ import PlaybackRows from './PlaybackRows.vue'
 import PlaybackStrip from './PlaybackStrip.vue'
 import { mb, secondsBetween, stamp, type Clip } from './playback-clips'
 import { addLauncher, live } from './store'
+import { AVC_TYPE, HEVC_FIRST_FRAME_MS, decodes, mayAskForHevc, rememberHevc, type StreamShape } from '../lib/hevc'
 
 type Device = { id: string; name?: string }
 type Listing = { files?: Clip[]; truncated?: boolean; cap?: number; elapsed_ms?: number }
 type Query = { device: string; day: string }
 type Frame = { type?: string; message?: string; [key: string]: unknown }
-
-const MEDIA_TYPE = 'video/mp4; codecs="avc1.42E01E"'
 
 const open = computed(() => live.screen === 'playback')
 const title = ref<HTMLElement>()
@@ -45,6 +44,8 @@ const stream = {
   status: {} as Record<string, any>,
   stats: null as Record<string, any> | null,
   windowSec: 60,
+  transport: '' as '' | 'hevc' | 'avc',
+  hevcTimer: 0,
 }
 
 const launcher = addLauncher({ id: 'pb-open', label: 'Playback', icon: 'history', slot: 'end', controls: 'pb', onClick: () => show() })
@@ -112,6 +113,9 @@ function stop() {
   stream.bytes = 0
   stream.stats = null
   stream.frameAt = null
+  stream.transport = ''
+  if (stream.hevcTimer) window.clearTimeout(stream.hevcTimer)
+  stream.hevcTimer = 0
 }
 
 function pump() {
@@ -120,13 +124,74 @@ function pump() {
   try {
     buffer.appendBuffer(stream.queue.shift() as BufferSource)
   } catch (error) {
+    if (stream.transport === 'hevc' && stream.hevcTimer) return fallBack('the H.265 fragment was refused')
     console.error('playback append failed', error)
     stream.queue = []
   }
 }
 
-function play(file: Clip, offset: number) {
+let retryAvc: (() => void) | null = null
+
+function fallBack(reason: string) {
+  rememberHevc('no')
+  console.warn('H.265 playback failed, switching to the H.264 transcode:', reason)
+  const again = retryAvc
+  if (again) again()
+}
+
+function openBuffer(media: MediaSource, type: string, transport: 'hevc' | 'avc', shape?: StreamShape) {
+  if (stream.buffer || stream.media !== media) return
+  stream.transport = transport
+  let buffer: SourceBuffer
+  try {
+    buffer = media.addSourceBuffer(type)
+  } catch (error) {
+    if (transport === 'hevc') return fallBack('the browser refused ' + type)
+    say('this browser cannot decode the clip: ' + (error instanceof Error ? error.message : String(error)), true)
+    return
+  }
+  stream.buffer = buffer
+  buffer.addEventListener('updateend', () => {
+    pump()
+    if (video.value && video.value.buffered.length && stream.frameAt === null) {
+      stream.frameAt = performance.now() - stream.startedAt
+      say(describeStats())
+    }
+  })
+  buffer.addEventListener('error', () => {
+    if (stream.transport === 'hevc' && stream.buffer === buffer) fallBack('the source buffer reported an error')
+  })
+  if (transport === 'hevc' && shape && video.value) {
+    const player = video.value as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number }
+    const confirm = () => {
+      if (stream.media !== media || stream.transport !== 'hevc') return
+      if (stream.hevcTimer) window.clearTimeout(stream.hevcTimer)
+      stream.hevcTimer = 0
+      rememberHevc('yes', shape)
+    }
+    if (player.requestVideoFrameCallback) player.requestVideoFrameCallback(confirm)
+    else player.addEventListener('loadeddata', confirm, { once: true })
+    stream.hevcTimer = window.setTimeout(() => {
+      if (stream.media === media && stream.transport === 'hevc') fallBack('no frame decoded within ' + HEVC_FIRST_FRAME_MS / 1000 + ' s')
+    }, HEVC_FIRST_FRAME_MS)
+  }
+  pump()
+}
+
+function chooseBuffer(media: MediaSource, frame: Frame) {
+  if (stream.buffer || typeof frame.mime !== 'string') return
+  if (frame.transport !== 'hevc') return openBuffer(media, frame.mime, 'avc')
+  const shape: StreamShape = { codec: String(frame.codecString || ''), width: Number(frame.width) || null, height: Number(frame.height) || null }
+  decodes(shape).then((ok) => {
+    if (stream.media !== media) return
+    if (!ok) return fallBack('the browser cannot decode ' + shape.codec + ' at ' + shape.width + 'x' + shape.height)
+    openBuffer(media, String(frame.mime), 'hevc', shape)
+  })
+}
+
+function play(file: Clip, offset: number, askHevc = mayAskForHevc()) {
   stop()
+  retryAvc = askHevc ? () => play(file, offset, false) : null
   chosen.value = file
   stream.status = {}
   stream.startedAt = performance.now()
@@ -145,21 +210,6 @@ function play(file: Clip, offset: number) {
   media.addEventListener(
     'sourceopen',
     () => {
-      let buffer: SourceBuffer
-      try {
-        buffer = media.addSourceBuffer(MEDIA_TYPE)
-      } catch (error) {
-        say('this browser cannot decode H.264: ' + (error instanceof Error ? error.message : String(error)), true)
-        return
-      }
-      stream.buffer = buffer
-      buffer.addEventListener('updateend', () => {
-        pump()
-        if (player.buffered.length && stream.frameAt === null) {
-          stream.frameAt = performance.now() - stream.startedAt
-          say(describeStats())
-        }
-      })
       const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
       const params =
         'device=' + encodeURIComponent(device) +
@@ -168,7 +218,8 @@ function play(file: Clip, offset: number) {
         '&begin=' + encodeURIComponent(file.begin) +
         '&end=' + encodeURIComponent(file.end) +
         '&start=' + Math.round(offset) +
-        '&window=' + (stream.windowSec || 60)
+        '&window=' + (stream.windowSec || 60) +
+        (askHevc ? '&codec=hevc' : '')
       const socket = new WebSocket(scheme + '://' + location.host + '/ws/playback?' + params)
       socket.binaryType = 'arraybuffer'
       stream.socket = socket
@@ -183,6 +234,7 @@ function play(file: Clip, offset: number) {
           if (!frame) return
           if (frame.type === 'status') {
             Object.assign(stream.status, frame)
+            chooseBuffer(media, frame)
             say(describeStats() || frame.message || '')
           } else if (frame.type === 'error') {
             say(frame.message || 'the playback failed', true)
@@ -195,6 +247,7 @@ function play(file: Clip, offset: number) {
         const bytes = new Uint8Array(event.data)
         stream.bytes += bytes.length
         stream.queue.push(bytes)
+        if (!stream.buffer && !stream.transport) openBuffer(media, AVC_TYPE, 'avc')
         pump()
         if (stream.status.openMs !== undefined) say(describeStats())
       }
@@ -258,7 +311,9 @@ function downloadChosen() {
     '&begin=' + encodeURIComponent(file.begin) +
     '&end=' + encodeURIComponent(file.end) +
     '&bytes=' + encodeURIComponent(String(file.bytes || 0))
-  anchor.download = String(file.name).split('/').pop() || 'clip'
+  const stem = (String(file.name).split('/').pop() || '').replace(/\.[^.]*$/, '') || 'clip'
+  const day = /^\d{4}-\d{2}-\d{2}/.test(file.begin) ? file.begin.slice(0, 10) + '_' : ''
+  anchor.download = day + stem + '.mp4'
   document.body.append(anchor)
   anchor.click()
   anchor.remove()

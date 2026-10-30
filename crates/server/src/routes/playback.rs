@@ -1,18 +1,17 @@
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use proview_core::dvrip::playback::{
     access_unit, codec_of, is_video, shift, snap_rate, FrameRate, MediaReader, PlaybackFile,
-    RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
+    Record, RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
 use proview_core::media::Codec;
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::provider::{ProviderError, VendorSession};
 use proview_core::session::Store;
-use proview_core::source::{Fmp4Splitter, Piece};
+use proview_core::source::Piece;
 use rocket::http::{ContentType, CookieJar, Status};
 use rocket::request::Request;
 use rocket::response::{self, Responder, Response};
@@ -20,9 +19,8 @@ use rocket::serde::json::Json;
 use rocket::State;
 use rocket_ws as ws;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
+use crate::routes::playback_mux::demuxer;
 use crate::routes::{fail, restore, session_id, status_for, Failure};
 
 const PRIME_READ: Duration = Duration::from_secs(3);
@@ -129,7 +127,7 @@ pub struct Download {
 impl<'r> Responder<'r, 'static> for Download {
     fn respond_to(self, _request: &'r Request<'_>) -> response::Result<'static> {
         Response::build()
-            .header(ContentType::Binary)
+            .header(ContentType::MP4)
             .raw_header(
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", self.filename),
@@ -148,21 +146,23 @@ fn short_fall(wire: u64, listed: u64) -> Option<String> {
     }
 }
 
-async fn collect(session: &mut Session, listed: u64) -> Result<Vec<u8>, String> {
+async fn collect(session: &mut Session, listed: u64) -> Result<Vec<Record>, String> {
     let mut reader = MediaReader::new();
-    let mut payload: Vec<u8> = Vec::new();
+    let mut payload: Vec<Record> = Vec::new();
+    let mut held = 0u64;
     let mut wire = 0u64;
     loop {
         while let Some(record) = reader.next_record() {
             if !is_video(&record) {
                 continue;
             }
-            if payload.len() as u64 + record.bytes.len() as u64 > DOWNLOAD_LIMIT {
+            held += record.bytes.len() as u64;
+            if held > DOWNLOAD_LIMIT {
                 return Err(format!(
                     "the file is larger than the {DOWNLOAD_LIMIT} bytes this server holds"
                 ));
             }
-            payload.extend_from_slice(&record.bytes);
+            payload.push(record);
         }
         if short_fall(wire, listed).is_none() {
             break;
@@ -239,17 +239,25 @@ pub async fn download(
     let collected = collect(&mut session, listed).await;
     let _ = session.download_stop(&file, channel).await;
     let _ = session.logout().await;
-    let bytes = collected.map_err(|message| fail(Status::BadGateway, message))?;
+    let records = collected.map_err(|message| fail(Status::BadGateway, message))?;
+    let clip = crate::routes::playback_mux::mp4_of(&records)
+        .map_err(|message| fail(Status::BadGateway, format!("playback stage=mux: {message}")))?;
+    tracing::info!(
+        codec = demuxer(clip.codec),
+        frames = clip.frames,
+        fps = clip.fps,
+        fps_source = clip.fps_source,
+        seconds = clip.seconds,
+        "playback download muxed"
+    );
     Ok(Download {
-        bytes,
-        filename: download_name(&name),
+        bytes: clip.bytes,
+        filename: download_name(&name, &begin),
     })
 }
 
-fn download_name(name: &str) -> String {
-    let base = name.rsplit('/').next().unwrap_or(name);
-    let cleaned: String = base
-        .chars()
+fn clean_name(text: &str) -> String {
+    text.chars()
         .map(|letter| {
             if letter.is_ascii_alphanumeric() || matches!(letter, '.' | '_' | '-' | '@' | '[' | ']')
             {
@@ -258,11 +266,30 @@ fn download_name(name: &str) -> String {
                 '_'
             }
         })
-        .collect();
-    if cleaned.is_empty() {
-        "clip.h264".to_string()
-    } else {
-        cleaned
+        .collect()
+}
+
+fn download_name(name: &str, begin: &str) -> String {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let stem = match base.rfind('.') {
+        Some(dot) if dot > 0 => &base[..dot],
+        _ => base,
+    };
+    let stem = clean_name(stem);
+    let day = begin.split(' ').next().unwrap_or("");
+    let dated = day.len() == 10
+        && day.chars().enumerate().all(|(index, letter)| {
+            if index == 4 || index == 7 {
+                letter == '-'
+            } else {
+                letter.is_ascii_digit()
+            }
+        });
+    match (stem.is_empty(), dated) {
+        (true, true) => format!("{day}_clip.mp4"),
+        (true, false) => "clip.mp4".to_string(),
+        (false, true) => format!("{day}_{stem}.mp4"),
+        (false, false) => format!("{stem}.mp4"),
     }
 }
 
@@ -285,6 +312,7 @@ struct WatchQuery {
     end: String,
     start: Option<u32>,
     window: Option<u32>,
+    codec: Option<String>,
 }
 
 type RateCache = std::sync::Mutex<std::collections::HashMap<String, f64>>;
@@ -307,65 +335,6 @@ fn remember_rate(device: &str, fps: f64) {
     }
 }
 
-fn demuxer(codec: Codec) -> &'static str {
-    match codec {
-        Codec::H264 => "h264",
-        Codec::H265 => "hevc",
-    }
-}
-
-fn ffmpeg(codec: Codec, fps: Option<f64>) -> Command {
-    let binary = std::env::var("PROVIEW_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string());
-    let mut command = Command::new(binary);
-    proview_core::process::hide_console(command.as_std_mut());
-    command.args([
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-flags",
-        "low_delay",
-        "-probesize",
-        "32768",
-        "-analyzeduration",
-        "0",
-        "-f",
-        demuxer(codec),
-    ]);
-    if let Some(fps) = fps {
-        command.args(["-framerate", &format!("{fps:.3}")]);
-    }
-    command.args([
-        "-i",
-        "pipe:0",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-tune",
-        "zerolatency",
-        "-profile:v",
-        "baseline",
-        "-g",
-        "25",
-        "-keyint_min",
-        "25",
-        "-sc_threshold",
-        "0",
-        "-an",
-        "-f",
-        "mp4",
-        "-movflags",
-        "+empty_moov+default_base_moof+frag_keyframe+separate_moof+omit_tfhd_offset",
-        "pipe:1",
-    ]);
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    command
-}
-
 fn annex_b(record: &proview_core::dvrip::playback::Record, out: &mut Vec<u8>) -> bool {
     if !is_video(record) {
         return false;
@@ -384,7 +353,7 @@ fn text_frame(payload: serde_json::Value) -> ws::Message {
     ws::Message::Text(payload.to_string())
 }
 
-#[get("/ws/playback?<device>&<channel>&<name>&<begin>&<end>&<start>&<window>")]
+#[get("/ws/playback?<device>&<channel>&<name>&<begin>&<end>&<start>&<window>&<codec>")]
 #[allow(clippy::too_many_arguments)]
 pub fn watch(
     ws: ws::WebSocket,
@@ -395,6 +364,7 @@ pub fn watch(
     end: String,
     start: Option<u32>,
     window: Option<u32>,
+    codec: Option<String>,
     cloud: &State<Arc<CloudProvider>>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
@@ -412,6 +382,7 @@ pub fn watch(
         end,
         start,
         window,
+        codec,
     };
     let cloud = cloud.inner().clone();
     Ok(ws.channel(move |mut stream| {
@@ -554,47 +525,55 @@ pub fn watch(
             } else {
                 (Some(DEFAULT_FPS), "default")
             };
-            let mut child = match ffmpeg(codec, fps).spawn() {
-                Ok(child) => child,
-                Err(error) => {
+            let config = if crate::routes::playback_mux::wants_native(codec, params.codec.as_deref()) {
+                crate::routes::playback_mux::config_of(codec, &pending)
+            } else {
+                None
+            };
+            let pipeline = match config.as_ref() {
+                Some(config) => Ok(crate::routes::playback_mux::native(
+                    codec,
+                    config,
+                    fps.unwrap_or(DEFAULT_FPS),
+                )),
+                None => crate::routes::playback_mux::transcode(codec, fps),
+            };
+            let crate::routes::playback_mux::Pipeline {
+                mut sink,
+                mut output,
+                mut child,
+                stderr,
+            } = match pipeline {
+                Ok(pipeline) => pipeline,
+                Err(message) => {
                     let _ = stream
                         .send(text_frame(serde_json::json!({
                             "type": "error",
-                            "message": format!("ffmpeg did not start: {error}"),
+                            "message": message,
                         })))
                         .await;
                     return Ok(());
                 }
             };
-            let mut stdin = match child.stdin.take() {
-                Some(stdin) => stdin,
-                None => return Ok(()),
+            let native = config.is_some();
+            let (mime, transport) = match config.as_ref() {
+                Some(config) => (
+                    config.mime(),
+                    if codec == Codec::H265 { "hevc" } else { "avc" },
+                ),
+                None => (crate::routes::playback_mux::AVC_MIME.to_string(), "avc"),
             };
-            let mut stdout = match child.stdout.take() {
-                Some(stdout) => stdout,
-                None => return Ok(()),
-            };
-            let stderr = child.stderr.take().map(|mut handle| {
-                tokio::spawn(async move {
-                    let mut tail = String::new();
-                    let mut chunk = [0u8; 2048];
-                    while let Ok(read) = handle.read(&mut chunk).await {
-                        if read == 0 {
-                            break;
-                        }
-                        tail.push_str(&String::from_utf8_lossy(&chunk[..read]));
-                        if tail.len() > 4096 {
-                            tail = tail.chars().skip(tail.chars().count() - 2048).collect();
-                        }
-                    }
-                    tail
-                })
-            });
             let _ = stream
                 .send(text_frame(serde_json::json!({
                     "type": "status",
-                    "message": "transcoding the clip",
+                    "message": if native { "muxing the clip without a transcode" } else { "transcoding the clip" },
                     "codec": demuxer(codec),
+                    "pipeline": if native { "native" } else { "ffmpeg" },
+                    "transport": transport,
+                    "mime": mime,
+                    "codecString": config.as_ref().map(|config| config.codec_string.clone()),
+                    "width": config.as_ref().map(|config| config.width),
+                    "height": config.as_ref().map(|config| config.height),
                     "fps": fps.map(|value| (value * 1000.0).round() / 1000.0),
                     "fpsSettled": rate.settled(),
                     "fpsSource": fps_source,
@@ -612,7 +591,7 @@ pub fn watch(
             let window_frames = (f64::from(window) * fps.unwrap_or(25.0)).ceil() as usize;
             let pump = tokio::spawn(async move {
                 for frame in primed {
-                    if stdin.write_all(&frame).await.is_err() {
+                    if !sink.unit(&frame).await {
                         return (video, false);
                     }
                 }
@@ -636,7 +615,7 @@ pub fn watch(
                         let mut bytes = Vec::new();
                         if annex_b(&frame, &mut bytes) {
                             written += 1;
-                            if stdin.write_all(&bytes).await.is_err() {
+                            if !sink.unit(&bytes).await {
                                 keep = false;
                                 break;
                             }
@@ -646,19 +625,17 @@ pub fn watch(
                         break;
                     }
                 }
-                let _ = stdin.shutdown().await;
+                sink.finish().await;
                 let _ = session.stop(&stop_file, channel).await;
                 (written, capped)
             });
 
-            let mut splitter = Fmp4Splitter::new();
-            let mut buffer = vec![0u8; 64 * 1024];
             let mut init_sent = false;
             let mut sent = 0u64;
             let mut first_frame: Option<u64> = None;
             let mut closed_by_client = false;
             'relay: loop {
-                let read = tokio::select! {
+                let piece = tokio::select! {
                     biased;
                     incoming = stream.next() => {
                         match incoming {
@@ -669,38 +646,37 @@ pub fn watch(
                             Some(Ok(_)) => continue,
                         }
                     }
-                    read = stdout.read(&mut buffer) => match read {
-                        Ok(0) => break,
-                        Ok(read) => read,
-                        Err(_) => break,
+                    piece = output.next() => match piece {
+                        Some(piece) => piece,
+                        None => break,
                     },
                 };
-                for piece in splitter.push(&buffer[..read]) {
-                    let payload = match piece {
-                        Piece::Init(fragment) => {
-                            init_sent = true;
-                            fragment
-                        }
-                        Piece::Fragment(fragment) => {
-                            if first_frame.is_none() {
-                                first_frame = Some(queued.elapsed().as_millis() as u64);
-                            }
-                            fragment
-                        }
-                    };
-                    sent += payload.len() as u64;
-                    if stream
-                        .send(ws::Message::Binary(payload.to_vec()))
-                        .await
-                        .is_err()
-                    {
-                        closed_by_client = true;
-                        break 'relay;
+                let payload = match piece {
+                    Piece::Init(fragment) => {
+                        init_sent = true;
+                        fragment
                     }
+                    Piece::Fragment(fragment) => {
+                        if first_frame.is_none() {
+                            first_frame = Some(queued.elapsed().as_millis() as u64);
+                        }
+                        fragment
+                    }
+                };
+                sent += payload.len() as u64;
+                if stream
+                    .send(ws::Message::Binary(payload.to_vec()))
+                    .await
+                    .is_err()
+                {
+                    closed_by_client = true;
+                    break 'relay;
                 }
             }
-            drop(stdout);
-            let _ = child.start_kill();
+            drop(output);
+            if let Some(child) = child.as_mut() {
+                let _ = child.start_kill();
+            }
             let mut pump = pump;
             let (written, capped) =
                 match tokio::time::timeout(Duration::from_secs(2), &mut pump).await {
@@ -711,7 +687,9 @@ pub fn watch(
                         (0, false)
                     }
                 };
-            let _ = child.wait().await;
+            if let Some(mut child) = child {
+                let _ = child.wait().await;
+            }
             if let Some(stderr) = stderr {
                 if let Ok(tail) = stderr.await {
                     if !tail.trim().is_empty() {
@@ -730,6 +708,7 @@ pub fn watch(
                         "fps": fps.map(|value| (value * 1000.0).round() / 1000.0),
                         "fpsSettled": rate.settled(),
                         "codec": demuxer(codec),
+                        "pipeline": if native { "native" } else { "ffmpeg" },
                         "windowSec": window,
                         "capped": capped,
                     })))
@@ -817,14 +796,24 @@ mod tests {
     #[test]
     fn a_device_name_cannot_smuggle_a_header() {
         assert_eq!(
-            super::download_name("/a/b\"\r\nSet-Cookie: x=1; é.h264"),
-            "b___Set-Cookie__x_1___.h264"
+            super::download_name("/a/b\"\r\nSet-Cookie: x=1; é.h264", "2026-10-24 10:34:00"),
+            "2026-10-24_b___Set-Cookie__x_1___.mp4"
         );
         assert_eq!(
-            super::download_name("/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264"),
-            "10.34.00-10.40.00[R][@e19][0].h264"
+            super::download_name(
+                "/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264",
+                "2026-10-24 10:34:00"
+            ),
+            "2026-10-24_10.34.00-10.40.00[R][@e19][0].mp4"
         );
-        assert_eq!(super::download_name("/"), "clip.h264");
+        assert_eq!(
+            super::download_name("/", "2026-10-24 10:34:00"),
+            "2026-10-24_clip.mp4"
+        );
+        assert_eq!(
+            super::download_name("/a.h264", "\"\r\nX: 1 10:00:00"),
+            "a.mp4"
+        );
     }
 
     #[test]
@@ -845,14 +834,18 @@ mod tests {
         let request = local.inner();
         let response = super::Download {
             bytes: vec![1, 2, 3],
-            filename: "clip.h264".to_string(),
+            filename: "clip.mp4".to_string(),
         }
         .respond_to(request)
         .expect("responder");
         assert_eq!(response.body().preset_size(), Some(3));
         assert_eq!(
+            response.content_type(),
+            Some(rocket::http::ContentType::MP4)
+        );
+        assert_eq!(
             response.headers().get_one("Content-Disposition"),
-            Some("attachment; filename=\"clip.h264\"")
+            Some("attachment; filename=\"clip.mp4\"")
         );
     }
 
@@ -923,7 +916,8 @@ mod tests {
         .await;
         let mut session = proview_core::dvrip::playback::Session::open(socket);
         let payload = super::collect(&mut session, wire).await.expect("collect");
-        assert_eq!(payload, [vec![1u8; 40], vec![2u8; 24]].concat());
+        let bytes: Vec<Vec<u8>> = payload.into_iter().map(|record| record.bytes).collect();
+        assert_eq!(bytes, [vec![1u8; 40], vec![2u8; 24]]);
     }
 
     #[tokio::test]

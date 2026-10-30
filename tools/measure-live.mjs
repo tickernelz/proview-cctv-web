@@ -95,19 +95,6 @@ const clickFirstDevice = "(function(){var b=document.querySelector('#devices li 
 const playing = "(function(){var v=document.querySelector('video');return !!(v && v.readyState>=2 && v.currentTime>0);})()";
 const videoState = "(function(){var v=document.querySelector('video');if(!v)return null;return {width:v.videoWidth,height:v.videoHeight,time:v.currentTime,readyState:v.readyState};})()";
 
-function avccToAnnexB(buffer) {
-  const parts = [];
-  let offset = 0;
-  while (offset + 4 <= buffer.length) {
-    const length = buffer.readUInt32BE(offset);
-    offset += 4;
-    if (length === 0 || offset + length > buffer.length) break;
-    parts.push(Buffer.from([0, 0, 0, 1]), buffer.subarray(offset, offset + length));
-    offset += length;
-  }
-  return Buffer.concat(parts);
-}
-
 function processTree(rootPid) {
   const parents = new Map();
   for (const entry of readdirSync('/proc')) {
@@ -258,7 +245,8 @@ async function measureAvc() {
 
 async function measureHevc() {
   const cookie = await cookies();
-  const path = '/ws/live?device=fixture-dev-0001&channel=1&quality=main&codec=hevc';
+  const device = process.env.PROVIEW_DEVICE || 'fixture-dev-0001';
+  const path = '/ws/live?device=' + encodeURIComponent(device) + '&channel=1&quality=main&codec=hevc';
   const target = base.replace(/^http/, 'ws').replace(/\/$/, '') + path;
   const warm = transcodePublishers(await statsSnapshot(cookie));
   if (warm > 0) {
@@ -276,7 +264,7 @@ async function measureHevc() {
   const socket = sockets[0];
   socket.binaryType = 'arraybuffer';
   let hello = null;
-  let config = null;
+  let init = null;
   let firstKeyframe = -1;
   let keyframes = 0;
   let deltas = 0;
@@ -289,7 +277,7 @@ async function measureHevc() {
     };
   }
   const started = Date.now();
-  const decoder = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'hevc', '-i', 'pipe:0', '-f', 'null', '-'], { stdio: ['pipe', 'ignore', 'pipe'] });
+  const decoder = spawn('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'mp4', '-i', 'pipe:0', '-fps_mode', 'passthrough', '-f', 'null', '-'], { stdio: ['pipe', 'ignore', 'pipe'] });
   let stderr = '';
   decoder.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   const finished = new Promise((resolve) => decoder.on('exit', resolve));
@@ -298,16 +286,18 @@ async function measureHevc() {
       hello = JSON.parse(event.data);
       return;
     }
-    const view = new Uint8Array(event.data);
+    const view = Buffer.from(event.data);
     bytes += view.length;
-    const kind = view[0];
-    if (kind === 1) { config = view.length - 1; return; }
-    if (kind === 2) {
+    decoder.stdin.write(view);
+    if (init === null) { init = view.length; return; }
+    const trun = view.indexOf('trun');
+    if (trun < 0) return;
+    if (view.readUInt32BE(trun + 24) & 0x02000000) {
       keyframes += 1;
       if (firstKeyframe < 0) firstKeyframe = Date.now() - started;
+    } else {
+      deltas += 1;
     }
-    if (kind === 3) deltas += 1;
-    decoder.stdin.write(avccToAnnexB(Buffer.from(view.subarray(9))));
   };
   await new Promise((resolve, reject) => {
     let ready = 0;
@@ -326,8 +316,9 @@ async function measureHevc() {
   for (const item of sockets) item.close();
   decoder.stdin.end();
   await Promise.race([finished, sleep(5000)]);
-  if (stderr.trim()) {
-    throw new Error('the passthrough bytes did not decode: ' + stderr.trim().slice(0, 300));
+  const decodeErrors = stderr.split('\n').filter((line) => line.trim() && line.indexOf('[null @') === -1);
+  if (decodeErrors.length) {
+    throw new Error('the passthrough bytes did not decode: ' + decodeErrors.join('\n').slice(0, 300));
   }
   if (after.processes !== 1) {
     throw new Error(
@@ -340,7 +331,7 @@ async function measureHevc() {
     viewers,
     other_viewer_bytes: otherBytes,
     hello,
-    config_bytes: config,
+    init_bytes: init,
     first_keyframe_ms: firstKeyframe,
     keyframes,
     deltas,

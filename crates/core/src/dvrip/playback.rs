@@ -466,6 +466,7 @@ pub struct Record {
     pub kind: RecordKind,
     pub stamp: Option<u32>,
     pub bytes: Vec<u8>,
+    pub rate: Option<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -581,6 +582,10 @@ impl MediaReader {
             return None;
         }
         let mut record = self.buffer.drain(..length).collect::<Vec<u8>>();
+        let rate = match kind {
+            RecordKind::Key => record.get(5).copied().filter(|fps| *fps > 0),
+            _ => None,
+        };
         let header = match kind {
             RecordKind::Info => RECORD_INFO_LEN,
             RecordKind::Pad => 8,
@@ -592,7 +597,12 @@ impl MediaReader {
         } else {
             record.split_off(header)
         };
-        Some(Record { kind, stamp, bytes })
+        Some(Record {
+            kind,
+            stamp,
+            bytes,
+            rate,
+        })
     }
 }
 

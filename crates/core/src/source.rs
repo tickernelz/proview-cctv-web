@@ -8,7 +8,8 @@ use tokio::process::{Child, Command};
 
 use crate::live::{Fragment, LiveHub, LiveMode, LivePacket, StreamKey, StreamMeta};
 use crate::media::fmp4::{init_segment, media_segment, Sample, TrackConfig};
-use crate::media::{h264, hevc, rtp};
+use crate::media::mux::{self, FragmentMux, VideoConfig};
+use crate::media::{h264, hevc, rtp, Codec};
 use crate::rtsp::{RtspSession, Track};
 
 #[derive(Debug, Clone)]
@@ -285,10 +286,10 @@ async fn pump_inner(
         ..StreamMeta::default()
     };
     if let (Some(vps), Some(sps), Some(pps)) = (&video.vps, &video.sps, &video.pps) {
-        if let Ok(config) = hevc_config(vps, sps, pps) {
+        if let Ok(config) = VideoConfig::hevc(vps, sps, pps) {
             meta.width = Some(config.width);
             meta.height = Some(config.height);
-            meta.codec_string = Some(config.codec.clone());
+            meta.codec_string = Some(config.codec_string);
         }
     }
     hub.set_meta(key, meta.clone());
@@ -568,60 +569,106 @@ impl Gate {
     }
 }
 
-struct HevcConfig {
-    hvcc: Vec<u8>,
-    codec: String,
-    width: u32,
-    height: u32,
+pub struct HevcPassthrough {
+    config: Option<VideoConfig>,
+    mux: FragmentMux,
+    previous_pts: Option<u64>,
+    started: bool,
 }
 
-fn hevc_config(vps: &[u8], sps: &[u8], pps: &[u8]) -> Result<HevcConfig, String> {
-    let parsed = hevc::parse_sps(sps)?;
-    Ok(HevcConfig {
-        hvcc: hevc::build_hvcc(&parsed, vps, sps, pps),
-        codec: hevc::codec_string(&parsed.profile),
-        width: parsed.width,
-        height: parsed.height,
-    })
-}
-
-struct ParameterSets {
-    vps: Option<Vec<u8>>,
-    sps: Option<Vec<u8>>,
-    pps: Option<Vec<u8>>,
-}
-
-fn parameter_sets(track: &Track) -> ParameterSets {
-    ParameterSets {
-        vps: track.vps.clone(),
-        sps: track.sps.clone(),
-        pps: track.pps.clone(),
+impl Default for HevcPassthrough {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-fn ensure_parameter_sets(nals: &mut Vec<Vec<u8>>, sets: &ParameterSets) {
-    let has = |kind: u8| nals.iter().any(|nal| hevc::nal_type(nal) == Some(kind));
-    let mut prefix = Vec::new();
-    if !has(32) {
-        if let Some(vps) = &sets.vps {
-            prefix.push(vps.clone());
+impl HevcPassthrough {
+    pub fn new() -> Self {
+        Self {
+            config: None,
+            mux: FragmentMux::new(1),
+            previous_pts: None,
+            started: false,
         }
     }
-    if !has(33) {
-        if let Some(sps) = &sets.sps {
-            prefix.push(sps.clone());
+
+    pub fn with_config(config: VideoConfig) -> Self {
+        Self {
+            config: Some(config),
+            ..Self::new()
         }
     }
-    if !has(34) {
-        if let Some(pps) = &sets.pps {
-            prefix.push(pps.clone());
+
+    pub fn config(&self) -> Option<&VideoConfig> {
+        self.config.as_ref()
+    }
+
+    pub fn learn(&mut self, nals: &[Vec<u8>]) -> Option<&VideoConfig> {
+        if self.config.is_some() {
+            return None;
         }
+        let built = VideoConfig::from_nals(Codec::H265, nals).ok()?;
+        self.config = Some(built);
+        self.config.as_ref()
     }
-    if prefix.is_empty() {
-        return;
+
+    pub fn push(
+        &mut self,
+        nals: &[Vec<u8>],
+        keyframe: bool,
+        duration: u32,
+    ) -> Vec<(Fragment, bool)> {
+        if self.config.is_none() {
+            return Vec::new();
+        }
+        if keyframe {
+            self.started = true;
+        }
+        if !self.started {
+            return Vec::new();
+        }
+        let data = mux::sample_data(Codec::H265, nals);
+        if data.is_empty() {
+            return Vec::new();
+        }
+        self.mux
+            .push(Sample {
+                data,
+                duration,
+                keyframe,
+            })
+            .into_iter()
+            .map(|(segment, keyframe)| (Fragment::from(segment), keyframe))
+            .collect()
     }
-    prefix.extend(std::mem::take(nals));
-    *nals = prefix;
+
+    pub fn duration_since(&mut self, pts_us: u64) -> u32 {
+        let duration = match self.previous_pts {
+            Some(previous) => {
+                ((pts_us.saturating_sub(previous) * 90) / 1_000).clamp(1, 90_000) as u32
+            }
+            None => 3_600,
+        };
+        self.previous_pts = Some(pts_us);
+        duration
+    }
+
+    pub fn flush(&mut self) -> Option<(Fragment, bool)> {
+        self.mux
+            .flush()
+            .map(|(segment, keyframe)| (Fragment::from(segment), keyframe))
+    }
+}
+
+pub fn publish_config(hub: &LiveHub, key: &StreamKey, meta: &mut StreamMeta, config: &VideoConfig) {
+    meta.codec_string = Some(config.codec_string.clone());
+    meta.width = Some(config.width);
+    meta.height = Some(config.height);
+    hub.set_meta(key, meta.clone());
+    hub.publish_packet(
+        key,
+        LivePacket::init(Fragment::from(config.fragmented_init())),
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -637,18 +684,18 @@ async fn pump_passthrough(
     if !video.codec.eq_ignore_ascii_case("H265") {
         return Err(SourceError::PassthroughNeedsHevc(video.codec.clone()));
     }
-    let sets = parameter_sets(&video);
-    let mut config = match (&sets.vps, &sets.sps, &sets.pps) {
-        (Some(vps), Some(sps), Some(pps)) => hevc_config(vps, sps, pps).ok(),
-        _ => None,
+    let mut passthrough = match (&video.vps, &video.sps, &video.pps) {
+        (Some(vps), Some(sps), Some(pps)) => VideoConfig::hevc(vps, sps, pps)
+            .map(HevcPassthrough::with_config)
+            .unwrap_or_default(),
+        _ => HevcPassthrough::new(),
     };
     let _sender = hub.publisher(key.clone());
-    if let Some(config) = config.as_ref() {
-        hub.publish_packet(key, LivePacket::config(Fragment::from(config.hvcc.clone())));
+    if let Some(config) = passthrough.config() {
+        publish_config(hub, key, &mut meta, config);
     }
 
     let mut reader = hevc::Reader::new();
-    let mut gate = Gate::default();
     let mut units = 0u64;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
@@ -673,40 +720,24 @@ async fn pump_passthrough(
         let Some(unit) = reader.push(&parsed) else {
             continue;
         };
-        if config.is_none() {
-            if let (Some(vps), Some(sps), Some(pps)) = (
-                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(32)),
-                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(33)),
-                unit.nals.iter().find(|nal| hevc::nal_type(nal) == Some(34)),
-            ) {
-                if let Ok(built) = hevc_config(vps, sps, pps) {
-                    meta.width = Some(built.width);
-                    meta.height = Some(built.height);
-                    meta.codec_string = Some(built.codec.clone());
-                    hub.set_meta(key, meta.clone());
-                    hub.publish_packet(key, LivePacket::config(Fragment::from(built.hvcc.clone())));
-                    config = Some(built);
-                }
-            }
+        if let Some(config) = passthrough.learn(&unit.nals) {
+            let config = config.clone();
+            publish_config(hub, key, &mut meta, &config);
         }
-        if !gate.accept(unit.keyframe) {
+        let duration = passthrough.duration_since(unit.pts_us);
+        let fragments = passthrough.push(&unit.nals, unit.keyframe, duration);
+        if fragments.is_empty() {
             hub.note_drop(key);
             continue;
         }
-        let mut nals = unit.nals;
-        if unit.keyframe {
-            ensure_parameter_sets(&mut nals, &sets);
-        }
         units += 1;
-        hub.publish_packet(
-            key,
-            LivePacket::access_unit(
-                Fragment::from(hevc::avcc(&nals)),
-                unit.keyframe,
-                unit.pts_us,
-            ),
-        );
+        for (fragment, keyframe) in fragments {
+            hub.publish_media(key, fragment, keyframe);
+        }
     };
+    if let Some((fragment, keyframe)) = passthrough.flush() {
+        hub.publish_media(key, fragment, keyframe);
+    }
 
     tracing::info!(
         units,
@@ -849,22 +880,6 @@ mod tests {
         assert_eq!(transcode_path("AVC"), TranscodePath::NativeH264);
         assert_eq!(transcode_path("H265"), TranscodePath::Ffmpeg);
         assert_eq!(transcode_path("MJPEG"), TranscodePath::Ffmpeg);
-    }
-
-    #[test]
-    fn parameter_sets_are_prepended_when_the_stream_omits_them() {
-        let sets = ParameterSets {
-            vps: Some(vec![0x40, 0x01, 0x0c]),
-            sps: Some(vec![0x42, 0x01, 0x01]),
-            pps: Some(vec![0x44, 0x01, 0xc0]),
-        };
-        let mut nals = vec![vec![0x26, 0x01, 0xaf]];
-        ensure_parameter_sets(&mut nals, &sets);
-        assert_eq!(nals.len(), 4);
-        assert_eq!(hevc::nal_type(&nals[0]), Some(32));
-        assert_eq!(hevc::nal_type(&nals[1]), Some(33));
-        assert_eq!(hevc::nal_type(&nals[2]), Some(34));
-        assert_eq!(hevc::nal_type(&nals[3]), Some(19));
     }
 
     #[test]

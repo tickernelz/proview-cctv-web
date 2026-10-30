@@ -732,14 +732,13 @@ impl CloudProvider {
         stop: &std::sync::atomic::AtomicBool,
     ) -> Result<bool, ProviderError> {
         let mut connection = self.open_media(session, device, channel, high).await?;
-        hub.set_meta(
-            &key,
-            crate::live::StreamMeta {
-                video_codec: Some("H265".to_string()),
-                ..crate::live::StreamMeta::default()
-            },
-        );
+        let mut meta = crate::live::StreamMeta {
+            video_codec: Some("H265".to_string()),
+            ..crate::live::StreamMeta::default()
+        };
+        hub.set_meta(&key, meta.clone());
         let mut demux = crate::media::live::LiveDemux::new();
+        let mut primed: Vec<crate::media::live::LiveFrame> = Vec::new();
         let mut buffered: Vec<u8> = Vec::new();
         let mut parameter_sets: Vec<Vec<u8>> = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -752,11 +751,14 @@ impl CloudProvider {
             if header.id != crate::media::live::LIVE_MEDIA_ID {
                 continue;
             }
-            let bytes = demux.push(&payload);
-            if bytes.is_empty() {
+            let frames = demux.push_frames(&payload);
+            if frames.is_empty() {
                 continue;
             }
-            buffered.extend_from_slice(&bytes);
+            for frame in frames {
+                buffered.extend_from_slice(&frame.bytes);
+                primed.push(frame);
+            }
             parameter_sets = parameter_sets_of(&buffered);
         }
         if parameter_sets.len() < 3 {
@@ -764,8 +766,91 @@ impl CloudProvider {
                 "the cloud stream did not carry VPS, SPS and PPS within 10 s".to_string(),
             ));
         }
+        match key.mode {
+            crate::live::LiveMode::Passthrough => {
+                let config = crate::media::mux::VideoConfig::hevc(
+                    &parameter_sets[0],
+                    &parameter_sets[1],
+                    &parameter_sets[2],
+                )
+                .map_err(|error| {
+                    ProviderError::Upstream(format!("the cloud stream SPS did not parse: {error}"))
+                })?;
+                let _sender = hub.publisher(key.clone());
+                crate::source::publish_config(&hub, &key, &mut meta, &config);
+                let mut relay = PassthroughRelay::new(config);
+                for frame in primed {
+                    relay.frame(&hub, &key, frame);
+                }
+                loop {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let frame =
+                        tokio::time::timeout(std::time::Duration::from_secs(10), connection.recv())
+                            .await;
+                    match frame {
+                        Ok(Ok((header, payload))) => {
+                            if header.id != crate::media::live::LIVE_MEDIA_ID {
+                                continue;
+                            }
+                            for frame in demux.push_frames(&payload) {
+                                relay.frame(&hub, &key, frame);
+                            }
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(device, error = ?error, "cloud live source read failed");
+                            break;
+                        }
+                        Err(_) => {
+                            tracing::warn!(device, "cloud live source saw no frame for 10 s");
+                            break;
+                        }
+                    }
+                }
+                relay.finish(&hub, &key);
+                let stats = demux.stats();
+                tracing::info!(
+                    device,
+                    fragments = relay.fragments,
+                    keyframes = stats.keyframes,
+                    deltas = stats.deltas,
+                    dropped = stats.dropped,
+                    fps = relay.rate.per_second(),
+                    "cloud passthrough source closed"
+                );
+                Ok(true)
+            }
+            crate::live::LiveMode::Transcode => {
+                self.relay_transcode(
+                    &hub,
+                    &key,
+                    connection,
+                    demux,
+                    buffered,
+                    &parameter_sets,
+                    stop,
+                    device,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_transcode(
+        &self,
+        hub: &std::sync::Arc<crate::live::LiveHub>,
+        key: &crate::live::StreamKey,
+        mut connection: crate::dvrip::client::Connection,
+        mut demux: crate::media::live::LiveDemux,
+        mut buffered: Vec<u8>,
+        parameter_sets: &[Vec<u8>],
+        stop: &std::sync::atomic::AtomicBool,
+        device: &str,
+    ) -> Result<bool, ProviderError> {
         let (mut stdin, reader, child) =
-            crate::source::spawn_fmp4_publisher(&hub, &key, &parameter_sets)
+            crate::source::spawn_fmp4_publisher(hub, key, parameter_sets)
                 .await
                 .map_err(|error| ProviderError::Upstream(error.to_string()))?;
         let mut written = 0usize;
@@ -829,6 +914,134 @@ impl CloudProvider {
             "cloud live source closed"
         );
         Ok(true)
+    }
+}
+
+struct PassthroughRelay {
+    mux: crate::source::HevcPassthrough,
+    rate: crate::media::mux::LiveRate,
+    ticks: crate::media::mux::Ticks,
+    fragments: u64,
+}
+
+impl PassthroughRelay {
+    fn new(config: crate::media::mux::VideoConfig) -> Self {
+        Self {
+            mux: crate::source::HevcPassthrough::with_config(config),
+            rate: crate::media::mux::LiveRate::new(),
+            ticks: crate::media::mux::Ticks::default(),
+            fragments: 0,
+        }
+    }
+
+    fn frame(
+        &mut self,
+        hub: &crate::live::LiveHub,
+        key: &crate::live::StreamKey,
+        frame: crate::media::live::LiveFrame,
+    ) {
+        self.rate.observe(frame.keyframe, frame.stamp, frame.rate);
+        let nals = crate::media::mux::split_annexb(&frame.bytes);
+        let duration = self.ticks.next(self.rate.per_second());
+        for (fragment, keyframe) in self.mux.push(&nals, frame.keyframe, duration) {
+            self.fragments += 1;
+            hub.publish_media(key, fragment, keyframe);
+        }
+    }
+
+    fn finish(&mut self, hub: &crate::live::LiveHub, key: &crate::live::StreamKey) {
+        if let Some((fragment, keyframe)) = self.mux.flush() {
+            self.fragments += 1;
+            hub.publish_media(key, fragment, keyframe);
+        }
+    }
+}
+
+#[cfg(test)]
+mod passthrough_tests {
+    use super::PassthroughRelay;
+    use crate::live::{LiveHub, LiveMode, PacketKind, StreamKey, StreamMeta};
+    use crate::media::live::LiveFrame;
+    use crate::media::mux::VideoConfig;
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    fn sets() -> [Vec<u8>; 3] {
+        [
+            hex("40010c01ffff0160000003000003000003000003003f2c0c00000fa00000bb8140"),
+            hex("4201010160000003000003000003000003003fa001202002887f9cbabc12e080"),
+            hex("4401c0f3c0e14524"),
+        ]
+    }
+
+    fn frame(keyframe: bool) -> LiveFrame {
+        let mut bytes = Vec::new();
+        if keyframe {
+            for set in sets() {
+                bytes.extend_from_slice(&[0, 0, 0, 1]);
+                bytes.extend_from_slice(&set);
+            }
+        }
+        bytes.extend_from_slice(&[0, 0, 0, 1, if keyframe { 0x26 } else { 0x02 }, 0x01, 0xaf]);
+        LiveFrame {
+            keyframe,
+            rate: keyframe.then_some(12),
+            stamp: None,
+            bytes,
+        }
+    }
+
+    #[tokio::test]
+    async fn cloud_passthrough_publishes_hvc1_init_then_one_fragment_per_frame() {
+        let hub = LiveHub::new(8);
+        let key = StreamKey::cloud("account", "serial-one", 1, false, LiveMode::Passthrough);
+        let mut subscription = hub.subscribe(key.clone());
+        let [vps, sps, pps] = sets();
+        let config = VideoConfig::hevc(&vps, &sps, &pps).expect("config");
+        let mut meta = StreamMeta::default();
+        crate::source::publish_config(&hub, &key, &mut meta, &config);
+        let init = subscription
+            .init
+            .lock()
+            .expect("init")
+            .clone()
+            .expect("an init");
+        assert!(init.windows(4).any(|window| window == b"hvc1"));
+        let published = hub.meta(&key).expect("meta");
+        assert_eq!(published.codec_string.as_deref(), Some("hvc1.1.6.L63"));
+        assert_eq!(
+            (published.width, published.height),
+            (Some(2304), Some(2592))
+        );
+        let mut relay = PassthroughRelay::new(config);
+        relay.frame(&hub, &key, frame(false));
+        relay.frame(&hub, &key, frame(true));
+        relay.frame(&hub, &key, frame(false));
+        relay.finish(&hub, &key);
+        assert_eq!(relay.fragments, 2);
+        let first = subscription
+            .receiver
+            .recv()
+            .await
+            .expect("keyframe fragment");
+        assert_eq!(first.kind, PacketKind::Fragment);
+        assert!(first.keyframe);
+        assert!(first.bytes.windows(4).any(|window| window == b"moof"));
+        assert!(
+            !first
+                .bytes
+                .windows(sps.len())
+                .any(|window| window == sps.as_slice()),
+            "parameter sets live in the hvcC, not in the samples"
+        );
+        let second = subscription.receiver.recv().await.expect("delta fragment");
+        assert!(!second.keyframe);
+        hub.release(&key);
     }
 }
 
