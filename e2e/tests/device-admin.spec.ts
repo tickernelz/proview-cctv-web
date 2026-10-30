@@ -172,6 +172,32 @@ test('Settings closes the sheet, and signing out drops what was typed', async ({
   expect(typed).toBe(false)
 })
 
+test('a removal that took other cameras with it is a red alert naming them, not a tooltip', async ({ page }) => {
+  const sent: unknown[] = []
+  const [gate, porch] = ATTRIBUTES.devices
+  const message = `removed ${gate.nickname} (${gate.uuid}), but the vendor also removed ${porch.nickname} (${porch.uuid}), which was not asked for; add those cameras again from the phone app`
+  await page.route(/\/api\/cloud\/device-attributes/, (route) => route.fulfill({ json: ATTRIBUTES }))
+  await page.route(/\/api\/devices\/unbind/, (route) => {
+    sent.push(route.request().postDataJSON())
+    return route.fulfill({
+      json: { ok: true, status: 'removed', serial: gate.uuid, vendor_code: 2000, verified: true, also_missing: [{ uuid: porch.uuid, name: porch.nickname }], message },
+    })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  const sheet = await openSheet(page)
+  const submit = sheet.getByTestId('unbind-submit')
+  await expect(submit).toBeDisabled()
+  await sheet.getByTestId('unbind-confirm').fill('front gate')
+  await submit.click()
+  const status = page.getByTestId('device-admin-status')
+  await expect(status).toHaveText(message.charAt(0).toUpperCase() + message.slice(1))
+  await expect(status).toHaveAttribute('role', 'alert')
+  await expect(status).toHaveClass(/bad/)
+  await expect(status).toBeInViewport()
+  expect(sent).toEqual([{ sn: gate.uuid, confirm: 'front gate' }])
+})
+
 test('the three jobs sit on tabs, and the favourite switch is saved with the group', async ({ page }) => {
   const calls = await fakeCloud(page)
   await signIn(page, 'one')

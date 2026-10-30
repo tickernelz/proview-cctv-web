@@ -2,14 +2,16 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
-import { api } from '../lib/api'
+import { api, type ApiError } from '../lib/api'
 import { sessionLost } from '../app/shell'
+import { loadDevices } from '../app/view'
 import { addLauncher, live, menuOpen } from './store'
 
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
 type Attributes = { devices?: Device[]; groups?: string[] }
-type Reply = { message?: string; resolved?: string; materialised?: boolean; data?: any } | null
-type Action = 'rename' | 'save' | 'share' | 'check' | 'cancel' | 'accept' | 'password' | 'permit' | 'shares' | 'perm' | 'revoke' | 'qr' | 'answer'
+type Reply = { message?: string; resolved?: string; materialised?: boolean; verified?: boolean; also_missing?: { uuid: string; name: string }[]; data?: any } | null
+type Said = { text: string; kind: 'ok' | 'bad' }
+type Action = 'rename' | 'save' | 'share' | 'check' | 'cancel' | 'accept' | 'password' | 'permit' | 'shares' | 'perm' | 'revoke' | 'qr' | 'answer' | 'unbind'
 type Permission = { id: string; label: string; default: boolean }
 type ShareRow = { shareId: string; serial: string; account: string; userId: string; permissions: string[]; state: string; deviceName: string }
 type QrReply = { link: string; svg: string; expiresAt: number; lifetimeSecs: number; permissions: string }
@@ -28,6 +30,7 @@ const BUSY: Record<Action, string> = {
   revoke: 'Revoking…',
   qr: 'Making…',
   answer: 'Answering…',
+  unbind: 'Removing…',
 }
 
 const FALLBACK_PERMISSIONS: Permission[] = [
@@ -46,7 +49,7 @@ const rows: (HTMLButtonElement | null)[] = []
 const list = reactive({ phase: 'idle' as 'idle' | 'loading' | 'ok' | 'error', devices: [] as Device[], groups: [] as string[], error: '' })
 const chosen = ref('')
 const tab = ref('name')
-const form = reactive({ name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+const form = reactive({ name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '', unbindConfirm: '' })
 const transfer = reactive({ confirming: false })
 const action = reactive({ busy: '' as Action | '', message: '', kind: '' as '' | 'ok' | 'bad' })
 const permissions = ref<Permission[]>(FALLBACK_PERMISSIONS)
@@ -165,7 +168,7 @@ function say(message: string, kind: 'ok' | 'bad') {
   action.kind = kind
 }
 
-async function run(name: Action, work: (uuid: string) => Promise<string>, needsCamera = true) {
+async function run(name: Action, work: (uuid: string) => Promise<string | Said>, needsCamera = true) {
   if (action.busy) return
   const uuid = chosen.value
   if (needsCamera && !uuid) return say('Pick a camera first', 'bad')
@@ -175,7 +178,8 @@ async function run(name: Action, work: (uuid: string) => Promise<string>, needsC
   try {
     const result = await work(uuid)
     await refresh()
-    say(result, 'ok')
+    if (typeof result === 'string') say(result, 'ok')
+    else say(result.text, result.kind)
   } catch (error) {
     if (sessionLost(error)) return close(false)
     say(sentence(error), 'bad')
@@ -199,6 +203,24 @@ const save = () =>
     const group = await post('/api/cloud/device/group', { uuid, group: form.group.trim() })
     const favourite = await post('/api/cloud/device/favourite', { uuid, favourite: form.favourite })
     return sentence(favourite?.message || group?.message || 'saved on this server')
+  })
+
+const unbind = () =>
+  run('unbind', async (uuid) => {
+    const confirm = form.unbindConfirm.trim()
+    const name = device.value?.nickname || uuid
+    let reply: Reply
+    try {
+      reply = await post('/api/devices/unbind', { sn: uuid, confirm })
+    } catch (error) {
+      const code = (error as ApiError).code
+      if (code && error instanceof Error) error.message += ' (' + code + ')'
+      throw error
+    }
+    form.unbindConfirm = ''
+    await loadDevices()
+    if (reply?.also_missing?.length || reply?.verified === false) return { text: sentence(reply.message || 'the removal could not be verified'), kind: 'bad' }
+    return 'Removed ' + name + ' from this account'
   })
 
 const transferReason = computed(() => (!form.transferTo.trim() ? 'Type the account that will own this camera' : ''))
@@ -347,7 +369,7 @@ const makeQr = () =>
 const label = (name: Action, idle: string) => (action.busy === name ? BUSY[name] : idle)
 
 function forgetForm() {
-  Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
+  Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', transferTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '', unbindConfirm: '' })
   transfer.confirming = false
   Object.assign(action, { busy: '', message: '', kind: '' })
   Object.assign(list, { phase: 'idle', devices: [], groups: [], error: '' })
@@ -445,6 +467,17 @@ onMounted(() => {
             <label class="switchrow"><input id="device-admin-favourite" v-model="form.favourite" type="checkbox" role="switch">Favourite</label>
             <div class="sheet-actions">
               <button class="btn btn-line" type="button" :aria-busy="action.busy === 'save'" @click="save">{{ label('save', 'Save group and favourite') }}</button>
+            </div>
+          </section>
+          <section v-if="device" class="devices-group" data-testid="unbind">
+            <h3>Remove from this account</h3>
+            <label class="field">
+              <span class="lab">Type {{ device.nickname || device.uuid }} or its serial</span>
+              <input id="device-admin-unbind" v-model="form.unbindConfirm" type="text" autocomplete="off" data-testid="unbind-confirm" :placeholder="device.uuid">
+              <span class="hint">The cloud account stops listing this camera; add it again by serial to get it back.</span>
+            </label>
+            <div class="sheet-actions">
+              <button class="btn btn-line danger" type="button" data-testid="unbind-submit" :disabled="!form.unbindConfirm.trim()" :aria-busy="action.busy === 'unbind'" @click="unbind">{{ label('unbind', 'Remove from this account') }}</button>
             </div>
           </section>
         </TabsContent>
