@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
-import Icon from '../components/Icon.vue'
+import { IconButton } from '../components/ui/icon-button'
 import { api } from '../lib/api'
 
 type Month = { phase: 'loading' | 'ok' | 'error'; days: number[]; error: string }
@@ -72,7 +72,7 @@ function pick(date: string) {
   emit('close')
 }
 
-watch(() => [props.open, props.device, shown.value], () => load())
+watch(() => [props.open, props.device, shown.value], () => load(), { immediate: true })
 watch(
   () => props.day,
   (day) => {
@@ -82,13 +82,13 @@ watch(
 </script>
 
 <template>
-  <div v-if="open" id="pb-calendar" class="pb-calendar" role="dialog" aria-label="Days with recordings" data-testid="pb-calendar" @keydown.esc.stop.prevent="emit('close')">
+  <div class="pb-calendar" data-testid="pb-calendar">
     <div class="pb-cal-head">
-      <button class="iconbtn" type="button" aria-label="Previous month" title="Previous month" @click="move(-1)"><Icon name="chevron-left" /></button>
-      <strong class="pb-cal-month" data-testid="pb-cal-month">{{ label }}</strong>
-      <button class="iconbtn" type="button" aria-label="Next month" title="Next month" @click="move(1)"><Icon name="chevron-right" /></button>
+      <IconButton label="Previous month" icon="chevron-left" size="sm" @click="move(-1)" />
+      <strong class="pb-cal-month" data-testid="pb-cal-month" aria-live="polite">{{ label }}</strong>
+      <IconButton label="Next month" icon="chevron-right" size="sm" @click="move(1)" />
     </div>
-    <div class="pb-cal-grid" role="grid">
+    <div class="pb-cal-grid">
       <span v-for="name in WEEK" :key="name" class="pb-cal-week" aria-hidden="true">{{ name }}</span>
       <template v-for="cell in cells" :key="cell.key">
         <span v-if="!cell.day" aria-hidden="true" />

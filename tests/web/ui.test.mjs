@@ -421,66 +421,82 @@ const PLAYBACK_FILES = {
 };
 const clockAt = (fraction) => new Date(new Date(2026, 9, 24, 0, 0, 0).getTime() + fraction * 86400000).getTime();
 
-test('the playback overlay draws the whole day and plays the file under the pointer', async () => {
-  const page = await open({ intercept: PLAYBACK_FILES });
+const SOCKET_LOG =
+  "(() => { const Real = window.WebSocket; window.__playback = []; window.WebSocket = class extends Real { constructor(url, protocols) { super(url, protocols); if (String(url).includes('/ws/playback')) window.__playback.push(String(url)); } }; })()";
+const lastBegin = "(() => { const url = window.__playback[window.__playback.length - 1]; return url ? new URL(url).searchParams.get('begin') : ''; })()";
+
+async function pickDay(page, day) {
+  await page.evaluate("(() => { const input = document.getElementById('pb-day'); input.value = '" + day + "'; input.dispatchEvent(new Event('change')); })()");
+}
+
+async function clickTrack(page, x, y) {
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await page.call('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+  }
+}
+
+test('the timeline draws the whole day and plays the file under the pointer', async () => {
+  const page = await open({ intercept: PLAYBACK_FILES, init: [SOCKET_LOG] });
   try {
     await page.evaluate("document.getElementById('pb-open').click()");
-    await page.wait("!document.getElementById('pb').hidden", 'the playback overlay');
-    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-24'; day.dispatchEvent(new Event('change')); })()");
+    await page.wait("Boolean(document.getElementById('pb'))", 'the recordings sheet');
+    await pickDay(page, '2026-10-24');
     await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the 557 file rows');
-    assert.equal(await page.evaluate("document.querySelectorAll('.pb-seg').length"), 557);
     assert.match(await page.evaluate("document.getElementById('pb-summary').textContent"), /^557 files · /);
+    await page.evaluate("document.querySelector('#recordings-panel button[aria-label=\"Close\"]').click()");
+    await page.wait("!document.getElementById('pb')", 'the recordings sheet to close');
+    await page.wait("document.querySelectorAll('[data-testid=tl-bar]').length === 1", 'the day drawn as one recorded span');
+    const span = await page.evaluate("(() => { const bar = document.querySelector('[data-testid=tl-bar]').getBoundingClientRect(); const track = document.querySelector('[data-testid=tl-track]').getBoundingClientRect(); return { left: bar.left - track.left, right: track.right - bar.right, width: track.width }; })()");
+    assert.ok(span.left < 1 && span.right < 1, 'the 557 files cover the whole track: ' + JSON.stringify(span));
 
-    const box = await page.evaluate("(() => { const track = document.getElementById('pb-timeline').getBoundingClientRect(); return { left: track.left, top: track.top, width: track.width, height: track.height }; })()");
-    for (const fraction of [0.2, 0.63]) {
-      const hit = await page.evaluate(
-        "(() => {" +
-        " const box = document.getElementById('pb-timeline').getBoundingClientRect();" +
-        " const x = box.left + box.width * " + fraction + ";" +
-        " const y = box.top + box.height / 2;" +
-        " const node = document.elementFromPoint(x, y);" +
-        " node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));" +
-        " return node.id || node.className;" +
-        " })()",
-      );
-      assert.equal(hit, 'pb-timeline');
-      await page.wait("document.getElementById('pb-playing').textContent.indexOf(' \u2192 ') > 0", 'the playing label after a timeline click');
-      const label = await page.evaluate("document.getElementById('pb-playing').textContent");
-      const [begin, end] = label.split(' \u2192 ');
-      const at = clockAt(fraction);
-      assert.ok(Date.parse(begin.replace(' ', 'T')) <= at, 'the clip starts before the clicked time: ' + label);
-      assert.ok(Date.parse(end.replace(' ', 'T')) >= at, 'the clip ends after the clicked time: ' + label);
+    const box = await page.evaluate("(() => { const track = document.querySelector('[data-testid=tl-track]').getBoundingClientRect(); return { left: track.left, top: track.top, width: track.width, height: track.height }; })()");
+    const inside = (entry, ms) => Date.parse(entry.begin.replace(' ', 'T')) <= ms && Date.parse(entry.end.replace(' ', 'T')) > ms;
+    for (const [index, fraction] of [0.2, 0.63].entries()) {
+      const x = Math.round(box.left + box.width * fraction);
+      const at = clockAt((x - box.left) / box.width);
+      const file = PLAYBACK_DAY.find((entry) => inside(entry, at));
+      await clickTrack(page, x, box.top + box.height / 2);
+      await page.wait('window.__playback.length === ' + (index + 1), 'a playback socket for the click at ' + fraction);
+      const url = new URL(await page.evaluate('window.__playback[window.__playback.length - 1]'));
+      assert.equal(url.searchParams.get('mode'), 'time');
+      assert.equal(url.searchParams.get('device'), DEVICES[0].id);
+      const begin = Date.parse(url.searchParams.get('begin').replace(' ', 'T'));
+      assert.ok(begin <= at && at - begin < 1000, 'playback starts at the clicked second: ' + url.searchParams.get('begin') + ' for ' + new Date(at).toTimeString());
+      assert.ok(file && inside(file, begin), 'the file under the pointer plays: ' + (file && file.name) + ' from ' + url.searchParams.get('begin'));
+      await page.wait("document.querySelector('[data-testid=playback-controls]') !== null", 'the playback controls in the dock');
     }
 
-    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-23'; day.dispatchEvent(new Event('change')); })()");
+    await page.evaluate("document.querySelector('[data-testid=tl-recordings]').click()");
+    await page.wait("Boolean(document.getElementById('pb'))", 'the recordings sheet again');
+    await pickDay(page, '2026-10-23');
     await page.wait("document.querySelectorAll('.pb-row').length === 3", 'the sparse day');
-    const gapClick = await page.evaluate(
-      "(() => {" +
-      " const segments = document.querySelectorAll('.pb-seg');" +
-      " const first = segments[0].getBoundingClientRect();" +
-      " const x = first.right + 40;" +
-      " const y = first.top + first.height / 2;" +
-      " const node = document.elementFromPoint(x, y);" +
-      " node.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: x, clientY: y }));" +
-      " return node.id || '';" +
-      " })()",
-    );
-    assert.equal(gapClick, 'pb-timeline', 'the gap click reaches the strip');
-    const expected = GAP_DAY[1].begin + ' → ' + GAP_DAY[1].end;
-    await page.wait("document.getElementById('pb-playing').textContent === " + JSON.stringify(expected), 'a click in a gap to play the clip that follows it');
-    await page.evaluate("(() => { const day = document.getElementById('pb-day'); day.value = '2026-10-24'; day.dispatchEvent(new Event('change')); })()");
-    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the dense day again');
+    await page.evaluate("document.querySelector('#recordings-panel button[aria-label=\"Close\"]').click()");
+    await page.wait("document.querySelectorAll('[data-testid=tl-bar]').length === 3", 'three recorded spans');
+    const gap = await page.evaluate("(() => { const first = document.querySelector('[data-testid=tl-bar]').getBoundingClientRect(); return { x: first.right + 40, y: first.top + first.height / 2 }; })()");
+    const sockets = await page.evaluate('window.__playback.length');
+    await clickTrack(page, gap.x, gap.y);
+    await page.wait('window.__playback.length === ' + (sockets + 1), 'a playback socket for the gap click');
+    assert.equal(await page.evaluate(lastBegin), GAP_DAY[1].begin, 'a click in a gap plays the recording that follows it');
 
-    const before = await page.evaluate("document.getElementById('pb-day').value");
+    await page.evaluate("document.querySelector('[data-testid=tl-recordings]').click()");
+    await page.wait("Boolean(document.getElementById('pb'))", 'the recordings sheet once more');
+    await pickDay(page, '2026-10-24');
+    await page.wait("document.querySelectorAll('.pb-row').length === 557", 'the dense day again');
     await page.evaluate("document.querySelector('#pb button[aria-label=\"Next day\"]').click()");
     const loaded = "document.querySelector('[data-testid=pb-refresh]').getAttribute('aria-busy') !== 'true' && document.querySelectorAll('.pb-row').length === 557";
     await page.wait("document.getElementById('pb-day').value === '2026-10-25' && " + loaded, 'the next day rows');
     await page.evaluate("document.querySelector('#pb button[aria-label=\"Previous day\"]').click()");
     await page.wait("document.getElementById('pb-day').value === '2026-10-24' && " + loaded, 'the rows of the day before');
 
-    await page.evaluate("(() => { const row = Array.from(document.querySelectorAll('.pb-row')).find((node) => node.textContent.indexOf('00:00:00') === 0); row.click(); })()");
-    await page.wait("/00:00:00 → /.test(document.getElementById('pb-playing').textContent)", 'the first clip');
-    assert.equal(await page.evaluate("document.getElementById('pb-day').value"), before);
+    const opened = await page.evaluate('window.__playback.length');
+    await page.evaluate("(() => { const row = Array.from(document.querySelectorAll('.pb-row')).find((node) => node.textContent.trim().indexOf('00:00:00') === 0); row.click(); })()");
+    await page.wait('window.__playback.length === ' + (opened + 1), 'the first clip');
+    assert.equal(await page.evaluate(lastBegin), '2026-10-24 00:00:00');
+    await page.wait("!document.getElementById('pb')", 'the recordings sheet to close after the row click');
+    assert.match(await page.evaluate("document.querySelector('[data-testid=tl-day]').getAttribute('aria-label')"), /24 Oct/, 'the day stays the same after a row click');
+    await page.evaluate("document.querySelector('[data-testid=tl-recordings]').click()");
+    await page.wait("Boolean(document.getElementById('pb-day'))", 'the recordings sheet to reopen');
+    assert.equal(await page.evaluate("document.getElementById('pb-day').value"), '2026-10-24');
   } finally {
     await page.close();
   }

@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import Icon from '../components/Icon.vue'
 import AlarmStop from './AlarmStop.vue'
 import MoreMenu from './stage/MoreMenu.vue'
+import PlaybackControls from './timeline/PlaybackControls.vue'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -90,6 +91,8 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       </span>
       <span class="dk-label">Talk</span>
     </button>
+    <PlaybackControls v-if="playback" />
+    <template v-else>
     <button id="mute" data-testid="ctl-mute" class="dk" type="button" aria-keyshortcuts="M" :aria-pressed="!live.muted" :data-sound="live.sound" :title="soundTitle" @click="clickSound">
       <Icon :name="live.muted ? 'speaker-off' : 'speaker'" /><span class="dk-label" data-testid="sound-label">{{ soundLabel }}</span>
     </button>
@@ -111,6 +114,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
     >
       <Icon name="record" /><span :class="['dk-label', { mono: live.record.on }]">{{ live.record.on ? live.record.elapsed : 'Record' }}</span>
     </button>
+    </template>
     <button
       id="move"
       data-testid="ctl-move"
@@ -169,7 +173,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
         <p class="menu-note">{{ live.lens.note }}</p>
       </DropdownMenuContent>
     </DropdownMenu>
-    <DropdownMenu :modal="false">
+    <DropdownMenu v-if="!playback" :modal="false">
       <DropdownMenuTrigger id="quality-pick" data-testid="quality-pick" class="dk" aria-keyshortcuts="Q" title="Quality (Q)">
         <span class="dk-label">Quality</span> <span class="dk-q" data-testid="quality-value">{{ quality }}</span>
       </DropdownMenuTrigger>

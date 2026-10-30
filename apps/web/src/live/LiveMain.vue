@@ -9,6 +9,7 @@ import DockStatus from './stage/DockStatus.vue'
 import PipInset from './stage/PipInset.vue'
 import PtzPad from './stage/PtzPad.vue'
 import StatusPlate from './stage/StatusPlate.vue'
+import Timeline from './timeline/Timeline.vue'
 import { frameFit } from './stage/pip'
 import { padSheet } from './stage/sheet'
 import { aimAt } from '../app/controls'
@@ -108,6 +109,7 @@ onBeforeUnmount(() => {
     <DockStatus />
     <PtzPad v-if="padSheet.on" mode="sheet" />
     <LiveBar />
+    <Timeline />
   </section>
   <section id="grid" data-testid="grid" class="gridview" aria-label="Every camera" :hidden="!live.panes.grid"><GridView /></section>
   <FisheyeOverlay />
