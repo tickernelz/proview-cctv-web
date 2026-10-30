@@ -208,6 +208,13 @@ pub struct BindBody {
 }
 
 #[derive(Deserialize)]
+pub struct UnbindBody {
+    pub sn: String,
+    #[serde(default)]
+    pub confirm: String,
+}
+
+#[derive(Deserialize)]
 pub struct QrBody {
     pub payload: String,
     #[serde(default)]
@@ -361,21 +368,52 @@ async fn bind_by_qr(
     bind(request, &session, cfg).await
 }
 
+fn confirms(typed: &str, serial: &str, nickname: &str) -> bool {
+    let typed = typed.trim().to_lowercase();
+    !typed.is_empty()
+        && (typed == serial.trim().to_lowercase()
+            || (!nickname.trim().is_empty() && typed == nickname.trim().to_lowercase()))
+}
+
 #[post("/devices/unbind", data = "<body>")]
 async fn unbind_by_serial(
-    body: Json<BindBody>,
+    body: Json<UnbindBody>,
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<BindReply>, Failure> {
     let (_, session) = live_session(store, cookies)?;
-    let serial = serial_or_fail(&body.sn)?;
+    let requested = serial_or_fail(&body.sn)?;
     let token = session.token.as_deref().ok_or_else(|| {
         fail(
             Status::Unauthorized,
             "session carries no cloud token; sign in again",
         )
     })?;
+    let devices = super::cloud_clips::envelope_for(cfg)
+        .device_list(token)
+        .await
+        .map_err(|error| cloud_failure(&error))?;
+    let (serial, nickname) = match devices
+        .iter()
+        .find(|device| device.uuid.trim().eq_ignore_ascii_case(&requested))
+    {
+        Some(device) => (device.uuid.trim().to_string(), device.nickname.clone()),
+        None => {
+            return Err(fail_code(
+                Status::Conflict,
+                "not_on_account",
+                format!("{requested} is not in this account's device list; nothing was removed"),
+            ))
+        }
+    };
+    if !confirms(&body.confirm, &serial, &nickname) {
+        return Err(fail_code(
+            Status::Conflict,
+            "confirm_mismatch",
+            "type the camera's name or serial exactly to confirm the removal; nothing was removed",
+        ));
+    }
     let client = BindClient::new(Identity::resolve(), cfg.cloud_base.clone());
     let code = client
         .remove_device(token, &serial)

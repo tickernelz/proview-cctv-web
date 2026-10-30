@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::sync::Once;
+use std::sync::{Arc, Mutex, Once};
 
 use proview_core::cloud::{body_key, open, seal};
 use proview_core::config::{Config, ProviderKind};
@@ -113,9 +113,27 @@ fn content_length(head: &str) -> usize {
         .unwrap_or(0)
 }
 
+type Calls = Arc<Mutex<Vec<(String, String)>>>;
+
 fn cloud_stub() -> String {
+    cloud_stub_with(false).0
+}
+
+fn sent(calls: &Calls, method: &str) -> Vec<String> {
+    calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|(name, _)| name == method)
+        .map(|(_, form)| form.clone())
+        .collect()
+}
+
+fn cloud_stub_with(list_fails: bool) -> (String, Calls) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("stub listener");
     let address = listener.local_addr().expect("stub address");
+    let calls: Calls = Arc::default();
+    let seen = calls.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let mut stream = match stream {
@@ -162,7 +180,14 @@ fn cloud_stub() -> String {
             } else {
                 open(&key, &body).unwrap_or_default()
             };
-            let payload = reply(&method, &form).to_string();
+            seen.lock()
+                .expect("calls")
+                .push((method.clone(), form.clone()));
+            let payload = if list_fails && method == "msdlistCode" {
+                json!({ "code": 5000, "msg": "SERVER_FAIL", "data": "" }).to_string()
+            } else {
+                reply(&method, &form).to_string()
+            };
             let sealed = seal(&key, &payload).unwrap_or(payload);
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -173,7 +198,7 @@ fn cloud_stub() -> String {
             let _ = stream.flush();
         }
     });
-    format!("http://{address}")
+    (format!("http://{address}"), calls)
 }
 
 struct Browser {
@@ -586,11 +611,126 @@ fn the_bind_routes_report_the_vendor_codes_they_received() {
             .post(
                 &running.base,
                 "/api/devices/unbind",
-                json!({ "sn": "AASN000000000002" }),
+                json!({ "sn": "AASN000000000001", "confirm": "Gate" }),
             )
             .await;
         assert_eq!(status, 200);
         assert_eq!(reply["status"], json!("removed"));
         running.shutdown.notify();
+    });
+}
+
+async fn unbind(cloud: &str, name: &str, body: Value) -> (u16, Value) {
+    let dir = data_dir(name);
+    let running = start(&dir, cloud).await;
+    let mut browser = Browser::new();
+    assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+    let answer = browser
+        .post(&running.base, "/api/devices/unbind", body)
+        .await;
+    running.shutdown.notify();
+    answer
+}
+
+#[test]
+fn unbind_refuses_a_serial_that_is_not_on_the_account() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(false);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-absent",
+            json!({ "sn": "AASN000000000999", "confirm": "AASN000000000999" }),
+        )
+        .await;
+        assert_eq!(status, 409);
+        assert_eq!(reply["code"], json!("not_on_account"));
+        assert!(reply["message"]
+            .as_str()
+            .unwrap()
+            .contains("AASN000000000999"));
+        assert!(!sent(&calls, "msdlistCode").is_empty());
+        assert!(sent(&calls, "mdrm").is_empty());
+    });
+}
+
+#[test]
+fn unbind_refuses_a_missing_or_wrong_confirmation() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(false);
+        for (name, body) in [
+            ("unbind-missing", json!({ "sn": "AASN000000000001" })),
+            (
+                "unbind-blank",
+                json!({ "sn": "AASN000000000001", "confirm": "  " }),
+            ),
+            (
+                "unbind-wrong",
+                json!({ "sn": "AASN000000000001", "confirm": "Garage" }),
+            ),
+            (
+                "unbind-partial",
+                json!({ "sn": "AASN000000000001", "confirm": "AASN00000000000" }),
+            ),
+        ] {
+            let (status, reply) = unbind(&cloud, name, body).await;
+            assert_eq!(status, 409, "{name}");
+            assert_eq!(reply["code"], json!("confirm_mismatch"), "{name}");
+        }
+        assert!(sent(&calls, "mdrm").is_empty());
+    });
+}
+
+#[test]
+fn unbind_confirmed_by_serial_sends_one_mdrm_for_that_serial() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(false);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-serial",
+            json!({ "sn": "AASN000000000001", "confirm": " aasn000000000001 " }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["status"], json!("removed"));
+        assert_eq!(
+            sent(&calls, "mdrm"),
+            vec!["uuid=AASN000000000001".to_string()]
+        );
+    });
+}
+
+#[test]
+fn unbind_confirmed_by_nickname_sends_one_mdrm_for_the_listed_serial() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(false);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-nickname",
+            json!({ "sn": "aasn000000000001", "confirm": "gate" }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["serial"], json!("AASN000000000001"));
+        assert_eq!(
+            sent(&calls, "mdrm"),
+            vec!["uuid=AASN000000000001".to_string()]
+        );
+    });
+}
+
+#[test]
+fn unbind_refuses_when_the_device_list_cannot_be_read() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(true);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-unread",
+            json!({ "sn": "AASN000000000001", "confirm": "AASN000000000001" }),
+        )
+        .await;
+        assert_eq!(status, 502);
+        assert_eq!(reply["ok"], json!(false));
+        assert!(!sent(&calls, "msdlistCode").is_empty());
+        assert!(sent(&calls, "mdrm").is_empty());
     });
 }
