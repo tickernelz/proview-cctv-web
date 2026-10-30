@@ -117,6 +117,10 @@ pub fn parse_files(reply: &Value) -> Vec<PlaybackFile> {
 }
 
 pub fn file_query_body(channel: u8, begin: &str, end: &str, kind: &str) -> Value {
+    event_query_body(channel, begin, end, kind, "*")
+}
+
+pub fn event_query_body(channel: u8, begin: &str, end: &str, kind: &str, event: &str) -> Value {
     json!({
         "Name": "OPFileQuery",
         "OPFileQuery": {
@@ -124,7 +128,7 @@ pub fn file_query_body(channel: u8, begin: &str, end: &str, kind: &str) -> Value
             "Channel": channel,
             "DriverTypeMask": "0x0000FFFF",
             "EndTime": end,
-            "Event": "*",
+            "Event": event,
             "StreamType": "0x00000000",
             "Type": kind,
         },
@@ -271,7 +275,11 @@ impl Session {
         Ok(self.connection.recv().await?)
     }
 
-    async fn send_json_plain(&mut self, id: u16, body: &Value) -> Result<(), PlaybackError> {
+    pub(crate) async fn send_json_plain(
+        &mut self,
+        id: u16,
+        body: &Value,
+    ) -> Result<(), PlaybackError> {
         let mut payload = serde_json::to_vec(body)
             .map_err(|error| PlaybackError::Malformed(error.to_string()))?;
         payload.push(b'\n');
@@ -327,12 +335,26 @@ impl Session {
         end: &str,
         kind: &str,
     ) -> Result<Vec<PlaybackFile>, PlaybackError> {
+        self.files_of(channel, begin, end, kind, "*").await
+    }
+
+    pub async fn files_of(
+        &mut self,
+        channel: u8,
+        begin: &str,
+        end: &str,
+        kind: &str,
+        event: &str,
+    ) -> Result<Vec<PlaybackFile>, PlaybackError> {
         let mut collected: Vec<PlaybackFile> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut cursor = begin.to_string();
         loop {
             let reply = self
-                .request(FILE_QUERY, file_query_body(channel, &cursor, end, kind))
+                .request(
+                    FILE_QUERY,
+                    event_query_body(channel, &cursor, end, kind, event),
+                )
                 .await?;
             if let Some(ret) = reply.get("Ret").and_then(Value::as_i64) {
                 if ret != 100 && ret != 150 {
@@ -587,7 +609,7 @@ impl MediaReader {
             RecordKind::Key => 16,
             RecordKind::Delta => 8,
         };
-        let bytes = if kind == RecordKind::Info || kind == RecordKind::Pad {
+        let bytes = if kind == RecordKind::Info {
             Vec::new()
         } else {
             record.split_off(header)
@@ -894,7 +916,7 @@ mod tests {
         reader.push(&pad);
         let first = reader.next_record().expect("record");
         assert_eq!(first.kind, RecordKind::Pad);
-        assert!(first.bytes.is_empty());
+        assert_eq!(first.bytes, vec![0xd5u8; 320]);
         assert_eq!(reader.buffered(), 0);
     }
 

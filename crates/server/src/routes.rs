@@ -23,6 +23,9 @@ pub mod cloud_bind;
 #[path = "routes/playback.rs"]
 pub mod playback;
 
+#[path = "routes/playback_plus.rs"]
+pub mod playback_plus;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -79,6 +82,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(device_admin::routes())
     .chain(apmode::routes())
     .chain(settings_write::routes())
+    .chain(playback_plus::routes())
     .chain(detect::routes())
     .collect()
 }
