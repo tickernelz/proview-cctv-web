@@ -144,8 +144,7 @@ export function ago(entry: Alarm) {
   if (minutes < 60) return minutes + ' min ago'
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return hours + ' h' + (minutes % 60 ? ' ' + (minutes % 60) + ' min' : '') + ' ago'
-  const days = Math.floor(hours / 24)
-  return days + (days === 1 ? ' day ago' : ' days ago')
+  return dayLabel(dayOfEntry(entry))
 }
 
 export function dayLabel(day: string) {
