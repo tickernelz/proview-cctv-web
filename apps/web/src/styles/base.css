@@ -72,7 +72,7 @@
   .menu-row:disabled { opacity: 0.5; cursor: not-allowed; }
   .menu-sep { height: 1px; background: var(--line-soft); margin: var(--s2) var(--s1); }
   .menu-note { font-size: var(--t-13); color: var(--ink-3); padding: var(--s2) var(--s3); line-height: 1.45; max-width: 36ch; }
-  .sheet { width: 380px; max-height: calc(100vh - var(--dock) - var(--below, 0px) - var(--s4) - var(--s2)); max-height: calc(100dvh - var(--dock) - var(--below, 0px) - var(--s4) - var(--s2)); inset: auto var(--s5) calc(var(--dock) + var(--below, 0px) + var(--s4)) auto; padding: var(--s3) var(--s4); }
+  .sheet { width: 380px; max-height: calc(100vh - var(--dock-clear) - var(--s4) - var(--s2)); max-height: calc(100dvh - var(--dock-clear) - var(--s4) - var(--s2)); inset: auto var(--s5) calc(var(--dock-clear) + var(--s4)) auto; padding: var(--s3) var(--s4); }
   .sheet-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s2); }
   .sheet-h h2 { font-size: var(--t-15); font-weight: 500; }
   .tabs-list { display: flex; gap: var(--s1); padding: var(--s1); margin-bottom: var(--s4); border-radius: var(--r-md); background: var(--bg-3); }
@@ -134,6 +134,6 @@
   .btn:active:not(:disabled), .iconbtn:active:not(:disabled), .menu-row:active { transform: translateY(1px); }
   .btn-line.danger { color: var(--bad); }
   @media (max-width: 480px) {
-    .sheet { inset: auto var(--s3) calc(var(--dock) + var(--below, 0px) + var(--s2)) var(--s3); width: auto; min-width: 0; max-width: none; max-height: calc(100vh - var(--dock) - var(--below, 0px) - var(--s2) - var(--s2)); max-height: calc(100dvh - var(--dock) - var(--below, 0px) - var(--s2) - var(--s2)); }
+    .sheet { inset: auto var(--s3) calc(var(--dock-clear) + var(--s2)) var(--s3); width: auto; min-width: 0; max-width: none; max-height: calc(100vh - var(--dock-clear) - var(--s2) - var(--s2)); max-height: calc(100dvh - var(--dock-clear) - var(--s2) - var(--s2)); }
   }
 }

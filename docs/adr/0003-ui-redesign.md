@@ -127,8 +127,7 @@ Tokens, sizes, breakpoints and the IA are in `DESIGN.md` version 3.
   store, app state modules, API client, `tools/contrast.py`, shared e2e helpers
   and layout specs, CI, package files) change only through the integrator. Five
   slices then run in parallel with disjoint files: live-stage, timeline-playback,
-  events, settings, signin-states-grid-mobile. The exact map is in `DESIGN.md`,
-  "File ownership for the next phase".
+  events, settings, signin-states-grid-mobile.
 - **Baselines regenerated in the CI container.** Every screenshot changes. The
   integrator regenerates the visual, responsive and touch snapshots once, inside
   the image the `e2e` job runs in (`mcr.microsoft.com/playwright:v1.64.1-noble`,

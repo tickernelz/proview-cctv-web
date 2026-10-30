@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { test, expect } from '@playwright/test'
-import { playing, signIn } from './app'
+import { eventsPanelClosed, playing, signIn } from './app'
 
 test('the live tile shows a decoded frame from the camera', async ({ page }) => {
   await signIn(page, 'one')
@@ -97,6 +97,53 @@ test('on a phone the dock is one row and More carries Record, Quality, Full scre
   await expect(page.getByTestId('playback')).toBeHidden()
   await expect(page.getByTestId('ctl-more')).toBeFocused()
 })
+
+for (const size of [
+  { width: 1024, height: 768 },
+  { width: 1440, height: 900 },
+]) {
+  test(`Devices, Recordings and the Events overlay leave the whole dock reachable at ${size.width}x${size.height}`, async ({ page }) => {
+    await page.setViewportSize(size)
+    await page.route(/\/api\/cloud\/device-attributes/, (route) => route.fulfill({ json: { ok: true, groups: [], devices: [] } }))
+    await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: { entries: [], total: 0, pollSeconds: 60 } }))
+    await eventsPanelClosed(page)
+    await signIn(page, 'one')
+    await playing(page)
+    const dock = page.getByTestId('live-controls')
+    const reachable = () =>
+      dock.evaluate((node) =>
+        [...node.querySelectorAll(':scope > button, :scope > [aria-haspopup]')]
+          .filter((button) => button.getClientRects().length)
+          .flatMap((button) => {
+            const box = button.getBoundingClientRect()
+            const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+            const name = button.id + (box.right > innerWidth ? ' cut at the edge' : '')
+            return button.contains(hit) && box.right <= innerWidth ? [] : [name]
+          }),
+      )
+    const sheets: [string, () => Promise<unknown>][] = [
+      ['device-admin', async () => {
+        await page.getByTestId('ctl-more').click()
+        await page.getByTestId('more-manage-cameras').click()
+      }],
+      ['recordings-panel', () => page.getByTestId('tl-recordings').click()],
+      ['alarm-center', () => page.getByTestId('alarm-bell').click()],
+    ]
+    for (const [id, open] of sheets) {
+      if (id === 'alarm-center' && size.width >= 1280) continue
+      await open()
+      await expect(page.getByTestId(id)).toBeVisible()
+      expect(await reachable(), id).toEqual([])
+      await page.getByTestId('ctl-more').click()
+      await expect(page.getByTestId('more-menu')).toBeVisible()
+      await page.keyboard.press('Escape')
+      await expect(page.getByTestId('more-menu')).toBeHidden()
+      if (id === 'alarm-center') await page.getByTestId('alarm-bell').click()
+      else await page.keyboard.press('Escape')
+      await expect(page.getByTestId(id)).toBeHidden()
+    }
+  })
+}
 
 test('Snapshot says where the picture went', async ({ page }) => {
   await signIn(page, 'one')

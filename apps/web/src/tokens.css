@@ -109,6 +109,7 @@
   --panel: 320px;
   --rail: 240px;
   --tabbar: 56px;
+  --dock-clear: calc(var(--dock) + var(--below, 0px));
   --chip: 24px;
   --hit: 36px;
 }

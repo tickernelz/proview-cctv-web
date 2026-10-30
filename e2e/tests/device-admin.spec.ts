@@ -246,8 +246,7 @@ test('Devices, Cloud and the Events overlay share one corner and replace each ot
   await signIn(page, 'one')
   await playing(page)
   const fromMore = async (item: string) => {
-    await page.getByTestId('ctl-more').focus()
-    await page.keyboard.press('Enter')
+    await page.getByTestId('ctl-more').click()
     await page.getByTestId(item).click()
   }
   const sheet = await openSheet(page)
