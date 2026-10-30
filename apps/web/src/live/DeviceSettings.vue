@@ -2,6 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
+import Icon from '../components/Icon.vue'
+import { settingsUi } from '../settings/ui'
 import CardFormat from './CardFormat.vue'
 import OsdSettings, { type OsdState, type TitleDot } from './OsdSettings.vue'
 import RecordSettings, { type RecordState } from './RecordSettings.vue'
@@ -370,19 +372,6 @@ function label(job: Exclude<Job, ''>, idle: string) {
   return busy.value === job ? WORKING[job] : idle
 }
 
-function open() {
-  const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
-  if (typeof page.openSettings === 'function') page.openSettings('device')
-  else if (typeof page.showSection === 'function') page.showSection('device', true)
-  else location.hash = '#/settings/device'
-}
-
-function openFromNav() {
-  const shown = props.shown
-  open()
-  if (shown) load()
-}
-
 watch(
   () => props.shown,
   (shown) => {
@@ -390,225 +379,322 @@ watch(
   },
 )
 
-
+watch(
+  () => settingsUi.reload.device,
+  () => {
+    if (props.shown) load()
+  },
+)
 </script>
 
 <template>
-  <Teleport defer to=".set-nav">
-    <a href="#/settings/device" data-section="device" data-testid="device-settings-link" @click.prevent="openFromNav">Device settings</a>
+  <header class="set-head">
+    <div>
+      <h2 id="h-device" class="set-h" tabindex="-1">Video &amp; storage</h2>
+      <p class="set-sub">Encoder, recording, on-screen text, network and storage as the camera holds them. Each card writes one block and reads it back.</p>
+    </div>
+  </header>
+  <Teleport defer to="#savebar-note">
+    <p v-show="shown" id="device-status" data-testid="device-status" :class="['set-status', { 'warn-text': status.bad }]" role="status">
+      <Icon v-if="status.bad" name="warning" small /><span>{{ status.text }}</span>
+    </p>
   </Teleport>
-  <h2 id="h-device" class="set-h" tabindex="-1">Device settings</h2>
-  <p class="set-sub">
-    Encoder, recording, on-screen text, network and storage as the camera holds them now, read over DVRIP through the cloud relay or the local
-    network. Every write saves a copy of the block first, reads it back, and
-    puts the copy back when the device returns a different value.
-  </p>
-  <p id="device-status" :class="['hint', { 'warn-text': status.bad }]" data-testid="device-status" role="status">{{ status.text }}</p>
-  <div id="device-report" data-testid="device-report">
-    <div v-for="report in reports" :key="report.block + report.backup" class="row">
-      <div class="lab">{{ report.block }}</div>
-      <div class="ctl-col">
-        <p class="hint">
-          {{ (report.reverted ? 'The device returned a different value, so the saved copy was put back. ' : 'Read back and kept. ') + 'Copy: ' + report.backup }}
-        </p>
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th scope="col">Field</th>
-              <th scope="col">Before</th>
-              <th scope="col">Asked for</th>
-              <th scope="col">After</th>
-              <th scope="col">State</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="field in report.fields" :key="'f' + field.field">
-              <th scope="row">{{ field.field }}</th>
-              <td class="code">{{ JSON.stringify(field.before) }}</td>
-              <td class="code">{{ JSON.stringify(field.requested) }}</td>
-              <td class="code">{{ JSON.stringify(field.after) }}</td>
-              <td>{{ field.matches ? 'matches' : 'differs' }}</td>
-            </tr>
-            <template v-if="report.restored.length">
-              <tr><th colspan="5" scope="row">put back from the saved copy</th></tr>
-              <tr v-for="field in report.restored" :key="'r' + field.field">
-                <th scope="row">{{ field.field }}</th>
-                <td class="code">{{ JSON.stringify(field.before) }}</td>
-                <td class="code">{{ JSON.stringify(field.requested) }}</td>
-                <td class="code">{{ JSON.stringify(field.after) }}</td>
-                <td>{{ field.matches ? 'restored' : 'still differs' }}</td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
+  <div class="set-cols">
+    <div class="set-col">
+      <div id="device-encode" class="dev-group" data-testid="device-encode">
+        <div v-if="encode.error" class="set-card">
+          <div class="set-card-h"><div><h3 class="set-card-t">Encoder</h3></div></div>
+          <p class="set-status warn-text"><Icon name="warning" small /><span>{{ encode.error }}</span></p>
+        </div>
+        <template v-else-if="encode.data">
+          <div v-for="stream in STREAMS" :key="stream" class="set-card">
+            <div class="set-card-h">
+              <div>
+                <h3 class="set-card-t">{{ stream === 'main' ? 'Main stream' : 'Extra stream' }}</h3>
+                <p class="set-card-d">{{ formatLine(encode.data[stream] || {}) }}</p>
+              </div>
+            </div>
+            <div class="row">
+              <div class="lab">
+                <label :for="'device-' + stream + '-fps'">Frames per second</label>
+                <span v-if="fpsCeiling(stream) !== null" class="hint">Up to {{ fpsCeiling(stream) }} at {{ encodeForm[stream].resolution || 'this resolution' }}, from EncodeCapability.</span>
+              </div>
+              <div class="ctl-col">
+                <input :id="'device-' + stream + '-fps'" v-model="encodeForm[stream].fps" type="number" step="1" min="0" :max="fpsCeiling(stream) ?? undefined">
+              </div>
+            </div>
+            <div class="row">
+              <div class="lab"><label :for="'device-' + stream + '-bitrate'">Bitrate (kbps)</label></div>
+              <div class="ctl-col">
+                <input :id="'device-' + stream + '-bitrate'" v-model="encodeForm[stream].bitrate" type="number" step="1" min="0" :max="encode.capability?.max_bitrate ?? undefined">
+              </div>
+            </div>
+            <div class="row">
+              <div class="lab"><label :for="'device-' + stream + '-gop'">Keyframe interval</label></div>
+              <div class="ctl-col">
+                <input :id="'device-' + stream + '-gop'" v-model="encodeForm[stream].gop" type="number" step="1" min="0">
+              </div>
+            </div>
+            <div class="row">
+              <div class="lab">
+                <label :for="'device-' + stream + '-resolution'">Resolution</label>
+                <span class="hint">{{ limitsFor(stream)?.resolutions.length ? 'The sizes EncodeCapability allows for this stream.' : 'The device token, for example 3072*2048.' }}</span>
+              </div>
+              <div class="ctl-col">
+                <select v-if="limitsFor(stream)?.resolutions.length" :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution">
+                  <option v-for="name in limitsFor(stream)?.resolutions" :key="name" :value="name">{{ name }}</option>
+                </select>
+                <input v-else :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution" type="text" placeholder="3072*2048">
+              </div>
+            </div>
+            <div class="set-card-f">
+              <button
+                class="btn btn-fill"
+                type="button"
+                :data-testid="'device-save-' + stream"
+                :aria-busy="busy === stream"
+                @click="saveEncode(stream)"
+              >{{ label(stream, 'Save ' + stream) }}</button>
+            </div>
+          </div>
+        </template>
+      </div>
+      <div v-if="encode.data" id="device-smart" class="set-card" data-testid="device-smart">
+        <div class="set-card-h">
+          <div>
+            <h3 class="set-card-t">Smart encoding</h3>
+            <p class="set-card-d">{{ encode.smart ? 'Now: ' + (SMART_LABEL[encode.smart.mode] || encode.smart.mode) : 'Off' }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lab">
+            <label for="device-smart-mode">Mode</label>
+            <span v-if="!encode.smart" class="hint">{{ NO_SMART }}</span>
+            <span v-else-if="encode.smart.modes.length < 2" class="hint">Encode264ability reports neither H.264+ nor H.265+ for this camera, so only Off is offered.</span>
+          </div>
+          <div class="ctl-col">
+            <select id="device-smart-mode" v-model="smartForm" :disabled="!encode.smart || encode.smart.modes.length < 2">
+              <option v-for="mode in encode.smart ? encode.smart.modes : ['off']" :key="mode" :value="mode">{{ SMART_LABEL[mode] || mode }}</option>
+            </select>
+          </div>
+        </div>
+        <div class="set-card-f">
+          <button class="btn btn-fill" type="button" data-testid="device-save-smart" :aria-busy="busy === 'smart'" :disabled="!encode.smart || encode.smart.modes.length < 2" @click="saveSmart">
+            {{ label('smart', 'Save smart encoding') }}
+          </button>
+        </div>
+      </div>
+      <div id="device-record" class="dev-group" data-testid="device-record">
+        <div v-if="record.error" class="set-card">
+          <div class="set-card-h"><div><h3 class="set-card-t">Recording</h3></div></div>
+          <p class="set-status warn-text"><Icon name="warning" small /><span>{{ record.error }}</span></p>
+        </div>
+        <RecordSettings v-else-if="record.data" :record="record.data" :busy="busy === 'record'" :label="label('record', 'Save recording')" @save="saveRecord" />
+      </div>
+      <div id="device-osd-block" class="dev-group">
+        <div v-if="osd.error" class="set-card">
+          <div class="set-card-h"><div><h3 class="set-card-t">On-screen text</h3></div></div>
+          <p class="set-status warn-text"><Icon name="warning" small /><span>{{ osd.error }}</span></p>
+        </div>
+        <OsdSettings v-else-if="osd.data" :osd="osd.data" :busy="busy === 'osd'" :label="label('osd', 'Save on-screen text')" @save="saveOsd" />
+      </div>
+    </div>
+    <div class="set-col">
+      <div class="set-card">
+        <div class="set-card-h">
+          <div>
+            <h3 class="set-card-t">Last write report</h3>
+            <p class="set-card-d">Before, asked for and after for every field the last save touched.</p>
+          </div>
+        </div>
+        <p v-if="!reports.length" class="set-empty">No write in this visit yet.</p>
+        <div id="device-report" class="dev-report" data-testid="device-report">
+          <div v-for="report in reports" :key="report.block + report.backup" class="row stack">
+            <div class="lab">
+              {{ report.block }}
+              <span class="hint">
+                {{ (report.reverted ? 'The device returned a different value, so the saved copy was put back. ' : 'Read back and kept. ') + 'Copy: ' + report.backup }}
+              </span>
+            </div>
+            <div class="ctl-col">
+              <table class="tbl">
+                <thead>
+                  <tr>
+                    <th scope="col">Field</th>
+                    <th scope="col">Before</th>
+                    <th scope="col">Asked for</th>
+                    <th scope="col">After</th>
+                    <th scope="col">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="field in report.fields" :key="'f' + field.field">
+                    <th scope="row">{{ field.field }}</th>
+                    <td class="code">{{ JSON.stringify(field.before) }}</td>
+                    <td class="code">{{ JSON.stringify(field.requested) }}</td>
+                    <td class="code">{{ JSON.stringify(field.after) }}</td>
+                    <td>{{ field.matches ? 'matches' : 'differs' }}</td>
+                  </tr>
+                  <template v-if="report.restored.length">
+                    <tr><th colspan="5" scope="row">put back from the saved copy</th></tr>
+                    <tr v-for="field in report.restored" :key="'r' + field.field">
+                      <th scope="row">{{ field.field }}</th>
+                      <td class="code">{{ JSON.stringify(field.before) }}</td>
+                      <td class="code">{{ JSON.stringify(field.requested) }}</td>
+                      <td class="code">{{ JSON.stringify(field.after) }}</td>
+                      <td>{{ field.matches ? 'restored' : 'still differs' }}</td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="device-network" class="dev-group" data-testid="device-network">
+        <div v-if="network.error" class="set-card">
+          <div class="set-card-h"><div><h3 class="set-card-t">Network</h3></div></div>
+          <p class="set-status warn-text"><Icon name="warning" small /><span>{{ network.error }}</span></p>
+        </div>
+        <div v-else-if="network.data" class="set-card">
+          <div class="set-card-h">
+            <div>
+              <h3 class="set-card-t">Network</h3>
+              <p class="set-card-d">DHCP, name servers, gateway and mask. The address itself is read only.</p>
+            </div>
+          </div>
+          <div class="row">
+            <div class="lab">Address<span class="hint">Read only here: a new address moves the camera away from the one this app reaches, so the route refuses it.</span></div>
+            <div class="ctl-col"><p class="val"><span class="code">{{ network.data.host_ip || 'unknown' }}</span></p></div>
+          </div>
+          <div class="row">
+            <div class="lab">MAC</div>
+            <div class="ctl-col"><p class="val"><span class="code">{{ network.data.mac || 'unknown' }}</span></p></div>
+          </div>
+          <div class="row">
+            <div class="lab">DHCP</div>
+            <div class="ctl-col">
+              <label class="switchrow"><input id="device-dhcp" v-model="networkForm.dhcp" type="checkbox" role="switch"><span>Take the address from DHCP</span></label>
+            </div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-dns">DNS</label>
+            <div class="ctl-col"><input id="device-dns" v-model="networkForm.dns" type="text" placeholder="1.1.1.1"></div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-spare-dns">Spare DNS</label>
+            <div class="ctl-col"><input id="device-spare-dns" v-model="networkForm.spare_dns" type="text" placeholder="8.8.8.8"></div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-gateway">Gateway</label>
+            <div class="ctl-col"><input id="device-gateway" v-model="networkForm.gateway" type="text"></div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-submask">Subnet mask</label>
+            <div class="ctl-col"><input id="device-submask" v-model="networkForm.submask" type="text"></div>
+          </div>
+          <div class="set-card-f">
+            <button class="btn btn-fill" type="button" data-testid="device-save-network" :aria-busy="busy === 'network'" @click="saveNetwork">
+              {{ label('network', 'Save network') }}
+            </button>
+          </div>
+        </div>
+      </div>
+      <div id="device-storage" class="dev-group" data-testid="device-storage">
+        <div v-if="storage.error" class="set-card">
+          <div class="set-card-h"><div><h3 class="set-card-t">Storage</h3></div></div>
+          <p class="set-status warn-text"><Icon name="warning" small /><span>{{ storage.error }}</span></p>
+        </div>
+        <div v-else-if="storage.data" class="set-card">
+          <div class="set-card-h">
+            <div>
+              <h3 class="set-card-t">Storage</h3>
+              <p class="set-card-d">The memory card and what the camera does when it fills up.</p>
+            </div>
+          </div>
+          <div class="row stack">
+            <div class="lab">Memory card</div>
+            <div class="ctl-col">
+              <table v-if="storage.data.partitions.length" class="tbl">
+                <thead>
+                  <tr>
+                    <th scope="col">Card</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Total</th>
+                    <th scope="col">Free</th>
+                    <th scope="col">Oldest recording</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="part in storage.data.partitions" :key="part.index">
+                    <th scope="row">{{ part.index }}</th>
+                    <td>{{ partitionState(part) }}</td>
+                    <td class="code">{{ part.total_space || '?' }}</td>
+                    <td class="code">{{ part.remain_space || '?' }}</td>
+                    <td class="code">{{ part.start || 'no recording' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-else class="val">The device reports no card in this camera.</p>
+              <p v-if="storage.data.usage" class="val" data-testid="device-usage">{{ usageLine(storage.data.usage, Boolean(storage.data.percent_view)) }}</p>
+            </div>
+          </div>
+          <div class="row">
+            <div class="lab">
+              Card missing alarm
+              <span v-if="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined" class="hint">The camera does not answer Storage.StorageNotExist.</span>
+            </div>
+            <div class="ctl-col">
+              <label class="switchrow">
+                <input id="device-missing-alarm" v-model="storageForm.missing_alarm" type="checkbox" role="switch" :disabled="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined">
+                <span>Raise an alarm when the card is missing or fails</span>
+              </label>
+            </div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-overwrite">When the card is full</label>
+            <div class="ctl-col">
+              <select id="device-overwrite" v-model="storageForm.overwrite">
+                <option value="overwrite">Overwrite the oldest recording</option>
+                <option value="stop">Stop recording when full</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <label class="lab" for="device-record">Record mode</label>
+            <div class="ctl-col">
+              <select id="device-record" v-model="storageForm.record">
+                <option value="config">Follow the schedule</option>
+                <option value="manual">Always record</option>
+                <option value="off">Stop recording</option>
+              </select>
+            </div>
+          </div>
+          <div class="set-card-f">
+            <button class="btn btn-fill" type="button" data-testid="device-save-storage" :aria-busy="busy === 'storage'" @click="saveStorage">
+              {{ label('storage', 'Save storage') }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
-  <div>
-    <div id="device-encode" data-testid="device-encode">
-      <p v-if="encode.error" class="hint warn-text">{{ encode.error }}</p>
-      <div v-else-if="encode.data">
-        <h3 class="set-h">Encoder</h3>
-        <div v-for="stream in STREAMS" :key="stream" class="row">
-          <div class="lab">{{ stream }} stream<div class="hint">{{ formatLine(encode.data[stream] || {}) }}</div></div>
-          <div class="ctl-col">
-            <label class="field">
-              <span>Frames per second</span>
-              <input :id="'device-' + stream + '-fps'" v-model="encodeForm[stream].fps" type="number" step="1" min="0" :max="fpsCeiling(stream) ?? undefined">
-              <span v-if="fpsCeiling(stream) !== null" class="hint">Up to {{ fpsCeiling(stream) }} at {{ encodeForm[stream].resolution || 'this resolution' }}, from EncodeCapability.</span>
-            </label>
-            <label class="field">
-              <span>Bitrate (kbps)</span>
-              <input :id="'device-' + stream + '-bitrate'" v-model="encodeForm[stream].bitrate" type="number" step="1" min="0" :max="encode.capability?.max_bitrate ?? undefined">
-            </label>
-            <label class="field">
-              <span>Keyframe interval</span>
-              <input :id="'device-' + stream + '-gop'" v-model="encodeForm[stream].gop" type="number" step="1" min="0">
-            </label>
-            <label class="field">
-              <span>Resolution</span>
-              <select v-if="limitsFor(stream)?.resolutions.length" :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution">
-                <option v-for="name in limitsFor(stream)?.resolutions" :key="name" :value="name">{{ name }}</option>
-              </select>
-              <input v-else :id="'device-' + stream + '-resolution'" v-model="encodeForm[stream].resolution" type="text" placeholder="3072*2048">
-              <span class="hint">{{ limitsFor(stream)?.resolutions.length ? 'The sizes EncodeCapability allows for this stream.' : 'The device token, for example 3072*2048.' }}</span>
-            </label>
-            <button
-              class="btn btn-fill"
-              type="button"
-              :data-testid="'device-save-' + stream"
-              :aria-busy="busy === stream"
-              @click="saveEncode(stream)"
-            >{{ label(stream, 'Save ' + stream) }}</button>
-          </div>
+  <div v-if="storage.data" class="set-stack">
+    <div class="set-card danger">
+      <div class="set-card-h">
+        <div>
+          <h3 class="set-card-t"><Icon name="warning" small />Danger zone</h3>
+          <p class="set-card-d">Cannot be undone.</p>
         </div>
       </div>
-    </div>
-    <div v-if="encode.data" id="device-smart" class="row" data-testid="device-smart">
-      <label class="lab" for="device-smart-mode">Smart encoding</label>
-      <div class="ctl-col">
-        <select id="device-smart-mode" v-model="smartForm" :disabled="!encode.smart || encode.smart.modes.length < 2">
-          <option v-for="mode in encode.smart ? encode.smart.modes : ['off']" :key="mode" :value="mode">{{ SMART_LABEL[mode] || mode }}</option>
-        </select>
-        <p v-if="!encode.smart" class="hint">{{ NO_SMART }}</p>
-        <p v-else-if="encode.smart.modes.length < 2" class="hint">Encode264ability reports neither H.264+ nor H.265+ for this camera, so only Off is offered.</p>
-        <button class="btn btn-fill" type="button" data-testid="device-save-smart" :aria-busy="busy === 'smart'" :disabled="!encode.smart || encode.smart.modes.length < 2" @click="saveSmart">
-          {{ label('smart', 'Save smart encoding') }}
-        </button>
-      </div>
-    </div>
-    <div id="device-record" data-testid="device-record">
-      <p v-if="record.error" class="hint warn-text">{{ record.error }}</p>
-      <RecordSettings v-else-if="record.data" :record="record.data" :busy="busy === 'record'" :label="label('record', 'Save recording')" @save="saveRecord" />
-    </div>
-    <div id="device-osd-block">
-      <p v-if="osd.error" class="hint warn-text">{{ osd.error }}</p>
-      <OsdSettings v-else-if="osd.data" :osd="osd.data" :busy="busy === 'osd'" :label="label('osd', 'Save on-screen text')" @save="saveOsd" />
-    </div>
-    <div id="device-network" data-testid="device-network">
-      <p v-if="network.error" class="hint warn-text">{{ network.error }}</p>
-      <div v-else-if="network.data">
-        <h3 class="set-h">Network</h3>
-        <div class="row">
-          <div class="lab">Address<div class="hint">Read only here: a new address moves the camera away from the one this app reaches, so the route refuses it.</div></div>
-          <div class="ctl-col"><p class="val"><span class="code">{{ network.data.host_ip || 'unknown' }}</span></p></div>
-        </div>
-        <div class="row">
-          <div class="lab">MAC</div>
-          <div class="ctl-col"><p class="val"><span class="code">{{ network.data.mac || 'unknown' }}</span></p></div>
-        </div>
-        <div class="row">
-          <div class="lab">DHCP</div>
-          <div class="ctl-col">
-            <label class="switchrow"><input id="device-dhcp" v-model="networkForm.dhcp" type="checkbox" role="switch"><span>Take the address from DHCP</span></label>
-          </div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-dns">DNS</label>
-          <div class="ctl-col"><input id="device-dns" v-model="networkForm.dns" type="text" placeholder="1.1.1.1"></div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-spare-dns">Spare DNS</label>
-          <div class="ctl-col"><input id="device-spare-dns" v-model="networkForm.spare_dns" type="text" placeholder="8.8.8.8"></div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-gateway">Gateway</label>
-          <div class="ctl-col"><input id="device-gateway" v-model="networkForm.gateway" type="text"></div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-submask">Subnet mask</label>
-          <div class="ctl-col"><input id="device-submask" v-model="networkForm.submask" type="text"></div>
-        </div>
-        <button class="btn btn-fill" type="button" data-testid="device-save-network" :aria-busy="busy === 'network'" @click="saveNetwork">
-          {{ label('network', 'Save network') }}
-        </button>
-      </div>
-    </div>
-    <div id="device-storage" data-testid="device-storage">
-      <p v-if="storage.error" class="hint warn-text">{{ storage.error }}</p>
-      <div v-else-if="storage.data">
-        <h3 class="set-h">Storage</h3>
-        <div class="row">
-          <div class="lab">Memory card</div>
-          <div class="ctl-col">
-            <table v-if="storage.data.partitions.length" class="tbl">
-              <thead>
-                <tr>
-                  <th scope="col">Card</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Total</th>
-                  <th scope="col">Free</th>
-                  <th scope="col">Oldest recording</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="part in storage.data.partitions" :key="part.index">
-                  <th scope="row">{{ part.index }}</th>
-                  <td>{{ partitionState(part) }}</td>
-                  <td class="code">{{ part.total_space || '?' }}</td>
-                  <td class="code">{{ part.remain_space || '?' }}</td>
-                  <td class="code">{{ part.start || 'no recording' }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p v-else class="val">The device reports no card in this camera.</p>
-            <p v-if="storage.data.usage" class="val" data-testid="device-usage">{{ usageLine(storage.data.usage, Boolean(storage.data.percent_view)) }}</p>
-          </div>
-        </div>
-        <div class="row">
-          <div class="lab">Card missing alarm</div>
-          <div class="ctl-col">
-            <label class="switchrow">
-              <input id="device-missing-alarm" v-model="storageForm.missing_alarm" type="checkbox" role="switch" :disabled="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined">
-              <span>Raise an alarm when the card is missing or fails</span>
-            </label>
-            <p v-if="storage.data.missing_alarm === null || storage.data.missing_alarm === undefined" class="hint">The camera does not answer Storage.StorageNotExist.</p>
-          </div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-overwrite">When the card is full</label>
-          <div class="ctl-col">
-            <select id="device-overwrite" v-model="storageForm.overwrite">
-              <option value="overwrite">Overwrite the oldest recording</option>
-              <option value="stop">Stop recording when full</option>
-            </select>
-          </div>
-        </div>
-        <div class="row">
-          <label class="lab" for="device-record">Record mode</label>
-          <div class="ctl-col">
-            <select id="device-record" v-model="storageForm.record">
-              <option value="config">Follow the schedule</option>
-              <option value="manual">Always record</option>
-              <option value="off">Stop recording</option>
-            </select>
-          </div>
-        </div>
-        <button class="btn btn-fill" type="button" data-testid="device-save-storage" :aria-busy="busy === 'storage'" @click="saveStorage">
-          {{ label('storage', 'Save storage') }}
-        </button>
-        <CardFormat :card="storage.data.usage ? storage.data.usage.card : storage.data.partitions.length ? 'ok' : 'absent'" :busy="busy === 'format'" :label="label('format', 'Format card')" @format="formatCard" />
-      </div>
+      <CardFormat :card="storage.data.usage ? storage.data.usage.card : storage.data.partitions.length ? 'ok' : 'absent'" :busy="busy === 'format'" :label="label('format', 'Format card')" @format="formatCard" />
     </div>
   </div>
 </template>
+
+<style scoped>
+.dev-group { display: grid; gap: var(--s4); min-width: 0; }
+.dev-group:empty { display: none; }
+.dev-report .hint, .dev-report .lab { overflow-wrap: anywhere; }
+.dev-report > .row:first-child { border-top: 1px solid var(--line-soft); }
+</style>

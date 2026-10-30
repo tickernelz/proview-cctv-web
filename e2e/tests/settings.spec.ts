@@ -130,7 +130,8 @@ test('Settings opens again on the section that was clicked last, from the gear, 
   await expect(page.getByTestId('settings').getByRole('link', { name: 'Configuration', exact: true })).toHaveAttribute('aria-current', 'page')
   await page.getByTestId('settings').getByRole('link', { name: 'Server', exact: true }).focus()
   await page.keyboard.press('ArrowUp')
-  await expect(page.locator('#h-config')).toBeVisible()
+  await expect(page.locator('#h-connection')).toBeVisible()
+  await expect(page.getByTestId('settings').getByRole('link', { name: 'Connection', exact: true })).toBeFocused()
   await page.keyboard.press('ArrowDown')
   await expect(page.locator('#h-server')).toBeVisible()
   await page.getByTestId('settings-back').click()
@@ -153,4 +154,96 @@ test('a refused provider switch is not shown again when Settings opens later', a
   await page.getByTestId('settings').getByRole('link', { name: 'Connection', exact: true }).click()
   await expect(page.locator('#h-connection')).toBeVisible()
   await expect(page.getByTestId('mode-error')).toHaveCount(0)
+})
+
+test('the sections sit in three groups and Manage cameras opens the camera list from Settings', async ({ page }) => {
+  await page.route('**/api/cloud/device-attributes', (route) => route.fulfill({ json: { devices: [{ uuid: 'gate', nickname: 'Gate camera' }], groups: [] } }))
+  await openSection(page, 'Playback')
+  const nav = page.getByTestId('settings').getByRole('navigation', { name: 'Settings sections' })
+  await expect(nav.locator('.set-nav-g')).toHaveText(['Camera', 'App', 'Account & server'])
+  await expect(nav.locator('a[data-section]')).toHaveText([
+    'This camera',
+    'Video & storage',
+    'Image, light & sound',
+    'Detection & alarms',
+    'System',
+    'Playback',
+    'Configuration',
+    'Account',
+    'Connection',
+    'Server',
+  ])
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeVisible()
+  const manage = page.getByTestId('settings-cameras')
+  await manage.click()
+  await expect(page.getByTestId('device-admin')).toBeVisible()
+  await page.getByTestId('device-admin-close').click()
+  await expect(page.getByTestId('device-admin')).toBeHidden()
+  await expect(manage).toBeFocused()
+})
+
+test('Ctrl+S saves and Escape leaves only when nothing is unsaved', async ({ page }) => {
+  await openSection(page, 'Configuration')
+  await expect(page.getByTestId('settings-status')).not.toHaveText('Not loaded yet.')
+  const field = page.getByTestId('setting-PROVIEW_LISTEN')
+  await field.fill('nope')
+  await expect(page.getByTestId('save-state')).toHaveText('Unsaved changes · 1 field')
+  await page.locator('#h-config').focus()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await page.route('**/api/settings', (route) =>
+    route.request().method() === 'POST' ? route.fulfill({ status: 400, json: { message: 'PROVIEW_LISTEN is not a socket address' } }) : route.continue(),
+  )
+  await page.keyboard.press('Control+s')
+  await expect(page.getByTestId('save-state')).toHaveText('Not saved: PROVIEW_LISTEN is not a socket address')
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
+  await page.locator('#h-config').focus()
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('live')).toBeVisible()
+})
+
+test('a phone shows the section list first, then the section, and All settings goes back', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'one')
+  await page.getByTestId('tab-settings').click()
+  const nav = page.getByTestId('settings').getByRole('navigation', { name: 'Settings sections' })
+  await expect(nav).toBeVisible()
+  await expect(page.locator('#set-body')).toBeHidden()
+  await nav.getByRole('link', { name: 'Server', exact: true }).click()
+  await expect(page.locator('#h-server')).toBeVisible()
+  await expect(nav).toBeHidden()
+  await page.locator('#set-body > section[data-section="server"]').getByRole('button', { name: 'All settings' }).click()
+  await expect(nav).toBeVisible()
+  await expect(nav.getByRole('link', { name: 'Server', exact: true })).toBeFocused()
+})
+
+test('a session without a cloud sign-in keeps Settings open and says why the account cannot be read', async ({ page }) => {
+  await openSection(page, 'Account')
+  await expect(page.getByTestId('account-not-cloud')).toHaveText('This session has no cloud sign-in. Sign in with the cloud account to manage it.')
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.getByTestId('account-password-reason')).toHaveText('This session has no cloud sign-in. Sign in with the cloud account to manage it.')
+})
+
+test('an expired session while reading the account returns to sign-in', async ({ page }) => {
+  await signIn(page, 'one')
+  await page.route('**/api/cloud/profile', (route) => route.fulfill({ status: 401, json: { ok: false, message: 'session expired' } }))
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings').getByRole('link', { name: 'Account', exact: true }).click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(page.getByTestId('settings')).toBeHidden()
+})
+
+test('Picture in picture picked as the lens on open survives a reload and opens the live view in picture in picture', async ({ page }) => {
+  await openSection(page, 'Playback')
+  await page.getByRole('radio', { name: 'Both lenses', exact: true }).check()
+  await page.getByRole('radio', { name: 'Picture in picture', exact: true }).check()
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeChecked()
+  await page.reload()
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.getByRole('radio', { name: 'Picture in picture', exact: true })).toBeChecked()
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').lens)).toBe('pip')
+  await page.getByTestId('settings-back').click()
+  await expect(page.getByTestId('live')).toBeVisible()
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'pip', { timeout: 20_000 })
+  await expect(page.getByTestId('pip-inset')).toBeVisible()
 })

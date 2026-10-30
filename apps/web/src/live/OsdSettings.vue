@@ -67,37 +67,53 @@ function save() {
 </script>
 
 <template>
-  <div id="device-osd" data-testid="device-osd">
-    <h3 class="set-h">On-screen text</h3>
+  <div id="device-osd" class="set-card" data-testid="device-osd">
+    <div class="set-card-h">
+      <div>
+        <h3 class="set-card-t">On-screen text</h3>
+        <p class="set-card-d">The title and clock the camera burns into its video.</p>
+      </div>
+    </div>
     <div class="row">
-      <label class="lab" for="device-osd-name">Channel title<div class="hint">Burned into the video; the cloud device name in the list is separate.</div></label>
-      <div class="ctl-col">
-        <input id="device-osd-name" v-model="form.name" type="text" maxlength="32">
+      <div class="lab">
+        <label for="device-osd-name">Channel title</label>
+        <span class="hint">Burned into the video; the cloud device name in the list is separate.</span>
         <span class="hint">Up to 32 Latin or 21 other characters, the mobile app limit.</span>
       </div>
+      <div class="ctl-col">
+        <input id="device-osd-name" v-model="form.name" type="text" maxlength="32">
+      </div>
     </div>
     <div class="row">
-      <div class="lab">Show title</div>
+      <div class="lab">
+        Show title
+        <span v-if="osd.title_shown === null || osd.title_shown === undefined" class="hint">AVEnc.VideoWidget carries no ChannelTitleAttribute.</span>
+      </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-osd-title" v-model="form.title" type="checkbox" role="switch" :disabled="osd.title_shown === null || osd.title_shown === undefined"><span>Overlay the channel title</span></label>
-        <p v-if="osd.title_shown === null || osd.title_shown === undefined" class="hint">AVEnc.VideoWidget carries no ChannelTitleAttribute.</p>
       </div>
     </div>
     <div class="row">
-      <div class="lab">Show time</div>
+      <div class="lab">
+        Show time
+        <span v-if="osd.time_shown === null || osd.time_shown === undefined" class="hint">AVEnc.VideoWidget carries no TimeTitleAttribute.</span>
+      </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-osd-time" v-model="form.time" type="checkbox" role="switch" :disabled="osd.time_shown === null || osd.time_shown === undefined"><span>Overlay the date and time</span></label>
-        <p v-if="osd.time_shown === null || osd.time_shown === undefined" class="hint">AVEnc.VideoWidget carries no TimeTitleAttribute.</p>
       </div>
     </div>
     <div class="row">
-      <div class="lab">Title bitmap</div>
+      <div class="lab">
+        Title bitmap
+        <span v-if="!osd.dot_required" class="hint">This camera reports more than one channel title, so it draws the text itself and takes no bitmap.</span>
+        <span v-else class="hint">Older single-channel firmware shows a 1-bit picture of the title (TitleDot) instead of drawing the text; the mobile app sends one on every rename. Leave it off when the video already shows the new title.</span>
+      </div>
       <div class="ctl-col">
         <label class="switchrow"><input id="device-osd-dot" v-model="form.dot" type="checkbox" role="switch" :disabled="!osd.dot_required"><span>Redraw the title bitmap after a rename</span></label>
-        <p v-if="!osd.dot_required" class="hint">This camera reports more than one channel title, so it draws the text itself and takes no bitmap.</p>
-        <p v-else class="hint">Older single-channel firmware shows a 1-bit picture of the title (TitleDot) instead of drawing the text; the mobile app sends one on every rename. Leave it off when the video already shows the new title.</p>
       </div>
     </div>
-    <button class="btn btn-fill" type="button" data-testid="device-save-osd" :aria-busy="busy" @click="save">{{ label }}</button>
+    <div class="set-card-f">
+      <button class="btn btn-fill" type="button" data-testid="device-save-osd" :aria-busy="busy" @click="save">{{ label }}</button>
+    </div>
   </div>
 </template>

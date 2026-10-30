@@ -240,7 +240,7 @@ async fn profile(
         if super::account::local_session(store, cookies) {
             fail(
                 Status::Conflict,
-                "this session is on a camera on this network; the account profile needs the cloud account sign-in",
+                "this session has no cloud sign-in; the account profile needs the cloud account sign-in",
             )
         } else {
             failure
