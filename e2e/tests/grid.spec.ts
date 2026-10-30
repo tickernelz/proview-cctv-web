@@ -203,3 +203,19 @@ test('on a phone the grid is one column without the column picker, and nothing i
   expect(wide).toBeLessThanOrEqual(0)
 })
 
+
+test('a tile Details block names the camera, never its device id', async ({ page }) => {
+  await page.route(/\/api\/stream\?device=porch/, (route) =>
+    route.fulfill({ status: 404, json: { message: 'device id unknown: porch is not in this account; the device refused the device token earlier in this process for porch' } }),
+  )
+  await signIn(page, 'grid')
+  await page.getByTestId('view-grid').click()
+  const porch = page.getByTestId('grid-tile').filter({ hasText: 'Porch' })
+  await expect(porch).toHaveAttribute('data-state', 'error')
+  const fail = porch.getByTestId('grid-tile-fail')
+  await fail.getByTestId('state-details-toggle').click()
+  const details = fail.getByTestId('state-details')
+  await expect(details).toHaveText('device id unknown: Porch is not in this account; the device refused the device token earlier in this process for Porch')
+  expect(await fail.innerText()).not.toMatch(/\bporch\b/)
+  expect(await fail.locator('[title]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('title')).join(' '))).not.toMatch(/\bporch\b/)
+})

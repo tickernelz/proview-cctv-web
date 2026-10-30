@@ -42,7 +42,9 @@ const soundWord = computed(() => {
   return SOUND_WORDS[status.sound] || 'Sound on'
 })
 const label = computed(() => props.camera.name + ', ' + WORDS[status.name] + (props.selected ? ', selected' : ''))
-const details = computed(() => (status.title && status.title !== status.detail ? status.title : ''))
+const deviceToken = computed(() => new RegExp('(?<![A-Za-z0-9])' + props.view.device.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![A-Za-z0-9])', 'g'))
+const scrub = (text: string) => (text ? text.replace(deviceToken.value, props.camera.name) : text)
+const details = computed(() => (status.title && status.title !== status.detail ? scrub(status.title) : ''))
 
 function set(name: TileState, detail = '') {
   if (name === 'playing') status.frameAt = Date.now()
@@ -140,8 +142,8 @@ onBeforeUnmount(stop)
         data-testid="grid-tile-fail"
         compact
         title="No picture"
-        :description="status.detail || 'The stream stopped.'"
-        :description-title="status.title"
+        :description="scrub(status.detail) || 'The stream stopped.'"
+        :description-title="scrub(status.title)"
         :details="details || null"
         @retry="start"
       />
