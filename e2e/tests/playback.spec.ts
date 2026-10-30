@@ -194,3 +194,156 @@ test('an expired session while listing goes back to sign-in', async ({ page }) =
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('playback')).toBeHidden()
 })
+
+const PIXEL = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q=='
+
+test('the calendar marks the days the camera reports and a marked day opens its list', async ({ page }) => {
+  const months: string[] = []
+  await page.route(/\/api\/playback\/calendar/, (route) => {
+    const url = new URL(route.request().url())
+    months.push(url.searchParams.get('year') + '-' + url.searchParams.get('month'))
+    return route.fulfill({ json: { ok: true, days: url.searchParams.get('month') === '10' ? [25, 27] : [] } })
+  })
+  const days: string[] = []
+  await page.route(/\/api\/playback\/files/, (route) => {
+    days.push(dayOf(route.request().url()))
+    return route.fulfill({ json: BODY })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-26')
+  await page.getByTestId('pb-cal-open').click()
+  const calendar = page.getByTestId('pb-calendar')
+  await expect(calendar).toBeVisible()
+  await expect(page.getByTestId('pb-cal-note')).toHaveText('2 days with recordings in October 2026.')
+  await expect(calendar.locator('.pb-cal-day[data-has]')).toHaveText(['25', '27'])
+  await expect(calendar.getByRole('button', { name: '2026-10-26, no recordings' })).toHaveAttribute('aria-pressed', 'true')
+  await page.getByRole('button', { name: 'Previous month' }).click()
+  await expect(page.getByTestId('pb-cal-note')).toHaveText('No recordings on the camera in September 2026.')
+  await page.getByRole('button', { name: 'Next month' }).click()
+  await calendar.getByRole('button', { name: '2026-10-27, has recordings' }).click()
+  await expect(calendar).toBeHidden()
+  await expect(page.getByTestId('pb-day')).toHaveValue('2026-10-27')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  expect(months).toEqual(['2026-10', '2026-9'])
+  expect(days.at(-1)).toBe('2026-10-27')
+})
+
+test('a calendar the device refuses says so without hiding the list', async ({ page }) => {
+  await page.route(/\/api\/playback\/calendar/, (route) => route.fulfill({ status: 504, json: { message: 'playback stage=calendar: the device did not answer inside 20.0 s' } }))
+  await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await page.getByTestId('pb-cal-open').click()
+  await expect(page.getByTestId('pb-cal-note')).toHaveText('The calendar did not load: playback stage=calendar: the device did not answer inside 20.0 s')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  await expect(page.getByTestId('pb-error')).toHaveCount(0)
+})
+
+test('the record type boxes ask the device for regular or alarm files only, never neither', async ({ page }) => {
+  const asked: (string | null)[] = []
+  await page.route(/\/api\/playback\/files/, (route) => {
+    const event = new URL(route.request().url()).searchParams.get('event')
+    asked.push(event)
+    return route.fulfill({ json: event === 'alarm' ? { ...BODY, files: [FILES[1]] } : BODY })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  await page.getByTestId('pb-kind-regular').uncheck()
+  await expect(page.locator('.pb-row')).toHaveCount(1)
+  await expect(page.getByTestId('pb-summary')).toHaveText('1 files · 28.61 MB · Gate camera on 2026-10-27 (alarm only)')
+  await page.getByTestId('pb-kind-alarm').click()
+  await expect(page.getByTestId('pb-kind-regular')).toBeChecked()
+  await expect(page.getByTestId('pb-kind-alarm')).not.toBeChecked()
+  await expect(page.getByTestId('pb-summary')).toHaveText('3 files · 128.75 MB · Gate camera on 2026-10-27 (regular only)')
+  expect(asked.slice(-2)).toEqual(['alarm', 'regular'])
+  await expect(page.locator('.pb-legend')).toHaveText('ContinuousMotionAlarm')
+})
+
+test('rows on screen ask for thumbnails in one batch and show the pictures the device returns', async ({ page }) => {
+  const batches: string[][] = []
+  await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
+  await page.route(/\/api\/playback\/thumbnails/, (route) => {
+    const body = route.request().postDataJSON() as { files: { name: string }[] }
+    batches.push(body.files.map((file) => file.name))
+    return route.fulfill({
+      json: {
+        ok: true,
+        thumbs: body.files.map((file, index) =>
+          index === 2 ? { name: file.name, image: null, error: 'keyframe: no keyframe inside 8 s' } : { name: file.name, source: 'picture', image: PIXEL },
+        ),
+      },
+    })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect(page.locator('.pb-thumb[data-state="ok"]')).toHaveCount(2)
+  await expect(page.locator('.pb-thumb[data-state="none"]')).toHaveCount(1)
+  await expect(page.locator('.pb-thumb[data-state="none"]')).toHaveAttribute('title', 'keyframe: no keyframe inside 8 s')
+  expect(batches).toEqual([FILES.map((file) => file.name)])
+})
+
+test('the player buttons wait for a recording and sound waits for 1x speed', async ({ page }) => {
+  await page.route(/\/api\/playback\/files/, (route) => route.fulfill({ json: BODY }))
+  await page.route(/\/api\/playback\/thumbnails/, (route) => route.fulfill({ json: { ok: true, thumbs: [] } }))
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect(page.getByTestId('pb-pause')).toBeDisabled()
+  await expect(page.getByTestId('pb-sound')).toBeDisabled()
+  await expect(page.getByTestId('pb-snapshot')).toBeDisabled()
+  await expect(page.getByTestId('pb-playing')).toHaveText('Pick a recording from the list or the strip.')
+  await page.locator('.pb-row').nth(0).click()
+  await expect(page.getByTestId('pb-pause')).toBeEnabled()
+  await expect(page.getByTestId('pb-sound')).toBeEnabled()
+  await expect(page.getByTestId('pb-snapshot-note')).toHaveText('Snapshot waits for the first picture.')
+  await page.getByTestId('pb-speed').selectOption('2')
+  await expect(page.getByTestId('pb-sound')).toBeDisabled()
+  await expect(page.getByTestId('pb-sound-note')).toHaveText('Sound plays at 1x only.')
+  await expect(page.getByTestId('pb-snapshot-note')).toHaveText('Snapshot waits for the first picture.')
+  await expect(page.locator('#pb-video')).toHaveJSProperty('playbackRate', 2)
+  await page.getByTestId('pb-speed').selectOption('0.25')
+  await expect(page.locator('#pb-video')).toHaveJSProperty('playbackRate', 0.25)
+})
+
+test('changing the day while a thumbnail batch is in flight sends the next batch only after it returns', async ({ page }) => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const asked: string[][] = []
+  let open = 0
+  let most = 0
+  const other = FILES.map((file) => ({ ...file, name: file.name.replace('2026-10-27', '2026-10-26'), begin: file.begin.replace('10-27', '10-26'), end: file.end.replace('10-27', '10-26') }))
+  await page.route(/\/api\/playback\/files/, (route) =>
+    route.fulfill({ json: dayOf(route.request().url()) === '2026-10-26' ? { ...BODY, files: other } : BODY }),
+  )
+  await page.route(/\/api\/playback\/thumbnails/, async (route) => {
+    const names = (route.request().postDataJSON() as { files: { name: string }[] }).files.map((file) => file.name)
+    asked.push(names)
+    open += 1
+    most = Math.max(most, open)
+    if (asked.length === 1) await held
+    open -= 1
+    return route.fulfill({ json: { ok: true, thumbs: names.map((name) => ({ name, source: 'picture', image: PIXEL })) } })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect.poll(() => asked.length).toBe(1)
+  await pickDay(page, '2026-10-26')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  await page.waitForTimeout(500)
+  expect(asked.length).toBe(1)
+  release()
+  await expect(page.locator('.pb-thumb[data-state="ok"]')).toHaveCount(3)
+  expect(asked[1]).toEqual(other.map((file) => file.name))
+  expect(most).toBe(1)
+})

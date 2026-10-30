@@ -8,6 +8,7 @@ pub(crate) mod fake;
 pub mod frame;
 pub mod image;
 pub mod playback;
+pub mod playback_plus;
 pub mod settings;
 pub mod storage_card;
 pub mod talk;
