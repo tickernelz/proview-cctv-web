@@ -6,7 +6,8 @@ import { live } from './store'
 
 const shown = ref(false)
 const busy = ref(false)
-const note = ref('Stop the sounding alarm')
+const note = ref('')
+const bad = ref(false)
 
 const query = () => (state.selectedId ? '?device=' + encodeURIComponent(state.selectedId) : '')
 
@@ -15,6 +16,7 @@ let ticket = 0
 async function check() {
   const mine = ++ticket
   shown.value = false
+  note.value = ''
   if (!state.selectedId) return
   try {
     const response = await fetch('/api/device/detect/alarm/stop' + query(), { credentials: 'same-origin' })
@@ -28,9 +30,15 @@ async function check() {
 async function stop() {
   if (busy.value) return
   busy.value = true
+  bad.value = false
+  note.value = 'Sending stop…'
   try {
     const response = await fetch('/api/device/detect/alarm/stop' + query(), { method: 'POST', credentials: 'same-origin' })
-    note.value = response.ok ? 'The camera acknowledged the stop' : 'Stop failed: HTTP ' + response.status
+    bad.value = !response.ok
+    note.value = response.ok ? 'The camera acknowledged the stop.' : 'Stop failed: HTTP ' + response.status
+  } catch (error) {
+    bad.value = true
+    note.value = 'Stop failed: ' + (error instanceof Error ? error.message : String(error))
   } finally {
     busy.value = false
   }
@@ -41,7 +49,15 @@ onMounted(check)
 </script>
 
 <template>
-  <button v-if="shown" id="alarm-stop" data-testid="ctl-alarm-stop" class="ctl" type="button" :title="note" :aria-busy="busy" @click="stop">
-    <Icon name="bell" /><span>Stop alarm</span>
-  </button>
+  <template v-if="shown">
+    <button id="alarm-stop" data-testid="ctl-alarm-stop" class="ctl" type="button" :aria-busy="busy" aria-describedby="alarm-stop-note" @click="stop">
+      <Icon name="bell" /><span>Stop alarm</span>
+    </button>
+    <span v-if="note" id="alarm-stop-note" data-testid="ctl-alarm-stop-note" :class="['stop-note', { bad }]" role="status">{{ note }}</span>
+  </template>
 </template>
+
+<style scoped>
+.stop-note { align-self: center; font-size: var(--t-13); color: var(--ink-2); }
+.stop-note.bad { color: var(--bad); }
+</style>

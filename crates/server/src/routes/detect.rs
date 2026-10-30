@@ -110,6 +110,23 @@ async fn session(
         })
 }
 
+fn hung(error: &SettingsError) -> bool {
+    matches!(
+        error,
+        SettingsError::Slow { .. } | SettingsError::RevertFailed { .. }
+    )
+}
+
+fn detect_hung(error: &DetectError) -> bool {
+    matches!(error, DetectError::Settings(error) if hung(error))
+}
+
+async fn close(connection: &mut Connection, hung: bool, window: Duration) {
+    if !hung {
+        let _ = connection.logout_within(window).await;
+    }
+}
+
 #[derive(Serialize)]
 pub struct OverviewBody {
     pub ok: bool,
@@ -129,7 +146,12 @@ async fn overview(
     let mut connection =
         session(device.as_deref(), cfg, cloud, modes, store, cookies, window).await?;
     let read = connection.alarm_overview_within(window).await;
-    let _ = connection.logout_within(window).await;
+    close(
+        &mut connection,
+        read.as_ref().err().map(hung).unwrap_or(false),
+        window,
+    )
+    .await;
     let overview = read.map_err(settings_failure)?;
     Ok(Json(OverviewBody { ok: true, overview }))
 }
@@ -174,7 +196,12 @@ async fn write(
             &WriteWindow::with_timeout(backup_dir(), window),
         )
         .await;
-    let _ = connection.logout_within(window).await;
+    close(
+        &mut connection,
+        written.as_ref().err().map(detect_hung).unwrap_or(false),
+        window,
+    )
+    .await;
     let report = written.map_err(detect_failure)?;
     Ok(Json(WriteBody { ok: true, report }))
 }
@@ -198,7 +225,12 @@ async fn stop_gate(
     let mut connection =
         session(device.as_deref(), cfg, cloud, modes, store, cookies, window).await?;
     let read = connection.manual_stop_gate_within(window).await;
-    let _ = connection.logout_within(window).await;
+    close(
+        &mut connection,
+        read.as_ref().err().map(hung).unwrap_or(false),
+        window,
+    )
+    .await;
     let gate = read.map_err(settings_failure)?;
     Ok(Json(StopGateBody { ok: true, gate }))
 }
@@ -222,7 +254,12 @@ async fn stop_alarm(
     let mut connection =
         session(device.as_deref(), cfg, cloud, modes, store, cookies, window).await?;
     let stopped = connection.stop_manual_alarm_within(window).await;
-    let _ = connection.logout_within(window).await;
+    close(
+        &mut connection,
+        stopped.as_ref().err().map(detect_hung).unwrap_or(false),
+        window,
+    )
+    .await;
     let ret = stopped.map_err(detect_failure)?;
     Ok(Json(StopBody { ok: true, ret }))
 }

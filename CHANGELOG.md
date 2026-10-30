@@ -10,10 +10,10 @@ stability before 1.0.
 ### Added
 
 - Alarm and detection settings over the vendor cloud (Settings, Alarm and
-  detection): motion detection (on/off, Low/Middle/High, area grid, schedule,
-  alarm actions, alarm tone), human detection (track box, area/line rule),
-  video loss and tamper, human tracking and the device push interval, each read
-  and written through `/api/device/detect` with a saved copy, a read-back and an
+  detection): motion detection (on/off, Low/Middle/High, schedule, alarm
+  actions, alarm tone), human detection (track box, area/line rule), human
+  tracking and the device push interval (30 to 1800 s, nothing else on that
+  block), each read and written through `/api/device/detect` with a saved copy, a read-back and an
   automatic revert. Blocks the camera does not advertise (vehicle, pet, cry,
   abnormal sound, intelligent vigilance, one-key call) are listed with the
   ability flag that hides them, the same gate the phone app uses. The live bar

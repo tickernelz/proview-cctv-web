@@ -1,7 +1,7 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
 import { signIn } from './app'
 
-const SLOTS = (first: string) => Array.from({ length: 7 }, () => [first, '0 00:00:00-24:00:00'])
+const SLOTS = (first: string) => Array.from({ length: 7 }, (_, day) => [first, day === 3 ? '0 07:00-08:00' : '0 00:00:00-24:00:00'])
 
 const motion = {
   enable: true,
@@ -16,7 +16,6 @@ const motion = {
   tip: false,
   voice_type: 24,
   schedule: SLOTS('1 00:00:00-24:00:00'),
-  region: Array.from({ length: 3 }, () => [true, true, true]),
   show_track: null,
   rule: null,
   duration: null,
@@ -46,6 +45,14 @@ const OVERVIEW = {
         },
         error: null,
       },
+      {
+        id: 'push',
+        label: 'Device push service',
+        config: 'NetWork.PMS',
+        gate: { supported: true, evidence: 'NetWork.PMS is a base ability; the app reads it without a flag' },
+        state: { ...empty, enable: true, push_interval: 10, push_server: 'push.example.invalid' },
+        error: null,
+      },
       { id: 'car', label: 'Vehicle detection', config: 'Detect.CarShapeDetection.[0]', gate: { supported: false, evidence: 'device does not report AlarmFunction.CarShapeDetection' }, state: null, error: null },
     ],
     tones_gate: { supported: true, evidence: 'device reports OtherFunction.SupportAlarmVoiceTips=true' },
@@ -53,7 +60,6 @@ const OVERVIEW = {
       { id: 24, text: 'Bell Alarm' },
       { id: 523, text: 'You have entered the monitoring area' },
     ],
-    grid: { rows: 3, columns: 3 },
     rule_limit: { area: true, line: true, sensitivity: false, show_track: true },
     combined: { supported: true, evidence: 'device reports AlarmFunction.MotionHumanDection=true' },
     manual_stop: { supported: false, evidence: 'device does not report AlarmFunction.ManuIntellAlertAlarm' },
@@ -63,7 +69,7 @@ const OVERVIEW = {
 async function fake(page: Page) {
   const writes: { path: string; body: any }[] = []
   await page.route(/\/api\/device\/detect(\?|$)/, (route: Route) => route.fulfill({ json: OVERVIEW }))
-  await page.route(/\/api\/device\/detect\/(motion|human)(\?|$)/, async (route: Route) => {
+  await page.route(/\/api\/device\/detect\/(motion|human|push)(\?|$)/, async (route: Route) => {
     const request = route.request()
     const body = request.postDataJSON()
     writes.push({ path: new URL(request.url()).pathname, body })
@@ -116,19 +122,32 @@ test('Saving motion detection sends only the fields that changed', async ({ page
   expect(writes.length).toBe(1)
 })
 
-test('A grid cell and a schedule slot travel as the full grid and seven-day table', async ({ page }) => {
+test('A schedule slot travels in the seven-day table and an unreadable slot keeps its raw text', async ({ page }) => {
   const writes = await fake(page)
   await openAlarm(page)
-  await page.getByTestId('detect-cell-1-2').click()
-  await expect(page.getByTestId('detect-cell-1-2')).toHaveAttribute('aria-pressed', 'false')
   await page.getByLabel('Monday slot 2', { exact: true }).check()
   await page.getByTestId('detect-save-motion').click()
   await expect(page.getByTestId('detect-status')).toHaveText('Motion detection read back after the write and kept.')
   const sent = writes[0].body
-  expect(sent.region).toEqual([[true, true, true], [true, true, false], [true, true, true]])
+  expect(Object.keys(sent)).toEqual(['schedule'])
   expect(sent.schedule[1][1]).toBe('1 00:00:00-24:00:00')
   expect(sent.schedule[0][1]).toBe('0 00:00:00-24:00:00')
-  expect(Object.keys(sent).sort()).toEqual(['region', 'schedule'])
+  expect(sent.schedule[3][1]).toBe('0 07:00-08:00')
+})
+
+test('The push service offers only the interval and clamps it to the app range', async ({ page }) => {
+  const writes = await fake(page)
+  await openAlarm(page)
+  const push = page.getByTestId('detect-push')
+  await expect(push.getByRole('switch')).toHaveCount(0)
+  await expect(page.getByTestId('detect-push-outside')).toContainText('holds 10 s')
+  await page.getByTestId('detect-save-push').click()
+  await expect(page.getByTestId('detect-status')).toHaveText('Nothing changed on device push service.')
+  expect(writes).toEqual([])
+  await page.getByTestId('detect-push-interval').fill('5')
+  await page.getByTestId('detect-save-push').click()
+  await expect(page.getByTestId('detect-status')).toHaveText('Device push service read back after the write and kept.')
+  expect(writes).toEqual([{ path: '/api/device/detect/push', body: { push_interval: 30 } }])
 })
 
 test('The live bar shows Stop alarm only when the camera reports the manual alarm ability', async ({ page }) => {
@@ -143,8 +162,20 @@ test('The live bar shows Stop alarm only when the camera reports the manual alar
   await signIn(page, 'one')
   await expect(page.getByTestId('ctl-alarm-stop')).toBeVisible()
   await page.getByTestId('ctl-alarm-stop').click()
-  await expect(page.getByTestId('ctl-alarm-stop')).toHaveAttribute('title', 'The camera acknowledged the stop')
+  await expect(page.getByTestId('ctl-alarm-stop-note')).toHaveText('The camera acknowledged the stop.')
+  await expect(page.getByTestId('ctl-alarm-stop-note')).toBeVisible()
   expect(stops.length).toBe(1)
+})
+
+test('A stop that never reaches the server says so next to the button', async ({ page }) => {
+  await page.route(/\/api\/device\/detect\/alarm\/stop/, (route: Route) => {
+    if (route.request().method() === 'POST') return route.abort('connectionrefused')
+    return route.fulfill({ json: { ok: true, gate: { supported: true, evidence: 'device reports AlarmFunction.ManuIntellAlertAlarm=true' } } })
+  })
+  await signIn(page, 'one')
+  await page.getByTestId('ctl-alarm-stop').click()
+  await expect(page.getByTestId('ctl-alarm-stop-note')).toContainText('Stop failed')
+  await expect(page.getByTestId('ctl-alarm-stop')).toBeEnabled()
 })
 
 test('The live bar keeps Stop alarm hidden when the ability is missing', async ({ page }) => {

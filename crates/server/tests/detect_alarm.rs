@@ -144,7 +144,6 @@ fn answer(shared: &Shared, id: u16, body: &Value) -> Option<Value> {
         msg::LOGIN => Some(json!({ "Ret": 100, "SessionID": "0x11223344" })),
         msg::ABILITY => Some(match name.as_str() {
             "SystemFunction" => json!({ "Ret": 100, "SystemFunction": device.abilities.clone() }),
-            "MotionArea" => json!({ "Ret": 100, "MotionArea": { "GridColumn": 7, "GridRow": 7 } }),
             _ => json!({ "Ret": 103 }),
         }),
         msg::CONFIG_GET if device.silent_config_get => None,
@@ -273,7 +272,7 @@ async fn the_overview_gates_every_block_on_the_ability_flags() {
     let motion = detector(&body, "motion");
     assert_eq!(motion["gate"]["supported"], json!(true));
     assert_eq!(motion["state"]["level"], json!(3));
-    assert_eq!(motion["state"]["region"].as_array().unwrap().len(), 7);
+    assert!(motion["state"].get("region").is_none(), "{motion}");
     let human = detector(&body, "human");
     assert_eq!(human["gate"]["supported"], json!(false));
     assert!(human["gate"]["evidence"]
@@ -281,7 +280,14 @@ async fn the_overview_gates_every_block_on_the_ability_flags() {
         .unwrap()
         .contains("PEAInHumanPed=false"));
     assert_eq!(detector(&body, "car")["state"], Value::Null);
-    assert_eq!(body["overview"]["grid"], json!({ "rows": 7, "columns": 7 }));
+    assert!(body["overview"].get("grid").is_none());
+    let ids: Vec<&str> = body["overview"]["detectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|item| item["id"].as_str())
+        .collect();
+    assert!(!ids.contains(&"loss") && !ids.contains(&"blind"), "{ids:?}");
     assert_eq!(body["overview"]["tones"][1]["id"], json!(523));
     assert_eq!(body["overview"]["manual_stop"]["supported"], json!(false));
     let names: Vec<String> = shared
@@ -349,6 +355,50 @@ async fn a_tone_outside_the_list_and_a_bad_level_never_reach_the_device() {
     .await;
     assert_eq!(status, Status::NotFound);
     assert!(sets(&shared).is_empty());
+}
+
+#[tokio::test]
+async fn the_push_block_takes_only_an_interval_inside_the_app_range() {
+    let shared = device(false);
+    let client = client(shared.clone()).await;
+    for patch in [
+        json!({ "enable": false }),
+        json!({ "push_interval": 29 }),
+        json!({ "push_interval": 1801 }),
+        json!({ "enable": true, "push_interval": 60 }),
+        json!({ "push": false }),
+    ] {
+        let (status, body) = post(&client, "/api/device/detect/push", patch.clone()).await;
+        assert_eq!(status, Status::BadRequest, "{patch}: {body}");
+    }
+    let (status, body) = post(
+        &client,
+        "/api/device/detect/motion",
+        json!({ "region": [[true]] }),
+    )
+    .await;
+    assert_eq!(status, Status::BadRequest, "{body}");
+    for gone in ["loss", "blind"] {
+        let (status, _) = post(
+            &client,
+            &format!("/api/device/detect/{gone}"),
+            json!({ "enable": true }),
+        )
+        .await;
+        assert_eq!(status, Status::NotFound, "{gone}");
+    }
+    assert!(sets(&shared).is_empty());
+    let (status, body) = post(
+        &client,
+        "/api/device/detect/push",
+        json!({ "push_interval": 30 }),
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let sent = sets(&shared);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["NetWork.PMS"]["PushInterval"], json!(30));
+    assert_eq!(sent[0]["NetWork.PMS"]["Enable"], json!(true));
 }
 
 #[tokio::test]
@@ -431,20 +481,21 @@ async fn a_device_silent_on_config_reads_times_out_with_the_stage_named() {
     let shared = device(false);
     shared.lock().unwrap().silent_config_get = true;
     let client = client(shared.clone()).await;
+    let bound = Duration::from_millis(400 + 250);
     let started = std::time::Instant::now();
     let (status, body) = get(&client, "/api/device/detect").await;
+    let read = started.elapsed();
     assert_eq!(status, Status::GatewayTimeout, "{body}");
     assert!(body.to_string().contains("Ability.VoiceTipType"), "{body}");
+    assert!(read < bound, "the read answered after {read:?}");
+    let started = std::time::Instant::now();
     let (status, body) = post(&client, "/api/device/detect/motion", json!({ "level": 6 })).await;
+    let write = started.elapsed();
     assert_eq!(status, Status::GatewayTimeout, "{body}");
     assert!(
         body.to_string().contains("Detect.MotionDetect.[0]"),
         "{body}"
     );
-    assert!(
-        started.elapsed() < Duration::from_secs(3),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(write < bound, "the write answered after {write:?}");
     assert!(sets(&shared).is_empty());
 }

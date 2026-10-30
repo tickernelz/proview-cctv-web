@@ -18,7 +18,6 @@ type Summary = {
   tip: boolean | null
   voice_type: number | null
   schedule: string[][] | null
-  region: boolean[][] | null
   show_track: boolean | null
   rule: Rule | null
   duration: number | null
@@ -31,7 +30,6 @@ type Overview = {
   detectors: Detector[]
   tones_gate: Gate
   tones: { id: number; text: string }[]
-  grid: { rows: number; columns: number } | null
   rule_limit: { area: boolean; line: boolean; sensitivity: boolean; show_track: boolean } | null
   combined: Gate
   manual_stop: Gate
@@ -39,7 +37,7 @@ type Overview = {
 type Field = { field: string; before: unknown; requested: unknown; after: unknown; matches: boolean }
 type Report = { block: string; backup: string; fields: Field[]; reverted: boolean; restored: Field[] }
 type Reply = { ok: boolean; status: number; body: any }
-type Slot = { on: boolean; start: string; end: string }
+type Slot = { on: boolean; start: string; end: string; raw: string; held: { on: boolean; start: string; end: string } }
 type Form = Omit<Summary, 'schedule' | 'push_server'> & { schedule: Slot[][] | null }
 
 const props = defineProps<{ host: HTMLElement }>()
@@ -63,6 +61,8 @@ const TRACK_LEVELS = [
   { value: 1, label: 'Middle' },
   { value: 2, label: 'High' },
 ]
+const PUSH_MIN = 30
+const PUSH_MAX = 1800
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 const status = reactive({ text: 'Not loaded yet.', bad: false })
@@ -101,10 +101,12 @@ const failureText = (result: Reply) => (result.body && (result.body.message || r
 
 function toSlot(raw: string): Slot {
   const match = /^([01]) (\d\d:\d\d:\d\d)-(\d\d:\d\d:\d\d)$/.exec(raw)
-  return match ? { on: match[1] === '1', start: match[2], end: match[3] } : { on: false, start: '00:00:00', end: '24:00:00' }
+  const held = match ? { on: match[1] === '1', start: match[2], end: match[3] } : { on: false, start: '00:00:00', end: '24:00:00' }
+  return { ...held, raw, held }
 }
 
-const fromSlot = (slot: Slot) => (slot.on ? '1 ' : '0 ') + seconds(slot.start) + '-' + seconds(slot.end)
+const untouched = (slot: Slot) => slot.on === slot.held.on && slot.start === slot.held.start && slot.end === slot.held.end
+const fromSlot = (slot: Slot) => (untouched(slot) ? slot.raw : (slot.on ? '1 ' : '0 ') + seconds(slot.start) + '-' + seconds(slot.end))
 const seconds = (time: string) => (time.length === 5 ? time + ':00' : time)
 
 function formOf(summary: Summary): Form {
@@ -149,14 +151,19 @@ function patchOf(item: Detector): Record<string, unknown> {
   for (const key of keys) {
     const value = form[key]
     if (value === null || value === undefined || value === ('' as unknown)) continue
-    const wanted = typeof before[key] === 'number' ? Number(value) : value
+    if (item.id === 'push' && key !== 'push_interval') continue
+    let wanted = typeof before[key] === 'number' ? Number(value) : value
+    if (key === 'push_interval') {
+      if (Number(value) === before.push_interval) continue
+      wanted = Math.min(PUSH_MAX, Math.max(PUSH_MIN, Math.round(Number(value))))
+      form.push_interval = wanted as number
+    }
     if (!same(wanted, before[key])) patch[key] = wanted
   }
   if (form.schedule && before.schedule) {
     const schedule = form.schedule.map((day) => day.map(fromSlot))
     if (!same(schedule, before.schedule)) patch.schedule = schedule
   }
-  if (form.region && !same(form.region, before.region)) patch.region = form.region
   if (form.rule && before.rule) {
     const rule: Record<string, unknown> = {}
     if (form.rule.rule_type !== before.rule.rule_type) rule.rule_type = Number(form.rule.rule_type)
@@ -212,19 +219,18 @@ function reset(item: Detector) {
 
 async function stopAlarm() {
   stopNote.value = 'Sending stop…'
-  const result = await request('/api/device/detect/alarm/stop' + deviceQuery(), { method: 'POST' })
-  stopNote.value = result.ok ? 'The camera acknowledged the stop.' : 'Stop failed: ' + failureText(result)
+  try {
+    const result = await request('/api/device/detect/alarm/stop' + deviceQuery(), { method: 'POST' })
+    stopNote.value = result.ok ? 'The camera acknowledged the stop.' : 'Stop failed: ' + failureText(result)
+  } catch (error) {
+    stopNote.value = 'Stop failed: ' + (error instanceof Error ? error.message : String(error))
+  }
 }
 
 function trackBlocked(item: Detector) {
   if (item.id !== 'track' || !data.value || data.value.combined.supported) return ''
   const human = data.value.detectors.find((entry) => entry.id === 'human')
   return human && human.state && human.state.enable ? 'Human detection is on and the camera does not run both: ' + data.value.combined.evidence : ''
-}
-
-function toggleCell(id: string, row: number, column: number) {
-  const region = forms[id].region
-  if (region) region[row][column] = !region[row][column]
 }
 
 function levelOptions(current: number | null) {
@@ -290,7 +296,7 @@ onBeforeUnmount(() => watcher.disconnect())
     <div v-for="item in supported" :key="item.id" :data-testid="'detect-' + item.id">
       <h3 class="set-h">{{ item.label }}</h3>
       <p class="hint">{{ item.gate.evidence }}</p>
-      <div v-if="forms[item.id].enable !== null" class="row">
+      <div v-if="forms[item.id].enable !== null && item.id !== 'push'" class="row">
         <div class="lab">Detection</div>
         <div class="ctl-col">
           <label class="switchrow">
@@ -359,25 +365,6 @@ onBeforeUnmount(() => watcher.disconnect())
           </div>
         </div>
       </div>
-      <div v-if="forms[item.id].region && data.grid" class="row">
-        <div class="lab">Detection area<div class="hint">{{ data.grid.rows }} by {{ data.grid.columns }} grid the camera reports in MotionArea. Filled cells detect.</div></div>
-        <div class="ctl-col">
-          <div class="detect-grid" role="group" aria-label="Motion detection area" :style="{ gridTemplateColumns: 'repeat(' + data.grid.columns + ', 2rem)' }">
-            <template v-for="(row, r) in forms[item.id].region!" :key="r">
-              <button
-                v-for="(cell, c) in row"
-                :key="r + '-' + c"
-                type="button"
-                :class="['detect-cell', { on: cell }]"
-                :aria-pressed="cell"
-                :aria-label="'Row ' + (r + 1) + ', column ' + (c + 1)"
-                :data-testid="'detect-cell-' + r + '-' + c"
-                @click="toggleCell(item.id, r, c)"
-              />
-            </template>
-          </div>
-        </div>
-      </div>
       <div v-if="LINKS.some((link) => forms[item.id][link.key] !== null)" class="row">
         <div class="lab">On alarm</div>
         <div class="ctl-col">
@@ -412,7 +399,10 @@ onBeforeUnmount(() => watcher.disconnect())
       <div v-if="forms[item.id].push_interval !== null" class="row">
         <label class="lab" :for="'detect-' + item.id + '-interval'">Push interval (s)<div class="hint">{{ item.state!.enable ? 'Push service on' : 'Push service off' }} · {{ item.state!.push_server || 'no server' }}</div></label>
         <div class="ctl-col">
-          <input :id="'detect-' + item.id + '-interval'" v-model.number="forms[item.id].push_interval" type="number" min="30" max="1800" step="1" data-testid="detect-push-interval">
+          <input :id="'detect-' + item.id + '-interval'" v-model.number="forms[item.id].push_interval" :min="PUSH_MIN" :max="PUSH_MAX" type="number" step="1" data-testid="detect-push-interval">
+          <p v-if="item.state!.push_interval !== null && (item.state!.push_interval < PUSH_MIN || item.state!.push_interval > PUSH_MAX)" class="hint" data-testid="detect-push-outside">
+            The camera holds {{ item.state!.push_interval }} s, outside the {{ PUSH_MIN }} to {{ PUSH_MAX }} s the app offers; it stays until you save a new value.
+          </p>
           <p class="hint">The app offers 30 to 1800 seconds. Whether an alarm pushes at all is the message switch on each detector.</p>
         </div>
       </div>
@@ -472,10 +462,6 @@ onBeforeUnmount(() => watcher.disconnect())
 </template>
 
 <style scoped>
-.detect-grid { display: grid; gap: var(--s1); }
-.detect-cell { width: 2rem; height: 2rem; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--bg-2); cursor: pointer; }
-.detect-cell.on { background: var(--accent-soft); border-color: var(--accent); }
-.detect-cell:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .detect-pair { display: flex; gap: var(--s2); }
 .detect-pair input { width: 6rem; }
 .detect-points { display: grid; gap: var(--s2); }

@@ -7,9 +7,9 @@ use super::settings::{SettingsError, WriteReport, WriteWindow};
 
 pub const VOICE_TIPS: &str = "Ability.VoiceTipType";
 pub const RULE_LIMIT: &str = "HumanRuleLimit";
-pub const MOTION_AREA: &str = "MotionArea";
 pub const REMOTE_CTRL: &str = "OPRemoteCtrl";
 pub const COORDINATE_MAX: i64 = 8192;
+pub const PUSH_INTERVAL: (i64, i64) = (30, 1800);
 pub const MANUAL_STOP: [&str; 2] = ["AlarmFunction", "ManuIntellAlertAlarm"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,8 +21,6 @@ pub enum Detector {
     Pet,
     Cry,
     Volume,
-    Loss,
-    Blind,
     Intell,
     RemoteCall,
     Track,
@@ -30,15 +28,13 @@ pub enum Detector {
 }
 
 impl Detector {
-    pub const ALL: [Detector; 12] = [
+    pub const ALL: [Detector; 10] = [
         Detector::Motion,
         Detector::Human,
         Detector::Car,
         Detector::Pet,
         Detector::Cry,
         Detector::Volume,
-        Detector::Loss,
-        Detector::Blind,
         Detector::Intell,
         Detector::RemoteCall,
         Detector::Track,
@@ -57,8 +53,6 @@ impl Detector {
             Detector::Pet => "pet",
             Detector::Cry => "cry",
             Detector::Volume => "volume",
-            Detector::Loss => "loss",
-            Detector::Blind => "blind",
             Detector::Intell => "intell",
             Detector::RemoteCall => "remote_call",
             Detector::Track => "track",
@@ -74,8 +68,6 @@ impl Detector {
             Detector::Pet => "Detect.PetDetection.[0]",
             Detector::Cry => "Detect.CryDetection.[0]",
             Detector::Volume => "Detect.VolumeDetection.[0]",
-            Detector::Loss => "Detect.LossDetect.[0]",
-            Detector::Blind => "Detect.BlindDetect.[0]",
             Detector::Intell => "Alarm.IntellAlertAlarm",
             Detector::RemoteCall => "Alarm.RemoteCall",
             Detector::Track => "Detect.DetectTrack",
@@ -91,8 +83,6 @@ impl Detector {
             Detector::Pet => "Pet detection",
             Detector::Cry => "Baby-cry detection",
             Detector::Volume => "Abnormal-sound detection",
-            Detector::Loss => "Video loss",
-            Detector::Blind => "Video tamper",
             Detector::Intell => "Intelligent vigilance",
             Detector::RemoteCall => "One-key call",
             Detector::Track => "Human tracking",
@@ -108,8 +98,6 @@ impl Detector {
             Detector::Pet => Some(["AlarmFunction", "HumanBasedPetDetect"]),
             Detector::Cry => Some(["AlarmFunction", "CryDetection"]),
             Detector::Volume => Some(["OtherFunction", "SupportVolumeDetect"]),
-            Detector::Loss => Some(["AlarmFunction", "LossDetect"]),
-            Detector::Blind => Some(["AlarmFunction", "BlindDetect"]),
             Detector::Intell => Some(["AlarmFunction", "IntellAlertAlarm"]),
             Detector::RemoteCall => Some(["OtherFunction", "SupportAlarmRemoteCall"]),
             Detector::Track => Some(["OtherFunction", "SupportDetectTrack"]),
@@ -170,12 +158,6 @@ pub fn detector_gate(detector: Detector, abilities: &Value) -> Gate {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-pub struct Grid {
-    pub rows: usize,
-    pub columns: usize,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 pub struct RuleLimit {
     pub area: bool,
@@ -212,7 +194,6 @@ pub struct Summary {
     pub tip: Option<bool>,
     pub voice_type: Option<i64>,
     pub schedule: Option<Vec<Vec<String>>>,
-    pub region: Option<Vec<Vec<bool>>>,
     pub show_track: Option<bool>,
     pub rule: Option<HumanRule>,
     pub duration: Option<i64>,
@@ -236,7 +217,6 @@ pub struct AlarmOverview {
     pub detectors: Vec<DetectorView>,
     pub tones_gate: Gate,
     pub tones: Vec<Tone>,
-    pub grid: Option<Grid>,
     pub rule_limit: Option<RuleLimit>,
     pub combined: Gate,
     pub manual_stop: Gate,
@@ -266,7 +246,6 @@ pub struct DetectorPatch {
     pub tip: Option<bool>,
     pub voice_type: Option<i64>,
     pub schedule: Option<Vec<Vec<String>>>,
-    pub region: Option<Vec<Vec<bool>>>,
     pub show_track: Option<bool>,
     pub rule: Option<RulePatch>,
     pub duration: Option<i64>,
@@ -279,10 +258,6 @@ impl DetectorPatch {
         self.voice_type.is_some()
     }
 
-    pub fn needs_grid(&self) -> bool {
-        self.region.is_some()
-    }
-
     pub fn needs_rule_limit(&self) -> bool {
         self.rule.is_some() || self.sensitivity.is_some() || self.show_track.is_some()
     }
@@ -291,7 +266,6 @@ impl DetectorPatch {
 #[derive(Debug, Clone, Default)]
 pub struct PatchContext {
     pub tones: Option<Vec<Tone>>,
-    pub grid: Option<Grid>,
     pub rule_limit: Option<RuleLimit>,
 }
 
@@ -402,31 +376,6 @@ fn read_schedule(value: &Value) -> Option<Vec<Vec<String>>> {
         })
 }
 
-fn region_word(raw: &str) -> Option<u32> {
-    let digits = raw
-        .trim()
-        .strip_prefix("0x")
-        .or_else(|| raw.trim().strip_prefix("0X"))?;
-    u32::from_str_radix(digits, 16).ok()
-}
-
-pub fn region_cells(region: &[Value], grid: Grid) -> Option<Vec<Vec<bool>>> {
-    if grid.rows > region.len() || grid.columns > 32 {
-        return None;
-    }
-    region[..grid.rows]
-        .iter()
-        .map(|row| {
-            let word = region_word(row.as_str()?)?;
-            Some(
-                (0..grid.columns)
-                    .map(|column| word & (1 << column) != 0)
-                    .collect(),
-            )
-        })
-        .collect()
-}
-
 fn read_rule(value: &Value) -> Option<HumanRule> {
     let rule = at(value, "PedRule.0")?;
     let area = at(rule, "RuleRegion.Pts")
@@ -459,14 +408,8 @@ fn read_rule(value: &Value) -> Option<HumanRule> {
     })
 }
 
-pub fn summarize(detector: Detector, block: &Value, grid: Option<Grid>) -> Summary {
+pub fn summarize(detector: Detector, block: &Value) -> Summary {
     let linkage = |key: &str| read_bool(block, &format!("EventHandler.{key}"));
-    let region = match (detector, grid) {
-        (Detector::Motion, Some(grid)) => at(block, "Region")
-            .and_then(Value::as_array)
-            .and_then(|region| region_cells(region, grid)),
-        _ => None,
-    };
     Summary {
         enable: read_bool(block, "Enable"),
         level: read_int(block, "Level"),
@@ -480,7 +423,6 @@ pub fn summarize(detector: Detector, block: &Value, grid: Option<Grid>) -> Summa
         tip: linkage("TipEnable"),
         voice_type: read_int(block, "EventHandler.VoiceType"),
         schedule: read_schedule(block),
-        region,
         show_track: read_bool(block, "ShowTrack"),
         rule: if detector == Detector::Human {
             read_rule(block)
@@ -521,18 +463,6 @@ pub fn tones_of(reply: &Value) -> Vec<Tone> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-pub fn grid_of(reply: &Value) -> Option<Grid> {
-    let rows = read_int(reply, "GridRow")?;
-    let columns = read_int(reply, "GridColumn")?;
-    if rows <= 0 || columns <= 0 || columns > 32 {
-        return None;
-    }
-    Some(Grid {
-        rows: rows as usize,
-        columns: columns as usize,
-    })
 }
 
 pub fn rule_limit_of(reply: &Value) -> RuleLimit {
@@ -651,45 +581,6 @@ fn schedule_value(
     Ok(json!(wanted))
 }
 
-fn region_value(
-    current: &Value,
-    grid: Option<Grid>,
-    cells: &[Vec<bool>],
-) -> Result<Value, SettingsError> {
-    let grid =
-        grid.ok_or_else(|| invalid("region", "the camera does not report a MotionArea grid"))?;
-    let words = at(current, "Region")
-        .and_then(Value::as_array)
-        .ok_or_else(|| invalid("region", "this block has no Region"))?;
-    if grid.rows > words.len() {
-        return Err(invalid(
-            "region",
-            format!("grid has {} rows, Region holds {}", grid.rows, words.len()),
-        ));
-    }
-    if cells.len() != grid.rows || cells.iter().any(|row| row.len() != grid.columns) {
-        return Err(invalid(
-            "region",
-            format!("send {} rows of {} cells", grid.rows, grid.columns),
-        ));
-    }
-    let mut out = words.clone();
-    for (row, flags) in cells.iter().enumerate() {
-        let raw = words[row].as_str().unwrap_or("");
-        let mut word = region_word(raw)
-            .ok_or_else(|| invalid("region", format!("Region row {row} reads {raw:?}")))?;
-        for (column, on) in flags.iter().enumerate() {
-            if *on {
-                word |= 1 << column;
-            } else {
-                word &= !(1 << column);
-            }
-        }
-        out[row] = json!(format!("0x{word:08X}"));
-    }
-    Ok(Value::Array(out))
-}
-
 fn point(field: &'static str, value: i64) -> Result<i64, SettingsError> {
     ranged(field, value, 0, COORDINATE_MAX)
 }
@@ -767,6 +658,16 @@ pub fn apply(
     patch: &DetectorPatch,
     context: &PatchContext,
 ) -> Result<(Value, Vec<String>), SettingsError> {
+    let interval_only = DetectorPatch {
+        push_interval: patch.push_interval,
+        ..Default::default()
+    };
+    if detector == Detector::Push && *patch != interval_only {
+        return Err(invalid(
+            "patch",
+            "NetWork.PMS takes push_interval only; the app edits nothing else there",
+        ));
+    }
     let mut draft = Draft {
         block: current.clone(),
         config: detector.config(),
@@ -826,16 +727,6 @@ pub fn apply(
         let value = schedule_value(read_schedule(current), schedule)?;
         draft.put("schedule", "EventHandler.TimeSection", value)?;
     }
-    if let Some(cells) = &patch.region {
-        if detector != Detector::Motion {
-            return Err(invalid(
-                "region",
-                "only motion detection carries a Region grid",
-            ));
-        }
-        let value = region_value(current, context.grid, cells)?;
-        draft.put("region", "Region", value)?;
-    }
     if let Some(on) = patch.show_track {
         if detector == Detector::Human
             && !context
@@ -876,7 +767,12 @@ pub fn apply(
         draft.put(
             "push_interval",
             "PushInterval",
-            json!(ranged("push_interval", interval, 1, 1800)?),
+            json!(ranged(
+                "push_interval",
+                interval,
+                PUSH_INTERVAL.0,
+                PUSH_INTERVAL.1
+            )?),
         )?;
     }
     if draft.fields.is_empty() {
@@ -979,10 +875,6 @@ impl Connection {
         } else {
             Vec::new()
         };
-        let grid = self
-            .optional_within(MOTION_AREA, true, window)
-            .await?
-            .and_then(|reply| grid_of(&reply));
         let human = gate(&abilities, ["AlarmFunction", "PEAInHumanPed"]);
         let rule_limit = if human.supported {
             self.optional_within(RULE_LIMIT, true, window)
@@ -1003,7 +895,7 @@ impl Connection {
             };
             if view.gate.supported {
                 match self.block_within(detector.config(), window).await {
-                    Ok(block) => view.state = Some(summarize(detector, &block, grid)),
+                    Ok(block) => view.state = Some(summarize(detector, &block)),
                     Err(error @ SettingsError::Slow { .. }) => return Err(error),
                     Err(error) => match unsupported_ret(&error) {
                         Some(ret) => {
@@ -1023,7 +915,6 @@ impl Connection {
             detectors,
             tones_gate,
             tones,
-            grid,
             rule_limit,
             combined: gate(&abilities, ["AlarmFunction", "MotionHumanDection"]),
             manual_stop: gate(&abilities, MANUAL_STOP),
@@ -1055,9 +946,6 @@ impl Connection {
                 });
             }
             context.tones = Some(tones_of(&self.block_within(VOICE_TIPS, window).await?));
-        }
-        if patch.needs_grid() {
-            context.grid = grid_of(&self.ability_within(MOTION_AREA, window).await?);
         }
         if patch.needs_rule_limit() && detector == Detector::Human {
             context.rule_limit = Some(rule_limit_of(
@@ -1174,10 +1062,6 @@ mod tests {
     fn context() -> PatchContext {
         PatchContext {
             tones: Some(tones()),
-            grid: Some(Grid {
-                rows: 7,
-                columns: 7,
-            }),
             rule_limit: Some(limit(false)),
         }
     }
@@ -1249,73 +1133,6 @@ mod tests {
                 "level",
             );
         }
-    }
-
-    #[test]
-    fn region_cells_flip_low_bits_per_row_and_keep_the_rest() {
-        let mut cells = vec![vec![true; 7]; 7];
-        cells[0][0] = false;
-        cells[6][6] = false;
-        cells[3][2] = false;
-        let patch = DetectorPatch {
-            region: Some(cells.clone()),
-            ..Default::default()
-        };
-        let (desired, fields) = apply(Detector::Motion, &motion(), &patch, &context()).unwrap();
-        let region = desired["Region"].as_array().unwrap();
-        assert_eq!(region.len(), 32);
-        assert_eq!(region[0], json!("0xFFFFFFFE"));
-        assert_eq!(region[3], json!("0xFFFFFFFB"));
-        assert_eq!(region[6], json!("0xFFFFFFBF"));
-        assert_eq!(region[1], json!("0xFFFFFFFF"));
-        assert_eq!(region[7], json!("0xFFFFFFFF"));
-        assert_eq!(fields, vec!["Region"]);
-        let read = summarize(
-            Detector::Motion,
-            &desired,
-            Some(Grid {
-                rows: 7,
-                columns: 7,
-            }),
-        );
-        assert_eq!(read.region.unwrap(), cells);
-    }
-
-    #[test]
-    fn region_with_the_wrong_shape_or_no_grid_is_refused() {
-        rejects(
-            Detector::Motion,
-            &motion(),
-            DetectorPatch {
-                region: Some(vec![vec![true; 7]; 6]),
-                ..Default::default()
-            },
-            "region",
-        );
-        rejects(
-            Detector::Motion,
-            &motion(),
-            DetectorPatch {
-                region: Some(vec![vec![true; 8]; 7]),
-                ..Default::default()
-            },
-            "region",
-        );
-        let patch = DetectorPatch {
-            region: Some(vec![vec![true; 7]; 7]),
-            ..Default::default()
-        };
-        let no_grid = PatchContext {
-            grid: None,
-            ..context()
-        };
-        assert!(apply(Detector::Motion, &motion(), &patch, &no_grid).is_err());
-        rejects(
-            Detector::Blind,
-            &json!({ "Enable": false, "Region": null }),
-            patch,
-            "region",
-        );
     }
 
     #[test]
@@ -1416,7 +1233,7 @@ mod tests {
             "push",
         );
         rejects(
-            Detector::Loss,
+            Detector::Intell,
             &json!({ "Enable": false, "Level": null }),
             DetectorPatch {
                 level: Some(3),
@@ -1576,15 +1393,42 @@ mod tests {
         .unwrap();
         assert_eq!(desired["PushInterval"], json!(60));
         assert_eq!(desired["Enable"], json!(true));
-        rejects(
-            Detector::Push,
-            &pms,
+        for interval in [29, 1801, 0] {
+            rejects(
+                Detector::Push,
+                &pms,
+                DetectorPatch {
+                    push_interval: Some(interval),
+                    ..Default::default()
+                },
+                "push_interval",
+            );
+        }
+        let edge = DetectorPatch {
+            push_interval: Some(30),
+            ..Default::default()
+        };
+        assert_eq!(
+            apply(Detector::Push, &pms, &edge, &context()).unwrap().0["PushInterval"],
+            json!(30)
+        );
+        for patch in [
             DetectorPatch {
-                push_interval: Some(1801),
+                enable: Some(false),
                 ..Default::default()
             },
-            "push_interval",
-        );
+            DetectorPatch {
+                enable: Some(false),
+                push_interval: Some(60),
+                ..Default::default()
+            },
+            DetectorPatch {
+                push: Some(false),
+                ..Default::default()
+            },
+        ] {
+            rejects(Detector::Push, &pms, patch, "patch");
+        }
         rejects(
             Detector::Motion,
             &motion(),
@@ -1594,7 +1438,7 @@ mod tests {
             },
             "push_interval",
         );
-        let read = summarize(Detector::Push, &pms, None);
+        let read = summarize(Detector::Push, &pms);
         assert_eq!(read.push_interval, Some(10));
         assert_eq!(read.push_server.as_deref(), Some("push.example.invalid"));
     }
@@ -1613,20 +1457,12 @@ mod tests {
     }
 
     #[test]
-    fn ability_replies_parse_into_grid_tones_and_limits() {
-        assert_eq!(
-            grid_of(&json!({ "GridColumn": 7, "GridRow": 7 })),
-            Some(Grid {
-                rows: 7,
-                columns: 7
-            })
-        );
-        assert_eq!(grid_of(&json!({ "GridColumn": 40, "GridRow": 7 })), None);
+    fn ability_replies_parse_into_tones_and_limits() {
         assert_eq!(tones().len(), 2);
         assert_eq!(tones()[1].id, 523);
         let parsed = limit(false);
         assert!(parsed.area && parsed.line && parsed.show_track && !parsed.sensitivity);
-        let summary = summarize(Detector::Human, &human(), None);
+        let summary = summarize(Detector::Human, &human());
         let rule = summary.rule.unwrap();
         assert_eq!(rule.area.len(), 4);
         assert_eq!(rule.line, Some([100, 100, 8191, 8191]));
