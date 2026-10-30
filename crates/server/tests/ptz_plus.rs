@@ -1,0 +1,581 @@
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use proview_core::dvrip::frame::Header;
+use proview_core::dvrip::{msg, HEADER_LEN};
+use proview_core::provider::Mode;
+use proview_server::config::ModeStore;
+use rocket::http::{ContentType, Status};
+use rocket::local::asynchronous::Client;
+use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+const WINDOW_MS: u64 = 400;
+const OUTER: Duration = Duration::from_secs(8);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mood {
+    Answers,
+    SilentOnPtz,
+    SilentOnLocate,
+    NoPanorama,
+}
+
+#[derive(Clone)]
+struct Seen {
+    connection: usize,
+    at: Instant,
+    id: u16,
+    body: Value,
+}
+
+#[derive(Clone)]
+struct Device {
+    mood: Mood,
+    seen: Arc<Mutex<Vec<Seen>>>,
+    presets: Arc<Mutex<Vec<(i64, String)>>>,
+    tour: Arc<Mutex<Vec<i64>>>,
+    connections: Arc<Mutex<usize>>,
+}
+
+impl Device {
+    fn frames(&self) -> Vec<Seen> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    fn ptz(&self) -> Vec<Seen> {
+        self.frames()
+            .into_iter()
+            .filter(|frame| frame.id == msg::PTZ_CONTROL)
+            .collect()
+    }
+
+    fn uart(&self) -> Value {
+        let presets: Vec<Value> = self
+            .presets
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, name)| json!({ "Id": id, "PresetName": name }))
+            .collect();
+        let points: Vec<Value> = self
+            .tour
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|preset| json!({ "Id": preset, "Time": 5 }))
+            .collect();
+        json!({
+            "PTZPreset": [presets],
+            "PTZTour": [[{ "Id": 1, "Name": "Yard", "Tour": points }]],
+        })
+    }
+
+    fn apply(&self, body: &Value) {
+        let control = &body["OPPTZControl"];
+        let parameter = &control["Parameter"];
+        let preset = parameter["Preset"].as_i64().unwrap_or(0);
+        let name = parameter["PresetName"].as_str().unwrap_or("").to_string();
+        match control["Command"].as_str().unwrap_or("") {
+            "SetPreset" => self.presets.lock().unwrap().push((preset, name)),
+            "SetPresetName" => {
+                for entry in self.presets.lock().unwrap().iter_mut() {
+                    if entry.0 == preset {
+                        entry.1 = name.clone();
+                    }
+                }
+            }
+            "ClearPreset" => self
+                .presets
+                .lock()
+                .unwrap()
+                .retain(|entry| entry.0 != preset),
+            "DeleteTour" => self.tour.lock().unwrap().retain(|stop| *stop != preset),
+            _ => {}
+        }
+    }
+}
+
+fn device(mood: Mood, presets: &[(i64, &str)], tour: &[i64]) -> Device {
+    Device {
+        mood,
+        seen: Arc::new(Mutex::new(Vec::new())),
+        presets: Arc::new(Mutex::new(
+            presets
+                .iter()
+                .map(|(id, name)| (*id, name.to_string()))
+                .collect(),
+        )),
+        tour: Arc::new(Mutex::new(tour.to_vec())),
+        connections: Arc::new(Mutex::new(0)),
+    }
+}
+
+async fn listen(device: Device) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((socket, _)) = listener.accept().await {
+            let connection = {
+                let mut count = device.connections.lock().unwrap();
+                *count += 1;
+                *count
+            };
+            tokio::spawn(serve(socket, device.clone(), connection));
+        }
+    });
+    address
+}
+
+fn trim(payload: &[u8]) -> &[u8] {
+    let mut end = payload.len();
+    while end > 0 && matches!(payload[end - 1], 0 | b'\n' | b'\r') {
+        end -= 1;
+    }
+    &payload[..end]
+}
+
+fn reply(header: &Header, value: &Value) -> Vec<u8> {
+    let mut payload = value.to_string().into_bytes();
+    payload.push(b'\n');
+    payload.push(0);
+    let mut out = Header {
+        session: 0x1122_3344,
+        sequence: header.sequence,
+        channel: 0,
+        end: true,
+        id: header.id.wrapping_add(1),
+        length: payload.len() as u32,
+    }
+    .encode()
+    .to_vec();
+    out.extend_from_slice(&payload);
+    out
+}
+
+async fn serve(mut socket: TcpStream, device: Device, connection: usize) {
+    loop {
+        let mut header_bytes = [0u8; HEADER_LEN];
+        if socket.read_exact(&mut header_bytes).await.is_err() {
+            return;
+        }
+        let Ok(header) = Header::decode(&header_bytes) else {
+            return;
+        };
+        let mut raw = vec![0u8; header.length as usize];
+        if header.length > 0 && socket.read_exact(&mut raw).await.is_err() {
+            return;
+        }
+        let body = serde_json::from_slice::<Value>(trim(&raw)).unwrap_or(Value::Null);
+        device.seen.lock().unwrap().push(Seen {
+            connection,
+            at: Instant::now(),
+            id: header.id,
+            body: body.clone(),
+        });
+        let answer = match header.id {
+            msg::LOGIN => Some(json!({ "Ret": 100, "SessionID": "0x11223344" })),
+            msg::CONFIG_GET if body["Name"] == "Uart" => {
+                Some(json!({ "Ret": 100, "Uart": device.uart() }))
+            }
+            msg::PTZ_CONTROL if device.mood == Mood::SilentOnPtz => None,
+            msg::PTZ_CONTROL => {
+                device.apply(&body);
+                Some(json!({ "Ret": 100 }))
+            }
+            msg::PTZ_LOCATE if device.mood == Mood::SilentOnLocate => None,
+            msg::ABILITY if body["Name"] == "GoToPosition" && device.mood == Mood::NoPanorama => {
+                Some(json!({ "Ret": 103 }))
+            }
+            msg::ABILITY if body["Name"] == "GoToPosition" => Some(json!({
+                "Ret": 100,
+                "GoToPosition": { "HorStart": 0, "HorSteps": 3600, "HorNow": 100, "VerStart": 45, "VerSteps": 90, "VerNow": 45 }
+            })),
+            _ => Some(json!({ "Ret": 100 })),
+        };
+        let Some(value) = answer else {
+            continue;
+        };
+        if socket.write_all(&reply(&header, &value)).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn figment() -> rocket::figment::Figment {
+    rocket::Config::figment()
+        .merge(("secret_key", "uVo3haa/znSxx4MPMV95m4oe9EYQe99QbYgEuBtVqqU="))
+        .merge(("port", 0))
+}
+
+fn config(address: &str) -> proview_core::config::Config {
+    proview_core::config::Config {
+        provider: proview_core::config::ProviderKind::Fixture,
+        cloud_base: "https://pub-token.xmeye.net".to_string(),
+        share_base: proview_core::cloud::attributes::SHARE_BASE.to_string(),
+        device_user: "admin".to_string(),
+        device_pass: "device-password".to_string(),
+        fixture_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures").to_string(),
+        device_host: Some(address.to_string()),
+        device_onvif: None,
+        device_rtsp: None,
+        session_ttl_secs: 3600,
+    }
+}
+
+async fn client(address: &str) -> Client {
+    std::env::set_var("PROVIEW_DVRIP_WINDOW_MS", WINDOW_MS.to_string());
+    let client = Client::tracked(proview_server::build_with_modes(
+        figment(),
+        config(address),
+        ModeStore::new(Mode::Cloud, None),
+    ))
+    .await
+    .expect("valid rocket instance");
+    let status = client
+        .post("/api/login")
+        .header(ContentType::JSON)
+        .body(
+            json!({ "email": "fixture@example.invalid", "password": "fixture-password" })
+                .to_string(),
+        )
+        .dispatch()
+        .await
+        .status();
+    assert_eq!(status, Status::Ok);
+    client
+}
+
+async fn post(client: &Client, path: &str) -> (Status, Value, Duration) {
+    let started = Instant::now();
+    let response = tokio::time::timeout(OUTER, client.post(path).dispatch())
+        .await
+        .unwrap_or_else(|_| panic!("{path} never answered inside {OUTER:?}"));
+    let status = response.status();
+    let text = response.into_string().await.unwrap_or_default();
+    (
+        status,
+        serde_json::from_str(&text).unwrap_or(json!({ "raw": text })),
+        started.elapsed(),
+    )
+}
+
+fn command(frame: &Seen) -> String {
+    frame.body["OPPTZControl"]["Command"]
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+}
+
+fn preset_of(frame: &Seen) -> i64 {
+    frame.body["OPPTZControl"]["Parameter"]["Preset"]
+        .as_i64()
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn a_held_move_starts_on_press_and_stops_on_release_over_one_session() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/press?action=left").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["command"], "DirectionLeft");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fake.ptz().len(),
+        1,
+        "no stop may go out while the key is held"
+    );
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=2000").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["held"], true);
+    assert_eq!(body["times"]["tail_ms"], 0);
+    assert_eq!(body["times"]["fresh_session"], false);
+    let frames = fake.ptz();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(command(&frames[0]), "DirectionLeft");
+    assert_eq!(command(&frames[1]), "DirectionLeft");
+    assert_eq!(preset_of(&frames[0]), 65535);
+    assert_eq!(preset_of(&frames[1]), -1);
+    assert_eq!(
+        frames[0].body["OPPTZControl"]["Parameter"]["Step"],
+        frames[1].body["OPPTZControl"]["Parameter"]["Step"]
+    );
+    assert_eq!(frames[0].connection, frames[1].connection);
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/release").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["held"], false);
+    assert_eq!(fake.ptz().len(), 2);
+}
+
+#[tokio::test]
+async fn a_tap_keeps_the_motor_running_for_the_app_tail_before_the_stop() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/press?action=zoom-in").await;
+    assert_eq!(status, Status::Ok);
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/release?pressed_ms=100").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let frames = fake.ptz();
+    assert_eq!(command(&frames[0]), "ZoomTile");
+    assert_eq!(preset_of(&frames[1]), -1);
+    let ran = frames[1].at - frames[0].at;
+    assert!(
+        ran >= Duration::from_millis(880),
+        "the stop came {ran:?} after the start"
+    );
+    assert!(
+        ran < Duration::from_millis(1600),
+        "the stop came {ran:?} after the start"
+    );
+}
+
+#[tokio::test]
+async fn a_second_press_stops_the_first_before_it_starts() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    assert_eq!(
+        post(&client, "/api/device/controls/ptz/press?action=up")
+            .await
+            .0,
+        Status::Ok
+    );
+    assert_eq!(
+        post(&client, "/api/device/controls/ptz/press?action=right")
+            .await
+            .0,
+        Status::Ok
+    );
+    let order: Vec<(String, i64)> = fake
+        .ptz()
+        .iter()
+        .map(|frame| (command(frame), preset_of(frame)))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("DirectionUp".to_string(), 65535),
+            ("DirectionUp".to_string(), -1),
+            ("DirectionRight".to_string(), 65535),
+        ]
+    );
+    assert_eq!(
+        post(&client, "/api/device/controls/ptz/release?pressed_ms=900")
+            .await
+            .0,
+        Status::Ok
+    );
+}
+
+#[tokio::test]
+async fn a_press_the_device_never_acks_times_out_and_still_sends_a_stop() {
+    let fake = device(Mood::SilentOnPtz, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, took) = post(&client, "/api/device/controls/ptz/press?action=down").await;
+    assert_eq!(status, Status::GatewayTimeout, "{body}");
+    assert!(body.to_string().contains("ptz press"), "{body}");
+    assert!(
+        took < Duration::from_millis(WINDOW_MS + 1500),
+        "answered after {took:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !fake.ptz().iter().any(|frame| preset_of(frame) == -1) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let frames = fake.ptz();
+    let stop = frames
+        .iter()
+        .find(|frame| preset_of(frame) == -1)
+        .expect("a stop after the silent press");
+    assert_eq!(command(stop), "DirectionDown");
+    assert_ne!(stop.connection, frames[0].connection);
+}
+
+#[tokio::test]
+async fn a_click_on_the_wide_lens_sends_the_offsets_monitor_activity_computes() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/locate?x=0.25&y=0.75").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let locate: Vec<Seen> = fake
+        .frames()
+        .into_iter()
+        .filter(|frame| frame.id == msg::PTZ_LOCATE)
+        .collect();
+    assert_eq!(locate.len(), 1);
+    assert_eq!(locate[0].body["Name"], "OPPtzLocate");
+    assert_eq!(
+        locate[0].body["OPPtzLocate"],
+        json!([{ "xoffset": -2048, "yoffset": -2048 }])
+    );
+    let before = fake.frames().len();
+    let (status, _, _) = post(&client, "/api/device/controls/ptz/locate?x=1.5&y=0.5").await;
+    assert_eq!(status, Status::BadRequest);
+    assert_eq!(
+        fake.frames().len(),
+        before,
+        "an outside click must not reach the camera"
+    );
+}
+
+#[tokio::test]
+async fn a_locate_the_device_never_answers_maps_to_504_inside_the_window() {
+    let fake = device(Mood::SilentOnLocate, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, took) = post(&client, "/api/device/controls/ptz/locate?x=0.5&y=0.5").await;
+    assert_eq!(status, Status::GatewayTimeout, "{body}");
+    assert!(body.to_string().contains("ptz locate"), "{body}");
+    assert!(
+        took < Duration::from_millis(WINDOW_MS + 1500),
+        "answered after {took:?}"
+    );
+}
+
+#[tokio::test]
+async fn presets_are_added_at_the_lowest_free_id_renamed_and_deleted_with_their_tour_stops() {
+    let fake = device(
+        Mood::Answers,
+        &[(1, "Gate"), (2, "Drive"), (250, "Home")],
+        &[1, 2],
+    );
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/preset/add").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["id"], 3);
+    assert_eq!(body["name"], "Preset3");
+    let set = fake
+        .ptz()
+        .into_iter()
+        .find(|frame| command(frame) == "SetPreset")
+        .unwrap();
+    assert_eq!(
+        set.body["OPPTZControl"]["Parameter"]["PresetName"],
+        "Preset3"
+    );
+    assert_eq!(set.body["OPPTZControl"]["Parameter"]["Channel"], 0);
+
+    let (status, body, _) = post(
+        &client,
+        "/api/device/controls/preset/rename?token=3&name=%20Back%20porch%20by%20the%20shed%20",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["name"], "Back porch by th");
+    assert!(
+        body["presets"].to_string().contains("Back porch by th"),
+        "{body}"
+    );
+
+    let (status, _, _) = post(
+        &client,
+        "/api/device/controls/preset/rename?token=3&name=%20%20",
+    )
+    .await;
+    assert_eq!(status, Status::BadRequest);
+    let (status, _, _) = post(&client, "/api/device/controls/preset/rename?token=9&name=x").await;
+    assert_eq!(status, Status::NotFound);
+
+    let (status, body, _) = post(
+        &client,
+        "/api/device/controls/tour/add?tour=1&preset=3&index=2",
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    fake.tour.lock().unwrap().push(3);
+    let (status, body, _) = post(&client, "/api/device/controls/preset/delete?token=3").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let commands: Vec<String> = fake.ptz().iter().map(command).collect();
+    let clear = commands
+        .iter()
+        .position(|name| name == "ClearPreset")
+        .unwrap();
+    assert_eq!(commands[clear + 1], "DeleteTour");
+    assert_eq!(*fake.tour.lock().unwrap(), vec![1, 2]);
+    let ids: Vec<i64> = fake
+        .presets
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|entry| entry.0)
+        .collect();
+    assert_eq!(ids, vec![1, 2, 250]);
+    let (status, _, _) = post(&client, "/api/device/controls/preset/delete?token=3").await;
+    assert_eq!(status, Status::NotFound);
+}
+
+#[tokio::test]
+async fn a_full_preset_list_refuses_the_add_before_any_write() {
+    let full: Vec<(i64, &str)> = (1..=32).map(|id| (id, "p")).collect();
+    let fake = device(Mood::Answers, &full, &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/preset/add?name=x").await;
+    assert_eq!(status, Status::Conflict, "{body}");
+    assert!(fake.ptz().is_empty());
+}
+
+#[tokio::test]
+async fn a_tour_stop_is_removed_with_delete_tour_on_its_line() {
+    let fake = device(Mood::Answers, &[(1, "Gate"), (2, "Drive")], &[1, 2]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/tour/remove?tour=1&preset=2").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let frame = fake
+        .ptz()
+        .into_iter()
+        .find(|frame| command(frame) == "DeleteTour")
+        .unwrap();
+    assert_eq!(frame.body["OPPTZControl"]["Parameter"]["Tour"], 1);
+    assert_eq!(frame.body["OPPTZControl"]["Parameter"]["Preset"], 2);
+    assert_eq!(*fake.tour.lock().unwrap(), vec![1]);
+    let (status, _, _) = post(&client, "/api/device/controls/tour/remove?tour=1&preset=7").await;
+    assert_eq!(status, Status::NotFound);
+}
+
+#[tokio::test]
+async fn the_panorama_goes_to_a_column_at_the_vertical_start_inside_the_range() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/panorama/goto?left=1800").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let frame = fake
+        .ptz()
+        .into_iter()
+        .find(|frame| command(frame) == "GoToPosition")
+        .expect("a GoToPosition frame");
+    assert_eq!(
+        frame.body["OPPTZControl"]["Parameter"]["POINT"],
+        json!({ "left": 1800, "top": 45 })
+    );
+    let before = fake.ptz().len();
+    let (status, _, _) = post(&client, "/api/device/controls/panorama/goto?left=3700").await;
+    assert_eq!(status, Status::BadRequest);
+    assert_eq!(fake.ptz().len(), before);
+}
+
+#[tokio::test]
+async fn a_camera_that_refuses_the_panorama_ability_answers_501_with_its_code() {
+    let fake = device(Mood::NoPanorama, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let response = client.get("/api/device/controls/panorama").dispatch().await;
+    assert_eq!(response.status(), Status::NotImplemented);
+    let text = response.into_string().await.unwrap_or_default();
+    assert!(text.contains("Ret 103"), "{text}");
+    let (status, _, _) = post(&client, "/api/device/controls/panorama/goto?left=10").await;
+    assert_eq!(status, Status::NotImplemented);
+    assert!(fake.ptz().is_empty());
+}
+
+#[tokio::test]
+async fn calibration_sends_ptz_auto_adjust_on_the_machine_message() {
+    let fake = device(Mood::Answers, &[], &[]);
+    let client = client(&listen(fake.clone()).await).await;
+    let (status, body, _) = post(&client, "/api/device/controls/ptz/calibrate").await;
+    assert_eq!(status, Status::Ok, "{body}");
+    let frame = fake
+        .frames()
+        .into_iter()
+        .find(|frame| frame.id == msg::OP_MACHINE)
+        .expect("an OPMachine frame");
+    assert_eq!(frame.body["Name"], "OPPtzAutoAdjust");
+}
