@@ -122,7 +122,9 @@ fn cloud_stub(handler: impl Fn(&str, &str) -> Value + Send + 'static) -> (String
                 .next()
                 .unwrap_or_default()
                 .to_string();
-            let tsid = path.split('/').nth(3).unwrap_or_default().to_string();
+            let (route, query) = path.split_once('?').unwrap_or((path.as_str(), ""));
+            let version = route.split('/').nth(2).unwrap_or_default().to_string();
+            let tsid = route.split('/').nth(3).unwrap_or_default().to_string();
             let length = content_length(&head_text);
             let body = if buffer.len() >= head + 4 {
                 String::from_utf8_lossy(&buffer[head + 4..(head + 4 + length).min(buffer.len())])
@@ -132,17 +134,27 @@ fn cloud_stub(handler: impl Fn(&str, &str) -> Value + Send + 'static) -> (String
                 String::new()
             };
             let key = body_key(&tsid, APP_SECRET);
-            let form = if body.is_empty() {
+            let form = if version == "v1" {
+                query.to_string()
+            } else if body.is_empty() {
                 String::new()
             } else {
                 open(&key, &body).unwrap_or_default()
             };
-            recorder
-                .lock()
-                .expect("recorded calls")
-                .push((method.clone(), form.clone()));
+            {
+                let mut recorded = recorder.lock().expect("recorded calls");
+                recorded.push((method.clone(), form.clone()));
+                recorded.push((
+                    format!("{method}@wire"),
+                    format!("version={version}&body={}", body.len()),
+                ));
+            }
             let payload = handler(&method, &form).to_string();
-            let sealed = seal(&key, &payload).unwrap_or(payload);
+            let sealed = if version == "v1" {
+                form_encoded(&payload)
+            } else {
+                seal(&key, &payload).unwrap_or(payload)
+            };
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 sealed.len(),
@@ -153,6 +165,20 @@ fn cloud_stub(handler: impl Fn(&str, &str) -> Value + Send + 'static) -> (String
         }
     });
     (format!("http://{address}"), calls)
+}
+
+fn form_encoded(text: &str) -> String {
+    let mut out = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'*') {
+            out.push(byte as char);
+        } else if byte == b' ' {
+            out.push('+');
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 fn login_reply() -> Value {
@@ -506,6 +532,12 @@ fn forms(calls: &Calls, endpoint: &str) -> Vec<String> {
         .collect()
 }
 
+fn keys(form: &str) -> Vec<&str> {
+    form.split('&')
+        .filter_map(|pair| pair.split_once('=').map(|(key, _)| key))
+        .collect()
+}
+
 fn field(form: &str, name: &str) -> String {
     form.split('&')
         .find_map(|pair| {
@@ -649,7 +681,14 @@ fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_righ
         let sent = forms(&calls, "mdshareadd");
         assert_eq!(sent.len(), 1);
         let form = &sent[0];
-        assert_eq!(field(form, "uuid"), SHAREABLE);
+        assert_eq!(
+            keys(form),
+            vec!["shareUuid", "acceptId", "powers", "permissions"]
+        );
+        assert_eq!(
+            forms(&calls, "mdshareadd@wire"),
+            vec!["version=v1&body=0".to_string()]
+        );
         assert_eq!(field(form, "shareUuid"), SHAREABLE);
         assert_eq!(field(form, "acceptId"), "wanted-id");
         assert_eq!(field(form, "permissions"), "DP_PTZ,DP_Intercom");
@@ -665,6 +704,45 @@ fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_righ
         );
         assert_eq!(parts[3], "0");
         assert!(parts[4].parse::<i64>().expect("time") > 1_700_000_000);
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn an_account_password_travels_as_the_apps_uname_and_upass_ahead_of_the_share() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
+                { "account": "zh***@gmail.com", "id": "wanted-id" }
+            ]}),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let running = start(&data_dir("upass"), &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/permitted",
+                json!({ "uuid": SHAREABLE, "acceptId": "wanted-id", "permissions": ["DP_PTZ"], "password": "acct pass+1" }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let form = &forms(&calls, "mdshareadd")[0];
+        assert_eq!(
+            keys(form),
+            vec![
+                "uname",
+                "upass",
+                "shareUuid",
+                "acceptId",
+                "powers",
+                "permissions"
+            ]
+        );
+        assert_eq!(field(form, "uname"), "someone@example.invalid");
+        assert_eq!(field(form, "upass"), "acct pass+1");
         running.shutdown.notify();
     });
 }
@@ -700,7 +778,17 @@ fn the_owner_lists_changes_and_revokes_a_share_by_its_id() {
         let (cloud, calls) = cloud_stub(|method, _| match method {
             "loginExist" => login_reply(),
             "mdsharemylist" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
-                { "id": "share-7", "uuid": SHAREABLE, "account": "zh***@gmail.com", "userId": "wanted-id", "permissions": "DP_PTZ,DP_Intercom", "shareState": 1 }
+                { "id": "share-7", "uuid": SHAREABLE, "shareTime": 1793352845004i64, "ret": 0, "pid": "",
+                  "powers": "{\"devInfo\":\"z1evz\"}", "account": "zh***@gmail.com", "shareAccountId": "wanted-id",
+                  "permissions": [
+                    { "label": "DP_AlarmPush", "enabled": false },
+                    { "label": "DP_CLoudConfig", "enabled": false },
+                    { "label": "DP_Intercom", "enabled": true },
+                    { "label": "DP_LocalStorage", "enabled": false },
+                    { "label": "DP_ModifyPwd", "enabled": false },
+                    { "label": "DP_PTZ", "enabled": true },
+                    { "label": "DP_VideoCall", "enabled": false }
+                  ] }
             ]}),
             _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
         });
@@ -717,8 +805,13 @@ fn the_owner_lists_changes_and_revokes_a_share_by_its_id() {
             .await;
         assert_eq!(status, 200, "{rows}");
         assert_eq!(rows[0]["shareId"], "share-7");
-        assert_eq!(rows[0]["permissions"], json!(["DP_PTZ", "DP_Intercom"]));
-        assert_eq!(rows[0]["state"], "1");
+        assert_eq!(rows[0]["permissions"], json!(["DP_Intercom", "DP_PTZ"]));
+        assert_eq!(rows[0]["state"], "0");
+        assert_eq!(rows[0]["userId"], "wanted-id");
+        assert_eq!(
+            forms(&calls, "mdsharemylist@wire"),
+            vec!["version=v1&body=0".to_string()]
+        );
         assert_eq!(
             field(&forms(&calls, "mdsharemylist")[0], "shareUuid"),
             SHAREABLE
@@ -742,7 +835,11 @@ fn the_owner_lists_changes_and_revokes_a_share_by_its_id() {
             )
             .await;
         assert_eq!(status, 200, "{body}");
-        assert_eq!(field(&forms(&calls, "mdsharedel")[0], "devId"), "share-7");
+        assert_eq!(forms(&calls, "mdsharedel")[0], "devId=share-7");
+        assert_eq!(
+            forms(&calls, "mdsharedel@wire"),
+            vec!["version=v1&body=0".to_string()]
+        );
         let (status, _) = browser
             .post(
                 &running.base,

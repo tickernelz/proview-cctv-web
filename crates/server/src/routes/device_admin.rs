@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use proview_core::cloud::attributes::{
     dev_info_plain, permission_list, share_powers, share_qr_link, AttributeClient, AttributeStore,
-    DeviceAttributes, ShareEntry, ShareQrInfo, SHARE_PERMISSIONS, SHARE_QR_LIFETIME_MS,
+    DeviceAttributes, ShareEntry, ShareLogin, ShareQrInfo, SHARE_PERMISSIONS, SHARE_QR_LIFETIME_MS,
 };
 use proview_core::cloud::bind::encode_qr_blob;
 use proview_core::cloud::envelope::{EnvelopeClient, Identity};
@@ -673,6 +673,8 @@ pub struct PermittedBody {
     account: Option<String>,
     #[serde(default)]
     permissions: Vec<String>,
+    #[serde(default)]
+    password: String,
 }
 
 #[derive(Serialize)]
@@ -741,9 +743,14 @@ async fn share_permitted(
     let powers = share_powers(&encode_qr_blob(&plain, blob_offset()));
     let vendor = within(
         "share",
-        admin
-            .admin
-            .share_with_permissions(&signed.token, &uuid, &target, &powers, &permissions),
+        admin.admin.share_with_permissions(
+            &signed.token,
+            &ShareLogin::new(&signed.account, &body.password),
+            &uuid,
+            &target,
+            &powers,
+            &permissions,
+        ),
     )
     .await?;
     Ok(Json(PermittedReply {
@@ -767,7 +774,9 @@ async fn shares_of_device(
     let admin = clients(cfg);
     within(
         "share list",
-        admin.admin.shares_of_device(&signed.token, &uuid),
+        admin
+            .admin
+            .shares_of_device(&signed.token, &ShareLogin::default(), &uuid),
     )
     .await
     .map(Json)
@@ -783,7 +792,9 @@ async fn shares_received(
     let admin = clients(cfg);
     within(
         "received shares",
-        admin.admin.shares_received(&signed.token),
+        admin
+            .admin
+            .shares_received(&signed.token, &ShareLogin::default()),
     )
     .await
     .map(Json)
@@ -795,6 +806,8 @@ pub struct SharePermissionBody {
     share_id: String,
     #[serde(default)]
     permissions: Vec<String>,
+    #[serde(default)]
+    password: String,
 }
 
 #[post("/cloud/device/shares/permissions", data = "<body>")]
@@ -810,9 +823,12 @@ async fn share_set_permissions(
     let admin = clients(cfg);
     within(
         "permission change",
-        admin
-            .admin
-            .set_share_permissions(&signed.token, &id, &permissions),
+        admin.admin.set_share_permissions(
+            &signed.token,
+            &ShareLogin::new(&signed.account, &body.password),
+            &id,
+            &permissions,
+        ),
     )
     .await
     .map(Json)
@@ -824,6 +840,8 @@ pub struct ShareIdBody {
     share_id: String,
     #[serde(default)]
     accept: Option<bool>,
+    #[serde(default)]
+    password: String,
 }
 
 #[post("/cloud/device/shares/revoke", data = "<body>")]
@@ -836,9 +854,13 @@ async fn share_revoke(
     let signed = signed(store, cookies)?;
     let id = share_id_of(&body.share_id)?;
     let admin = clients(cfg);
-    within("revoke", admin.admin.revoke_share(&signed.token, &id))
-        .await
-        .map(Json)
+    let login = ShareLogin::new(&signed.account, &body.password);
+    within(
+        "revoke",
+        admin.admin.revoke_share(&signed.token, &login, &id),
+    )
+    .await
+    .map(Json)
 }
 
 #[post("/cloud/device/shares/answer", data = "<body>")]
@@ -857,17 +879,23 @@ async fn share_answer(
         )
     })?;
     let admin = clients(cfg);
+    let login = ShareLogin::new(&signed.account, &body.password);
     if accept {
         within(
             "accept",
-            admin.admin.accept_permission_share(&signed.token, &id),
+            admin
+                .admin
+                .accept_permission_share(&signed.token, &login, &id),
         )
         .await
         .map(Json)
     } else {
-        within("refuse", admin.admin.refuse_share(&signed.token, &id))
-            .await
-            .map(Json)
+        within(
+            "refuse",
+            admin.admin.refuse_share(&signed.token, &login, &id),
+        )
+        .await
+        .map(Json)
     }
 }
 
