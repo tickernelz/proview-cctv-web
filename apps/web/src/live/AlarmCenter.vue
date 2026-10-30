@@ -21,10 +21,10 @@ const devicePick = ref<HTMLSelectElement>()
 const devices = ref<Device[]>([])
 const extra = ref<Device | null>(null)
 const query = reactive<Query>({ serial: '', hours: 24, event: '', day: '' })
-const filters = ref<Filter[]>([
+const filters: Filter[] = [
   { id: 'VideoMotion', label: 'Motion detection' },
   { id: 'appEventHumanDetectAlarm', label: 'Human detection' },
-])
+]
 const tools = reactive({
   calendar: false,
   manage: false,
@@ -61,7 +61,6 @@ let lastCheck = 0
 let ticket = 0
 let inflight: Query | null = null
 let alertsOn = false
-let filtersAsked = false
 
 const cameras = computed(() => (extra.value && !devices.value.some((device) => device.id === extra.value!.id) ? [...devices.value, extra.value] : devices.value))
 const rows = computed(() => [...view.entries].sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0)))
@@ -266,17 +265,6 @@ async function readJson(reply: Response) {
   return (await reply.json().catch(() => ({}))) as Record<string, unknown>
 }
 
-async function loadFilters() {
-  try {
-    const reply = await fetch('/api/cloud/alarms/filters', { credentials: 'same-origin' })
-    if (!reply.ok) return
-    const body = (await reply.json()) as Filter[]
-    if (Array.isArray(body) && body.length) filters.value = body
-  } catch {
-    return
-  }
-}
-
 async function loadMonth() {
   const serial = query.serial
   const month = tools.month
@@ -397,10 +385,6 @@ function syncDevices() {
 async function show() {
   live.sheet = 'alarms'
   syncDevices()
-  if (!filtersAsked) {
-    filtersAsked = true
-    loadFilters()
-  }
   await nextTick()
   devicePick.value?.focus()
   if (view.phase !== 'ok') poll()

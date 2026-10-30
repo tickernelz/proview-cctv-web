@@ -72,7 +72,7 @@ const device = computed(() => list.devices.find((entry) => entry.uuid === chosen
 const shownTab = computed(() => (device.value ? tab.value : 'share'))
 
 watch(
-  () => open.value && shownTab.value === 'share',
+  () => open.value && list.phase === 'ok' && shownTab.value === 'share',
   (sharing) => {
     if (!sharing) return
     if (permissions.value === FALLBACK_PERMISSIONS) loadPermissions()
