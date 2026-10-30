@@ -45,6 +45,7 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 pub mod settings_write;
+pub mod system;
 
 #[path = "routes/recordings.rs"]
 pub mod recordings;
@@ -78,6 +79,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(device_admin::routes())
     .chain(apmode::routes())
     .chain(settings_write::routes())
+    .chain(system::routes())
     .collect()
 }
 

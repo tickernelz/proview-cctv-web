@@ -9,6 +9,21 @@ stability before 1.0.
 
 ### Added
 
+- About device in Settings, over the vendor cloud relay (`/api/device/system*`):
+  model, serial, firmware, build time, hardware, run time, `SystemInfoEx` and the
+  `SystemFunction` flags; camera clock and time zone with a sync to this
+  computer (`OPTimeQuery` 1452, `OPTimeSetting` 1450, `System.TimeZone`,
+  `General.Location`); the camera UI language from its `MultiLanguage` list;
+  a firmware check that asks the camera (`OPVersionReq` 2016, only when it
+  reports `SupportCfgCloudupgrade`) and the vendor upgrade server
+  (`POST upgrade.secu100.net:9083/list`, 204 means no newer build); a network
+  check (`Ping` 1052 to the app's hosts plus the gateway, `XmCloudStatus`,
+  `Status.NatInfo`, `WifiRouteInfo` gated by `WifiRouteSignalLevel`); the
+  device user list without password hashes; restart (`OPMachine`). Factory
+  defaults (typed RESET), cloud and file firmware upgrade (typed UPGRADE),
+  device password change, user rename and password recovery are wired with
+  the app's wire JSON and proven against a fake device only.
+
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the

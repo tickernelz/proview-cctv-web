@@ -32,6 +32,7 @@ const SECTIONS = [
   { id: 'config', name: 'Configuration' },
   { id: 'server', name: 'Server' },
 ]
+const OWN = new Set(SECTIONS.map((item) => item.id))
 const OPTION_LABELS: Record<string, string> = {
   proview: 'Vendor cloud',
   cloud: 'Cloud account',
@@ -255,7 +256,7 @@ function onNavKey(event: KeyboardEvent) {
   if (at < 0) return
   event.preventDefault()
   const next = links[(at + step + links.length) % links.length]
-  if (next.dataset.section === 'device') next.click()
+  if (!OWN.has(next.dataset.section || '')) next.click()
   else show(next.dataset.section || 'playback', false)
   next.focus()
 }
@@ -331,10 +332,15 @@ function onKey(event: KeyboardEvent) {
 }
 
 function syncForeign(section: string) {
-  for (const node of document.querySelectorAll<HTMLElement>('#set-body > section[data-section="device"]')) node.hidden = section !== 'device'
-  for (const link of document.querySelectorAll<HTMLAnchorElement>('.set-nav a[data-section="device"]')) {
-    link.tabIndex = section === 'device' ? 0 : -1
-    if (section === 'device') link.setAttribute('aria-current', 'page')
+  for (const node of document.querySelectorAll<HTMLElement>('#set-body > section[data-section]')) {
+    const id = node.dataset.section || ''
+    if (!OWN.has(id)) node.hidden = section !== id
+  }
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('.set-nav a[data-section]')) {
+    const id = link.dataset.section || ''
+    if (OWN.has(id)) continue
+    link.tabIndex = section === id ? 0 : -1
+    if (section === id) link.setAttribute('aria-current', 'page')
     else link.removeAttribute('aria-current')
   }
 }

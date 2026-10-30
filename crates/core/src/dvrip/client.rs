@@ -265,7 +265,7 @@ impl Connection {
         self.stream.flush().await
     }
 
-    async fn send_json(&mut self, id: u16, body: &Value) -> Result<(), DvrError> {
+    pub(crate) async fn send_json(&mut self, id: u16, body: &Value) -> Result<(), DvrError> {
         let mut plain =
             serde_json::to_vec(body).map_err(|error| DvrError::Malformed(error.to_string()))?;
         match &self.seal {
@@ -354,7 +354,7 @@ impl Connection {
         self.await_reply(8).await
     }
 
-    async fn await_reply(&mut self, attempts: usize) -> Result<Value, DvrError> {
+    pub(crate) async fn await_reply(&mut self, attempts: usize) -> Result<Value, DvrError> {
         for _ in 0..attempts {
             let (_, payload) = self.recv().await?;
             if let Ok(value) = parse_json(&payload) {
