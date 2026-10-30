@@ -130,7 +130,10 @@
   .pad-btn { flex: none; min-height: 28px; padding: 0 var(--s1); color: var(--p-ink); font-size: var(--t-13); text-decoration: underline; text-underline-offset: 3px; }
   .pad-btn:disabled { color: var(--p-ink-2); text-decoration: none; cursor: not-allowed; }
 
-  .emptywrap { flex: 1; display: grid; place-items: center; }
+  .emptywrap { flex: 1; min-height: 0; display: grid; place-items: center; padding: var(--s4); overflow-y: auto; }
+  @media (max-height: 900px), (max-width: 640px) {
+    .emptywrap { place-items: start center; }
+  }
   .empty { max-width: 440px; display: grid; gap: var(--s3); }
   .empty h2 { font-size: var(--t-21); font-weight: 600; letter-spacing: -0.01em; }
   .empty p { font-size: var(--t-14); color: var(--ink-2); line-height: 1.55; }

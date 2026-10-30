@@ -45,6 +45,14 @@ function clickKey(act: string, event: MouseEvent) {
   else if (event.detail === 0) tapControl(act)
 }
 
+function releaseFocus(event: PointerEvent) {
+  if (event.pointerType === 'touch') return
+  nextTick(() => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && (event.currentTarget as HTMLElement | null)?.contains(active)) active.blur()
+  })
+}
+
 const knob = ref({ x: 0, y: 0, active: false })
 let aimed = ''
 const REACH = 40
@@ -133,7 +141,7 @@ watch(
     <div class="pad-panel">
       <div class="pad-row">
         <span class="pad-lab">Speed</span>
-        <SegmentedControl data-testid="ptz-speed" label="Speed" size="sm" :options="SPEEDS" :model-value="pad.speed" @update:model-value="pickPtzSpeed" />
+        <span class="pad-speed" @pointerup="releaseFocus"><SegmentedControl data-testid="ptz-speed" label="Speed" size="sm" :options="SPEEDS" :model-value="pad.speed" @update:model-value="pickPtzSpeed" /></span>
       </div>
       <div v-if="pad.presetsShown || live.gate.presetEdit.ok" class="pad-row top">
         <span id="preset-label" class="pad-lab" data-testid="ptz-preset-label">Presets</span>

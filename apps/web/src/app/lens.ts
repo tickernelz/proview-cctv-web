@@ -194,7 +194,7 @@ export function renderLensPicker() {
   live.settings.lensNote = lensNote()
   live.settings.lensTitle = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : ''
   live.settings.lensRolesKnown = entries.some((entry) => entry.role !== 'unknown')
-  const pipOption = pair ? [{ value: PIP, name: 'Picture in picture', sub: pipPair()[0].label.toLowerCase() + ' large, ' + pipPair()[1].label.toLowerCase() + ' in a corner' }] : []
+  const pipOption = pair ? [{ value: PIP, name: 'Picture in picture', sub: 'one lens large, the other in a corner' }] : []
   live.lens.options = pipOption.concat(
     [{ value: 'combined', name: 'Both lenses', sub: 'stacked, as the camera sends the frame' }],
     entries.map((entry) => ({ value: String(entry.index), name: entry.label, sub: lensSub(entry) })),
