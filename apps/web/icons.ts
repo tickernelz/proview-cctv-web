@@ -43,6 +43,17 @@ export const ICONS: Record<string, string> = {
   calendar: 'calendar-days',
   loader: 'loader-circle',
   alert: 'circle-alert',
+  layers: 'layers',
+  swap: 'repeat-2',
+  flip: 'flip-vertical-2',
+  lightbulb: 'lightbulb',
+  'low-light': 'sun-dim',
+  'zoom-in': 'zoom-in',
+  'zoom-out': 'zoom-out',
+  focus: 'focus',
+  route: 'route',
+  pencil: 'pencil',
+  crosshair: 'crosshair',
 }
 
 const SPRITE = /<svg class="sprite"[^>]*>[\s\S]*?<\/svg>/

@@ -343,7 +343,7 @@ function openSocket(session: Session, mine: number) {
 }
 
 export async function startTalk() {
-  if (live.talk.on || !live.gate.intercom.ok || state.view !== 'live') return
+  if (live.talk.on || !live.gate.intercom.ok || state.view !== 'live' || live.mode === 'playback') return
   const mine = ++attempt
   const session: Session = {
     socket: null,

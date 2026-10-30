@@ -4,6 +4,7 @@ import { live } from '../live/store'
 import { elapsed, renderFlag } from './caption'
 import { selectedDevice } from './devices'
 import { state } from './state'
+import { toast } from '../components/ui/toast'
 
 const video = () => document.getElementById('video') as HTMLVideoElement
 
@@ -49,7 +50,10 @@ export function captureSnapshot() {
   }
   context.drawImage(frame, sx, sy, sw, sh, 0, 0, sw, sh)
   canvas.toBlob((blob) => {
-    if (blob) download(blob, device.id + '_ch' + state.channel + '_lens-' + state.lensView + '_' + stamp() + '.png')
+    if (!blob) return
+    const name = device.id + '_ch' + state.channel + '_lens-' + state.lensView + '_' + stamp() + '.png'
+    download(blob, name)
+    toast({ title: 'Snapshot saved', description: name, tone: 'ok' })
   }, 'image/png')
 }
 
@@ -91,7 +95,11 @@ export function toggleRecord() {
     state.recordChunks = []
     state.recorder = null
     renderRecord()
-    if (blob.size) download(blob, (device ? device.id : 'camera') + '_ch' + state.channel + '_' + stamp() + '.webm')
+    if (blob.size) {
+      const name = (device ? device.id : 'camera') + '_ch' + state.channel + '_' + stamp() + '.webm'
+      download(blob, name)
+      toast({ title: 'Clip saved', description: name, tone: 'ok' })
+    }
     for (const track of stream.getTracks()) track.stop()
   })
   recorder.start()
