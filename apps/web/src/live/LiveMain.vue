@@ -84,8 +84,8 @@ onBeforeUnmount(() => {
   </div>
   <section id="live" class="live" aria-label="Live" :hidden="!live.panes.live">
     <div id="well" ref="well" class="well" data-testid="live-well" :data-state="stage.name" :data-lens="stage.lens" :style="{ height: showing ? frameFit.height : '' }">
-      <div class="stage-frame" :hidden="!showing" :style="{ width: stage.crop.width, height: stage.crop.height }">
-        <div id="lens-crop" class="lens-crop" data-testid="live-frame" :data-flipped="stage.crop.flipped" :data-aim="live.padOpen && live.gate.aim.ok ? 'on' : undefined" @click="aimAt">
+      <div class="stage-frame" data-testid="live-frame" :hidden="!showing" :data-flipped="stage.crop.flipped" :data-aim="live.padOpen && live.gate.aim.ok ? 'on' : undefined" :style="{ width: stage.crop.width, height: stage.crop.height }">
+        <div id="lens-crop" class="lens-crop" @click="aimAt">
           <video id="video" data-testid="live-video" playsinline muted :style="stage.view" @loadedmetadata="onMetadata" @timeupdate="onTimeUpdate" />
         </div>
         <StatusPlate />

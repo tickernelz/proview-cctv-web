@@ -9,9 +9,9 @@
   .stage-frame { position: relative; flex: none; overflow: hidden; border-radius: var(--r-lg); background: var(--stage); }
   .live > .well:fullscreen .stage-frame { border-radius: 0; }
   .lens-crop { position: relative; width: 100%; height: 100%; overflow: hidden; }
-  .lens-crop[data-flipped="true"] { transform: rotate(180deg); }
+  .stage-frame[data-flipped="true"] .lens-crop { transform: rotate(180deg); }
   .lens-crop video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: fill; display: block; }
-  .lens-crop[data-aim="on"] { cursor: crosshair; }
+  .stage-frame[data-aim="on"] .lens-crop { cursor: crosshair; }
 
   .plate { position: absolute; left: var(--s3); top: var(--s3); z-index: 2; display: inline-flex; align-items: center; gap: var(--s2); max-width: calc(100% - var(--s6)); height: var(--chip); padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--stage-matte); box-shadow: inset 0 0 0 1px var(--stage-line); color: var(--stage-ink); font-family: var(--f-mono); font-size: var(--t-12); font-weight: 500; white-space: nowrap; overflow: hidden; pointer-events: none; }
   .plate-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--stage-live); }
