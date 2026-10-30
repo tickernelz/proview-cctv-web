@@ -21,6 +21,18 @@ stability before 1.0.
   app's Regular/Alarm record filter (`GET /api/playback/files?event=`). The
   file query, calendar and thumbnail routes answer 504 naming the stage when
   the device stays silent past `PROVIEW_PLAYBACK_WINDOW_MS` (default 20 s).
+- Device settings work through the vendor cloud: `/api/device/settings/{encode,network,storage}`
+  and `/api/device/controls/settings` take `device` and open DVRIP over the relay,
+  so they answer without the camera on the local network. New blocks with the
+  mobile app's gating: SD card usage by partition kind and the missing-card alarm
+  (`Storage.StorageNotExist`), the record schedule (full-time or alarm-only),
+  clip length, record stream (`Storage.RecordStream`), lens splicing, record
+  audio (`/api/device/settings/record`), smart encode behind `Encode264ability`,
+  an encoder form bounded by `EncodeCapability`, the burned-in channel title and
+  time overlay (`/api/device/settings/osd`, `AVEnc.VideoWidget` + `ChannelTitle`,
+  optional `TitleDot` bitmap), and Format SD (`OPStorageManager`, cmd 1460)
+  behind a typed `FORMAT` confirmation.
+
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
