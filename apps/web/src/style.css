@@ -237,7 +237,7 @@ kbd { display: inline-block; min-width: 18px; padding: 1px var(--s1); border-rad
 .tile-fail .btn { position: relative; z-index: 2; margin-top: var(--s1); }
 
 .set { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px 1fr; overflow: hidden; }
-.set-nav { padding: var(--s4) var(--s2); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 2px; }
+.set-nav { padding: var(--s4) var(--s2); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .set-nav a { display: flex; align-items: center; min-height: var(--hit); padding: 0 var(--s3); border-radius: var(--r-md); font-size: var(--t-14); color: var(--ink-2); text-decoration: none; }
 .set-nav a:hover { background: var(--bg-3); color: var(--ink); }
 .set-nav a[aria-current="page"] { background: var(--accent-soft); color: var(--ink); font-weight: 500; box-shadow: inset 2px 0 0 var(--accent); }
