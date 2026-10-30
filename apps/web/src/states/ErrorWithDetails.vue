@@ -7,7 +7,7 @@ import { detailText } from './time'
 import type { DetailRows, StateSurface } from './types'
 
 const props = withDefaults(
-  defineProps<{ title: string; description?: string; details?: DetailRows | null; surface?: StateSurface; compact?: boolean; retry?: boolean; retryLabel?: string; busy?: boolean; open?: boolean }>(),
+  defineProps<{ title: string; description?: string; descriptionTitle?: string; details?: DetailRows | null; surface?: StateSurface; compact?: boolean; retry?: boolean; retryLabel?: string; busy?: boolean; open?: boolean }>(),
   { description: '', details: null, surface: 'stage', retry: true, retryLabel: 'Try again', open: false },
 )
 const emit = defineEmits<{ retry: [] }>()
@@ -31,7 +31,7 @@ const stage = computed(() => props.surface === 'stage')
     <div role="alert" :class="['flex flex-col items-center', compact ? 'gap-1' : 'gap-2']">
       <Icon name="warning" :class="[compact ? '' : 'size-8', stage ? 'text-stage-warn' : 'text-bad']" />
       <p :class="['font-semibold text-balance', compact ? 'text-15' : 'text-17']">{{ title }}</p>
-      <p v-if="description" :class="['max-w-[48ch] text-pretty', compact ? 'text-13' : 'text-14', stage ? 'text-stage-ink-2' : 'text-ink-2']">{{ description }}</p>
+      <p v-if="description" :class="['max-w-[48ch] text-pretty', compact ? 'text-13' : 'text-14', stage ? 'text-stage-ink-2' : 'text-ink-2']"><span :title="descriptionTitle || undefined">{{ description }}</span></p>
     </div>
     <div v-if="retry || text || $slots.actions" class="mt-1 flex flex-wrap justify-center gap-2">
       <template v-if="stage">

@@ -18,7 +18,7 @@ const sentence = computed(() => {
   const parts: string[] = []
   if (!props.compact && props.since) parts.push(sinceText.value + '.')
   if (props.lastFrameAt) parts.push('Last frame ' + clockHms(props.lastFrameAt) + '.')
-  if (!parts.length && props.detail) parts.push(props.detail.replace(/\.?$/, '.'))
+  if (!parts.length && props.detail) parts.push(props.detail.charAt(0).toUpperCase() + props.detail.slice(1).replace(/\.?$/, '.'))
   return parts.join(' ')
 })
 </script>

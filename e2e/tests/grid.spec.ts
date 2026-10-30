@@ -38,7 +38,9 @@ test('the grid shows every camera as a tile and the layout picks 1 to 3 columns'
 test('on a phone each tile keeps its name and stream under its own picture, whatever layout was saved', async ({ page }) => {
   await signIn(page, 'grid')
   await page.getByTestId('view-grid').click()
+  await page.getByTestId('grid-layout').getByRole('button', { name: '1', exact: true }).click()
   await page.getByTestId('grid-layout').getByRole('button', { name: '3', exact: true }).click()
+  await expect(page.getByTestId('grid-layout').getByRole('button', { name: '3', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByTestId('grid-note')).toHaveText(/saved at/)
   await page.setViewportSize({ width: 390, height: 844 })
   const tiles = page.getByTestId('grid-tile')
@@ -48,7 +50,7 @@ test('on a phone each tile keeps its name and stream under its own picture, what
     .toBe(1)
   const boxes = await tiles.evaluateAll((nodes) =>
     nodes.map((tile) => {
-      const well = tile.querySelector('.well')!.getBoundingClientRect()
+      const well = tile.querySelector('.tile-well')!.getBoundingClientRect()
       const meta = tile.querySelector('.tile-meta')!.getBoundingClientRect()
       return { wellBottom: well.bottom, wellHeight: well.height, wellWidth: well.width, metaTop: meta.top, metaBottom: meta.bottom, top: tile.getBoundingClientRect().top }
     }),
@@ -74,8 +76,15 @@ test('a tile that cannot play says why, centred, and Try again plays it', async 
   const failBox = porch.getByTestId('grid-tile-fail')
   await expect(failBox).toContainText('No picture')
   await expect(failBox).toHaveCSS('text-align', 'center')
-  const retry = porch.getByTestId('grid-tile-retry')
-  await expect(retry).toHaveClass(/btn/)
+  await expect(failBox.getByRole('alert')).toContainText('No picture')
+  await expect(failBox).toContainText('the server answered 502')
+  const details = failBox.getByTestId('state-details')
+  await expect(details).toBeHidden()
+  await failBox.getByTestId('state-details-toggle').click()
+  await expect(failBox.getByTestId('state-details-toggle')).toHaveAttribute('aria-expanded', 'true')
+  await expect(details).toHaveText('the camera did not answer the stream request in 8 s')
+  const retry = failBox.getByTestId('state-retry')
+  await expect(retry).toHaveText('Try again')
   fail = false
   await retry.click()
   await expect(porch).toHaveAttribute('data-state', 'playing', { timeout: 20_000 })
@@ -152,3 +161,45 @@ test('on a phone two tiles get rows the height of their picture, with no gap und
   const rows = await page.getByTestId('grid-tiles').evaluate((node) => getComputedStyle(node).gridTemplateRows.split(' ').map(parseFloat))
   expect(Math.max(...rows) - Math.min(...rows)).toBeLessThan(2)
 })
+
+test('a click selects a tile and moves its ring, Enter or a double-click opens it in Live', async ({ page }) => {
+  await signIn(page, 'grid')
+  await page.getByTestId('view-grid').click()
+  const tiles = page.getByTestId('grid-tile')
+  await expect(tiles).toHaveCount(5)
+  const garage = tiles.filter({ hasText: 'Garage' })
+  const yard = tiles.filter({ hasText: 'Back yard' })
+  await garage.locator('.tile-open').click()
+  await expect(garage).toHaveClass(/\bsel\b/)
+  await expect(page.locator('#tiles .tile.sel')).toHaveCount(1)
+  await expect(garage.locator('.tile-open')).toHaveAttribute('aria-pressed', 'true')
+  await expect(garage.getByTestId('grid-tile-state')).toHaveText('Sound off')
+  await expect(page.getByTestId('grid')).toBeVisible()
+  await garage.locator('.tile-open').press('Enter')
+  await expect(page.getByTestId('camera-name')).toHaveText('Garage')
+  await page.getByTestId('view-grid').click()
+  await expect(tiles).toHaveCount(5)
+  await yard.locator('.tile-open').dblclick()
+  await expect(page.getByTestId('camera-name')).toHaveText('Back yard')
+})
+
+test('a playing tile carries the LIVE plate and an offline tile says Offline in its picture', async ({ page }) => {
+  await signIn(page, 'grid')
+  await page.getByTestId('view-grid').click()
+  const gate = page.getByTestId('grid-tile').filter({ hasText: 'Gate camera' })
+  await expect(gate).toHaveAttribute('data-state', 'playing', { timeout: 20_000 })
+  await expect(gate.locator('.tile-plate')).toHaveText('LIVE')
+  await expect(page.getByTestId('grid-tile').filter({ hasText: 'Shed' }).getByTestId('grid-tile-fail')).toContainText('Offline')
+})
+
+test('on a phone the grid is one column without the column picker, and nothing is wider than the screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await signIn(page, 'grid')
+  await page.getByTestId('view-grid').click()
+  await expect(page.getByTestId('grid-tile')).toHaveCount(5)
+  await expect(page.getByTestId('grid-layout')).toHaveCount(0)
+  await expect(page.getByTestId('grid-count')).toBeVisible()
+  const wide = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+  expect(wide).toBeLessThanOrEqual(0)
+})
+
