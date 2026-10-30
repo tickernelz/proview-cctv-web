@@ -708,17 +708,17 @@ mod tests {
     #[test]
     fn a_cloud_publisher_does_not_answer_for_a_local_key_of_the_same_device() {
         let hub = LiveHub::default();
-        let local = StreamKey::new("7f92970ddf5282743hrc", 1, false, LiveMode::Transcode);
+        let local = StreamKey::new("AASN000000000001", 1, false, LiveMode::Transcode);
         let cloud = StreamKey::cloud(
             "account-one",
-            "7f92970ddf5282743hrc",
+            "AASN000000000001",
             1,
             false,
             LiveMode::Transcode,
         );
         let other_account = StreamKey::cloud(
             "account-two",
-            "7f92970ddf5282743hrc",
+            "AASN000000000001",
             1,
             false,
             LiveMode::Transcode,

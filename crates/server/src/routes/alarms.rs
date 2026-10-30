@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn a_serial_is_a_plain_token() {
-        assert!(plain_token("7f92970ddf5282743hrc"));
+        assert!(plain_token("AASN000000000001"));
         assert!(!plain_token(""));
         assert!(!plain_token("a/b"));
         assert!(!plain_token("a b"));

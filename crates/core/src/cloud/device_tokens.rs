@@ -230,11 +230,9 @@ mod tests {
     fn a_token_round_trips_through_the_sealed_store() {
         let dir = scratch();
         let store = DeviceTokenStore::load(Some(&dir));
-        store
-            .put("7f92970ddf5282743hrc", "token-value")
-            .expect("put");
+        store.put("AASN000000000001", "token-value").expect("put");
         assert_eq!(
-            store.get("7f92970ddf5282743hrc").as_deref(),
+            store.get("AASN000000000001").as_deref(),
             Some("token-value")
         );
         let raw = fs::read_to_string(dir.join(STORE_FILE)).expect("store file");

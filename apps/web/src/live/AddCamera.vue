@@ -80,7 +80,7 @@ async function bindQr() {
       <h4>By serial number</h4>
       <div :class="['field', { bad: serial.missing }]">
         <label for="add-sn">Serial number</label>
-        <input id="add-sn" ref="snInput" v-model="serial.sn" type="text" spellcheck="false" autocomplete="off" placeholder="7f92970ddf5282743hrc" :aria-invalid="serial.missing" :aria-describedby="serial.missing ? 'add-sn-missing' : undefined">
+        <input id="add-sn" ref="snInput" v-model="serial.sn" type="text" spellcheck="false" autocomplete="off" placeholder="AASN000000000001" :aria-invalid="serial.missing" :aria-describedby="serial.missing ? 'add-sn-missing' : undefined">
         <p v-if="serial.missing" id="add-sn-missing" class="err"><Icon name="warning" small /><span>Type the serial printed on the camera or in the phone app.</span></p>
       </div>
       <div class="add-pair">

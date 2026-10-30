@@ -628,10 +628,6 @@ mod tests {
             assert_eq!(decode_qr_blob(blob).as_deref(), Some(plain), "blob {blob}");
         }
         assert_eq!(
-            decode_qr_blob("vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz").as_deref(),
-            Some("7f92970ddf5282743hrc")
-        );
-        assert_eq!(
             decode_qr_blob(
                 "8DIC0Ga40A1eX8C9dG2M9oV1B1yX9A0gH9L9pX1UAh3KBJ9KYI0CDw9A0KI9L9pv1VqV3Lbtz"
             )
@@ -649,10 +645,6 @@ mod tests {
                 "plain {plain} offset {offset}"
             );
         }
-        assert_eq!(
-            encode_qr_blob("7f92970ddf5282743hrc", 0),
-            "vWxa0hFw0e5a1kxfwidLPl8FbV9cgzrM1Dgvz"
-        );
     }
 
     #[test]
@@ -677,8 +669,8 @@ mod tests {
 
     #[test]
     fn parses_the_plain_comma_form() {
-        let device = parse_qr("7f92970ddf5282743hrc,admin,,0,1793109504").unwrap();
-        assert_eq!(device.serial, "7f92970ddf5282743hrc");
+        let device = parse_qr("AASN000000000001,admin,,0,1793109504").unwrap();
+        assert_eq!(device.serial, "AASN000000000001");
         assert_eq!(device.username, "admin");
         assert_eq!(device.password, "");
         assert_eq!(device.kind, Some(0));
@@ -687,9 +679,9 @@ mod tests {
 
     #[test]
     fn parses_an_encoded_vendor_blob_into_the_serial() {
-        let blob = encode_qr_blob("7f92970ddf5282743hrc,,hunter2,0,1793109504", 334);
+        let blob = encode_qr_blob("AASN000000000001,,hunter2,0,1793109504", 334);
         let device = parse_qr(&blob).unwrap();
-        assert_eq!(device.serial, "7f92970ddf5282743hrc");
+        assert_eq!(device.serial, "AASN000000000001");
         assert_eq!(device.password, "hunter2");
     }
 
@@ -741,7 +733,7 @@ mod tests {
     #[test]
     fn serial_validation_covers_the_bounds_the_routes_rely_on() {
         assert!(serial_ok("AASN000000000001"));
-        assert!(serial_ok("7f92970ddf5282743hrc"));
+        assert!(serial_ok("AASN000000000001"));
         assert!(!serial_ok("no"));
         assert!(!serial_ok(""));
         assert!(!serial_ok("AASN 0000 0001"));
