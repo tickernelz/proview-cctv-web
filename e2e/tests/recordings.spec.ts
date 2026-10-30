@@ -32,7 +32,7 @@ test('Cloud opens on the camera on screen, takes focus, and Escape or Close hand
   await expect(launcher).toHaveAttribute('aria-pressed', 'false')
   await expect(page.getByTestId('live-well')).toBeVisible()
   await openPanel(page)
-  await page.getByTestId('recordings-close').click()
+  await page.getByTestId('recordings-panel').getByRole('button', { name: 'Close', exact: true }).click()
   await expect(panel).toBeHidden()
   await expect(launcher).toBeFocused()
 })
@@ -111,7 +111,7 @@ test('opening Cloud again does not ask the server for the camera list', async ({
   for (let round = 0; round < 3; round += 1) {
     await openPanel(page)
     await expect(page.getByTestId('recordings-camera').locator('option')).toHaveCount(5)
-    await page.getByTestId('recordings-close').click()
+    await page.getByTestId('recordings-panel').getByRole('button', { name: 'Close', exact: true }).click()
     await expect(page.getByTestId('recordings-panel')).toBeHidden()
   }
   expect(devices).toBe(0)

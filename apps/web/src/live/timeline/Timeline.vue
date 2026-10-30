@@ -80,7 +80,8 @@ const ticks = computed(() => {
   for (let at = first; at <= view.start + z.span + 1; at += z.tick) {
     const offset = at - base.value
     const left = pct(at)
-    const text = offset % z.label === 0 && offset < DAY_MS && left < 97 ? label(at) : ''
+    const every = width.value && width.value < 560 ? z.label * 2 : z.label
+    const text = offset % every === 0 && offset < DAY_MS && left < 97 ? label(at) : ''
     out.push({ key: at, left, major: offset % z.major === 0, text, edge: left < 1 })
   }
   return out
@@ -124,12 +125,17 @@ const markers = computed(() =>
 )
 
 const headLeft = computed(() => (head.value === null ? null : pct(head.value)))
+const pillShift = computed(() => {
+  const left = headLeft.value ?? 50
+  const half = width.value ? (40 / width.value) * 100 : 3
+  return left < half ? 'translateX(0)' : left > 100 - half ? 'translateX(-100%)' : 'translateX(-50%)'
+})
 const headShown = computed(() => headLeft.value !== null && headLeft.value >= 0 && headLeft.value <= 100)
 const cursor = computed(() => pointer.at)
 const cursorLeft = computed(() => (cursor.value === null ? null : pct(cursor.value)))
 
 const trackNote = computed(() => {
-  if (!page.selectedId) return ''
+  if (!tl.device) return ''
   if (tl.files.phase === 'loading' && !tl.files.list.length) return 'Loading the recordings of ' + dayLabel(tl.day, false) + '…'
   if (tl.files.phase === 'error') return 'The recordings of ' + dayLabel(tl.day, false) + ' did not load: ' + tl.files.error
   if (tl.files.phase === 'ok' && !tl.files.list.length) return 'No recording on ' + dayLabel(tl.day, false) + (tl.kind === 'all' ? '.' : tl.kind === 'alarm' ? ' (alarm files only).' : ' (regular files only).')
@@ -151,8 +157,9 @@ const film = computed(() => {
   if (at === null || !list.length || !width.value) return null
   let index = list.findIndex((entry) => entry.to >= at)
   if (index < 0) index = list.length - 1
-  const from = Math.max(0, Math.min(index - Math.floor(FILM / 2), list.length - FILM))
-  const frames = list.slice(from, from + FILM).map((entry) => ({
+  const count = Math.max(1, Math.min(FILM, Math.floor((width.value - 8) / 100)))
+  const from = Math.max(0, Math.min(index - Math.floor(count / 2), list.length - count))
+  const frames = list.slice(from, from + count).map((entry) => ({
     file: entry.file,
     time: hm(entry.from),
     current: at >= entry.from && at <= entry.to,
@@ -327,6 +334,11 @@ function keepInView(at: number) {
   if (at < view.start || at > view.start + span) view.start = clampStart(at - span / 2)
 }
 
+function goLive() {
+  backToLive()
+  setDay(today())
+}
+
 function stepDay(delta: number) {
   setDay(shiftDay(tl.day, delta))
 }
@@ -359,7 +371,7 @@ function onKey(event: KeyboardEvent) {
     snapshot()
   } else if (key === 'Escape' && !document.fullscreenElement && !live.padOpen) {
     event.preventDefault()
-    backToLive()
+    goLive()
   }
 }
 
@@ -442,14 +454,13 @@ onBeforeUnmount(() => {
         :data-at="entry.marker.at"
         :style="{ left: entry.left + '%' }"
       />
-      <p v-if="trackNote" :class="['tl-note', { bad: tl.files.phase === 'error' }]" data-testid="tl-note" :role="tl.files.phase === 'error' ? 'alert' : 'status'">
+      <p v-if="trackNote" :class="['tl-note', { bad: tl.files.phase === 'error' }]" data-testid="tl-note" role="status">
         <Icon v-if="tl.files.phase === 'error'" name="warning" small />{{ trackNote }}
-        <button v-if="tl.files.phase === 'error'" class="tl-retry" type="button" @pointerdown.stop @click.stop="loadDay(true)">Try again</button>
       </p>
       <span v-if="cursorLeft !== null" class="tl-hover" :style="{ left: cursorLeft + '%' }" />
       <template v-if="headShown">
         <span class="tl-head" data-testid="tl-head" :style="{ left: headLeft + '%' }" />
-        <span class="tl-pill" data-testid="tl-pill" :data-live="!playing || null" :style="{ left: headLeft + '%' }">{{ hms(head as number) }}</span>
+        <span class="tl-pill" data-testid="tl-pill" :data-live="!playing || null" :style="{ left: headLeft + '%', transform: pillShift }">{{ hms(head as number) }}</span>
       </template>
     </div>
     <div v-if="film" class="tl-film" data-testid="tl-film" :style="film.style" aria-hidden="true">
@@ -463,7 +474,7 @@ onBeforeUnmount(() => {
     </div>
     <div class="tl-bar-row">
       <div class="tl-zoom">
-        <SegmentedControl class="tl-zoom-seg" :options="ZOOM_OPTIONS" :model-value="zoom.value" label="Timeline span" size="sm" @update:model-value="onZoomPick" />
+        <span class="tl-zoom-seg"><SegmentedControl :options="ZOOM_OPTIONS" :model-value="zoom.value" label="Timeline span" size="sm" @update:model-value="onZoomPick" /></span>
         <IconButton label="Zoom out" icon="zoom-out" size="sm" data-testid="tl-zoom-out" :disabled="view.zoom === 0" @click="setZoom(view.zoom - 1)" />
         <IconButton label="Zoom in" icon="zoom-in" size="sm" data-testid="tl-zoom-in" :disabled="view.zoom === ZOOMS.length - 1" @click="setZoom(view.zoom + 1)" />
         <p :class="['tl-status', { bad: tl.status.bad }]" data-testid="pb-status" :role="tl.status.bad ? 'alert' : 'status'">
@@ -485,15 +496,15 @@ onBeforeUnmount(() => {
           </PopoverTrigger>
           <PopoverPortal>
             <PopoverContent class="menu-panel tl-calendar" side="top" align="center" :side-offset="8" :collision-padding="8">
-              <PlaybackCalendar :device="page.selectedId || ''" :day="tl.day" :open="calendarOpen" @pick="pickDay" @close="calendarOpen = false" />
+              <PlaybackCalendar :device="tl.device" :day="tl.day" :open="calendarOpen" @pick="pickDay" @close="calendarOpen = false" />
             </PopoverContent>
           </PopoverPortal>
         </PopoverRoot>
         <IconButton label="Next day" icon="chevron-right" size="sm" data-testid="tl-next-day" :disabled="isToday" @click="stepDay(1)" />
       </div>
       <div class="tl-end">
-        <Button size="sm" variant="ghost" icon="history" data-testid="tl-recordings" aria-label="Recordings" @click="openRecordings('camera')"><span class="tl-label">Recordings</span></Button>
-        <Button v-if="playing" size="sm" icon="radio" data-testid="tl-back-live" aria-keyshortcuts="Escape" @click="backToLive()"><span class="tl-label">Back to live</span><span class="tl-label-short">Live</span></Button>
+        <Button id="tl-recordings" size="sm" variant="ghost" icon="history" data-testid="tl-recordings" aria-label="Recordings" @click="openRecordings('camera', 'tl-recordings')"><span class="tl-label">Recordings</span></Button>
+        <Button v-if="playing || !isToday" size="sm" icon="radio" data-testid="tl-back-live" aria-keyshortcuts="Escape" @click="goLive"><span class="tl-label">Back to live</span><span class="tl-label-short">Live</span></Button>
         <span v-else class="tl-live" data-testid="tl-live"><span class="tl-live-dot" aria-hidden="true" />LIVE</span>
       </div>
     </div>

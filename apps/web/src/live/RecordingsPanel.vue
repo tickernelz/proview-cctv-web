@@ -13,7 +13,7 @@ import { shell } from '../shell/layout'
 import PlaybackRows from './PlaybackRows.vue'
 import { mb, stamp, type Clip } from './playback-clips'
 import { addLauncher, live } from './store'
-import { downloadFile, loadFiles, needThumbs, openRecordings, playAt, setDay, setKind, shiftDay, tl, today, type Kind } from './timeline/engine'
+import { downloadFile, loadFiles, needThumbs, openRecordings, playAt, setDay, setKind, shiftDay, takeOpener, tl, today, type Kind } from './timeline/engine'
 import { dayLabel } from './timeline/time'
 
 type Camera = { id: string; name?: string }
@@ -54,7 +54,7 @@ const launcher = addLauncher({
   slot: 'start',
   pressed: false,
   controls: 'recordings-panel',
-  onClick: () => (open.value ? close() : openRecordings('cloud')),
+  onClick: () => (open.value ? close() : openRecordings('cloud', 'recordings-launcher')),
 })
 
 const cameraName = (id: string) => (page.devices.find((device) => device.id === id)?.name || id) as string
@@ -94,10 +94,14 @@ watch(
 )
 
 function setOpen(value: boolean) {
+  if (value) returnTo = 'opener'
   if (!value && live.sheet === 'recordings') live.sheet = ''
 }
 
-function close() {
+let returnTo: 'opener' | 'none' = 'opener'
+
+function close(focus = true) {
+  returnTo = focus ? 'opener' : 'none'
   setOpen(false)
 }
 
@@ -108,19 +112,23 @@ async function focusFirst(event: Event) {
   else cameraTab.value?.querySelector<HTMLElement>('[data-state="active"]')?.focus()
 }
 
+function returnFocus(event: Event) {
+  const element = takeOpener()
+  if (returnTo === 'none') return event.preventDefault()
+  if (!element) return
+  event.preventDefault()
+  element.focus()
+}
+
 function onTab(value: string | number) {
   tl.tab = value === 'cloud' ? 'cloud' : 'camera'
   if (tl.tab === 'camera') void loadFiles()
 }
 
-function guardKeys(event: KeyboardEvent) {
-  if (event.key !== 'Escape' && event.key !== 'Tab') event.stopPropagation()
-}
-
 function playFile(file: Clip) {
   const from = stamp(file.begin)
   if (from === null) return
-  live.sheet = ''
+  close(false)
   void playAt(from)
 }
 
@@ -155,7 +163,7 @@ async function load() {
       : noPlan || listing.notice || 'No cloud clips for ' + camera + ' on ' + asked + '.'
     result.phase = 'done'
   } catch (error) {
-    if (sessionLost(error)) return close()
+    if (sessionLost(error)) return close(false)
     fail(error)
   }
 }
@@ -214,7 +222,7 @@ async function takeClip(kind: 'play' | 'download', item: Recording) {
     clip.phase = 'playing'
     clip.message = 'Clip of ' + item.start
   } catch (error) {
-    if (sessionLost(error)) return close()
+    if (sessionLost(error)) return close(false)
     clip.phase = 'error'
     const text = error instanceof Error ? error.message : String(error)
     clip.message = text.charAt(0).toUpperCase() + text.slice(1)
@@ -242,11 +250,11 @@ function duration(seconds?: number) {
       data-testid="recordings-panel"
       :side="shell.narrow ? 'bottom' : 'right'"
       @open-auto-focus="focusFirst"
-      @keydown="guardKeys"
+      @close-auto-focus="returnFocus"
     >
       <SheetHeader>
         <SheetTitle id="recordings-title">Recordings</SheetTitle>
-        <SheetDescription>{{ cameraName(page.selectedId || '') }}</SheetDescription>
+        <SheetDescription>{{ cameraName(tl.device) }}</SheetDescription>
       </SheetHeader>
       <Tabs :model-value="tl.tab" class="rec-tabs" @update:model-value="onTab">
         <div ref="cameraTab">
@@ -255,7 +263,8 @@ function duration(seconds?: number) {
             <TabsTrigger value="cloud" data-testid="rec-tab-cloud">Cloud</TabsTrigger>
           </TabsList>
         </div>
-        <TabsContent value="camera" class="rec-pane">
+        <TabsContent value="camera">
+          <div id="pb" class="rec-pane" data-testid="playback">
           <div class="pb-day" role="group" aria-label="Day">
             <IconButton label="Previous day" icon="chevron-left" size="sm" @click="setDay(shiftDay(tl.day, -1))" />
             <input id="pb-day" v-model.lazy="day" class="rec-input" type="date" aria-label="Day" data-testid="pb-day">
@@ -270,8 +279,10 @@ function duration(seconds?: number) {
           <p v-if="files.phase === 'error'" class="pb-err" role="alert" data-testid="pb-error"><Icon name="warning" small /><span>{{ files.error }}</span></p>
           <p v-else id="pb-summary" class="pb-summary" data-testid="pb-summary" role="status">{{ summary }}</p>
           <PlaybackRows :files="files.list" :current="live.mode === 'playback' ? tl.file : null" :thumbs="tl.thumbs" @play="playFile" @download="downloadFile" @need="needThumbs" />
+          </div>
         </TabsContent>
-        <TabsContent value="cloud" class="rec-pane">
+        <TabsContent value="cloud">
+          <div class="rec-pane">
           <form class="rec-form" @submit.prevent="load">
             <label>Day <input ref="dayInput" v-model="form.day" class="rec-input" type="date" name="day" data-testid="recordings-day" required></label>
             <label>Camera
@@ -303,6 +314,7 @@ function duration(seconds?: number) {
           </p>
           <p v-else-if="clip.message" class="pb-summary" data-status data-testid="recordings-clip-status" role="status">{{ clip.message }}</p>
           <video v-if="clip.url" class="rec-player" :src="clip.url" controls autoplay playsinline data-testid="recordings-player" />
+          </div>
         </TabsContent>
       </Tabs>
     </SheetContent>

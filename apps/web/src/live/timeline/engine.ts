@@ -49,6 +49,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 export const tl = reactive({
   camera: '',
+  device: '',
   day: today(),
   kind: 'all' as Kind,
   files: { phase: 'idle' as Phase, list: [] as Clip[], error: '', cap: 0, key: '', asked: { device: '', day: '', kind: 'all' as Kind } },
@@ -62,12 +63,20 @@ export const tl = reactive({
   tab: 'camera' as 'camera' | 'cloud',
 })
 
-export function openRecordings(tab: 'camera' | 'cloud') {
+let opener = ''
+
+export function openRecordings(tab: 'camera' | 'cloud', from = '') {
+  opener = from
   tl.tab = tab
   live.sheet = 'recordings'
 }
 
-const lastAt = new Map<string, number>()
+export function takeOpener() {
+  const element = opener ? document.getElementById(opener) : null
+  opener = ''
+  return element
+}
+
 const sound = new PlaybackSound()
 const stream = {
   socket: null as WebSocket | null,
@@ -296,7 +305,6 @@ function follow() {
   const at = realAt(now)
   if (at === null) return
   live.playback.at = at
-  lastAt.set(device() + ':' + page.channel, at)
   const inside = fileAtTime(tl.files.list, at)
   if (inside) tl.file = inside
 }
@@ -587,22 +595,6 @@ export function backToLive() {
   bridgeStage('live')
 }
 
-export async function openPlayback() {
-  const key = device() + ':' + page.channel
-  const known = lastAt.get(key)
-  if (known !== undefined) return playAt(known)
-  tl.day = today()
-  await loadFiles()
-  const files = tl.files.list
-  if (tl.files.phase !== 'ok' || !files.length) return false
-  const last = files[files.length - 1]
-  const from = stamp(last.begin)
-  const to = stamp(last.end)
-  if (from === null) return false
-  await playAt(Math.max(from, (to ?? from) - 60_000))
-  return true
-}
-
 export function setSpeed(value: number) {
   live.playback.speed = value
   const video = stream.video
@@ -708,7 +700,7 @@ function reset() {
   tl.file = null
 }
 
-const watching = () => live.settings.signedIn && shell.screen === 'watch' && shell.view === 'live' && shell.mode === 'single' && Boolean(device())
+const watching = () => live.settings.signedIn && shell.screen === 'watch' && shell.view === 'live' && shell.mode === 'single' && Boolean(tl.device)
 let pendingSeek: Seek | null = null
 
 function trySeek() {
@@ -723,6 +715,7 @@ watch(
   (camera) => {
     if (camera === tl.camera) return
     tl.camera = camera
+    tl.device = device()
     if (live.mode === 'playback') backToLive()
     reset()
     tl.day = today()
@@ -735,7 +728,25 @@ watch(watching, (on) => {
   if (on) {
     loadDay()
     trySeek()
-  } else if (live.mode === 'playback') backToLive()
+    return
+  }
+  if (live.mode === 'playback') backToLive()
+  if (live.sheet === 'recordings') live.sheet = ''
+})
+
+window.addEventListener(
+  'keydown',
+  (event) => {
+    if (live.sheet !== 'recordings' || event.key.length !== 1 || event.key === ' ') return
+    if (event.target instanceof Element && event.target.closest('input, textarea, select')) return
+    event.stopPropagation()
+  },
+  true,
+)
+
+window.addEventListener('desktop-live', () => {
+  if (live.sheet === 'recordings') live.sheet = ''
+  backToLive()
 })
 
 watch(
@@ -744,8 +755,8 @@ watch(
     if (signed) return
     if (live.mode === 'playback') backToLive()
     reset()
-    lastAt.clear()
     tl.camera = ''
+    tl.device = ''
   },
 )
 

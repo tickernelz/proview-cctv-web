@@ -13,11 +13,9 @@
   .tl-mark[data-kind="alarm"] { background: var(--live); }
   .tl-hover { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--ink-3); pointer-events: none; }
   .tl-head { position: absolute; top: -22px; bottom: -1px; width: 2px; margin-left: -1px; background: var(--accent); pointer-events: none; }
-  .tl-pill { position: absolute; top: -23px; transform: translateX(-50%); height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--accent); color: var(--accent-ink); font-family: var(--f-mono); font-size: var(--t-12); font-weight: 500; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none; z-index: 2; }
+  .tl-pill { position: absolute; top: -23px; height: 18px; padding: 0 6px; border-radius: var(--r-sm); background: var(--accent); color: var(--accent-ink); font-family: var(--f-mono); font-size: var(--t-12); font-weight: 500; line-height: 18px; white-space: nowrap; font-variant-numeric: tabular-nums; pointer-events: none; z-index: 2; }
   .tl-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: var(--s2); padding: 0 var(--s3); font-size: var(--t-13); color: var(--ink-2); text-align: center; pointer-events: none; overflow: hidden; }
   .tl-note.bad { color: var(--bad); }
-  .tl-retry { pointer-events: auto; min-height: 28px; padding: 0 var(--s2); border-radius: var(--r-sm); color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
-  .tl-retry:hover { background: var(--bg-2); }
   .tl-film { position: absolute; bottom: calc(100% - 20px); display: flex; gap: 4px; padding: 4px; background: var(--bg-2); border-radius: var(--r-md); box-shadow: var(--shadow-menu), inset 0 0 0 1px var(--line); z-index: 20; pointer-events: none; }
   .tl-frame { display: flex; flex-direction: column; gap: 2px; width: 96px; }
   .tl-thumb { width: 96px; height: 54px; display: grid; place-items: center; border-radius: var(--r-sm); background: var(--bg-3); color: var(--ink-3); overflow: hidden; }
@@ -31,6 +29,7 @@
   .tl-status { flex: 1; min-width: 0; margin-left: var(--s2); font-size: var(--t-12); color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
   .tl-status.bad { color: var(--bad); }
   .tl-day-short, .tl-label-short { display: none; }
+  .tl-zoom-seg { display: contents; }
   .tl-live { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--live-soft); color: var(--live); font-family: var(--f-mono); font-size: var(--t-12); font-weight: 500; }
   .tl-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--live); }
   .tl-calendar { width: 300px; min-width: 0; padding: var(--s3); }
@@ -119,6 +118,10 @@
     .tl-film { bottom: calc(100% - 16px); }
     .pbc-btn { min-width: 44px; }
     .pbc-btn > span:not(.pbc-speed-value) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  }
+  @media (pointer: coarse) {
+    .pb-cal-day { min-height: 44px; min-width: 44px; }
+    .tl-calendar { width: min(356px, calc(100vw - 16px)); }
   }
   @media (prefers-reduced-motion: reduce) {
     .pbc-btn, .pb-row { transition: none; }

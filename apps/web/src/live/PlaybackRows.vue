@@ -56,7 +56,6 @@ onBeforeUnmount(() => watcher?.disconnect())
   <ul id="pb-files" ref="box" class="pb-list" data-testid="pb-files" aria-label="Recording files">
     <li v-for="(row, index) in rows" :key="row.key" class="pb-item" :data-index="index">
       <button
-        v-memo="[row.file === current, thumbOf(row.file)?.image, thumbOf(row.file)?.error]"
         class="pb-row"
         type="button"
         :data-mode="row.mode"
