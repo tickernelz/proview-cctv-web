@@ -6,15 +6,19 @@ recordings and settings.
 
 | Provider | Default | Transport | What it can do today |
 |---|---|---|---|
-| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | account login and device list work through the signed v3 envelope in `crates/core/src/cloud/envelope.rs` (`POST /api/login`, `GET /api/devices`), with no vendor binary at run time. The v2 portal login is implemented and answers; the white-label account rejects it. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md`. Live view, playback and the device controls run over that relay: `/api/device/controls*` opens the same DVRIP session for a pan or tilt, a preset recall and a snapshot, so none of them needs the camera on the local network (ZHA-4281). The capability report in cloud mode is read from the device (`Ptz.GunBallLocate`, `Uart.PTZPreset`) rather than left empty |
-| `local` | opt-in | LAN: DVRIP 34567, RTSP 554, HTTP 80 | RTSP `DESCRIBE` with Digest works against a real IPC; DVRIP login returns `ret 203` |
+| `cloud` | **yes** | ProView account → vendor cloud (CSS/PSS, P2P) | account login and device list work through the signed v3 envelope in `crates/core/src/cloud/envelope.rs` (`POST /api/login`, `GET /api/devices`), with no vendor binary at run time. The v2 portal login is implemented and answers; the white-label account rejects it. One vendor cloud call works without a session: device caps by serial (`GET /api/cloud/device-caps`), see `cloud-app-surface.md`. Live view, playback and the device controls run over that relay: `/api/device/controls*` opens the same DVRIP session for a pan or tilt, a preset recall and a snapshot, so none of them needs the camera on the local network. The capability report in cloud mode is read from the device (`Ptz.GunBallLocate`, `Uart.PTZPreset`) rather than left empty |
+| `local` | opt-in | LAN: DVRIP 34567, RTSP 554, HTTP 80 | sign-in is an RTSP `DESCRIBE` with Digest; one device (`local`, channel 1) streams over `/ws/live`. Its playback, alarms and device settings calls answer not implemented; the DVRIP login itself succeeds (`Ret: 100`, below) |
 
 ## Selection rules
 
-- `PROVIEW_MODE=cloud|local`, default `cloud`. The choice is per profile in the
-  UI; the environment variable is the bootstrap default.
-- `local` requires `PROVIEW_DEVICE_HOST` (DVRIP) and/or `PROVIEW_DEVICE_RTSP`
-  plus device credentials. With no host configured, the UI must say so and fall
+- `PROVIEW_MODE=cloud|local`, default `cloud`. The choice is made in the UI and
+  kept by the mode store below; the environment variable is the bootstrap default.
+- `PROVIEW_PROVIDER` does not pick the LAN path: `fixture` swaps the cloud
+  provider for the built-in sample data, and any other value (`local` included)
+  keeps the vendor cloud.
+- `local` requires `PROVIEW_DEVICE_RTSP` or `PROVIEW_DEVICE_HOST` (the RTSP
+  target is the first one set, port 554 when none is given) plus device
+  credentials. With no host configured, the UI must say so and fall
   back to `cloud` — never a blank screen.
 - The active provider is always visible in the interface. A stream's origin is a
   fact about the picture, not an implementation detail.
@@ -26,13 +30,14 @@ where the platform has somewhere to keep it:
 
 | Platform | Where the choice lives | Lifetime |
 |---|---|---|
-| Desktop | `<app_data_dir>/mode.json`, written atomically (staged file + rename) | until the operator changes it |
-| Server | in memory, keyed by the `pvw_session` cookie | the session; logout drops it |
+| Desktop, or a server with `PROVIEW_DATA_DIR` | `<data dir>/mode.json`, written atomically (staged file + rename); one choice for every session | until the operator changes it |
+| Server without a data directory | in memory, keyed by the `pvw_session` cookie | the session; logout drops it |
 
 `ModeStore::from_env` reads `PROVIEW_MODE` for the bootstrap default and
 `PROVIEW_DATA_DIR` (or the Tauri `app_data_dir` passed through `ServeOptions`)
-for the persistence directory. An unreadable or malformed file falls back to the
-environment default, which falls back to `cloud`.
+for the persistence directory. A stored `mode.json` wins over `PROVIEW_MODE`; an
+unreadable or malformed file falls back to the environment default, which falls
+back to `cloud`. Both are read once at startup.
 
 ## The API the UI reads
 
@@ -47,13 +52,13 @@ a notice when the two differ:
 
 `POST /api/config/mode {"mode":"local"}` needs a live session and returns the
 same report. `GET /api/config/mode` works before sign-in and reports the
-bootstrap default. Every stream ticket carries `source`
+default (the saved choice, where there is a data directory). Every stream ticket carries `source`
 (`cloud`/`local`/`fixture`), so the player marks the origin of the picture.
 
 ## Fallback
 
-`crates/core/src/provider/router.rs` decides once per request and then keeps the
-decision:
+`crates/core/src/provider/router.rs` is built for each request, decides once and
+then keeps the decision for that request:
 
 1. `mode=cloud` → the configured provider (`CloudProvider`, or the fixture in
    tests and demos).
@@ -62,7 +67,8 @@ decision:
    above. The screen fills with cloud devices instead of staying empty.
 4. `LocalProvider` fails with a transport error (refused, unreachable, timeout)
    → the router retries the same call on the cloud provider, records one notice,
-   and stays on cloud for later calls so the UI does not stall on every retry.
+   and stays on cloud for the rest of that request; the next request tries the
+   LAN again.
 5. `LocalProvider` rejects the credentials → `BadCredentials`, no fallback: a
    wrong device password must not silently authenticate a cloud account.
 
@@ -103,14 +109,17 @@ A-law audio. Consequences for the live path:
   Secret Service on Linux). Profiles default to `default` and are named by
   `PROVIEW_PROFILE`.
   `proview-desktop --store-credentials` reads `{"user":…,"password":…}` from
-  stdin, `--forget-credentials` deletes the entry, and startup loads the entry
+  stdin, `--check-credentials` says whether the profile holds a login,
+  `--forget-credentials` deletes the entry, and startup loads the entry
   before falling back to `PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`. Passwords
   never appear in argv.
 - RTSP `Content-Base` echoes the URL it was given; the client strips userinfo
   before logging and sends credentials only in `Authorization`.
 - The device token a cloud login succeeds with is kept per serial in
-  `device-tokens.json` (AES-256-GCM under `device-token.key`, both in the data
-  directory), so the next open offers it without asking the account again.
+  `device-tokens.json` (AES-256-GCM under `device-token.key`, both in
+  `PROVIEW_DATA_DIR`), so the next open offers it without asking the account
+  again. The store reads only that variable, not the desktop's own data
+  directory; without it nothing is kept and the account's token is offered.
 - The cloud path logs in with the token the account issues
   (`deviceToken.AdminToken`) and never with a device password. A camera that
   answers `Ret` 117 or 137 to a token login is marked refused for the life of the
@@ -119,5 +128,5 @@ A-law audio. Consequences for the live path:
   reports what the device said — `Ret` 205 "ip locked" included — and a token
   answer of 100 clears the mark. Camera credentials
   (`PROVIEW_DEVICE_USER`/`PROVIEW_DEVICE_PASS`) belong to the local-network path:
-  playback, live and walk diagnosis never send them. Talk over the relay still
-  logs in with them until ZHA-4283 moves it to the account token.
+  playback, live, talk over the relay and walk diagnosis never send them. Only
+  the direct talk path to `PROVIEW_DEVICE_HOST` logs in with them.

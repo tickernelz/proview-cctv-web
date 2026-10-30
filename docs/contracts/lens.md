@@ -55,9 +55,8 @@ has 18 such strings and none of them concerns lenses (`TR_Common_Change_Chn`,
 
 The capability path is implemented and reachable through
 `PROVIEW_LENS_CAPABILITIES` (comma-separated APK field names). It is not filled
-from the device yet because the DVRIP config channel still fails (`ret 203`,
-ZHA-3912); until then the runtime default is the geometry rule and the payload
-says so in `countSource`.
+from the device's `SystemFunction` reply yet; until then the runtime default is
+the geometry rule and the payload says so in `countSource`.
 
 ## 3. Which lens pans and tilts
 
@@ -67,9 +66,13 @@ measurement in §1 settles it for this device family: the **bottom** half moves.
 
 Therefore `lenses[i].ptz` is a per-lens boolean:
 
-- two-lens layout: index 0 `ptz: false`, index 1 `ptz: true`, `ptzSource: "measured_default"`;
-- one or three lenses: every `ptz: false`, `ptzSource: "unknown"`;
-- `PROVIEW_LENS_PTZ=<index>` overrides the index and sets `ptzSource: "operator"`.
+- `PROVIEW_LENS_PTZ=<index>` overrides everything below and sets `ptzSource: "operator"`;
+- with `PROVIEW_DEVICE_HOST` set, the server reads `Ptz.GunBallLocate` over DVRIP
+  (in the background, kept 10 minutes, 60 s after a failure); an enabled locate
+  binds the bottom lens and sets `ptzSource: "device"` with the reading in
+  `ptzEvidence`;
+- otherwise a two-lens layout: index 0 `ptz: false`, index 1 `ptz: true`, `ptzSource: "measured_default"`;
+- otherwise every `ptz: false`, `ptzSource: "unknown"`.
 
 Consequences the client can rely on: the crop of a `ptz: false` lens never moves
 while a PTZ command runs, so its viewport may be cached or reused more
@@ -79,8 +82,8 @@ aggressively than the `ptz: true` one.
 
 The route is authenticated like every other `/api` route (`pvw_session` cookie).
 Query: `device` (required), `channel` (default `1`), `quality` (`main` | `sub`,
-both when omitted), `width` + `height` (client hint, only used when the server
-cannot read the parameter sets).
+both when omitted, anything else is a `400`), `width` + `height` (client hint, only
+used when the server cannot read the parameter sets).
 
 Fields:
 
@@ -90,7 +93,7 @@ Fields:
 | `channel` | number | vendor channel (this camera answers on all of `0..3`) |
 | `streams[]` | array | one entry per probed quality |
 | `streams[].quality` | `"main"` \| `"sub"` | sub stream is the cheaper one (640x720) |
-| `streams[].codec` | string | `H264` / `H265` from the SDP |
+| `streams[].codec` | string | `H264` / `H265` from the SDP, `unknown` when no stream answered |
 | `streams[].width`, `.height` | number | `0` when unknown |
 | `streams[].sizeSource` | `sdp_sps` \| `client_hint` \| `unknown` | where the size came from |
 | `lenses[]` | array | empty when the count is unknown |
@@ -101,9 +104,10 @@ Fields:
 | `lensCount` | number | resolved lens count |
 | `countSource` | `capability` \| `geometry` \| `unknown` | which rule decided `lensCount` |
 | `stack` | `vertical` \| `single` | how the frame is split |
-| `cropsVerified` | boolean | `countSource` and the frame geometry agree |
+| `cropsVerified` | boolean | two or more lenses, and the frame geometry gives the same count |
 | `capabilities` | object | the raw APK flags this decision saw |
-| `ptzSource` | `measured_default` \| `operator` \| `unknown` | where `lenses[].ptz` came from |
+| `ptzSource` | `operator` \| `device` \| `measured_default` \| `unknown` | where `lenses[].ptz` came from |
+| `ptzEvidence` | string \| `null` | the device reading behind `ptzSource: "device"`, else `null` |
 
 Live payload from the camera above, both streams, geometry path
 (`GET /api/lens?device=local&channel=1`, 457 ms, two `DESCRIBE` handshakes):
@@ -166,6 +170,9 @@ agrees):
   "ptzSource": "measured_default"
 }
 ```
+
+Neither recorded payload shows `ptzEvidence`; a payload today carries it, `null`
+unless `ptzSource` is `device`.
 
 ## 5. How a client draws it
 
