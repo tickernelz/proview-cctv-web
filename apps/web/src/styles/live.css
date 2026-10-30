@@ -65,7 +65,7 @@
 
   .dock-status { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s4); min-height: 24px; padding: var(--s2) var(--s1) 0; font-size: var(--t-12); line-height: 1.4; color: var(--ink-3); }
   .dock-status p { margin: 0; }
-  #caption { display: flex; flex-wrap: wrap; gap: var(--s2); }
+  #caption { order: 1; display: flex; flex-wrap: wrap; gap: var(--s2); }
   #caption-flag:empty, .dock-note:empty { display: none; }
   #caption-flag.warn { color: var(--warn); }
   #caption-flag.rec { color: var(--live); }
