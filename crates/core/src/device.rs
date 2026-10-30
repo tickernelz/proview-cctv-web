@@ -1950,7 +1950,10 @@ mod tests {
     #[tokio::test]
     async fn a_cloud_link_carries_the_move_over_the_relay() {
         let (peer, server) = crate::dvrip::fake::serve(vec![
-            crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
+            crate::dvrip::fake::json_reply(json!({
+                "Ret": 100,
+                "Uart.PTZControlCmd": [{ "FlipOperation": false, "MirrorOperation": true, "ModifyCfg": true }]
+            })),
             crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
             crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
             crate::dvrip::fake::json_reply(json!({ "Ret": 100 })),
@@ -1963,9 +1966,11 @@ mod tests {
             .await
             .expect("the relay carried the move");
         let seen = server.await.expect("fake peer");
-        assert!(seen[0].contains("\"Command\":\"DirectionRight\""));
-        assert!(seen[0].contains("\"Preset\":65535"));
-        assert!(seen[1].contains("\"Preset\":-1"));
+        assert!(seen[0].contains("\"Name\":\"Uart.PTZControlCmd\""));
+        assert!(seen[1].contains("\"Command\":\"DirectionLeft\""));
+        assert!(seen[1].contains("\"Preset\":65535"));
+        assert!(seen[2].contains("\"Command\":\"DirectionLeft\""));
+        assert!(seen[2].contains("\"Preset\":-1"));
     }
 
     #[tokio::test]

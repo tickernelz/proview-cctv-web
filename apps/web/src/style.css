@@ -391,6 +391,7 @@ select.text-input { background: var(--bg-2); }
   label:has(> input[type="checkbox"]), label:has(> input[type="radio"]) { min-height: var(--hit); }
   .btn-text, .presets button, #tour { display: inline-flex; align-items: center; }
   #tour { min-height: var(--hit); }
+  .pad-speed select { min-height: var(--hit); }
   .tabs button, .auth-note .btn-text { min-height: var(--hit); }
   .tile .tile-meta .tile-pick { display: inline-flex; align-items: center; justify-content: center; min-width: var(--hit); min-height: var(--hit); }
   .grid-bar .grid-seg button { min-width: var(--hit); min-height: var(--hit); }
