@@ -16,9 +16,10 @@ stability before 1.0.
   `VideoDecoder.isConfigSupported` accept the stream's real codec string at its
   coded size, and falls back to the H.264 transcode when the buffer refuses it
   or no frame is presented within 4 s, remembering the verdict per session.
-  Measured over the cloud relay on the dual-lens camera: 0.6 % of a core and no
-  child process for the main stream against 88 % with ffmpeg, first fragment
-  1.56 s against 2.85 s. ffmpeg stays a hidden fallback and is never bundled.
+  Measured over the cloud relay on the dual-lens camera: 0.3-0.4 % of a core and
+  no child process for the main stream against 76-81 % with ffmpeg, first
+  fragment 2.17-2.27 s against 2.88-3.08 s. ffmpeg stays a hidden fallback and
+  is never bundled.
 - Clip downloads are playable MP4 files (`2026-10-30_05.20.31-05.25.00[R]...mp4`)
   muxed natively for H.264 and H.265, timed from the record stamps: a 269 s
   file reads as 269.2 s at 12.5 fps in `ffprobe`, where the header byte's
