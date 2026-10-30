@@ -6,6 +6,7 @@ use proview_core::cloud::bind::BindStatus;
 use proview_core::cloud::bind::{parse_qr, serial_ok, AddDevice, BindClient, BindFailure};
 use proview_core::cloud::claims;
 use proview_core::cloud::classify;
+use proview_core::cloud::types::CloudDevice;
 use proview_core::cloud::{CloudError, Identity};
 use proview_core::config::Config;
 use proview_core::provider::VendorSession;
@@ -196,6 +197,23 @@ pub struct BindReply {
     pub message: String,
 }
 
+#[derive(Serialize)]
+pub struct Missing {
+    pub uuid: String,
+    pub name: String,
+}
+
+#[derive(Serialize)]
+pub struct UnbindReply {
+    pub ok: bool,
+    pub status: &'static str,
+    pub serial: String,
+    pub vendor_code: i32,
+    pub message: String,
+    pub verified: bool,
+    pub also_missing: Vec<Missing>,
+}
+
 #[derive(Deserialize)]
 pub struct BindBody {
     pub sn: String,
@@ -381,7 +399,7 @@ async fn unbind_by_serial(
     cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
-) -> Result<Json<BindReply>, Failure> {
+) -> Result<Json<UnbindReply>, Failure> {
     let (_, session) = live_session(store, cookies)?;
     let requested = serial_or_fail(&body.sn)?;
     let token = session.token.as_deref().ok_or_else(|| {
@@ -411,7 +429,7 @@ async fn unbind_by_serial(
         return Err(fail_code(
             Status::Conflict,
             "confirm_mismatch",
-            "type the camera's name or serial exactly to confirm the removal; nothing was removed",
+            "type the camera's name or serial to confirm the removal; nothing was removed",
         ));
     }
     let client = BindClient::new(Identity::resolve(), cfg.cloud_base.clone());
@@ -419,13 +437,70 @@ async fn unbind_by_serial(
         .remove_device(token, &serial)
         .await
         .map_err(bind_failure)?;
-    Ok(Json(BindReply {
+    let listed = super::cloud_clips::envelope_for(cfg)
+        .device_list(token)
+        .await
+        .ok();
+    let (verified, also_missing, message) = match listed {
+        None => (
+            false,
+            Vec::new(),
+            format!(
+                "the cloud accepted removing {}, but the camera list could not be read afterwards, so the result could not be verified; reopen Devices and check that your other cameras are still listed",
+                labelled(&nickname, &serial)
+            ),
+        ),
+        Some(listed) => {
+            let missing = vanished(&devices, &listed, &serial);
+            let message = if missing.is_empty() {
+                format!("{serial} is no longer on this account")
+            } else {
+                format!(
+                    "removed {}, but the vendor also removed {}, which was not asked for; add those cameras again from the phone app",
+                    labelled(&nickname, &serial),
+                    missing
+                        .iter()
+                        .map(|device| labelled(&device.name, &device.uuid))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            (true, missing, message)
+        }
+    };
+    Ok(Json(UnbindReply {
         ok: true,
         status: "removed",
-        message: format!("{serial} is no longer on this account"),
+        message,
         serial,
         vendor_code: code,
+        verified,
+        also_missing,
     }))
+}
+
+fn labelled(name: &str, serial: &str) -> String {
+    if name.trim().is_empty() {
+        serial.to_string()
+    } else {
+        format!("{} ({serial})", name.trim())
+    }
+}
+
+fn vanished(before: &[CloudDevice], after: &[CloudDevice], removed: &str) -> Vec<Missing> {
+    before
+        .iter()
+        .filter(|device| !device.uuid.trim().eq_ignore_ascii_case(removed))
+        .filter(|device| {
+            !after
+                .iter()
+                .any(|kept| kept.uuid.trim().eq_ignore_ascii_case(device.uuid.trim()))
+        })
+        .map(|device| Missing {
+            uuid: device.uuid.trim().to_string(),
+            name: device.nickname.trim().to_string(),
+        })
+        .collect()
 }
 
 #[derive(Serialize)]

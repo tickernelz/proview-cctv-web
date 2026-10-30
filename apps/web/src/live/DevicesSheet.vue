@@ -9,7 +9,8 @@ import { addLauncher, live, menuOpen } from './store'
 
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
 type Attributes = { devices?: Device[]; groups?: string[] }
-type Reply = { message?: string; resolved?: string; materialised?: boolean; data?: any } | null
+type Reply = { message?: string; resolved?: string; materialised?: boolean; verified?: boolean; also_missing?: { uuid: string; name: string }[]; data?: any } | null
+type Said = { text: string; kind: 'ok' | 'bad' }
 type Action = 'rename' | 'save' | 'share' | 'check' | 'cancel' | 'accept' | 'password' | 'permit' | 'shares' | 'perm' | 'revoke' | 'qr' | 'answer' | 'unbind'
 type Permission = { id: string; label: string; default: boolean }
 type ShareRow = { shareId: string; serial: string; account: string; userId: string; permissions: string[]; state: string; deviceName: string }
@@ -165,7 +166,7 @@ function say(message: string, kind: 'ok' | 'bad') {
   action.kind = kind
 }
 
-async function run(name: Action, work: (uuid: string) => Promise<string>, needsCamera = true) {
+async function run(name: Action, work: (uuid: string) => Promise<string | Said>, needsCamera = true) {
   if (action.busy) return
   const uuid = chosen.value
   if (needsCamera && !uuid) return say('Pick a camera first', 'bad')
@@ -175,7 +176,8 @@ async function run(name: Action, work: (uuid: string) => Promise<string>, needsC
   try {
     const result = await work(uuid)
     await refresh()
-    say(result, 'ok')
+    if (typeof result === 'string') say(result, 'ok')
+    else say(result.text, result.kind)
   } catch (error) {
     if (sessionLost(error)) return close(false)
     say(sentence(error), 'bad')
@@ -205,8 +207,9 @@ const unbind = () =>
   run('unbind', async (uuid) => {
     const confirm = form.unbindConfirm.trim()
     const name = device.value?.nickname || uuid
+    let reply: Reply
     try {
-      await post('/api/devices/unbind', { sn: uuid, confirm })
+      reply = await post('/api/devices/unbind', { sn: uuid, confirm })
     } catch (error) {
       const code = (error as ApiError).code
       if (code && error instanceof Error) error.message += ' (' + code + ')'
@@ -214,6 +217,7 @@ const unbind = () =>
     }
     form.unbindConfirm = ''
     await loadDevices()
+    if (reply?.also_missing?.length || reply?.verified === false) return { text: sentence(reply.message || 'the removal could not be verified'), kind: 'bad' }
     return 'Removed ' + name + ' from this account'
   })
 

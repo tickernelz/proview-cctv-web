@@ -71,29 +71,38 @@ fn reply(method: &str, form: &str) -> Value {
             "msg": "SUCCESS",
             "data": { "accessToken": token(3600), "refreshToken": "refresh" }
         }),
-        "msdlistCode" => json!({
-            "code": 2000,
-            "msg": "SUCCESS",
-            "data": { "mine": [ { "uuid": "AASN000000000001", "nickname": "Gate" } ], "share": [] }
-        }),
-        "mdadd" => {
-            let serial = form
-                .split('&')
-                .find_map(|pair| pair.strip_prefix("uuid="))
-                .unwrap_or_default();
-            match serial {
-                "AASN000000000001" => json!({ "code": 4101, "msg": "DEV_ALREADY", "data": "" }),
-                "AASN000000000003" => {
-                    json!({ "code": 4105, "msg": "DEV_USERNAME_FAIL", "data": "" })
-                }
-                "AASN000000000004" => json!({ "code": -4004, "msg": "token expired", "data": "" }),
-                "AASN000000000005" => json!({ "code": 4104, "msg": "DEV_UUID_FAIL", "data": "" }),
-                _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        "mdadd" => match serial_of(form) {
+            "AASN000000000001" => json!({ "code": 4101, "msg": "DEV_ALREADY", "data": "" }),
+            "AASN000000000003" => {
+                json!({ "code": 4105, "msg": "DEV_USERNAME_FAIL", "data": "" })
             }
-        }
-        "mdrm" => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+            "AASN000000000004" => json!({ "code": -4004, "msg": "token expired", "data": "" }),
+            "AASN000000000005" => json!({ "code": 4104, "msg": "DEV_UUID_FAIL", "data": "" }),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        },
         _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
     }
+}
+
+fn serial_of(form: &str) -> &str {
+    form.split('&')
+        .find_map(|pair| pair.strip_prefix("uuid="))
+        .unwrap_or_default()
+}
+
+fn listed() -> Vec<Value> {
+    vec![
+        json!({ "uuid": "AASN000000000001", "nickname": "Gate" }),
+        json!({ "uuid": "AASN000000000007", "nickname": "Garage" }),
+    ]
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Vendor {
+    Honest,
+    ListFails,
+    DropsAll,
+    RereadFails,
 }
 
 fn find_head(buffer: &[u8]) -> Option<usize> {
@@ -116,7 +125,7 @@ fn content_length(head: &str) -> usize {
 type Calls = Arc<Mutex<Vec<(String, String)>>>;
 
 fn cloud_stub() -> String {
-    cloud_stub_with(false).0
+    cloud_stub_with(Vendor::Honest).0
 }
 
 fn sent(calls: &Calls, method: &str) -> Vec<String> {
@@ -129,12 +138,14 @@ fn sent(calls: &Calls, method: &str) -> Vec<String> {
         .collect()
 }
 
-fn cloud_stub_with(list_fails: bool) -> (String, Calls) {
+fn cloud_stub_with(vendor: Vendor) -> (String, Calls) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("stub listener");
     let address = listener.local_addr().expect("stub address");
     let calls: Calls = Arc::default();
     let seen = calls.clone();
     std::thread::spawn(move || {
+        let mut mine = listed();
+        let mut removed = false;
         for stream in listener.incoming() {
             let mut stream = match stream {
                 Ok(stream) => stream,
@@ -183,11 +194,32 @@ fn cloud_stub_with(list_fails: bool) -> (String, Calls) {
             seen.lock()
                 .expect("calls")
                 .push((method.clone(), form.clone()));
-            let payload = if list_fails && method == "msdlistCode" {
-                json!({ "code": 5000, "msg": "SERVER_FAIL", "data": "" }).to_string()
-            } else {
-                reply(&method, &form).to_string()
-            };
+            let failed = json!({ "code": 5000, "msg": "SERVER_FAIL", "data": "" });
+            let payload = match method.as_str() {
+                "msdlistCode"
+                    if vendor == Vendor::ListFails
+                        || (vendor == Vendor::RereadFails && removed) =>
+                {
+                    failed
+                }
+                "msdlistCode" => json!({
+                    "code": 2000,
+                    "msg": "SUCCESS",
+                    "data": { "mine": mine, "share": [] }
+                }),
+                "mdrm" => {
+                    removed = true;
+                    if vendor == Vendor::DropsAll {
+                        mine.clear();
+                    } else {
+                        let serial = serial_of(&form).to_string();
+                        mine.retain(|device| device["uuid"] != json!(serial));
+                    }
+                    json!({ "code": 2000, "msg": "SUCCESS", "data": "" })
+                }
+                _ => reply(&method, &form),
+            }
+            .to_string();
             let sealed = seal(&key, &payload).unwrap_or(payload);
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -635,7 +667,7 @@ async fn unbind(cloud: &str, name: &str, body: Value) -> (u16, Value) {
 #[test]
 fn unbind_refuses_a_serial_that_is_not_on_the_account() {
     block_on(async {
-        let (cloud, calls) = cloud_stub_with(false);
+        let (cloud, calls) = cloud_stub_with(Vendor::Honest);
         let (status, reply) = unbind(
             &cloud,
             "unbind-absent",
@@ -656,7 +688,7 @@ fn unbind_refuses_a_serial_that_is_not_on_the_account() {
 #[test]
 fn unbind_refuses_a_missing_or_wrong_confirmation() {
     block_on(async {
-        let (cloud, calls) = cloud_stub_with(false);
+        let (cloud, calls) = cloud_stub_with(Vendor::Honest);
         for (name, body) in [
             ("unbind-missing", json!({ "sn": "AASN000000000001" })),
             (
@@ -665,7 +697,19 @@ fn unbind_refuses_a_missing_or_wrong_confirmation() {
             ),
             (
                 "unbind-wrong",
+                json!({ "sn": "AASN000000000001", "confirm": "Porch" }),
+            ),
+            (
+                "unbind-other-name",
                 json!({ "sn": "AASN000000000001", "confirm": "Garage" }),
+            ),
+            (
+                "unbind-other-serial",
+                json!({ "sn": "AASN000000000001", "confirm": "AASN000000000007" }),
+            ),
+            (
+                "unbind-second-named-as-first",
+                json!({ "sn": "AASN000000000007", "confirm": "gate" }),
             ),
             (
                 "unbind-partial",
@@ -683,7 +727,7 @@ fn unbind_refuses_a_missing_or_wrong_confirmation() {
 #[test]
 fn unbind_confirmed_by_serial_sends_one_mdrm_for_that_serial() {
     block_on(async {
-        let (cloud, calls) = cloud_stub_with(false);
+        let (cloud, calls) = cloud_stub_with(Vendor::Honest);
         let (status, reply) = unbind(
             &cloud,
             "unbind-serial",
@@ -702,7 +746,7 @@ fn unbind_confirmed_by_serial_sends_one_mdrm_for_that_serial() {
 #[test]
 fn unbind_confirmed_by_nickname_sends_one_mdrm_for_the_listed_serial() {
     block_on(async {
-        let (cloud, calls) = cloud_stub_with(false);
+        let (cloud, calls) = cloud_stub_with(Vendor::Honest);
         let (status, reply) = unbind(
             &cloud,
             "unbind-nickname",
@@ -721,7 +765,7 @@ fn unbind_confirmed_by_nickname_sends_one_mdrm_for_the_listed_serial() {
 #[test]
 fn unbind_refuses_when_the_device_list_cannot_be_read() {
     block_on(async {
-        let (cloud, calls) = cloud_stub_with(true);
+        let (cloud, calls) = cloud_stub_with(Vendor::ListFails);
         let (status, reply) = unbind(
             &cloud,
             "unbind-unread",
@@ -732,5 +776,83 @@ fn unbind_refuses_when_the_device_list_cannot_be_read() {
         assert_eq!(reply["ok"], json!(false));
         assert!(!sent(&calls, "msdlistCode").is_empty());
         assert!(sent(&calls, "mdrm").is_empty());
+    });
+}
+
+#[test]
+fn unbind_of_the_second_camera_sends_one_mdrm_for_the_second_serial() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(Vendor::Honest);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-second",
+            json!({ "sn": "AASN000000000007", "confirm": "Garage" }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["serial"], json!("AASN000000000007"));
+        assert_eq!(reply["verified"], json!(true));
+        assert_eq!(reply["also_missing"], json!([]));
+        assert_eq!(
+            reply["message"],
+            json!("AASN000000000007 is no longer on this account")
+        );
+        assert_eq!(
+            sent(&calls, "mdrm"),
+            vec!["uuid=AASN000000000007".to_string()]
+        );
+        assert_eq!(sent(&calls, "msdlistCode").len(), 2);
+    });
+}
+
+#[test]
+fn unbind_names_the_cameras_the_vendor_removed_without_being_asked() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(Vendor::DropsAll);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-drops-all",
+            json!({ "sn": "AASN000000000007", "confirm": "Garage" }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["ok"], json!(true));
+        assert_eq!(reply["verified"], json!(true));
+        assert_eq!(
+            reply["also_missing"],
+            json!([{ "uuid": "AASN000000000001", "name": "Gate" }])
+        );
+        let message = reply["message"].as_str().unwrap();
+        assert!(message.contains("Gate (AASN000000000001)"), "{message}");
+        assert!(message.contains("not asked for"), "{message}");
+        assert!(message.contains("phone app"), "{message}");
+        assert_eq!(
+            sent(&calls, "mdrm"),
+            vec!["uuid=AASN000000000007".to_string()]
+        );
+    });
+}
+
+#[test]
+fn unbind_says_so_when_the_result_cannot_be_verified() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub_with(Vendor::RereadFails);
+        let (status, reply) = unbind(
+            &cloud,
+            "unbind-unverified",
+            json!({ "sn": "AASN000000000007", "confirm": "Garage" }),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(reply["ok"], json!(true));
+        assert_eq!(reply["verified"], json!(false));
+        assert_eq!(reply["also_missing"], json!([]));
+        let message = reply["message"].as_str().unwrap();
+        assert!(message.contains("could not be verified"), "{message}");
+        assert_eq!(
+            sent(&calls, "mdrm"),
+            vec!["uuid=AASN000000000007".to_string()]
+        );
+        assert_eq!(sent(&calls, "msdlistCode").len(), 2);
     });
 }

@@ -12,9 +12,16 @@ stability before 1.0.
 - `POST /api/devices/unbind` no longer sends `mdrm` for a serial that is not
   on the account: it reads the live `msdlistCode` `mine` list first and answers
   409 `not_on_account` when the serial is absent, refuses when the list cannot
-  be read, and needs `confirm` to match the camera's serial or name (409
-  `confirm_mismatch` otherwise). The device sheet gains a typed "Remove from
-  this account" control that uses it.
+  be read, and needs `confirm` to match the camera's serial or name (trimmed,
+  case-insensitive; 409 `confirm_mismatch` otherwise). This catches typos and
+  stale serials. It does not prevent the 2026-10-30 sequence (a device bound
+  and then removed on a legacy account), because that `mdrm` is the same
+  request the phone app sends. After `mdrm` succeeds the route reads the list
+  once more: a camera other than the removed one that is no longer listed is
+  returned in `also_missing` with a message to add it again from the phone app,
+  and a failed re-read answers `verified: false` with a message that the result
+  could not be verified. The device sheet gains a typed "Remove from this
+  account" control that uses it and shows either message as a red alert.
 - Two settings writes of the same block in the same millisecond no longer fail
   with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
   and a name that already exists is skipped instead of refused.
