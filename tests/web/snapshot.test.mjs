@@ -84,15 +84,16 @@ async function downloaded(act) {
   throw new Error('the snapshot download never finished: ' + JSON.stringify(readdirSync(downloads)));
 }
 
-test('the Snapshot button downloads a PNG of the live frame at its own size', async () => {
+test('the Snapshot button downloads a PNG of the large lens in picture in picture at its own size', async () => {
   const page = await watching();
   try {
     const video = await page.evaluate(VIDEO);
     assert.deepEqual([video.width, video.height], [640, 720], 'the fixture streams two stacked 640\u00d7360 pictures');
+    assert.equal(await page.evaluate("document.getElementById('well').dataset.lens"), 'pip');
     const file = await downloaded(() => page.evaluate("document.getElementById('snapshot').click()"));
     const image = png(file.path);
-    assert.deepEqual([image.width, image.height], [video.width, video.height]);
-    assert.match(file.name, /^gate_ch1_lens-combined_\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z\.png$/);
+    assert.deepEqual([image.width, image.height], [640, 360]);
+    assert.match(file.name, /^gate_ch1_lens-pip_\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z\.png$/);
     const drawn = await pixels(page, file.path);
     assert.equal(drawn.transparent, 0, 'every pixel is opaque');
     assert.ok(drawn.colours >= 10, 'the picture carries ' + drawn.colours + ' colours, not a blank canvas');
@@ -108,7 +109,9 @@ test('the Snapshot shortcut keeps the selected lens crop', async () => {
     const video = await page.evaluate(VIDEO);
     assert.deepEqual([video.width, video.height], [640, 720], 'the fixture streams two stacked 640\u00d7360 pictures');
     await page.key('l');
-    await page.wait("document.getElementById('well').dataset.lens !== 'combined'", 'a single-lens view', 10000);
+    await page.wait("document.getElementById('well').dataset.lens === 'combined'", 'both lenses after the first L', 10000);
+    await page.key('l');
+    await page.wait("document.getElementById('well').dataset.lens === '0'", 'the top lens after the second L', 10000);
     const file = await downloaded(() => page.key('s'));
     const image = png(file.path);
     assert.deepEqual([image.width, image.height], [640, 360]);

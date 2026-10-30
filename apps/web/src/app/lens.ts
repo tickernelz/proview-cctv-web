@@ -1,5 +1,6 @@
 import { api } from '../lib/api'
 import { live } from '../live/store'
+import { frameFit, pip } from '../live/stage/pip'
 import { renderCaption } from './caption'
 import { renderSwitcher } from './chrome'
 import { sessionLost } from './shell'
@@ -22,6 +23,7 @@ export type Lens = {
 }
 
 const FULL: Crop = { x: 0, y: 0, w: 1, h: 1 }
+export const PIP = 'pip'
 const LENS_WORDS: Record<string, string> = { full: 'Full frame', top: 'Top lens', middle: 'Middle lens', bottom: 'Bottom lens' }
 
 const video = () => document.getElementById('video') as HTMLVideoElement | null
@@ -134,9 +136,25 @@ export function lensEntries(): LensEntry[] {
   return state.lens && state.lens.lenses.length ? state.lens.lenses : []
 }
 
+function activeView() {
+  const view = String(state.lensView)
+  if (lensEntries().length < 2) return 'combined'
+  if (view === PIP || view === 'combined') return view
+  return lensEntries().some((lens) => String(lens.index) === view) ? view : 'combined'
+}
+
+function pipPair(): [LensEntry, LensEntry] {
+  const entries = lensEntries()
+  const top = entries.find((lens) => lens.rawLabel === 'top') || entries[0]
+  const bottom = entries.find((lens) => lens !== top && lens.rawLabel === 'bottom') || entries.find((lens) => lens !== top) || entries[1]
+  return pip.swapped ? [bottom, top] : [top, bottom]
+}
+
 export function lensViewLabel() {
-  if (state.lensView === 'combined') return 'Both lenses'
-  const entry = lensEntries().find((lens) => String(lens.index) === String(state.lensView))
+  const view = activeView()
+  if (view === PIP) return 'Picture in picture'
+  if (view === 'combined') return 'Both lenses'
+  const entry = lensEntries().find((lens) => String(lens.index) === view)
   return entry ? entry.label : 'Both lenses'
 }
 
@@ -171,16 +189,18 @@ function lensSub(entry: LensEntry) {
 export function renderLensPicker() {
   const entries = lensEntries()
   const pair = entries.length > 1
-  if (!pair && state.lensView !== 'combined') state.lensView = 'combined'
+  if (state.lens && !pair && state.lensView !== 'combined') state.lensView = 'combined'
   live.lens.shown = pair
   live.lens.label = lensViewLabel()
   live.settings.lensNote = lensNote()
   live.settings.lensTitle = state.lens && state.lens.ptzEvidence ? state.lens.ptzEvidence : ''
   live.settings.lensRolesKnown = entries.some((entry) => entry.role !== 'unknown')
-  live.lens.options = [{ value: 'combined', name: 'Both lenses', sub: 'the frame as the camera sends it' }].concat(
+  const pipOption = pair ? [{ value: PIP, name: 'Picture in picture', sub: 'one lens large, the other in a corner' }] : []
+  live.lens.options = pipOption.concat(
+    [{ value: 'combined', name: 'Both lenses', sub: 'stacked, as the camera sends the frame' }],
     entries.map((entry) => ({ value: String(entry.index), name: entry.label, sub: lensSub(entry) })),
   )
-  live.lens.value = String(state.lensView)
+  live.lens.value = activeView()
   live.lens.note = lensNote()
   renderSwitcher()
   renderCaption()
@@ -194,8 +214,15 @@ export function chooseLens(value: string) {
 export function cycleLens() {
   const entries = lensEntries()
   if (entries.length < 2) return
-  const order = ['combined'].concat(entries.map((entry) => String(entry.index)))
-  chooseLens(order[(order.indexOf(String(state.lensView)) + 1) % order.length])
+  const order = [PIP, 'combined'].concat(entries.map((entry) => String(entry.index)))
+  chooseLens(order[(order.indexOf(activeView()) + 1) % order.length])
+}
+
+export function swapLenses() {
+  if (activeView() !== PIP) return
+  pip.swapped = !pip.swapped
+  applyLensView(PIP)
+  renderLensPicker()
 }
 
 function frameDims() {
@@ -209,11 +236,14 @@ function frameDims() {
 
 export function layoutLensCrop() {
   const well = document.getElementById('well')
-  if (!well || !(state.stage.name === 'playing' || state.stage.name === 'stalled')) return
+  if (!well || !['playing', 'stalled', 'playback'].includes(state.stage.name)) return
   const dims = frameDims()
   const crop = currentCrop()
   const ratio = (crop.w * dims.width) / (crop.h * dims.height)
-  const available = { width: well.clientWidth || 1, height: well.clientHeight || 1 }
+  const narrow = typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 640px)').matches && !document.fullscreenElement
+  const width0 = well.clientWidth || 1
+  frameFit.height = narrow ? Math.round(Math.min(width0 / ratio, window.innerHeight * 0.62)) + 'px' : ''
+  const available = { width: width0, height: narrow ? Math.round(Math.min(width0 / ratio, window.innerHeight * 0.62)) : well.clientHeight || 1 }
   let width = available.width
   let height = width / ratio
   if (height > available.height) {
@@ -223,6 +253,18 @@ export function layoutLensCrop() {
   live.stage.crop.width = Math.max(1, Math.round(width)) + 'px'
   live.stage.crop.height = Math.max(1, Math.round(height)) + 'px'
   live.stage.crop.flipped = state.prefs.flip ? 'true' : 'false'
+  renderPip(dims)
+}
+
+function renderPip(dims: { width: number; height: number }) {
+  const on = activeView() === PIP
+  pip.shown = on
+  if (!on) return
+  const [main, inset] = pipPair()
+  pip.main = main.label
+  pip.inset = inset.label
+  pip.crop = { ...inset.crop }
+  pip.ratio = (inset.crop.w * dims.width) / (inset.crop.h * dims.height)
 }
 
 export function applyLensView(value: string | number) {
@@ -232,14 +274,17 @@ export function applyLensView(value: string | number) {
   live.stage.view.top = (-crop.y / crop.h) * 100 + '%'
   live.stage.view.width = 100 / crop.w + '%'
   live.stage.view.height = 100 / crop.h + '%'
-  live.stage.lens = String(value)
+  live.stage.lens = activeView()
+  pip.shown = false
   layoutLensCrop()
   renderFsLine()
 }
 
 export function currentCrop(): Crop {
-  if (state.lensView === 'combined') return FULL
-  const entry = lensEntries().find((lens) => String(lens.index) === String(state.lensView))
+  const view = activeView()
+  if (view === 'combined') return FULL
+  if (view === PIP) return pipPair()[0].crop
+  const entry = lensEntries().find((lens) => String(lens.index) === view)
   return entry ? entry.crop : FULL
 }
 

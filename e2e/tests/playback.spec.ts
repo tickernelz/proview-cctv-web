@@ -132,8 +132,13 @@ test('a click on a recorded point plays from that time inside Live, and Back to 
   const begin = new Date(String(param(url, 'begin')).replace(' ', 'T')).getTime()
   expect(Math.abs(begin - new Date('2026-10-27T08:52:00').getTime())).toBeLessThan(3 * 60_000)
   await expect(page.getByTestId('playback-controls')).toBeVisible()
-  await expect(page.getByTestId('ctl-talk')).toHaveCount(0)
+  await expect(page.getByTestId('ctl-talk')).toBeDisabled()
+  await expect(page.getByTestId('ctl-move')).toBeDisabled()
+  await expect(page.getByTestId('playback-note')).toBeVisible()
+  await expect(page.getByTestId('ctl-record')).toHaveCount(0)
   await expect(page.getByTestId('tl-live')).toHaveCount(0)
+  await expect(page.getByTestId('live-plate')).toHaveAttribute('data-tone', 'rec')
+  await expect(page.getByTestId('live-plate')).toContainText(/RECs*08:5d:dd/)
   await expect(page.getByTestId('pb-snapshot')).toBeEnabled()
   await expect(page.getByTestId('pb-frame-next')).toBeEnabled()
   await expect(page.getByTestId('tl-pill')).toHaveText(/^08:5\d:\d\d$/)
@@ -550,7 +555,7 @@ test('in playback the live keys stay out: T, R, V and Q do nothing live, S saves
   expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
 })
 
-test('a live route during playback leaves playback first: one socket, live mode', async ({ page }) => {
+test('a live route during playback keeps playing the recording and opens no live stream beside it', async ({ page }) => {
   await prepare(page)
   const live = await trackLive(page)
   const sockets = await fakePlayback(page)
@@ -564,11 +569,15 @@ test('a live route during playback leaves playback first: one socket, live mode'
     history.replaceState(null, '', '#/live/single')
     location.hash = '#/live'
   })
+  await page.waitForTimeout(1500)
+  expect(openSockets(live, sockets)).toEqual({ live: 0, playback: 1 })
+  await expect(page.getByTestId('playback-controls')).toBeVisible()
+  await expect(page.getByTestId('live-plate')).toHaveAttribute('data-tone', 'rec')
+  await page.getByTestId('tl-back-live').click()
   await expect.poll(() => sockets.closed).toBe(1)
-  await expect(page.getByTestId('playback-controls')).toHaveCount(0)
-  await expect(page.getByTestId('tl-live')).toBeVisible()
   await playing(page)
   await expect.poll(() => openSockets(live, sockets)).toEqual({ live: 1, playback: 0 })
+  await expect(page.getByTestId('live-plate')).toHaveAttribute('data-tone', 'live')
 })
 
 test('switching camera and clicking the track while the new stream loads plays that camera once the stream settles', async ({ page }) => {

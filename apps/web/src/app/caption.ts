@@ -27,6 +27,7 @@ function captionText() {
     return 'failed at ' + hms(state.stage.failedAt) + ' — ' + after + ' s after the request'
   }
   if (name === 'offline') return 'offline'
+  if (name === 'playback') return 'recording' + (live.playback.at === null ? '' : ' from ' + hms(live.playback.at))
   if (name === 'playing') {
     const lens = lensEntries().length > 1 ? ', ' + lensViewLabel().toLowerCase() : ''
     return 'live' + lens + (state.padOpen ? ' — arrow keys move it' : '')

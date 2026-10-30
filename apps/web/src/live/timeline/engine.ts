@@ -8,7 +8,6 @@ import { decodeAlaw, PlaybackSound } from '../playback-audio'
 import { deviceTime, fileAtTime, mb, stamp, type Clip } from '../playback-clips'
 import { setView } from '../../app/view'
 import { live, menuOpen } from '../store'
-import { bridgeStage } from './stage-bridge'
 
 export type Kind = 'all' | 'regular' | 'alarm'
 export type Phase = 'idle' | 'loading' | 'ok' | 'error'
@@ -596,7 +595,6 @@ export async function playAt(ms: number) {
   if (live.mode !== 'playback') {
     live.mode = 'playback'
     await nextTick()
-    bridgeStage('playback')
     if (mine !== playTicket || live.mode !== 'playback') return
   }
   start(deviceTime(at))
@@ -607,10 +605,6 @@ export function playEvent(at: number) {
 }
 
 export function backToLive() {
-  leavePlayback(true)
-}
-
-function leavePlayback(resume: boolean) {
   queued = null
   if (live.mode !== 'playback') return
   playTicket += 1
@@ -632,7 +626,6 @@ function leavePlayback(resume: boolean) {
   tl.file = null
   say('')
   live.mode = 'live'
-  if (resume) bridgeStage('live')
 }
 
 export function setSpeed(value: number) {
@@ -803,7 +796,7 @@ watch(
 watch(
   () => live.stage.name,
   (name) => {
-    if (name === 'loading') leavePlayback(false)
+    if (name === 'loading') backToLive()
   },
   { flush: 'sync' },
 )
