@@ -2366,7 +2366,11 @@ A second live transport skips the transcode: `/ws/live?...&codec=hevc` carries
 the camera's H.265 untouched, muxed in-process into fragmented MP4 (no ffmpeg),
 for the same MediaSource player the transcode feeds. Both transports open with
 one JSON text frame naming the mode the server chose, which is what the client
-follows (a fixture or an H.264 camera answers `transcode` even to `codec=hevc`):
+follows. The server answers `passthrough` only when it actually sends H.265:
+an H.264 camera asked for `codec=hevc` gets its own stream remuxed natively
+(`avc1`, no ffmpeg) under a `transcode` hello naming that `avc1` codec, and a
+fixture or an H.265 stream that reorders frames (B-frames, see below) is
+transcoded under a `transcode` hello:
 `{"type":"hello","mode":"passthrough","codec":"hvc1.1.6.L63","width":2304,"height":2592,"audio":null,"audio_clock":null}`
 (measured on the dual-lens camera over the cloud relay, 2026-10-30). Binary
 frames follow with no header bytes: the init segment (`ftyp`+`moov`, one `hvc1`
@@ -2387,6 +2391,15 @@ NAL with its first-slice flag at an access-unit boundary restores the stream.
 The codec string comes from the SPS `profile_tier_level` and the SPS payload is
 de-escaped (`00 00 03` → `00 00`) before it is parsed, otherwise the camera's
 SPS yields a zero size.
+
+Reordering: the muxers write no composition offsets (`ctts`, `trun`
+composition times), so they only take streams whose decode order is their
+presentation order. H.265 is checked through `sps_max_num_reorder_pics` of the
+highest sub-layer; H.264 through `max_num_reorder_frames` in the VUI bitstream
+restriction, and without one only Baseline or `pic_order_cnt_type` 2 count as
+in order. A reordering stream is transcoded live and in playback, and its
+download stays the raw elementary stream (`.hevc`/`.h264`) instead of an MP4.
+The dual-lens camera declares 0 reorder pictures on both streams.
 
 The browser asks for `codec=hevc` only when `MediaSource.isTypeSupported` accepts
 the codec string and, where `VideoDecoder` exists, `isConfigSupported` accepts it

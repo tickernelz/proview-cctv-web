@@ -55,7 +55,6 @@ pub enum SourceError {
     Ffmpeg(String),
     NoVideoTrack,
     FfmpegMissing,
-    PassthroughNeedsHevc(String),
 }
 
 impl std::fmt::Display for SourceError {
@@ -68,10 +67,6 @@ impl std::fmt::Display for SourceError {
             SourceError::FfmpegMissing => write!(
                 f,
                 "ffmpeg is not installed; add its path under Settings, Configuration, Streaming, or install ffmpeg for HEVC cameras"
-            ),
-            SourceError::PassthroughNeedsHevc(codec) => write!(
-                f,
-                "passthrough needs an H.265 camera, this one announces {codec}"
             ),
         }
     }
@@ -285,27 +280,57 @@ async fn pump_inner(
         audio_clock: audio.as_ref().and_then(|track| audio_clock(&track.codec)),
         ..StreamMeta::default()
     };
-    if let (Some(vps), Some(sps), Some(pps)) = (&video.vps, &video.sps, &video.pps) {
-        if let Ok(config) = VideoConfig::hevc(vps, sps, pps) {
-            meta.width = Some(config.width);
-            meta.height = Some(config.height);
-            meta.codec_string = Some(config.codec_string);
-        }
+    let announced = match (&video.vps, &video.sps, &video.pps) {
+        (Some(vps), Some(sps), Some(pps)) => VideoConfig::hevc(vps, sps, pps).ok(),
+        _ => None,
+    };
+    if let Some(config) = &announced {
+        meta.width = Some(config.width);
+        meta.height = Some(config.height);
+        meta.codec_string = Some(config.codec_string.clone());
+    }
+    let route = live_route(key.mode, &video.codec, announced.as_ref());
+    if key.mode == LiveMode::Passthrough && route != LiveRoute::Passthrough {
+        meta.codec_string = None;
     }
     hub.set_meta(key, meta.clone());
 
-    match key.mode {
-        LiveMode::Passthrough => {
-            pump_passthrough(hub, key, session, video, audio_channel, meta, stop).await
+    match route {
+        LiveRoute::Passthrough => {
+            let handover =
+                pump_passthrough(hub, key, session, &video, audio_channel, meta.clone(), stop)
+                    .await?;
+            match handover {
+                Some(session) => {
+                    meta.codec_string = None;
+                    hub.set_meta(key, meta);
+                    pump_transcode(hub, key, session, video, audio_channel, stop).await
+                }
+                None => Ok(()),
+            }
         }
-        LiveMode::Transcode => match transcode_path(&video.codec) {
-            TranscodePath::NativeH264 => {
-                pump_h264(hub, key, session, video, audio_channel, meta, stop).await
-            }
-            TranscodePath::Ffmpeg => {
-                pump_transcode(hub, key, session, video, audio_channel, stop).await
-            }
-        },
+        LiveRoute::NativeH264 => {
+            pump_h264(hub, key, session, video, audio_channel, meta, stop).await
+        }
+        LiveRoute::Ffmpeg => pump_transcode(hub, key, session, video, audio_channel, stop).await,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveRoute {
+    Passthrough,
+    NativeH264,
+    Ffmpeg,
+}
+
+fn live_route(mode: LiveMode, codec: &str, announced: Option<&VideoConfig>) -> LiveRoute {
+    let hevc = codec.eq_ignore_ascii_case("H265");
+    if mode == LiveMode::Passthrough && hevc && !announced.is_some_and(|config| config.reorders) {
+        return LiveRoute::Passthrough;
+    }
+    match transcode_path(codec) {
+        TranscodePath::NativeH264 => LiveRoute::NativeH264,
+        TranscodePath::Ffmpeg => LiveRoute::Ffmpeg,
     }
 }
 
@@ -676,14 +701,11 @@ async fn pump_passthrough(
     hub: &Arc<LiveHub>,
     key: &StreamKey,
     mut session: RtspSession,
-    video: Track,
+    video: &Track,
     audio_channel: Option<u8>,
     mut meta: StreamMeta,
     stop: &Arc<AtomicBool>,
-) -> Result<(), SourceError> {
-    if !video.codec.eq_ignore_ascii_case("H265") {
-        return Err(SourceError::PassthroughNeedsHevc(video.codec.clone()));
-    }
+) -> Result<Option<RtspSession>, SourceError> {
     let mut passthrough = match (&video.vps, &video.sps, &video.pps) {
         (Some(vps), Some(sps), Some(pps)) => VideoConfig::hevc(vps, sps, pps)
             .map(HevcPassthrough::with_config)
@@ -697,6 +719,7 @@ async fn pump_passthrough(
 
     let mut reader = hevc::Reader::new();
     let mut units = 0u64;
+    let mut handover = false;
     let result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
@@ -721,6 +744,10 @@ async fn pump_passthrough(
             continue;
         };
         if let Some(config) = passthrough.learn(&unit.nals) {
+            if config.reorders {
+                handover = true;
+                break Ok(());
+            }
             let config = config.clone();
             publish_config(hub, key, &mut meta, &config);
         }
@@ -735,6 +762,10 @@ async fn pump_passthrough(
             hub.publish_media(key, fragment, keyframe);
         }
     };
+    if handover {
+        tracing::info!("the stream reorders frames, so it is transcoded instead");
+        return result.map(|()| Some(session));
+    }
     if let Some((fragment, keyframe)) = passthrough.flush() {
         hub.publish_media(key, fragment, keyframe);
     }
@@ -746,7 +777,7 @@ async fn pump_passthrough(
     );
     hub.publisher_done(key);
     let _ = tokio::time::timeout(Duration::from_secs(2), session.teardown()).await;
-    result
+    result.map(|()| None)
 }
 
 pub type Fmp4Publisher = (
@@ -871,6 +902,52 @@ mod tests {
         assert!(args.contains(&"libx264".to_string()));
         assert!(args.contains(&"pipe:1".to_string()));
         assert!(!args.contains(&"copy".to_string()));
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    #[test]
+    fn a_passthrough_request_follows_what_the_camera_can_send() {
+        let camera = VideoConfig::hevc(
+            &hex("40010c01ffff0160000003000003000003000003003f2c0c00000fa00000bb8140"),
+            &hex("4201010160000003000003000003000003003fa001202002887f9cbabc12e080"),
+            &hex("4401c0f3c0e14524"),
+        )
+        .expect("camera");
+        let b_frames = VideoConfig::hevc(
+            &hex("40010c01ffff01600000030090000003000003003c959809"),
+            &hex("42010101600000030090000003000003003ca00a080f165959a4932bc05a020000030002000003003210"),
+            &hex("4401c172b46240"),
+        )
+        .expect("x265 bframes=4");
+        let passthrough = LiveMode::Passthrough;
+        assert_eq!(
+            live_route(passthrough, "H265", Some(&camera)),
+            LiveRoute::Passthrough
+        );
+        assert_eq!(
+            live_route(passthrough, "H265", None),
+            LiveRoute::Passthrough
+        );
+        assert_eq!(
+            live_route(passthrough, "H265", Some(&b_frames)),
+            LiveRoute::Ffmpeg
+        );
+        assert_eq!(live_route(passthrough, "H264", None), LiveRoute::NativeH264);
+        assert_eq!(live_route(passthrough, "MJPEG", None), LiveRoute::Ffmpeg);
+        assert_eq!(
+            live_route(LiveMode::Transcode, "H265", Some(&camera)),
+            LiveRoute::Ffmpeg
+        );
+        assert_eq!(
+            live_route(LiveMode::Transcode, "H264", None),
+            LiveRoute::NativeH264
+        );
     }
 
     #[test]

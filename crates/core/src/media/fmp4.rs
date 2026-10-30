@@ -203,6 +203,17 @@ pub(crate) fn movie(
     box_bytes(b"moov", &moov)
 }
 
+const SYNC_SAMPLE: u32 = 0x0200_0000;
+const DEPENDENT_SAMPLE: u32 = 0x0101_0000;
+
+fn sample_flags(sample: &Sample) -> u32 {
+    if sample.keyframe {
+        SYNC_SAMPLE
+    } else {
+        DEPENDENT_SAMPLE
+    }
+}
+
 pub fn media_segment(sequence: u32, base_decode_time: u64, samples: &[Sample]) -> Vec<u8> {
     let mfhd = full_box(b"mfhd", 0, 0, &sequence.to_be_bytes());
 
@@ -217,16 +228,12 @@ pub fn media_segment(sequence: u32, base_decode_time: u64, samples: &[Sample]) -
         let mut trun = Vec::new();
         trun.extend_from_slice(&(samples.len() as u32).to_be_bytes());
         trun.extend_from_slice(&data_offset.to_be_bytes());
-        trun.extend_from_slice(&0x0200_0000u32.to_be_bytes());
+        let first = samples.first().map(sample_flags).unwrap_or(SYNC_SAMPLE);
+        trun.extend_from_slice(&first.to_be_bytes());
         for sample in samples {
             trun.extend_from_slice(&sample.duration.to_be_bytes());
             trun.extend_from_slice(&(sample.data.len() as u32).to_be_bytes());
-            let flags = if sample.keyframe {
-                0x0200_0000u32
-            } else {
-                0x0101_0000u32
-            };
-            trun.extend_from_slice(&flags.to_be_bytes());
+            trun.extend_from_slice(&sample_flags(sample).to_be_bytes());
         }
         full_box(b"trun", 0, 0x000705, &trun)
     };

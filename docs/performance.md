@@ -189,6 +189,14 @@ for i in 1 2 3; do curl -s -o /dev/null -w '%{time_total}\n' http://127.0.0.1:87
 
 ## Stream 2 live transports (measured 2026-10-26, `feat/stream2`)
 
+> Superseded for the passthrough column on 2026-10-30 (`par/hevc-native`):
+> passthrough now carries the H.265 in fragmented MP4 (`hvc1`) into the same
+> MediaSource player as the transcode, the hub replays its current GOP to a late
+> viewer exactly as it does for the transcode, and the WebCodecs framing
+> described at the end of this section is gone. Current numbers are in
+> "H.265 without ffmpeg over the cloud relay". The figures below stay as they
+> were measured on 2026-10-26.
+
 Same camera as above (PROVIEW IPC, `192.168.0.100`, main stream 2304×2592
 H.265, ~12 fps delivered), same workstation under WSL2, release build, Chrome
 156 headless driven over CDP. One run per row. The box was also running four
@@ -221,7 +229,7 @@ collide with the provider switch.
 |---|---|---|
 | processes serving the stream | server + 1 `ffmpeg` | server only |
 | click → first painted frame, cold source | 2.6 s, 5.0 s, 5.3 s (three runs) | first keyframe on the socket 0.56–0.78 s |
-| click → first painted frame, warm source | 240 / 120 / 120 / 111 ms | not offered: a passthrough viewer always joins at the next IDR |
+| click → first painted frame, warm source | 240 / 120 / 120 / 111 ms | not offered on 2026-10-26: a passthrough viewer joined at the next IDR (replayed since 2026-10-30) |
 | CPU, 1 viewer | 63.5–85.4 % of one core | 0.1–0.2 % |
 | CPU, 2 viewers | 83.3 % (41.7 % per viewer) | not measured |
 | CPU, 3 viewers | 79.5–81.5 % (26.5–27.2 % per viewer) | 0.5 % (0.2 % per viewer) |
@@ -256,8 +264,8 @@ Reading the numbers:
    **on the socket** (0.56–0.78 s), which is the camera's own IDR cadence with
    a warm RTSP session — a different stopwatch, not a cheaper cold start.
    Warm starts are 111–240 ms because the hub replays the fragments since the
-   last keyframe (transcode); passthrough has no replay and always waits for the
-   camera's next IDR. On the H.264 remux path the first fragment also waits for
+   last keyframe (transcode); passthrough had no replay then and waited for the
+   camera's next IDR (it replays like the transcode since 2026-10-30). On the H.264 remux path the first fragment also waits for
    up to 10 access units after the first keyframe, 0.4 s at 25 fps.
 4. The frame really painted on this machine: Chromium reported `readyState 4`,
    `videoWidth 2304`, `videoHeight 2592` and an advancing `currentTime`, and a
@@ -272,9 +280,10 @@ Defect found by measuring, fixed here: the MSE transport was receiving its init
 segment wrapped in the passthrough config framing (one leading `0x01` byte), so
 `MediaSource` rejected the segment and the element stayed at `readyState 0`
 behind a blob URL. Before: zero frames, every run. After: 111–240 ms to the
-first painted frame on a warm source. Framing is now chosen by transport —
+first painted frame on a warm source. Framing was then chosen by transport —
 init and fragments raw for MSE, `0x01`-prefixed hvcC plus `0x02`/`0x03` access
-units for WebCodecs.
+units for WebCodecs. Since 2026-10-30 both transports send raw fMP4 and that
+framing no longer exists.
 
 ## Cloud account login, Rust envelope (measured 2026-10-27)
 

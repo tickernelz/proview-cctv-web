@@ -1,10 +1,9 @@
 use std::process::Stdio;
 
 use bytes::Bytes;
-use proview_core::dvrip::playback::{is_video, Record};
 use proview_core::media::fmp4::Sample;
 use proview_core::media::mux::{
-    clip_rate, is_keyframe, sample_data, split_annexb, FragmentMux, Ticks, VideoConfig,
+    is_keyframe, sample_data, split_annexb, FragmentMux, Ticks, VideoConfig,
 };
 use proview_core::media::Codec;
 use proview_core::source::{Fmp4Splitter, Piece};
@@ -35,6 +34,7 @@ pub(crate) fn config_of(codec: Codec, units: &[Vec<u8>]) -> Option<VideoConfig> 
     units
         .iter()
         .find_map(|unit| VideoConfig::from_nals(codec, &split_annexb(unit)).ok())
+        .filter(|config| !config.reorders)
 }
 
 pub(crate) fn ffmpeg(codec: Codec, fps: Option<f64>) -> Command {
@@ -268,67 +268,11 @@ pub(crate) fn transcode(codec: Codec, fps: Option<f64>) -> Result<Pipeline, Stri
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ClipFile {
-    pub bytes: Vec<u8>,
-    pub codec: Codec,
-    pub frames: usize,
-    pub fps: f64,
-    pub fps_source: &'static str,
-    pub seconds: f64,
-}
-
-pub(crate) fn mp4_of(records: &[Record]) -> Result<ClipFile, String> {
-    let video: Vec<&Record> = records.iter().filter(|record| is_video(record)).collect();
-    let units: Vec<Vec<Vec<u8>>> = video
-        .iter()
-        .map(|record| split_annexb(&record.bytes))
-        .collect();
-    let codec = units
-        .iter()
-        .find_map(|nals| proview_core::dvrip::playback::codec_of(nals))
-        .ok_or_else(|| "the clip carries no parameter sets, so its codec is unknown".to_string())?;
-    let config = units
-        .iter()
-        .find_map(|nals| VideoConfig::from_nals(codec, nals).ok())
-        .ok_or_else(|| "the clip parameter sets did not parse".to_string())?;
-    let (fps, fps_source) = clip_rate(records);
-    let mut ticks = Ticks::default();
-    let mut samples = Vec::with_capacity(units.len());
-    for nals in &units {
-        let keyframe = is_keyframe(codec, nals);
-        if samples.is_empty() && !keyframe {
-            continue;
-        }
-        let data = sample_data(codec, nals);
-        if data.is_empty() {
-            continue;
-        }
-        samples.push(Sample {
-            data,
-            duration: ticks.next(fps),
-            keyframe,
-        });
-    }
-    if samples.is_empty() {
-        return Err("the clip holds no keyframe".to_string());
-    }
-    let frames = samples.len();
-    let bytes = config.progressive(&samples);
-    Ok(ClipFile {
-        bytes,
-        codec,
-        frames,
-        fps,
-        fps_source,
-        seconds: frames as f64 / fps,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proview_core::dvrip::playback::RecordKind;
+    use proview_core::dvrip::playback::{Record, RecordKind};
+    use proview_core::media::mux::ClipMux;
 
     fn hex(text: &str) -> Vec<u8> {
         (0..text.len())
@@ -377,6 +321,16 @@ mod tests {
         let config = config_of(Codec::H265, &[delta(), keyframe()]).expect("config");
         assert_eq!((config.width, config.height), (2304, 2592));
         assert!(config_of(Codec::H265, &[delta()]).is_none());
+        let b_frames = annexb(&[
+            hex("40010c01ffff01600000030090000003000003003c959809"),
+            hex("42010101600000030090000003000003003ca00a080f165959a4932bc05a020000030002000003003210"),
+            hex("4401c172b46240"),
+            vec![0x26, 0x01, 0xaf, 0x10],
+        ]);
+        assert!(
+            config_of(Codec::H265, &[b_frames]).is_none(),
+            "a stream with B-frames goes through the transcode"
+        );
     }
 
     #[tokio::test]
@@ -455,7 +409,12 @@ mod tests {
                 records.push(record(RecordKind::Delta, None, delta()));
             }
         }
-        let clip = mp4_of(&records).expect("mp4");
+        let mut mux = ClipMux::new(1 << 20);
+        for record in records {
+            mux.push(record);
+        }
+        let clip = mux.finish().expect("mp4");
+        assert!(clip.muxed);
         assert_eq!(clip.codec, Codec::H265);
         assert_eq!(clip.frames, 250);
         assert_eq!(clip.fps, 12.5);
@@ -470,11 +429,5 @@ mod tests {
         let duration =
             u32::from_be_bytes(clip.bytes[mvhd + 20..mvhd + 24].try_into().expect("u32"));
         assert_eq!(duration, 20_000);
-    }
-
-    #[test]
-    fn a_clip_without_parameter_sets_is_refused_with_its_reason() {
-        let error = mp4_of(&[record(RecordKind::Delta, None, delta())]).expect_err("no codec");
-        assert!(error.contains("codec is unknown"), "{error}");
     }
 }

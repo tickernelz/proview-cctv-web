@@ -346,9 +346,9 @@ def classify(payload: bytes, seen_init: bool) -> str:
     if not seen_init:
         return "init"
     trun = payload.find(b"trun")
-    if trun < 0 or trun + 28 > len(payload):
+    if trun < 0 or trun + 32 > len(payload):
         return "fragment"
-    flags = int.from_bytes(payload[trun + 24:trun + 28], "big")
+    flags = int.from_bytes(payload[trun + 28:trun + 32], "big")
     return "keyframe" if flags & 0x02000000 else "delta"
 
 

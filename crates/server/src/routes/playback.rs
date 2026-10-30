@@ -4,9 +4,10 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use proview_core::dvrip::playback::{
     access_unit, codec_of, is_video, shift, snap_rate, FrameRate, MediaReader, PlaybackFile,
-    Record, RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
+    RecordKind, Session, DOWNLOAD_DATA, PLAYBACK_DATA,
 };
 use proview_core::media::hevc;
+use proview_core::media::mux::ClipMux;
 use proview_core::media::Codec;
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::provider::{ProviderError, VendorSession};
@@ -122,12 +123,13 @@ pub async fn files(
 pub struct Download {
     bytes: Vec<u8>,
     filename: String,
+    kind: ContentType,
 }
 
 impl<'r> Responder<'r, 'static> for Download {
     fn respond_to(self, _request: &'r Request<'_>) -> response::Result<'static> {
         Response::build()
-            .header(ContentType::MP4)
+            .header(self.kind)
             .raw_header(
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", self.filename),
@@ -146,23 +148,17 @@ fn short_fall(wire: u64, listed: u64) -> Option<String> {
     }
 }
 
-async fn collect(session: &mut Session, listed: u64) -> Result<Vec<Record>, String> {
+async fn collect(session: &mut Session, listed: u64, mux: &mut ClipMux) -> Result<(), String> {
     let mut reader = MediaReader::new();
-    let mut payload: Vec<Record> = Vec::new();
-    let mut held = 0u64;
     let mut wire = 0u64;
     loop {
         while let Some(record) = reader.next_record() {
-            if !is_video(&record) {
-                continue;
-            }
-            held += record.bytes.len() as u64;
-            if held > DOWNLOAD_LIMIT {
+            mux.push(record);
+            if mux.held() as u64 > DOWNLOAD_LIMIT {
                 return Err(format!(
                     "the file is larger than the {DOWNLOAD_LIMIT} bytes this server holds"
                 ));
             }
-            payload.push(record);
         }
         if short_fall(wire, listed).is_none() {
             break;
@@ -185,7 +181,7 @@ async fn collect(session: &mut Session, listed: u64) -> Result<Vec<Record>, Stri
             }
         }
     }
-    Ok(payload)
+    Ok(())
 }
 
 #[get("/playback/download?<device>&<channel>&<name>&<begin>&<end>&<bytes>")]
@@ -236,23 +232,38 @@ pub async fn download(
         .download_start(&file, channel)
         .await
         .map_err(|error| fail(Status::BadGateway, error.to_string()))?;
-    let collected = collect(&mut session, listed).await;
+    let mut mux = ClipMux::new(listed as usize);
+    let collected = collect(&mut session, listed, &mut mux).await;
     let _ = session.download_stop(&file, channel).await;
     let _ = session.logout().await;
-    let records = collected.map_err(|message| fail(Status::BadGateway, message))?;
-    let clip = crate::routes::playback_mux::mp4_of(&records)
+    collected.map_err(|message| fail(Status::BadGateway, message))?;
+    let clip = tokio::task::spawn_blocking(move || mux.finish())
+        .await
+        .map_err(|error| {
+            fail(
+                Status::InternalServerError,
+                format!("playback stage=mux: {error}"),
+            )
+        })?
         .map_err(|message| fail(Status::BadGateway, format!("playback stage=mux: {message}")))?;
     tracing::info!(
         codec = demuxer(clip.codec),
+        muxed = clip.muxed,
         frames = clip.frames,
         fps = clip.fps,
         fps_source = clip.fps_source,
         seconds = clip.seconds,
-        "playback download muxed"
+        "playback download ready"
     );
+    let (extension, kind) = if clip.muxed {
+        ("mp4", ContentType::MP4)
+    } else {
+        (demuxer(clip.codec), ContentType::Binary)
+    };
     Ok(Download {
         bytes: clip.bytes,
-        filename: download_name(&name, &begin),
+        filename: download_name(&name, &begin, extension),
+        kind,
     })
 }
 
@@ -269,7 +280,7 @@ fn clean_name(text: &str) -> String {
         .collect()
 }
 
-fn download_name(name: &str, begin: &str) -> String {
+fn download_name(name: &str, begin: &str, extension: &str) -> String {
     let base = name.rsplit('/').next().unwrap_or(name);
     let stem = match base.rfind('.') {
         Some(dot) if dot > 0 => &base[..dot],
@@ -286,10 +297,10 @@ fn download_name(name: &str, begin: &str) -> String {
             }
         });
     match (stem.is_empty(), dated) {
-        (true, true) => format!("{day}_clip.mp4"),
-        (true, false) => "clip.mp4".to_string(),
-        (false, true) => format!("{day}_{stem}.mp4"),
-        (false, false) => format!("{stem}.mp4"),
+        (true, true) => format!("{day}_clip.{extension}"),
+        (true, false) => format!("clip.{extension}"),
+        (false, true) => format!("{day}_{stem}.{extension}"),
+        (false, false) => format!("{stem}.{extension}"),
     }
 }
 
@@ -796,22 +807,27 @@ mod tests {
     #[test]
     fn a_device_name_cannot_smuggle_a_header() {
         assert_eq!(
-            super::download_name("/a/b\"\r\nSet-Cookie: x=1; é.h264", "2026-10-24 10:34:00"),
+            super::download_name(
+                "/a/b\"\r\nSet-Cookie: x=1; é.h264",
+                "2026-10-24 10:34:00",
+                "mp4"
+            ),
             "2026-10-24_b___Set-Cookie__x_1___.mp4"
         );
         assert_eq!(
             super::download_name(
                 "/idea0/2026-10-24/001/10.34.00-10.40.00[R][@e19][0].h264",
-                "2026-10-24 10:34:00"
+                "2026-10-24 10:34:00",
+                "hevc"
             ),
-            "2026-10-24_10.34.00-10.40.00[R][@e19][0].mp4"
+            "2026-10-24_10.34.00-10.40.00[R][@e19][0].hevc"
         );
         assert_eq!(
-            super::download_name("/", "2026-10-24 10:34:00"),
+            super::download_name("/", "2026-10-24 10:34:00", "mp4"),
             "2026-10-24_clip.mp4"
         );
         assert_eq!(
-            super::download_name("/a.h264", "\"\r\nX: 1 10:00:00"),
+            super::download_name("/a.h264", "\"\r\nX: 1 10:00:00", "mp4"),
             "a.mp4"
         );
     }
@@ -835,6 +851,7 @@ mod tests {
         let response = super::Download {
             bytes: vec![1, 2, 3],
             filename: "clip.mp4".to_string(),
+            kind: rocket::http::ContentType::MP4,
         }
         .respond_to(request)
         .expect("responder");
@@ -847,6 +864,24 @@ mod tests {
             response.headers().get_one("Content-Disposition"),
             Some("attachment; filename=\"clip.mp4\"")
         );
+    }
+
+    fn hevc_keyframe() -> Vec<u8> {
+        let mut out = Vec::new();
+        for nal in [
+            "40010c01ffff0160000003000003000003000003003f2c0c00000fa00000bb8140",
+            "4201010160000003000003000003000003003fa001202002887f9cbabc12e080",
+            "4401c0f3c0e14524",
+            "2601af10",
+        ] {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend(
+                (0..nal.len())
+                    .step_by(2)
+                    .map(|index| u8::from_str_radix(&nal[index..index + 2], 16).expect("hex")),
+            );
+        }
+        out
     }
 
     fn record(kind: u8, body: &[u8]) -> Vec<u8> {
@@ -902,8 +937,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_complete_file_is_collected_to_its_payload() {
-        let key = record(0xfc, &[1u8; 40]);
-        let delta = record(0xfd, &[2u8; 24]);
+        let key = record(0xfc, &hevc_keyframe());
+        let delta = record(0xfd, &[0, 0, 0, 1, 0x02, 0x01, 0xd0]);
         let wire = (key.len() + delta.len()) as u64;
         let socket = device(
             vec![
@@ -915,9 +950,14 @@ mod tests {
         )
         .await;
         let mut session = proview_core::dvrip::playback::Session::open(socket);
-        let payload = super::collect(&mut session, wire).await.expect("collect");
-        let bytes: Vec<Vec<u8>> = payload.into_iter().map(|record| record.bytes).collect();
-        assert_eq!(bytes, [vec![1u8; 40], vec![2u8; 24]]);
+        let mut mux = super::ClipMux::new(wire as usize);
+        super::collect(&mut session, wire, &mut mux)
+            .await
+            .expect("collect");
+        let clip = mux.finish().expect("clip");
+        assert!(clip.muxed);
+        assert_eq!(clip.frames, 2);
+        assert_eq!(&clip.bytes[4..8], b"ftyp");
     }
 
     #[tokio::test]
@@ -926,7 +966,7 @@ mod tests {
         let wire = key.len() as u64;
         let socket = device(vec![(0x058e, key)], true).await;
         let mut session = proview_core::dvrip::playback::Session::open(socket);
-        let error = super::collect(&mut session, wire + 1)
+        let error = super::collect(&mut session, wire + 1, &mut super::ClipMux::new(0))
             .await
             .expect_err("a short file");
         assert!(error.contains("the tunnel broke"), "{error}");
@@ -938,7 +978,7 @@ mod tests {
         let wire = key.len() as u64;
         let socket = device(vec![(0x058e, key)], true).await;
         let mut session = proview_core::dvrip::playback::Session::open(socket);
-        let error = super::collect(&mut session, wire + 4096)
+        let error = super::collect(&mut session, wire + 4096, &mut super::ClipMux::new(0))
             .await
             .expect_err("an overstated length");
         assert!(error.contains("the tunnel broke"), "{error}");

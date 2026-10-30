@@ -32,8 +32,63 @@ export function hevcVerdict(): HevcVerdict | null {
 }
 
 export function rememberHevc(verdict: HevcVerdict, shape?: StreamShape) {
+  if (verdict === 'yes' && hevcVerdict() === 'no') return
   write(VERDICT_KEY, verdict)
   if (shape) write(CODEC_KEY, JSON.stringify(shape))
+}
+
+export function framesShown(video: HTMLVideoElement) {
+  if (typeof video.getVideoPlaybackQuality === 'function') return video.getVideoPlaybackQuality().totalVideoFrames > 0
+  return video.currentTime > 0
+}
+
+export function watchFirstFrame(video: HTMLVideoElement, current: () => boolean, settle: (ok: boolean, reason: string) => void): () => void {
+  const target = video as HTMLVideoElement & {
+    requestVideoFrameCallback?: (callback: () => void) => number
+    cancelVideoFrameCallback?: (handle: number) => void
+  }
+  let done = false
+  let timer = 0
+  let frame: number | null = null
+  const cleanup = () => {
+    done = true
+    if (timer) window.clearTimeout(timer)
+    timer = 0
+    if (frame !== null && target.cancelVideoFrameCallback) target.cancelVideoFrameCallback(frame)
+    frame = null
+    target.removeEventListener('loadeddata', shown)
+    target.removeEventListener('error', failed)
+    document.removeEventListener('visibilitychange', visible)
+  }
+  const finish = (ok: boolean, reason: string) => {
+    if (done) return
+    cleanup()
+    if (current()) settle(ok, reason)
+  }
+  const shown = () => finish(true, '')
+  const failed = () => finish(false, 'the video element failed to decode')
+  const check = () => {
+    timer = 0
+    if (done || !current()) return cleanup()
+    if (framesShown(video)) return finish(true, '')
+    if (document.hidden) {
+      document.addEventListener('visibilitychange', visible)
+      return
+    }
+    finish(false, 'no frame decoded within ' + HEVC_FIRST_FRAME_MS / 1000 + ' s')
+  }
+  const visible = () => {
+    if (document.hidden || done) return
+    document.removeEventListener('visibilitychange', visible)
+    timer = window.setTimeout(check, HEVC_FIRST_FRAME_MS)
+  }
+  if (target.requestVideoFrameCallback) frame = target.requestVideoFrameCallback(shown)
+  else target.addEventListener('loadeddata', shown)
+  target.addEventListener('error', failed)
+  timer = window.setTimeout(check, HEVC_FIRST_FRAME_MS)
+  return () => {
+    if (!done) cleanup()
+  }
 }
 
 function knownShape(): StreamShape {

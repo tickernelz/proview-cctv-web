@@ -8,7 +8,7 @@ import PlaybackRows from './PlaybackRows.vue'
 import PlaybackStrip from './PlaybackStrip.vue'
 import { mb, secondsBetween, stamp, type Clip } from './playback-clips'
 import { addLauncher, live } from './store'
-import { AVC_TYPE, HEVC_FIRST_FRAME_MS, decodes, mayAskForHevc, rememberHevc, type StreamShape } from '../lib/hevc'
+import { AVC_TYPE, decodes, mayAskForHevc, rememberHevc, watchFirstFrame, type StreamShape } from '../lib/hevc'
 
 type Device = { id: string; name?: string }
 type Listing = { files?: Clip[]; truncated?: boolean; cap?: number; elapsed_ms?: number }
@@ -45,7 +45,7 @@ const stream = {
   stats: null as Record<string, any> | null,
   windowSec: 60,
   transport: '' as '' | 'hevc' | 'avc',
-  hevcTimer: 0,
+  stopHevcWatch: null as (() => void) | null,
 }
 
 const launcher = addLauncher({ id: 'pb-open', label: 'Playback', icon: 'history', slot: 'end', controls: 'pb', onClick: () => show() })
@@ -114,8 +114,8 @@ function stop() {
   stream.stats = null
   stream.frameAt = null
   stream.transport = ''
-  if (stream.hevcTimer) window.clearTimeout(stream.hevcTimer)
-  stream.hevcTimer = 0
+  if (stream.stopHevcWatch) stream.stopHevcWatch()
+  stream.stopHevcWatch = null
 }
 
 function pump() {
@@ -124,7 +124,7 @@ function pump() {
   try {
     buffer.appendBuffer(stream.queue.shift() as BufferSource)
   } catch (error) {
-    if (stream.transport === 'hevc' && stream.hevcTimer) return fallBack('the H.265 fragment was refused')
+    if (stream.transport === 'hevc' && stream.stopHevcWatch) return fallBack('the H.265 fragment was refused')
     console.error('playback append failed', error)
     stream.queue = []
   }
@@ -162,18 +162,15 @@ function openBuffer(media: MediaSource, type: string, transport: 'hevc' | 'avc',
     if (stream.transport === 'hevc' && stream.buffer === buffer) fallBack('the source buffer reported an error')
   })
   if (transport === 'hevc' && shape && video.value) {
-    const player = video.value as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number }
-    const confirm = () => {
-      if (stream.media !== media || stream.transport !== 'hevc') return
-      if (stream.hevcTimer) window.clearTimeout(stream.hevcTimer)
-      stream.hevcTimer = 0
-      rememberHevc('yes', shape)
-    }
-    if (player.requestVideoFrameCallback) player.requestVideoFrameCallback(confirm)
-    else player.addEventListener('loadeddata', confirm, { once: true })
-    stream.hevcTimer = window.setTimeout(() => {
-      if (stream.media === media && stream.transport === 'hevc') fallBack('no frame decoded within ' + HEVC_FIRST_FRAME_MS / 1000 + ' s')
-    }, HEVC_FIRST_FRAME_MS)
+    stream.stopHevcWatch = watchFirstFrame(
+      video.value,
+      () => stream.media === media && stream.transport === 'hevc',
+      (ok, reason) => {
+        stream.stopHevcWatch = null
+        if (ok) rememberHevc('yes', shape)
+        else fallBack(reason)
+      },
+    )
   }
   pump()
 }
@@ -311,9 +308,7 @@ function downloadChosen() {
     '&begin=' + encodeURIComponent(file.begin) +
     '&end=' + encodeURIComponent(file.end) +
     '&bytes=' + encodeURIComponent(String(file.bytes || 0))
-  const stem = (String(file.name).split('/').pop() || '').replace(/\.[^.]*$/, '') || 'clip'
-  const day = /^\d{4}-\d{2}-\d{2}/.test(file.begin) ? file.begin.slice(0, 10) + '_' : ''
-  anchor.download = day + stem + '.mp4'
+  anchor.download = ''
   document.body.append(anchor)
   anchor.click()
   anchor.remove()

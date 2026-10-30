@@ -292,7 +292,8 @@ async function measureHevc() {
     if (init === null) { init = view.length; return; }
     const trun = view.indexOf('trun');
     if (trun < 0) return;
-    if (view.readUInt32BE(trun + 24) & 0x02000000) {
+    if (trun + 32 > view.length) return;
+    if (view.readUInt32BE(trun + 28) & 0x02000000) {
       keyframes += 1;
       if (firstKeyframe < 0) firstKeyframe = Date.now() - started;
     } else {

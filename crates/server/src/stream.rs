@@ -30,11 +30,28 @@ pub fn requested_mode(codec: Option<&str>) -> LiveMode {
     }
 }
 
-pub fn hello(mode: LiveMode, meta: &StreamMeta) -> String {
+pub fn served_mode(requested: LiveMode, meta: &StreamMeta) -> LiveMode {
+    let hevc = meta
+        .codec_string
+        .as_deref()
+        .is_some_and(|codec| codec.starts_with("hvc1") || codec.starts_with("hev1"));
+    if requested == LiveMode::Passthrough && hevc {
+        LiveMode::Passthrough
+    } else {
+        LiveMode::Transcode
+    }
+}
+
+pub fn hello(requested: LiveMode, meta: &StreamMeta) -> String {
+    let mode = served_mode(requested, meta);
+    let codec = meta
+        .codec_string
+        .as_deref()
+        .filter(|codec| mode == LiveMode::Passthrough || codec.starts_with("avc1"));
     let frame = Hello {
         kind: "hello",
         mode: mode.as_str(),
-        codec: meta.codec_string.as_deref(),
+        codec,
         width: meta.width,
         height: meta.height,
         audio: meta.audio_codec.as_deref(),
@@ -266,6 +283,44 @@ mod tests {
         assert_eq!(hello["audio_clock"], 8000);
         assert_eq!(hello["width"], 2304);
         assert_eq!(hello["height"], 2592);
+    }
+
+    #[test]
+    fn a_passthrough_request_the_camera_cannot_serve_says_transcode() {
+        let h264 = StreamMeta {
+            video_codec: Some("H264".to_string()),
+            codec_string: Some("avc1.4D401E".to_string()),
+            width: Some(640),
+            height: Some(720),
+            ..StreamMeta::default()
+        };
+        let served: serde_json::Value =
+            serde_json::from_str(&hello(LiveMode::Passthrough, &h264)).expect("hello json");
+        assert_eq!(served["mode"], "transcode");
+        assert_eq!(served["codec"], "avc1.4D401E");
+        let ffmpeg = StreamMeta {
+            video_codec: Some("H265".to_string()),
+            ..StreamMeta::default()
+        };
+        assert_eq!(
+            served_mode(LiveMode::Passthrough, &ffmpeg),
+            LiveMode::Transcode
+        );
+        let camera = StreamMeta {
+            codec_string: Some("hvc1.1.6.L63".to_string()),
+            ..StreamMeta::default()
+        };
+        assert_eq!(
+            served_mode(LiveMode::Passthrough, &camera),
+            LiveMode::Passthrough
+        );
+        let transcoded: serde_json::Value =
+            serde_json::from_str(&hello(LiveMode::Transcode, &camera)).expect("hello json");
+        assert_eq!(transcoded["mode"], "transcode");
+        assert!(
+            transcoded["codec"].is_null(),
+            "the camera's hvc1 string is not what a transcode socket carries"
+        );
     }
 
     #[test]
