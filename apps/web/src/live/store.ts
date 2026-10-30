@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import type { SoundState } from '../lib/stream-player'
 
 export type Gate = { ok: boolean; why: string }
 export type Launcher = {
@@ -28,6 +29,7 @@ export const live = reactive({
   flag: { text: '', tone: '' },
   clock: '',
   muted: true,
+  sound: 'off' as SoundState,
   record: { on: false, disabled: true, elapsed: '' },
   snapshotDisabled: true,
   gate: Object.fromEntries(

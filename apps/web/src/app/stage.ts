@@ -1,5 +1,5 @@
 import { api } from '../lib/api'
-import { StreamPlayer } from '../lib/stream-player'
+import { StreamPlayer, type SoundState } from '../lib/stream-player'
 import { setControlStatus } from './controls'
 import { layoutLensCrop, lensEntries, lensViewLabel } from './lens'
 import { live } from '../live/store'
@@ -160,8 +160,11 @@ function stagePlayer() {
         setStage(name)
         renderCameraInfo()
       },
-      () => state.muted,
+      () => state.muted || live.talk.on,
     )
+    player.onSound = (sound: SoundState) => {
+      live.sound = sound
+    }
     state.players.set('stage', player)
   }
   return player

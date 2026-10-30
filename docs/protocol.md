@@ -1750,6 +1750,15 @@ report) instead of letting it fill the queue, but it does not play it. The owner
 acoustic leg on 2026-10-27 16:14Z by hearing the test tone from the camera during
 a talk run. Inbound audio arrives on `1433`, not `1432`: 328-byte frames (8-byte
 header plus 320 A-law bytes) at 25 a second, 77,952 bytes in an 8.96 s session.
+`/ws/talk` forwards them to a client that sent `{"type":"sound","on":true}` as
+`{"type":"audio","frame","codec":"alaw","rate":8000,"data"}` text frames.
+
+The live `0x0584` stream carries the same records between video bodies: a body
+starting `00 00 01 FA 0E 02` holds a little-endian length (320, or 0 for the fixed
+320) and that many A-law bytes. Measured 2026-10-30 over the relay: 24.7 records a
+second on the main stream and 24.8 on the sub stream, about two per video frame.
+`/ws/live` sends them as the same `audio` text frame, `frame` being the number
+of video frames demuxed before the record, once the viewer asks for sound.
 
 Multi-channel: the device reports one media profile and `ChannelNum 1`; the dual
 lens arrives as one frame, so a two-viewport grid needs cropping, not a second

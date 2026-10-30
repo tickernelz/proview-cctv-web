@@ -6,7 +6,7 @@ use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 
-use crate::live::{Fragment, LiveHub, LiveMode, LivePacket, StreamKey, StreamMeta};
+use crate::live::{Fragment, LiveAudio, LiveHub, LiveMode, LivePacket, StreamKey, StreamMeta};
 use crate::media::fmp4::{init_segment, media_segment, Sample, TrackConfig};
 use crate::media::mux::{self, FragmentMux, VideoConfig};
 use crate::media::{h264, hevc, rtp, Codec};
@@ -361,7 +361,7 @@ async fn pump_transcode(
                 Err(_) => continue,
             };
         if Some(channel) == audio_channel {
-            hub.note_audio(key);
+            forward_audio(hub, key, &packet);
             continue;
         }
         let Some(parsed) = rtp::parse(&packet) else {
@@ -388,6 +388,28 @@ async fn pump_transcode(
         tracing::debug!(%text, "ffmpeg stderr");
     }
     result
+}
+
+pub const RTP_PCMA: u8 = 8;
+
+pub fn rtsp_audio(packet: &[u8]) -> Option<LiveAudio> {
+    let parsed = rtp::parse(packet)?;
+    if parsed.payload_type != RTP_PCMA || parsed.payload.is_empty() {
+        return None;
+    }
+    Some(LiveAudio {
+        codec: "alaw",
+        rate: 8000,
+        frame: u64::from(parsed.sequence),
+        bytes: parsed.payload.to_vec(),
+    })
+}
+
+fn forward_audio(hub: &LiveHub, key: &StreamKey, packet: &[u8]) {
+    match rtsp_audio(packet) {
+        Some(audio) => hub.publish_audio(key, audio),
+        None => hub.note_audio(key),
+    }
 }
 
 fn h264_codec_string(sps: &[u8]) -> String {
@@ -509,7 +531,7 @@ async fn pump_h264(
                 Err(_) => continue,
             };
         if Some(channel) == audio_channel {
-            hub.note_audio(key);
+            forward_audio(hub, key, &packet);
             continue;
         }
         let Some(parsed) = rtp::parse(&packet) else {
@@ -731,7 +753,7 @@ async fn pump_passthrough(
                 Err(_) => continue,
             };
         if Some(channel) == audio_channel {
-            hub.note_audio(key);
+            forward_audio(hub, key, &packet);
             continue;
         }
         let Some(parsed) = rtp::parse(&packet) else {
@@ -957,6 +979,47 @@ mod tests {
         assert_eq!(transcode_path("AVC"), TranscodePath::NativeH264);
         assert_eq!(transcode_path("H265"), TranscodePath::Ffmpeg);
         assert_eq!(transcode_path("MJPEG"), TranscodePath::Ffmpeg);
+    }
+
+    fn rtp_packet(payload_type: u8, sequence: u16, payload: &[u8]) -> Vec<u8> {
+        let mut packet = vec![0x80, payload_type, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        packet[2..4].copy_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(payload);
+        packet
+    }
+
+    #[tokio::test]
+    async fn rtsp_pcma_reaches_the_live_audio_channel_and_other_codecs_are_only_counted() {
+        let audio = rtsp_audio(&rtp_packet(RTP_PCMA, 7, &[0xd5; 160])).expect("pcma");
+        assert_eq!(audio.codec, "alaw");
+        assert_eq!(audio.rate, 8000);
+        assert_eq!(audio.frame, 7);
+        assert_eq!(audio.bytes, vec![0xd5u8; 160]);
+        assert!(rtsp_audio(&rtp_packet(0, 8, &[0xff; 160])).is_none());
+        assert!(rtsp_audio(&rtp_packet(RTP_PCMA, 9, &[])).is_none());
+
+        let hub = LiveHub::new(8);
+        let key = StreamKey::new("dev", 1, false, LiveMode::Passthrough);
+        let mut subscription = hub.subscribe(key.clone());
+        hub.set_meta(
+            &key,
+            StreamMeta {
+                audio_codec: Some("PCMA".to_string()),
+                audio_clock: Some(8000),
+                ..StreamMeta::default()
+            },
+        );
+        forward_audio(&hub, &key, &rtp_packet(RTP_PCMA, 1, &[0x55; 160]));
+        forward_audio(&hub, &key, &rtp_packet(0, 2, &[0xff; 160]));
+        let heard = subscription.audio.try_recv().expect("forwarded");
+        assert_eq!(heard.bytes, vec![0x55u8; 160]);
+        assert!(subscription.audio.try_recv().is_err());
+        assert_eq!(hub.snapshots()[0].audio_packets, 2);
+        assert_eq!(
+            hub.meta(&key).and_then(|meta| meta.audio_codec).as_deref(),
+            Some("PCMA")
+        );
+        hub.release(&key);
     }
 
     #[test]
