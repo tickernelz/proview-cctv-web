@@ -216,3 +216,19 @@ test('a phone shows the section list first, then the section, and All settings g
   await expect(nav).toBeVisible()
   await expect(nav.getByRole('link', { name: 'Server', exact: true })).toBeFocused()
 })
+
+test('a session without a cloud sign-in keeps Settings open and says why the account cannot be read', async ({ page }) => {
+  await openSection(page, 'Account')
+  await expect(page.getByTestId('account-not-cloud')).toHaveText('This session has no cloud sign-in. Sign in with the cloud account to manage it.')
+  await expect(page.getByTestId('settings')).toBeVisible()
+  await expect(page.getByTestId('account-password-reason')).toHaveText('This session has no cloud sign-in. Sign in with the cloud account to manage it.')
+})
+
+test('an expired session while reading the account returns to sign-in', async ({ page }) => {
+  await signIn(page, 'one')
+  await page.route('**/api/cloud/profile', (route) => route.fulfill({ status: 401, json: { ok: false, message: 'session expired' } }))
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('settings').getByRole('link', { name: 'Account', exact: true }).click()
+  await expect(page.getByTestId('signin')).toBeVisible()
+  await expect(page.getByTestId('settings')).toBeHidden()
+})

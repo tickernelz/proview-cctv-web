@@ -125,6 +125,8 @@ test('Saving motion detection sends only the fields that changed', async ({ page
 test('A schedule slot travels in the seven-day table and an unreadable slot keeps its raw text', async ({ page }) => {
   const writes = await fake(page)
   await openAlarm(page)
+  const exact = page.getByTestId('detect-motion-schedule').locator('details.detect-exact')
+  if (!(await exact.evaluate((node) => (node as HTMLDetailsElement).open))) await exact.locator('summary').click()
   await page.getByLabel('Monday slot 2', { exact: true }).check()
   await page.getByTestId('detect-save-motion').click()
   await expect(page.getByTestId('detect-status')).toHaveText('Motion detection read back after the write and kept.')

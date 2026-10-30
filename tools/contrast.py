@@ -74,6 +74,7 @@ PAIRS = [
     ('accent badge text on accent-soft over page', 'accent', 'accent-soft@bg', TEXT, 4.5),
     ('segmented selected label on accent-soft over bar', 'accent', 'accent-soft@bg-2', TEXT, 4.5),
     ('live text on live-soft over bar', 'live', 'live-soft@bg-2', TEXT, 4.5),
+    ('accent-ink on bad (filled danger button)', 'accent-ink', 'bad', TEXT, 4.5),
 ]
 
 
