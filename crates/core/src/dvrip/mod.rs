@@ -8,6 +8,7 @@ pub(crate) mod fake;
 pub mod frame;
 pub mod playback;
 pub mod playback_plus;
+pub mod ptz;
 pub mod settings;
 pub mod storage_card;
 pub mod system;
@@ -47,5 +48,6 @@ pub mod msg {
     pub const MONITOR: u16 = 0x0585;
     pub const MONITOR_CHANNEL: u8 = 99;
     pub const MONITOR_START: u16 = 0x0582;
+    pub const PTZ_LOCATE: u16 = 3032;
     pub const OP_REMOTE_CTRL: u16 = 4000;
 }

@@ -48,6 +48,7 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 pub mod detect;
+pub mod ptz;
 pub mod settings_write;
 pub mod system;
 
@@ -75,6 +76,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(ptz::routes())
     .chain(alarms::routes())
     .chain(fisheye::api())
     .chain(recordings::routes())
