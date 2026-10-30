@@ -340,12 +340,12 @@ impl AttributeClient {
         let response = request
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         if !status.is_success() {
             return Err(CloudError::Unreachable(format!("{endpoint} HTTP {status}")));
         }
@@ -383,12 +383,12 @@ impl AttributeClient {
             .header("Content-Length", "0")
             .send()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         let status = response.status();
         let text = response
             .text()
             .await
-            .map_err(|error| CloudError::Unreachable(error.to_string()))?;
+            .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
         if !status.is_success() {
             return Err(CloudError::Unreachable(format!("{endpoint} HTTP {status}")));
         }
@@ -926,11 +926,11 @@ mod tests {
     #[test]
     fn a_live_share_row_reads_enabled_labels_ret_and_the_peer_id() {
         let rows = share_entries(&json!([{
-            "id": "c9092811acaa145439c1281df08eae9a",
+            "id": "share-1",
             "uuid": "SN1",
             "ret": 0,
-            "account": "zh***@gmail.com",
-            "shareAccountId": "as92",
+            "account": "x***@example.invalid",
+            "shareAccountId": "peer-1",
             "username": "admin",
             "permissions": [
                 { "label": "DP_AlarmPush", "enabled": true },
@@ -939,11 +939,11 @@ mod tests {
                 { "label": "DP_VideoCall", "enabled": false }
             ]
         }]));
-        assert_eq!(rows[0].share_id, "c9092811acaa145439c1281df08eae9a");
+        assert_eq!(rows[0].share_id, "share-1");
         assert_eq!(rows[0].permissions, vec!["DP_AlarmPush", "DP_PTZ"]);
         assert_eq!(rows[0].state, "0");
-        assert_eq!(rows[0].user_id, "as92");
-        assert_eq!(rows[0].account, "zh***@gmail.com");
+        assert_eq!(rows[0].user_id, "peer-1");
+        assert_eq!(rows[0].account, "x***@example.invalid");
     }
 
     #[test]

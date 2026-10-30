@@ -15,9 +15,33 @@ const APP_KEY: &str = "test-app-key";
 const APP_SECRET: &str = "0123456789abcdef0123456789abcdef";
 const ACCOUNT: &str = "acct-0000000000000000000001";
 const SERIAL: &str = "SN-0001";
-const WANTED: &str = "zhexample@gmail.com";
+const WANTED: &str = "xample@example.invalid";
 
 static ENV: Once = Once::new();
+static LOGS: Once = Once::new();
+static LOGGED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+struct Captured;
+
+impl Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        LOGGED.lock().expect("logs").extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn capture_logs() {
+    LOGS.call_once(|| {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(|| Captured)
+            .try_init();
+    });
+}
 
 fn prepare_env() {
     ENV.call_once(|| {
@@ -149,7 +173,11 @@ fn cloud_stub(handler: impl Fn(&str, &str) -> Value + Send + 'static) -> (String
                     format!("version={version}&body={}", body.len()),
                 ));
             }
-            let payload = handler(&method, &form).to_string();
+            let reply = handler(&method, &form);
+            if reply.is_null() {
+                continue;
+            }
+            let payload = reply.to_string();
             let sealed = if version == "v1" {
                 form_encoded(&payload)
             } else {
@@ -377,7 +405,7 @@ fn a_masked_hit_beside_a_stranger_is_the_target_of_the_invitation() {
             "loginExist" => login_reply(),
             "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
                 { "account": "someone@else.com", "id": "stranger-id" },
-                { "account": "zh***@gmail.com", "id": "wanted-id" }
+                { "account": "x***@example.invalid", "id": "wanted-id" }
             ]}),
             "devicesTransOut" => {
                 json!({ "code": 2000, "msg": "SUCCESS", "data": { "transKey": "k1", "expireMillis": 1 } })
@@ -397,7 +425,7 @@ fn a_masked_hit_beside_a_stranger_is_the_target_of_the_invitation() {
             .await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["data"]["transKey"], "k1");
-        assert_eq!(body["resolved"], "zh***@gmail.com");
+        assert_eq!(body["resolved"], "x***@example.invalid");
         let sent = invited(&calls);
         assert_eq!(sent.len(), 1);
         assert!(sent[0].contains("transInUserId=wanted-id"), "{}", sent[0]);
@@ -412,8 +440,8 @@ fn two_matching_hits_are_a_409_instead_of_a_guess() {
         let (cloud, calls) = cloud_stub(|method, _| match method {
             "loginExist" => login_reply(),
             "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
-                { "account": "zh***@gmail.com", "id": "one" },
-                { "account": "zhe***@gmail.com", "id": "two" }
+                { "account": "x***@example.invalid", "id": "one" },
+                { "account": "xa***@example.invalid", "id": "two" }
             ]}),
             _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
         });
@@ -661,7 +689,7 @@ fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_righ
         let (cloud, calls) = cloud_stub(|method, _| match method {
             "loginExist" => login_reply(),
             "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
-                { "account": "zh***@gmail.com", "id": "wanted-id" }
+                { "account": "x***@example.invalid", "id": "wanted-id" }
             ]}),
             _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
         });
@@ -714,7 +742,7 @@ fn an_account_password_travels_as_the_apps_uname_and_upass_ahead_of_the_share() 
         let (cloud, calls) = cloud_stub(|method, _| match method {
             "loginExist" => login_reply(),
             "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
-                { "account": "zh***@gmail.com", "id": "wanted-id" }
+                { "account": "x***@example.invalid", "id": "wanted-id" }
             ]}),
             _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
         });
@@ -743,6 +771,38 @@ fn an_account_password_travels_as_the_apps_uname_and_upass_ahead_of_the_share() 
         );
         assert_eq!(field(form, "uname"), "someone@example.invalid");
         assert_eq!(field(form, "upass"), "acct pass+1");
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn a_failed_share_call_never_echoes_the_account_password() {
+    capture_logs();
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "mdshareadd" => Value::Null,
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let running = start(&data_dir("leak"), &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/permitted",
+                json!({ "uuid": SHAREABLE, "acceptId": "wanted-id", "permissions": ["DP_PTZ"], "password": "leak-check-pass-9" }),
+            )
+            .await;
+        assert_eq!(status, 503, "{body}");
+        assert_eq!(
+            field(&forms(&calls, "mdshareadd")[0], "upass"),
+            "leak-check-pass-9"
+        );
+        assert!(!body.to_string().contains("leak-check-pass"), "{body}");
+        assert!(!body.to_string().contains("upass"), "{body}");
+        let logs = String::from_utf8_lossy(&LOGGED.lock().expect("logs")).to_string();
+        assert!(!logs.contains("leak-check-pass"), "{logs}");
         running.shutdown.notify();
     });
 }
@@ -779,7 +839,7 @@ fn the_owner_lists_changes_and_revokes_a_share_by_its_id() {
             "loginExist" => login_reply(),
             "mdsharemylist" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
                 { "id": "share-7", "uuid": SHAREABLE, "shareTime": 1793352845004i64, "ret": 0, "pid": "",
-                  "powers": "{\"devInfo\":\"z1evz\"}", "account": "zh***@gmail.com", "shareAccountId": "wanted-id",
+                  "powers": "{\"devInfo\":\"z1evz\"}", "account": "x***@example.invalid", "shareAccountId": "wanted-id",
                   "permissions": [
                     { "label": "DP_AlarmPush", "enabled": false },
                     { "label": "DP_CLoudConfig", "enabled": false },

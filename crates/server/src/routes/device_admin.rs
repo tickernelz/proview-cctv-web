@@ -1037,9 +1037,18 @@ mod tests {
             "zh***@example.com",
             "zhexample@example.com"
         ));
-        assert!(account_matches("zh***@gmail.com", "zhexample@gmail.com"));
-        assert!(!account_matches("zh***@gmail.com", "someone@gmail.com"));
-        assert!(!account_matches("zh***@gmail.com", "zhexample@example.com"));
+        assert!(account_matches(
+            "x***@example.invalid",
+            "xample@example.invalid"
+        ));
+        assert!(!account_matches(
+            "x***@example.invalid",
+            "someone@example.invalid"
+        ));
+        assert!(!account_matches(
+            "x***@example.invalid",
+            "xample@example.com"
+        ));
         assert!(!account_matches(
             "zhafron@example.com",
             "zhafron@example.org"
