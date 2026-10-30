@@ -19,7 +19,11 @@ stability before 1.0.
   `/preset/delete`, `/tour/remove`). Zoom, focus, calibration
   (`/ptz/calibrate`) and the panoramic PTZ range (`/panorama`) follow the
   device's ability flags and stay hidden on this camera, which reports none of
-  them; the capability table shows why.
+  them; the capability table shows why. Every one of these writes reads the
+  device's ability on its session first and answers 501 with the device's
+  wording when the flag is missing, before anything is sent. A hold stops by
+  itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
+  sends the release as a beacon.
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
