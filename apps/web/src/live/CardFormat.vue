@@ -23,11 +23,24 @@ function run() {
 
 <template>
   <div class="row" data-testid="device-format">
-    <label class="lab" for="device-format-confirm">Format the card</label>
+    <div class="lab">
+      <label for="device-format-confirm">Format the card</label>
+      <span class="hint warn-text">{{ reason || 'Every recording on the card will be erased.' }}</span>
+    </div>
     <div class="ctl-col">
-      <input id="device-format-confirm" v-model="typed" type="text" autocomplete="off" :placeholder="WORD" :disabled="card !== 'ok'">
-      <p class="hint warn-text">{{ reason || 'Every recording on the card will be erased.' }}</p>
-      <button class="btn" type="button" data-testid="device-format-run" :disabled="!ready" :aria-busy="busy" @click="run">{{ label }}</button>
+      <div class="fmt">
+        <input id="device-format-confirm" v-model="typed" type="text" autocomplete="off" :placeholder="WORD" :disabled="card !== 'ok'">
+        <button class="btn danger" type="button" data-testid="device-format-run" :disabled="!ready" :aria-busy="busy" @click="run">{{ label }}</button>
+      </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.fmt { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s2); min-width: 0; }
+.fmt input { flex: 1 1 120px; width: 160px; min-width: 0; font-family: var(--f-mono); }
+@media (max-width: 640px) {
+  .fmt { justify-content: flex-start; }
+  .fmt input { width: auto; }
+}
+</style>

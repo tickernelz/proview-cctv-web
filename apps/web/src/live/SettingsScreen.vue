@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
+import { Kbd } from '../components/ui/kbd'
 import { api } from '../lib/api'
 import { leaveSettings, setMode, setPref, showSection, signOut } from '../app/shell'
-import { toggleTheme } from '../app/theme'
 import { toggleWhiteLight } from '../app/controls'
 import { live, menuOpen, type Prefs } from './store'
 import AccountPanel from './AccountPanel.vue'
@@ -12,6 +12,7 @@ import DeviceSettings from './DeviceSettings.vue'
 import ImageSettings from './ImageSettings.vue'
 import SystemAbout from './SystemAbout.vue'
 import { replaceHash, settingsHash } from '../shell/router'
+import { openDevices, reloadSection } from '../settings/ui'
 
 type Field = {
   key: string
@@ -31,20 +32,71 @@ type Field = {
 type View = { fields: Field[]; exists?: boolean; path?: string }
 type Check = { text: string; ok: boolean | null }
 
-const SECTIONS = [
-  { id: 'playback', name: 'Playback' },
-  { id: 'camera', name: 'This camera' },
-  { id: 'connection', name: 'Connection' },
-  { id: 'config', name: 'Configuration' },
-  { id: 'server', name: 'Server' },
+const GROUPS = [
+  {
+    id: 'camera',
+    name: 'Camera',
+    items: [
+      { id: 'camera', name: 'This camera', icon: 'cctv', testid: 'camera-settings-link' },
+      { id: 'device', name: 'Video & storage', icon: 'video', testid: 'device-settings-link' },
+      { id: 'image', name: 'Image, light & sound', icon: 'sun', testid: 'image-settings-link' },
+      { id: 'alarm', name: 'Detection & alarms', icon: 'scan', testid: 'detect-settings-link' },
+      { id: 'system', name: 'System', icon: 'cpu', testid: 'system-link' },
+    ],
+  },
+  {
+    id: 'app',
+    name: 'App',
+    items: [
+      { id: 'playback', name: 'Playback', icon: 'play', testid: 'playback-settings-link' },
+      { id: 'config', name: 'Configuration', icon: 'sliders', testid: 'config-settings-link' },
+    ],
+  },
+  {
+    id: 'account',
+    name: 'Account & server',
+    items: [
+      { id: 'account', name: 'Account', icon: 'user', testid: 'account-settings-link' },
+      { id: 'connection', name: 'Connection', icon: 'cloud', testid: 'connection-settings-link' },
+      { id: 'server', name: 'Server', icon: 'activity', testid: 'server-settings-link' },
+    ],
+  },
 ]
-const OWN = new Set(SECTIONS.map((item) => item.id))
+const NOTE_SECTIONS = new Set(['device', 'image', 'alarm', 'system'])
+const LENSES = [
+  ['pip', 'Picture in picture'],
+  ['combined', 'Both lenses'],
+  ['0', 'Top lens'],
+  ['1', 'Bottom lens'],
+]
+const THEMES = [
+  ['system', 'System'],
+  ['dark', 'Dark'],
+  ['light', 'Light'],
+]
+const KEYS: [string[], string][] = [
+  [['1', '9'], 'Switch camera'],
+  [['G'], 'Single or grid'],
+  [['F'], 'Full screen'],
+  [['M'], 'Sound on or off'],
+  [['T'], 'Talk, held'],
+  [['R'], 'Record'],
+  [['S'], 'Snapshot'],
+  [['L'], 'Lens'],
+  [['Q'], 'HD or SD'],
+  [['V'], 'Move pad'],
+  [['Space'], 'Stop moving'],
+  [[','], 'Settings'],
+  [['Esc'], 'Close or go back'],
+  [['?'], 'Keyboard list'],
+]
 const OPTION_LABELS: Record<string, string> = {
   proview: 'ProView camera',
   cloud: 'Cloud account',
   local: 'This network',
   fixture: 'Built-in sample data',
 }
+const fieldId = (key: string) => 'setting-' + key.replace(/[^a-z0-9]+/gi, '-').toLowerCase()
 const MONO_KEY = /addr|host|base|listen|dir|rtsp|onvif|ffmpeg|url|port|profile/i
 
 const s = live.settings
@@ -108,7 +160,9 @@ const barText = computed(() => {
   if (pendingRestart.value) return 'Saved. ' + (canRestart.value ? 'Restart the app' : 'Restart the server process') + ' to apply ' + plural(pendingRestart.value, 'field')
   return 'Everything saved'
 })
-const barTone = computed(() => (barError.value || (blocked.value && changed.value) ? 'bad' : ''))
+const barTone = computed(() => (barError.value || (blocked.value && changed.value) ? 'bad' : changed.value ? 'dirty' : ''))
+const barOwn = computed(() => !NOTE_SECTIONS.has(s.section) || changed.value > 0 || Boolean(barError.value) || pendingRestart.value > 0)
+const sectionName = computed(() => GROUPS.flatMap((group) => group.items).find((item) => item.id === s.section)?.name || 'Settings')
 const backLabel = computed(() => (s.signedIn ? 'Live' : 'Sign in'))
 const modeLine = computed(() => {
   const mode = s.mode
@@ -254,16 +308,33 @@ function show(section: string, focus: boolean) {
   showSection(section, focus)
 }
 
+function pick(section: string) {
+  if (s.section === section) {
+    reloadSection(section)
+    if (section === 'config') load()
+  }
+  show(section, true)
+}
+
+function toList() {
+  const link = nav.value?.querySelector<HTMLAnchorElement>('a[aria-current="page"]')
+  link?.focus()
+  link?.scrollIntoView({ block: 'nearest' })
+}
+
 function onNavKey(event: KeyboardEvent) {
   const step = ({ ArrowDown: 1, ArrowUp: -1, ArrowRight: 1, ArrowLeft: -1 } as Record<string, number>)[event.key]
-  if (!step || !nav.value) return
+  if (!nav.value) return
   const links = [...nav.value.querySelectorAll<HTMLAnchorElement>('a[data-section]')]
   const at = links.indexOf(event.target as HTMLAnchorElement)
   if (at < 0) return
+  let next: HTMLAnchorElement | undefined
+  if (step) next = links[(at + step + links.length) % links.length]
+  else if (event.key === 'Home') next = links[0]
+  else if (event.key === 'End') next = links[links.length - 1]
+  if (!next) return
   event.preventDefault()
-  const next = links[(at + step + links.length) % links.length]
-  if (!OWN.has(next.dataset.section || '')) next.click()
-  else show(next.dataset.section || 'playback', false)
+  show(next.dataset.section || 'playback', false)
   next.focus()
 }
 
@@ -337,18 +408,7 @@ function onKey(event: KeyboardEvent) {
   }
 }
 
-function syncForeign(section: string) {
-  for (const link of document.querySelectorAll<HTMLAnchorElement>('.set-nav a[data-section]')) {
-    const id = link.dataset.section || ''
-    if (OWN.has(id)) continue
-    link.tabIndex = section === id ? 0 : -1
-    if (section === id) link.setAttribute('aria-current', 'page')
-    else link.removeAttribute('aria-current')
-  }
-}
-
 watch(() => s.section, (section) => {
-  syncForeign(section)
   if (body.value) body.value.scrollTop = 0
   if (s.shown) replaceHash(settingsHash(section))
 })
@@ -359,9 +419,6 @@ watch(() => s.focusHeading, async () => {
 watch(() => s.focusBack, async () => {
   await nextTick()
   back.value?.focus()
-})
-watch(() => s.shown, (shown) => {
-  if (shown) syncForeign(s.section)
 })
 watch(payload, () => {
   barError.value = ''
@@ -388,132 +445,225 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <header class="topbar">
-    <button id="settings-back" ref="back" class="ctl back" data-testid="settings-back" type="button" @click="goBack"><Icon name="arrow-left" small /><span id="settings-back-label">{{ backLabel }}</span></button>
-    <h1 id="settings-title" class="screen-title" tabindex="-1">Settings</h1>
-    <div class="spacer" />
-    <button class="iconbtn" type="button" data-testid="theme-toggle" :aria-label="live.theme === 'dark' ? 'Switch to the light theme' : 'Switch to the dark theme'" title="Theme" @click="toggleTheme"><Icon :name="live.theme === 'dark' ? 'sun' : 'moon'" /></button>
-  </header>
   <div class="set">
     <nav ref="nav" class="set-nav" aria-label="Settings sections" @keydown="onNavKey">
-      <a
-        v-for="item in SECTIONS"
-        :key="item.id"
-        :href="settingsHash(item.id)"
-        :data-section="item.id"
-        :aria-current="s.section === item.id ? 'page' : undefined"
-        :tabindex="s.section === item.id ? 0 : -1"
-        @click.prevent="show(item.id, true)"
-      >{{ item.name }}</a>
+      <div class="set-top">
+        <button id="settings-back" ref="back" class="set-back" data-testid="settings-back" type="button" @click="goBack"><Icon name="arrow-left" small /><span id="settings-back-label">{{ backLabel }}</span></button>
+        <h1 id="settings-title" class="set-title" tabindex="-1">Settings</h1>
+      </div>
+      <template v-for="group in GROUPS" :key="group.id">
+        <p :id="'set-nav-' + group.id" class="set-nav-g">{{ group.name }}</p>
+        <p v-if="group.id === 'camera'" class="set-nav-cam" data-testid="settings-camera">
+          <span :class="['dot', { off: live.top.dotOff || !live.top.dotShown }]" /><span class="name">{{ s.camera ? s.camera.name : 'No camera' }}</span><span class="sr">, {{ live.top.dotShown ? live.top.dotLabel : 'status not read' }}</span>
+        </p>
+        <a
+          v-for="item in group.items"
+          :key="item.id"
+          :href="settingsHash(item.id)"
+          :data-section="item.id"
+          :data-testid="item.testid"
+          :aria-current="s.section === item.id ? 'page' : undefined"
+          :tabindex="s.section === item.id ? 0 : -1"
+          @click.prevent="pick(item.id)"
+        ><Icon :name="item.icon" small />{{ item.name }}</a>
+      </template>
+      <div class="set-nav-foot">
+        <button class="btn" type="button" data-testid="settings-cameras" :disabled="!s.signedIn" @click="openDevices"><Icon name="cctv" small />Manage cameras</button>
+        <p v-if="!s.signedIn" class="hint">Sign in to manage the cameras on the account.</p>
+      </div>
     </nav>
     <div id="set-body" ref="body" class="set-body">
       <section data-section="playback" aria-labelledby="h-playback" :hidden="s.section !== 'playback'">
-        <h2 id="h-playback" class="set-h" tabindex="-1">Playback</h2>
-        <p class="set-sub">What happens when a camera opens. These live in this browser and apply at once.</p>
-        <div class="row">
-          <div id="lab-quality" class="lab">Stream quality</div>
-          <div class="ctl-col" role="radiogroup" aria-labelledby="lab-quality">
-            <label class="opt"><input type="radio" name="quality" value="main" :checked="s.prefs.quality === 'main'" @change="pref('quality', 'main')">HD — the main stream</label>
-            <label class="opt"><input type="radio" name="quality" value="sub" :checked="s.prefs.quality === 'sub'" @change="pref('quality', 'sub')">SD — the sub stream, lighter on the network</label>
+        <button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button>
+        <header class="set-head">
+          <div>
+            <h2 id="h-playback" class="set-h" tabindex="-1">Playback</h2>
+            <p class="set-sub">How a camera opens and looks. Saved in this browser and applied at once; camera settings are under Camera.</p>
           </div>
-        </div>
-        <div class="row">
-          <div id="lab-lens" class="lab">Lens on open<span class="hint">Only cameras with two lenses use this.</span></div>
-          <div class="ctl-col" role="radiogroup" aria-labelledby="lab-lens">
-            <label v-for="[value, name] in [['combined', 'Both lenses'], ['0', 'Top lens'], ['1', 'Bottom lens']]" :key="value" class="opt"><input type="radio" name="lens" :value="value" :checked="s.prefs.lens === value" @change="pref('lens', value)">{{ name }}</label>
+        </header>
+        <div class="set-cols">
+          <div class="set-col">
+            <div class="set-card">
+              <div class="set-card-h"><div><h3 class="set-card-t">Appearance</h3></div></div>
+              <div class="row">
+                <div id="lab-theme" class="lab">Theme<span class="hint">System follows the computer setting.</span></div>
+                <div class="ctl-col">
+                  <div class="seg" role="radiogroup" aria-labelledby="lab-theme">
+                    <label v-for="[value, name] in THEMES" :key="value"><input type="radio" name="theme" :value="value" :checked="s.prefs.theme === value" @change="pref('theme', value)">{{ name }}</label>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="lab">Caption in full screen<span class="hint">Camera name and clock at the bottom of the picture. The window keeps them under the picture either way.</span></div>
+                <div class="ctl-col"><label class="switchrow"><input id="set-osd" type="checkbox" role="switch" aria-label="Camera name and clock in full screen" :checked="s.prefs.osd" @change="pref('osd', ($event.target as HTMLInputElement).checked)"></label></div>
+              </div>
+              <div class="row">
+                <div class="lab">Upside down<span class="hint">Turn the picture 180° for a camera mounted on the ceiling.</span></div>
+                <div class="ctl-col"><label class="switchrow"><input id="set-flip" type="checkbox" role="switch" data-testid="set-flip" aria-label="Turn the picture 180° (a camera mounted upside down)" :checked="s.prefs.flip" @change="pref('flip', ($event.target as HTMLInputElement).checked)"></label></div>
+              </div>
+            </div>
+            <div class="set-card">
+              <div class="set-card-h"><div><h3 class="set-card-t">Keyboard shortcuts</h3><p class="set-card-d">Letter keys do nothing while you type in a field.</p></div></div>
+              <dl class="keylist">
+                <div v-for="[combo, meaning] in KEYS" :key="meaning">
+                  <dt>{{ meaning }}</dt>
+                  <dd>
+                    <template v-if="combo.length === 2"><Kbd>{{ combo[0] }}</Kbd>–<Kbd>{{ combo[1] }}</Kbd></template>
+                    <Kbd v-else>{{ combo[0] }}</Kbd>
+                  </dd>
+                </div>
+              </dl>
+            </div>
           </div>
-        </div>
-        <div class="row">
-          <div class="lab">Sound</div>
-          <div class="ctl-col"><label class="switchrow"><input id="set-muted" type="checkbox" role="switch" :checked="s.prefs.muted" @change="pref('muted', ($event.target as HTMLInputElement).checked)">Start muted</label></div>
-        </div>
-        <div class="row">
-          <div class="lab">On the picture<span class="hint">The window keeps the name and clock under the picture either way.</span></div>
-          <div class="ctl-col">
-            <label class="switchrow"><input id="set-osd" type="checkbox" role="switch" :checked="s.prefs.osd" @change="pref('osd', ($event.target as HTMLInputElement).checked)">Camera name and clock in full screen</label>
-            <label class="switchrow"><input id="set-flip" type="checkbox" role="switch" data-testid="set-flip" :checked="s.prefs.flip" @change="pref('flip', ($event.target as HTMLInputElement).checked)">Turn the picture 180° (a camera mounted upside down)</label>
-          </div>
-        </div>
-        <div class="row">
-          <div id="lab-theme" class="lab">Theme</div>
-          <div class="ctl-col" role="radiogroup" aria-labelledby="lab-theme">
-            <label v-for="[value, name] in [['system', 'Match the system'], ['dark', 'Dark'], ['light', 'Light']]" :key="value" class="opt"><input type="radio" name="theme" :value="value" :checked="s.prefs.theme === value" @change="pref('theme', value)">{{ name }}</label>
+          <div class="set-col">
+            <div class="set-card">
+              <div class="set-card-h"><div><h3 class="set-card-t">Playback</h3></div></div>
+              <div class="row">
+                <div id="lab-quality" class="lab">Stream quality<span class="hint">SD is the sub stream, lighter on the network.</span></div>
+                <div class="ctl-col">
+                  <div class="seg" role="radiogroup" aria-labelledby="lab-quality">
+                    <label><input type="radio" name="quality" value="main" aria-label="HD — the main stream" :checked="s.prefs.quality === 'main'" @change="pref('quality', 'main')">HD</label>
+                    <label><input type="radio" name="quality" value="sub" aria-label="SD — the sub stream, lighter on the network" :checked="s.prefs.quality === 'sub'" @change="pref('quality', 'sub')">SD</label>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <div id="lab-lens" class="lab">Lens on open<span class="hint">Only cameras with two lenses use this.</span></div>
+                <div class="ctl-col">
+                  <div class="seg" role="radiogroup" aria-labelledby="lab-lens">
+                    <label v-for="[value, name] in LENSES" :key="value"><input type="radio" name="lens" :value="value" :checked="s.prefs.lens === value" @change="pref('lens', value)">{{ name }}</label>
+                  </div>
+                </div>
+              </div>
+              <div class="row">
+                <div class="lab">Start muted<span class="hint">Sound stays off until you turn it on with M or the Sound button.</span></div>
+                <div class="ctl-col"><label class="switchrow"><input id="set-muted" type="checkbox" role="switch" aria-label="Start muted" :checked="s.prefs.muted" @change="pref('muted', ($event.target as HTMLInputElement).checked)"></label></div>
+              </div>
+            </div>
+            <p class="set-aside"><Icon name="info" small /><span>These choices stay in this browser. Another browser or the desktop app keeps its own.</span></p>
           </div>
         </div>
       </section>
 
       <section data-section="camera" aria-labelledby="h-camera" :hidden="s.section !== 'camera'">
-        <h2 id="h-camera" class="set-h" tabindex="-1">This camera</h2>
-        <p id="camera-sub" class="set-sub">What the device says about itself, as the server last read it. An unavailable row means the camera returned no evidence, not that the app forgot to look.</p>
-        <div v-if="!s.camera" id="camera-none" class="row"><div class="lab">No camera</div><div class="ctl-col"><p class="val">Sign in and pick a camera first.</p></div></div>
-        <div v-else id="camera-rows">
-          <div class="row"><div class="lab">Name</div><div class="ctl-col"><p id="cam-name" class="val">{{ s.camera.name }}</p></div></div>
-          <div class="row">
-            <div class="lab">Device id<span class="hint">The same id the phone app shows.</span></div>
-            <div class="ctl-col"><p class="codes"><span id="cam-id" class="code">{{ s.camera.id }}</span><span id="cam-channel" class="code">channel {{ s.camera.channel }}</span><span id="cam-model" class="code">{{ s.camera.model }}</span></p></div>
+        <button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button>
+        <header class="set-head">
+          <div>
+            <h2 id="h-camera" class="set-h" tabindex="-1">This camera</h2>
+            <p id="camera-sub" class="set-sub">What the device says about itself, as the server last read it. An unavailable row means the camera returned no evidence, not that the app forgot to look.</p>
           </div>
-          <div class="row"><div class="lab">Connection</div><div class="ctl-col"><p id="cam-connection" class="val">{{ s.camera.connection }}</p><p id="cam-stream" class="hint">{{ s.camera.stream }}</p></div></div>
-          <div class="row">
-            <div class="lab">Lens layout</div>
-            <div class="ctl-col">
-              <p id="lens-source" class="val" :title="s.lensTitle || undefined">{{ s.lensNote }}</p>
-              <p v-if="!s.lensRolesKnown" id="lens-roles-note" class="hint">Which half moves comes from the device report. Until the server sends it, the lenses are named by position, not by role.</p>
-            </div>
-          </div>
-          <div class="row">
-            <div class="lab">What it can do<span id="device-note" class="hint">{{ s.controlNote }}</span></div>
-            <div class="ctl-col">
-              <table class="tbl caps">
-                <caption class="sr">Device capability report from the server</caption>
-                <thead><tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">Reported</th><th scope="col">Evidence</th></tr></thead>
-                <tbody id="capability-rows">
-                  <tr v-for="(row, index) in capabilityRows" :key="index">
-                    <td class="feature" data-label="Feature">{{ row[0] }}</td>
-                    <td class="lens" data-label="Lens">{{ row[1] }}</td>
-                    <td class="backend" data-label="Backend">{{ row[2] }}</td>
-                    <td class="state" data-label="Reported"><span :class="['pill', row[3] === 'supported' ? 'ok' : 'no']"><Icon :name="row[3] === 'supported' ? 'check' : 'x'" small />{{ row[3] === 'supported' ? 'supported' : row[3] || 'unavailable' }}</span></td>
-                    <td class="evidence" data-label="Evidence">{{ row[4] }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div class="row">
-            <div class="lab">White light</div>
-            <div class="ctl-col">
-              <button id="light" class="btn btn-line" data-testid="ctl-light" type="button" :disabled="!s.light.ok" :title="s.light.why || undefined" @click="toggleWhiteLight">Switch the white light</button>
-              <p v-if="!s.light.ok && s.light.why" class="hint" data-testid="light-why">{{ s.light.why }}</p>
-              <p id="light-status" class="hint" data-testid="light-status" role="status">{{ s.lightStatus }}</p>
-            </div>
-          </div>
+        </header>
+        <div v-if="!s.camera" id="camera-none" class="set-card">
+          <div class="row"><div class="lab">No camera</div><div class="ctl-col"><p class="val">Sign in and pick a camera first.</p></div></div>
         </div>
+        <template v-else>
+          <div id="camera-rows" class="set-cols">
+            <div class="set-col">
+              <div class="set-card">
+                <div class="set-card-h"><div><h3 class="set-card-t">Identity</h3></div></div>
+                <div class="row"><div class="lab">Name</div><div class="ctl-col"><p id="cam-name" class="val">{{ s.camera.name }}</p></div></div>
+                <div class="row">
+                  <div class="lab">Device id<span class="hint">The same id the phone app shows.</span></div>
+                  <div class="ctl-col"><p class="codes"><span id="cam-id" class="code">{{ s.camera.id }}</span><span id="cam-channel" class="code">channel {{ s.camera.channel }}</span><span id="cam-model" class="code">{{ s.camera.model }}</span></p></div>
+                </div>
+                <div class="row"><div class="lab">Connection<span id="cam-stream" class="hint">{{ s.camera.stream }}</span></div><div class="ctl-col"><p id="cam-connection" class="val">{{ s.camera.connection }}</p></div></div>
+                <div class="row stack">
+                  <div class="lab">Lens layout</div>
+                  <p id="lens-source" class="hint" :title="s.lensTitle || undefined">{{ s.lensNote }}</p>
+                  <p v-if="!s.lensRolesKnown" id="lens-roles-note" class="hint">Which half moves comes from the device report. Until the server sends it, the lenses are named by position, not by role.</p>
+                </div>
+              </div>
+            </div>
+            <div class="set-col">
+              <div class="set-card">
+                <div class="set-card-h"><div><h3 class="set-card-t">White light</h3><p class="set-card-d">Switches the spotlight between its modes on the camera.</p></div></div>
+                <div class="row">
+                  <div class="lab">Spotlight<span v-if="!s.light.ok && s.light.why" class="hint" data-testid="light-why">{{ s.light.why }}</span></div>
+                  <div class="ctl-col">
+                    <button id="light" class="btn" data-testid="ctl-light" type="button" :disabled="!s.light.ok" :title="s.light.why || undefined" @click="toggleWhiteLight">Switch the white light</button>
+                    <p id="light-status" class="hint" data-testid="light-status" role="status">{{ s.lightStatus }}</p>
+                  </div>
+                </div>
+              </div>
+              <div class="set-card">
+                <div class="set-card-h"><div><h3 class="set-card-t">Cameras on this account</h3><p class="set-card-d">Rename, group, share with permissions or by QR code, transfer and remove.</p></div></div>
+                <div class="row">
+                  <div class="lab">Manage cameras<span v-if="!s.signedIn" class="hint">Sign in to manage the cameras on the account.</span></div>
+                  <div class="ctl-col"><button class="btn" type="button" data-testid="camera-manage" :disabled="!s.signedIn" @click="openDevices"><Icon name="cctv" small />Open the camera list</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="set-stack">
+            <div class="set-card">
+              <div class="set-card-h"><div><h3 class="set-card-t">What it can do</h3><p id="device-note" class="set-card-d">{{ s.controlNote }}</p></div></div>
+              <div class="row stack">
+                <table class="tbl caps">
+                  <caption class="sr">Device capability report from the server</caption>
+                  <thead><tr><th scope="col">Feature</th><th scope="col">Lens</th><th scope="col">Backend</th><th scope="col">Reported</th><th scope="col">Evidence</th></tr></thead>
+                  <tbody id="capability-rows">
+                    <tr v-for="(row, index) in capabilityRows" :key="index">
+                      <td class="feature" data-label="Feature">{{ row[0] }}</td>
+                      <td class="lens" data-label="Lens">{{ row[1] }}</td>
+                      <td class="backend" data-label="Backend">{{ row[2] }}</td>
+                      <td class="state" data-label="Reported"><span :class="['pill', row[3] === 'supported' ? 'ok' : 'no']"><Icon :name="row[3] === 'supported' ? 'check' : 'x'" small />{{ row[3] === 'supported' ? 'supported' : row[3] || 'unavailable' }}</span></td>
+                      <td class="evidence" data-label="Evidence">{{ row[4] }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-if="!capabilityRows.length" class="hint">No capability report yet.</p>
+              </div>
+            </div>
+          </div>
+        </template>
       </section>
 
       <section data-section="connection" aria-labelledby="h-connection" :hidden="s.section !== 'connection'">
-        <h2 id="h-connection" class="set-h" tabindex="-1">Connection</h2>
-        <p class="set-sub">Which provider answers: the vendor cloud, or the camera on this network. Switching re-opens the camera list through the new provider.</p>
-        <div class="row">
-          <div id="lab-mode" class="lab">Provider</div>
-          <div ref="modeGroup" class="ctl-col" role="radiogroup" aria-labelledby="lab-mode">
-            <label v-for="[value, name] in [['cloud', 'Cloud account'], ['local', 'This network']]" :key="value" class="opt"><input type="radio" name="mode" :value="value" :disabled="!s.signedIn" :checked="Boolean(s.mode) && s.mode!.mode === value" @change="chooseMode(value)">{{ name }}</label>
-            <p id="mode-status" class="hint" role="status">{{ modeLine }}</p>
-            <p v-if="s.modeError" class="err" data-testid="mode-error" role="alert"><Icon name="warning" small /><span>{{ s.modeError }}</span></p>
-            <p v-if="modeNotice" id="mode-notice" class="notice mode-notice"><Icon name="info" small /><span>{{ modeNotice }}</span></p>
+        <button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button>
+        <header class="set-head">
+          <div>
+            <h2 id="h-connection" class="set-h" tabindex="-1">Connection</h2>
+            <p class="set-sub">Which provider answers: the vendor cloud, or the camera on this network. Switching re-opens the camera list through the new provider.</p>
           </div>
-        </div>
-        <div v-if="s.signedIn" id="account-row" class="row">
-          <div class="lab">Account</div>
-          <div class="ctl-col"><p id="account" class="val">{{ s.account || 'Signed in' }}</p><button id="signout" class="btn btn-line" type="button" data-testid="settings-signout" @click="signOut">Sign out</button></div>
+        </header>
+        <div class="set-stack set-narrow">
+          <div class="set-card">
+            <div class="set-card-h"><div><h3 class="set-card-t">Provider</h3><p id="mode-status" class="set-card-d" role="status">{{ modeLine }}</p></div></div>
+            <div class="row">
+              <div id="lab-mode" class="lab">Answering provider<span v-if="!s.signedIn" class="hint">Sign in to switch the provider.</span></div>
+              <div ref="modeGroup" class="ctl-col">
+                <div class="seg" role="radiogroup" aria-labelledby="lab-mode">
+                  <label v-for="[value, name] in [['cloud', 'Cloud account'], ['local', 'This network']]" :key="value"><input type="radio" name="mode" :value="value" :disabled="!s.signedIn" :checked="Boolean(s.mode) && s.mode!.mode === value" @change="chooseMode(value)">{{ name }}</label>
+                </div>
+              </div>
+            </div>
+            <div v-if="s.modeError || modeNotice" class="row stack">
+              <p v-if="s.modeError" class="err" data-testid="mode-error" role="alert"><Icon name="warning" small /><span>{{ s.modeError }}</span></p>
+              <p v-if="modeNotice" id="mode-notice" class="notice mode-notice"><Icon name="info" small /><span>{{ modeNotice }}</span></p>
+            </div>
+          </div>
+          <div v-if="s.signedIn" id="account-row" class="set-card">
+            <div class="set-card-h"><div><h3 class="set-card-t">Session</h3></div></div>
+            <div class="row">
+              <div class="lab">Signed in as<span id="account" class="hint">{{ s.account || 'Signed in' }}</span></div>
+              <div class="ctl-col"><button id="signout" class="btn" type="button" data-testid="settings-signout" @click="signOut">Sign out</button></div>
+            </div>
+          </div>
         </div>
       </section>
 
       <section data-section="config" aria-labelledby="h-config" :hidden="s.section !== 'config'">
-        <h2 id="h-config" class="set-h" tabindex="-1">Configuration</h2>
-        <p class="set-sub">Server settings, stored on this machine in <code>settings.json</code>. Saving sends only the fields you changed; secrets are never read back. A key that needs a restart carries a Restart tag.</p>
-        <p id="settings-status" :class="['hint', 'settings-status', { 'warn-text': status.bad }]" data-testid="settings-status" role="status">{{ status.text }}</p>
-        <div id="settings-fields" data-testid="settings-fields">
-          <template v-for="group in groups" :key="group.name">
-            <h3 class="set-group">{{ group.name }}</h3>
+        <button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button>
+        <header class="set-head">
+          <div>
+            <h2 id="h-config" class="set-h" tabindex="-1">Configuration</h2>
+            <p class="set-sub">Server settings, stored on this machine in <code>settings.json</code>. Saving sends only the fields you changed; secrets are never read back. A field that needs a restart carries a Restart tag.</p>
+            <p id="settings-status" :class="['set-sub', 'settings-status', { 'warn-text': status.bad }]" data-testid="settings-status" role="status">{{ status.text }}</p>
+          </div>
+        </header>
+        <div id="settings-fields" class="set-stack set-narrow" data-testid="settings-fields">
+          <div v-for="group in groups" :key="group.name" class="set-card">
+            <div class="set-card-h"><div><h3 class="set-card-t">{{ group.name }}</h3></div></div>
             <div v-for="field in group.fields" :key="field.key" class="row" :data-changed="field.key in payload ? 'true' : undefined">
               <template v-if="field.kind === 'toggle'">
                 <div class="lab">
@@ -524,9 +674,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                 <div class="ctl-col">
                   <label class="switchrow">
                     <input
-                      :id="'setting-' + field.key.replace(/[^a-z0-9]+/gi, '-').toLowerCase()"
+                      :id="fieldId(field.key)"
                       type="checkbox"
                       role="switch"
+                      :aria-label="field.label"
                       :data-key="field.key"
                       :data-testid="'setting-' + field.key"
                       data-secret="false"
@@ -537,7 +688,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                 </div>
               </template>
               <template v-else>
-                <label class="lab" :for="'setting-' + field.key.replace(/[^a-z0-9]+/gi, '-').toLowerCase()">
+                <label class="lab" :for="fieldId(field.key)">
                   {{ field.label }}
                   <span v-if="field.restart" class="tag-restart"><Icon name="refresh" small />Restart</span>
                   <span v-if="field.hint" class="hint">{{ field.hint }}</span>
@@ -545,7 +696,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                 <div class="ctl-col">
                   <select
                     v-if="field.kind === 'select'"
-                    :id="'setting-' + field.key.replace(/[^a-z0-9]+/gi, '-').toLowerCase()"
+                    :id="fieldId(field.key)"
                     v-model="values[field.key]"
                     class="text-input"
                     :data-key="field.key"
@@ -556,7 +707,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                   </select>
                   <input
                     v-else
-                    :id="'setting-' + field.key.replace(/[^a-z0-9]+/gi, '-').toLowerCase()"
+                    :id="fieldId(field.key)"
                     v-model="values[field.key]"
                     :class="['text-input', { 'mono-input': field.kind !== 'secret' && MONO_KEY.test(field.key) }]"
                     :type="field.kind === 'secret' ? 'password' : field.kind === 'number' ? 'number' : 'text'"
@@ -572,17 +723,24 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
                 </div>
               </template>
             </div>
-          </template>
+          </div>
         </div>
       </section>
 
       <section data-section="server" aria-labelledby="h-server" :hidden="s.section !== 'server'">
-        <h2 id="h-server" class="set-h" tabindex="-1">Server</h2>
-        <p class="set-sub">Facts read from this server right now; nothing is cached. A failure is the server's real answer for this machine.</p>
-        <div class="row">
-          <div class="lab">Checks<span class="hint">GET /api/health · GET /api/me · POST /api/device/rtsp · GET /api/stream for the open camera.</span></div>
-          <div class="ctl-col">
-            <button id="run-checks" ref="checksButton" class="btn btn-line" type="button" data-testid="run-checks" :aria-busy="checking" @click="runChecks"><Icon name="refresh" small />{{ checking ? 'Checking…' : 'Run checks' }}</button>
+        <button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button>
+        <header class="set-head">
+          <div>
+            <h2 id="h-server" class="set-h" tabindex="-1">Server</h2>
+            <p class="set-sub">Facts read from this server right now; nothing is cached. A failure is the server's real answer for this machine.</p>
+          </div>
+        </header>
+        <div class="set-stack set-narrow">
+          <div class="set-card">
+            <div class="set-card-h">
+              <div><h3 class="set-card-t">Checks</h3><p class="set-card-d">GET /api/health · GET /api/me · POST /api/device/rtsp · GET /api/stream for the open camera.</p></div>
+              <div class="set-card-a"><button id="run-checks" ref="checksButton" class="btn" type="button" data-testid="run-checks" :aria-busy="checking" @click="runChecks"><Icon name="refresh" small />{{ checking ? 'Checking…' : 'Run checks' }}</button></div>
+            </div>
             <dl class="report checks" data-testid="checks">
               <div v-for="[key, name] in [['health', 'Health'], ['account', 'Account'], ['probe', 'Camera probe'], ['ticket', 'Stream ticket']]" :key="key">
                 <dt>{{ name }}</dt>
@@ -594,19 +752,20 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKey))
           </div>
         </div>
       </section>
-      <section data-section="device" aria-labelledby="h-device" :hidden="s.section !== 'device'"><DeviceSettings :shown="s.section === 'device'" /></section>
-      <section data-section="system" aria-labelledby="h-system" :hidden="s.section !== 'system'"><SystemAbout :shown="s.section === 'system'" /></section>
-      <section data-section="alarm" aria-labelledby="h-alarm" :hidden="s.section !== 'alarm'"><AlarmSettings :shown="s.section === 'alarm'" /></section>
-      <section data-section="image" aria-labelledby="h-image" :hidden="s.section !== 'image'"><ImageSettings :shown="s.section === 'image'" /></section>
-      <section data-section="account" aria-labelledby="h-account" :hidden="s.section !== 'account'"><AccountPanel :shown="s.section === 'account'" /></section>
+      <section data-section="device" aria-labelledby="h-device" :hidden="s.section !== 'device'"><button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button><DeviceSettings :shown="s.section === 'device'" /></section>
+      <section data-section="image" aria-labelledby="h-image" :hidden="s.section !== 'image'"><button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button><ImageSettings :shown="s.section === 'image'" /></section>
+      <section data-section="alarm" aria-labelledby="h-alarm" :hidden="s.section !== 'alarm'"><button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button><AlarmSettings :shown="s.section === 'alarm'" /></section>
+      <section data-section="system" aria-labelledby="h-system" :hidden="s.section !== 'system'"><button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button><SystemAbout :shown="s.section === 'system'" /></section>
+      <section data-section="account" aria-labelledby="h-account" :hidden="s.section !== 'account'"><button class="set-crumb" type="button" @click="toList"><Icon name="chevron-left" small />All settings</button><AccountPanel :shown="s.section === 'account'" /></section>
     </div>
   </div>
-  <div class="savebar" :data-tone="barTone || undefined">
-    <p id="save-state" class="state" data-testid="save-state" :role="barTone ? 'alert' : 'status'">
-      <Icon v-if="barTone" name="warning" small /><span>{{ barError || barText }}</span>
+  <div class="savebar" :data-tone="barTone || undefined" :aria-label="'Save bar, ' + sectionName" role="region">
+    <p v-show="barOwn" id="save-state" class="state" data-testid="save-state" :role="barTone === 'bad' ? 'alert' : 'status'">
+      <Icon v-if="barTone === 'bad'" name="warning" small /><Icon v-else-if="!changed && !pendingRestart" name="check" small /><span>{{ barError || barText }}</span>
     </p>
+    <div v-show="!barOwn" id="savebar-note" class="savebar-note" />
     <div class="spacer" />
-    <button id="settings-discard" class="btn btn-line" type="button" :hidden="changed === 0" @click="discard">Discard</button>
+    <button id="settings-discard" class="btn" type="button" :hidden="changed === 0" @click="discard">Discard</button>
     <button id="settings-save" ref="saveButton" class="btn btn-fill" data-testid="settings-save" type="button" aria-keyshortcuts="Control+S" :aria-busy="saving" :hidden="changed === 0" @click="save">{{ saving ? 'Saving…' : 'Save changes' }}</button>
     <button id="settings-restart" class="btn btn-fill" data-testid="settings-restart" type="button" :aria-busy="restarting" :hidden="!(changed === 0 && pendingRestart > 0 && canRestart)" @click="restart">{{ restarting ? 'Restarting…' : 'Restart the app' }}</button>
   </div>

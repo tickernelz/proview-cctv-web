@@ -2,6 +2,8 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
+import { settingsUi } from '../settings/ui'
+import Icon from '../components/Icon.vue'
 
 type Feature<T> = { supported: boolean; evidence: string; value: T | null }
 type Choice = { code: number; key: string; label: string }
@@ -173,19 +175,6 @@ const saveMic = () => write('mic', 'volume', { target: 'mic', level: form.mic },
 
 const checked = (event: Event) => (event.target as HTMLInputElement).checked
 
-function open() {
-  const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
-  if (typeof page.openSettings === 'function') page.openSettings('image')
-  else if (typeof page.showSection === 'function') page.showSection('image', true)
-  else location.hash = '#/settings/image'
-}
-
-function openFromNav() {
-  const shown = props.shown
-  open()
-  if (shown) load()
-}
-
 watch(
   () => props.shown,
   (shown) => {
@@ -193,190 +182,248 @@ watch(
   },
 )
 
-
+watch(
+  () => settingsUi.reload.image,
+  () => {
+    if (props.shown) load()
+  },
+)
 </script>
 
 <template>
-  <Teleport defer to=".set-nav">
-    <a href="#/settings/image" data-section="image" data-testid="image-settings-link" @click.prevent="openFromNav">Image, light and sound</a>
+  <header class="set-head">
+    <div>
+      <h2 id="h-image" class="set-h" tabindex="-1">Image, light &amp; sound</h2>
+      <p class="set-sub">Day and night, spotlight, privacy, indicators and volumes as the camera holds them. Each save reads the block back.</p>
+    </div>
+  </header>
+  <Teleport defer to="#savebar-note">
+    <p v-show="shown" id="image-status" :class="['set-status', { 'warn-text': status.bad }]" data-testid="image-status" role="status">
+      <Icon v-if="status.bad" name="warning" small /><span>{{ status.text }}</span>
+    </p>
   </Teleport>
-  <h2 id="h-image" class="set-h" tabindex="-1">Image, light and sound</h2>
-  <p class="set-sub">
-    Day and night mode, the spotlight schedule, privacy, indicators and volumes as the camera holds them now. Each save reads the block back, and a
-    control the camera does not offer stays off with the camera's own answer beside it.
-  </p>
-  <p id="image-status" :class="['hint', { 'warn-text': status.bad }]" data-testid="image-status" role="status">{{ status.text }}</p>
-  <div v-if="report" data-testid="image-report">
-    <h3 class="set-h">Picture</h3>
-    <div v-if="report.light_mode.supported" class="row">
-      <label class="lab" for="image-light-mode">Day and night<span class="hint">Now: {{ report.light_mode.value?.label }}. On this camera the light mode sets the picture colour.</span></label>
-      <div class="ctl-col">
-        <select id="image-light-mode" v-model="form.lightMode" data-testid="image-light-mode">
-          <option v-for="choice in report.light_mode.value?.options || []" :key="choice.mode" :value="choice.mode">{{ choice.label }}</option>
-        </select>
-        <button class="btn btn-fill" type="button" data-testid="image-save-light-mode" :aria-busy="busy === 'mode'" @click="saveLightMode">Save</button>
-      </div>
-    </div>
-    <div v-else class="row">
-      <label class="lab" for="image-day-night">Day and night<span class="hint">{{ report.day_night.supported ? 'Now: ' + report.day_night.value?.label : report.day_night.evidence }}</span></label>
-      <div class="ctl-col">
-        <select id="image-day-night" v-model.number="form.day" data-testid="image-day-night" :disabled="!report.day_night.supported">
-          <option v-for="choice in report.day_night.value?.options || []" :key="choice.code" :value="choice.code">{{ choice.label }}</option>
-        </select>
-        <button class="btn btn-fill" type="button" data-testid="image-save-day" :disabled="!report.day_night.supported" :aria-busy="busy === 'day'" @click="saveDay">Save</button>
-      </div>
-    </div>
-    <div class="row">
-      <label class="lab" for="image-scene">Scene</label>
-      <div class="ctl-col">
-        <template v-if="report.scene.supported">
-          <input id="image-scene" v-model.number="form.scene" data-testid="image-scene" type="number" min="0" max="255" step="1">
-          <button class="btn btn-fill" type="button" :aria-busy="busy === 'scene'" @click="saveScene">Save</button>
-        </template>
-        <p v-else class="hint" data-testid="image-scene-reason">Not offered by this camera: {{ report.scene.evidence }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <div class="lab">Low light</div>
-      <div class="ctl-col">
-        <label class="switchrow">
-          <input
-            id="image-low-lux"
-            data-testid="image-low-lux"
-            type="checkbox"
-            role="switch"
-            :checked="Boolean(report.low_lux.value)"
-            :disabled="!report.low_lux.supported || busy !== ''"
-            @change="saveLux(checked($event))"
-          ><span>Starlight low-lux mode</span>
-        </label>
-        <p v-if="!report.low_lux.supported" class="hint" data-testid="image-low-lux-reason">Not offered by this camera: {{ report.low_lux.evidence }}</p>
-      </div>
-    </div>
-
-    <h3 class="set-h">Spotlight</h3>
-    <template v-if="report.white_light.supported && light">
-      <div class="row">
-        <div class="lab">Mode</div>
-        <div class="ctl-col"><p class="val"><span class="code">{{ light.mode || 'not reported' }}</span></p><p class="hint">{{ report.light_mode.supported ? 'Set with Day and night above.' : 'Set with the white light switch under This camera.' }}</p></div>
-      </div>
-      <div v-if="light.period" class="row">
-        <div class="lab">Schedule</div>
-        <div class="ctl-col">
-          <label class="switchrow"><input id="image-period" v-model="form.periodOn" data-testid="image-period" type="checkbox" role="switch"><span>Only light up inside this window</span></label>
-          <label class="field"><span>From</span><input id="image-start" v-model="form.start" data-testid="image-start" type="time"></label>
-          <label class="field"><span>Until</span><input id="image-end" v-model="form.end" data-testid="image-end" type="time"></label>
+  <p v-if="!report" class="set-empty">Nothing read from this camera yet.</p>
+  <div v-else class="set-cols" data-testid="image-report">
+    <div class="set-col">
+      <div class="set-card">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Picture</h3></div>
+        </div>
+        <div v-if="report.light_mode.supported" class="row">
+          <label class="lab" for="image-light-mode">Day and night<span class="hint">Now: {{ report.light_mode.value?.label }}. On this camera the light mode sets the picture colour.</span></label>
+          <div class="ctl-col">
+            <select id="image-light-mode" v-model="form.lightMode" data-testid="image-light-mode">
+              <option v-for="choice in report.light_mode.value?.options || []" :key="choice.mode" :value="choice.mode">{{ choice.label }}</option>
+            </select>
+            <button class="btn btn-fill" type="button" data-testid="image-save-light-mode" :aria-busy="busy === 'mode'" @click="saveLightMode">Save</button>
+          </div>
+        </div>
+        <div v-else class="row">
+          <label class="lab" for="image-day-night">Day and night<span class="hint">{{ report.day_night.supported ? 'Now: ' + report.day_night.value?.label : report.day_night.evidence }}</span></label>
+          <div class="ctl-col">
+            <select id="image-day-night" v-model.number="form.day" data-testid="image-day-night" :disabled="!report.day_night.supported">
+              <option v-for="choice in report.day_night.value?.options || []" :key="choice.code" :value="choice.code">{{ choice.label }}</option>
+            </select>
+            <button class="btn btn-fill" type="button" data-testid="image-save-day" :disabled="!report.day_night.supported" :aria-busy="busy === 'day'" @click="saveDay">Save</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="lab" for="image-scene">Scene</label>
+          <div class="ctl-col">
+            <template v-if="report.scene.supported">
+              <input id="image-scene" v-model.number="form.scene" data-testid="image-scene" type="number" min="0" max="255" step="1">
+              <button class="btn btn-fill" type="button" :aria-busy="busy === 'scene'" @click="saveScene">Save</button>
+            </template>
+            <p v-else class="hint" data-testid="image-scene-reason">Not offered by this camera: {{ report.scene.evidence }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lab">Low light</div>
+          <div class="ctl-col">
+            <label class="switchrow">
+              <input
+                id="image-low-lux"
+                data-testid="image-low-lux"
+                type="checkbox"
+                role="switch"
+                :checked="Boolean(report.low_lux.value)"
+                :disabled="!report.low_lux.supported || busy !== ''"
+                @change="saveLux(checked($event))"
+              ><span>Starlight low-lux mode</span>
+            </label>
+            <p v-if="!report.low_lux.supported" class="hint" data-testid="image-low-lux-reason">Not offered by this camera: {{ report.low_lux.evidence }}</p>
+          </div>
         </div>
       </div>
-      <div v-if="light.trigger" class="row">
-        <div class="lab">On motion</div>
-        <div class="ctl-col">
-          <label class="field">
-            <span>Sensitivity</span>
-            <select id="image-level" v-model.number="form.level" data-testid="image-level">
-              <option v-for="level in LEVELS" :key="level.value" :value="level.value">{{ level.label }}</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Stay lit for</span>
-            <select id="image-duration" v-model.number="form.duration" data-testid="image-duration">
-              <option v-for="seconds in DURATIONS" :key="seconds" :value="seconds">{{ seconds }} s</option>
-            </select>
-          </label>
+
+      <div class="set-card">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Spotlight</h3></div>
+        </div>
+        <template v-if="report.white_light.supported && light">
+          <div class="row">
+            <div class="lab">Mode<span class="hint">{{ report.light_mode.supported ? 'Set with Day and night above.' : 'Set with the white light switch under This camera.' }}</span></div>
+            <div class="ctl-col"><p class="val"><span class="code">{{ light.mode || 'not reported' }}</span></p></div>
+          </div>
+          <div v-if="light.period" class="row">
+            <div class="lab">Schedule</div>
+            <div class="ctl-col">
+              <label class="switchrow"><input id="image-period" v-model="form.periodOn" data-testid="image-period" type="checkbox" role="switch"><span>Only light up inside this window</span></label>
+              <div class="ctl-line">
+                <label class="field"><span>From</span><input id="image-start" v-model="form.start" data-testid="image-start" type="time"></label>
+                <label class="field"><span>Until</span><input id="image-end" v-model="form.end" data-testid="image-end" type="time"></label>
+              </div>
+            </div>
+          </div>
+          <div v-if="light.trigger" class="row">
+            <div class="lab">On motion</div>
+            <div class="ctl-col">
+              <div class="ctl-line">
+                <label class="field">
+                  <span>Sensitivity</span>
+                  <select id="image-level" v-model.number="form.level" data-testid="image-level">
+                    <option v-for="level in LEVELS" :key="level.value" :value="level.value">{{ level.label }}</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Stay lit for</span>
+                  <select id="image-duration" v-model.number="form.duration" data-testid="image-duration">
+                    <option v-for="seconds in DURATIONS" :key="seconds" :value="seconds">{{ seconds }} s</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="set-card-f">
+            <button class="btn btn-fill" type="button" data-testid="image-save-light" :aria-busy="busy === 'light'" @click="saveLight">Save spotlight</button>
+          </div>
+        </template>
+        <p v-else class="hint">Not offered by this camera: {{ report.white_light.evidence }}</p>
+      </div>
+    </div>
+
+    <div class="set-col">
+      <div class="set-card">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Privacy</h3></div>
+        </div>
+        <div class="row">
+          <div class="lab">Cover the lens<span class="hint">While on, the camera sends no picture.</span></div>
+          <div class="ctl-col">
+            <label class="switchrow">
+              <input
+                id="image-privacy"
+                data-testid="image-privacy"
+                type="checkbox"
+                role="switch"
+                :checked="Boolean(report.privacy.value)"
+                :disabled="!report.privacy.supported || busy !== ''"
+                @change="savePrivacy(checked($event))"
+              ><span>Privacy shading</span>
+            </label>
+            <p v-if="!report.privacy.supported" class="hint" data-testid="image-privacy-reason">Not offered by this camera: {{ report.privacy.evidence }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <div class="lab">Timed sleep<span class="hint">The camera turns its picture off inside the window.</span></div>
+          <div class="ctl-col">
+            <template v-if="report.sleep.supported">
+              <label class="switchrow"><input id="image-sleep" v-model="form.sleepOn" data-testid="image-sleep" type="checkbox" role="switch"><span>Sleep on a schedule</span></label>
+              <div class="ctl-line">
+                <label class="field"><span>From</span><input id="image-sleep-start" v-model="form.sleepStart" type="time"></label>
+                <label class="field"><span>Until</span><input id="image-sleep-end" v-model="form.sleepEnd" type="time"></label>
+              </div>
+              <label class="switchrow"><input id="image-sleep-repeat" v-model="form.sleepRepeat" type="checkbox" role="switch"><span>Every day</span></label>
+              <div class="ctl-line">
+                <button v-if="report.sleep.value?.sleeping" class="btn" type="button" :aria-busy="busy === 'wake'" @click="wake">Wake now</button>
+                <button class="btn btn-fill" type="button" data-testid="image-save-sleep" :aria-busy="busy === 'sleep'" @click="saveSleep">Save sleep</button>
+              </div>
+            </template>
+            <p v-else class="hint" data-testid="image-sleep-reason">Not offered by this camera: {{ report.sleep.evidence }}</p>
+          </div>
         </div>
       </div>
-      <button class="btn btn-fill" type="button" data-testid="image-save-light" :aria-busy="busy === 'light'" @click="saveLight">Save spotlight</button>
-    </template>
-    <p v-else class="hint">Not offered by this camera: {{ report.white_light.evidence }}</p>
 
-    <h3 class="set-h">Privacy</h3>
-    <div class="row">
-      <div class="lab">Cover the lens<span class="hint">While on, the camera sends no picture.</span></div>
-      <div class="ctl-col">
-        <label class="switchrow">
-          <input
-            id="image-privacy"
-            data-testid="image-privacy"
-            type="checkbox"
-            role="switch"
-            :checked="Boolean(report.privacy.value)"
-            :disabled="!report.privacy.supported || busy !== ''"
-            @change="savePrivacy(checked($event))"
-          ><span>Privacy shading</span>
-        </label>
-        <p v-if="!report.privacy.supported" class="hint" data-testid="image-privacy-reason">Not offered by this camera: {{ report.privacy.evidence }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <div class="lab">Timed sleep<span class="hint">The camera turns its picture off inside the window.</span></div>
-      <div class="ctl-col">
-        <template v-if="report.sleep.supported">
-          <label class="switchrow"><input id="image-sleep" v-model="form.sleepOn" data-testid="image-sleep" type="checkbox" role="switch"><span>Sleep on a schedule</span></label>
-          <label class="field"><span>From</span><input id="image-sleep-start" v-model="form.sleepStart" type="time"></label>
-          <label class="field"><span>Until</span><input id="image-sleep-end" v-model="form.sleepEnd" type="time"></label>
-          <label class="switchrow"><input id="image-sleep-repeat" v-model="form.sleepRepeat" type="checkbox" role="switch"><span>Every day</span></label>
-          <button class="btn btn-fill" type="button" data-testid="image-save-sleep" :aria-busy="busy === 'sleep'" @click="saveSleep">Save sleep</button>
-          <button v-if="report.sleep.value?.sleeping" class="btn" type="button" :aria-busy="busy === 'wake'" @click="wake">Wake now</button>
-        </template>
-        <p v-else class="hint" data-testid="image-sleep-reason">Not offered by this camera: {{ report.sleep.evidence }}</p>
-      </div>
-    </div>
-
-    <h3 class="set-h">Indicators and sound</h3>
-    <div class="row">
-      <div class="lab">Indicators</div>
-      <div class="ctl-col">
-        <label class="switchrow">
-          <input
-            id="image-led"
-            data-testid="image-led"
-            type="checkbox"
-            role="switch"
-            :checked="Boolean(report.status_led.value)"
-            :disabled="!report.status_led.supported || busy !== ''"
-            @change="saveLed(checked($event))"
-          ><span>Status light</span>
-        </label>
-        <p v-if="!report.status_led.supported" class="hint" data-testid="image-led-reason">Not offered by this camera: {{ report.status_led.evidence }}</p>
-        <label class="switchrow">
-          <input
-            id="image-voice-tip"
-            data-testid="image-voice-tip"
-            type="checkbox"
-            role="switch"
-            :checked="Boolean(report.voice_tip.value)"
-            :disabled="!report.voice_tip.supported || busy !== ''"
-            @change="saveTip(checked($event))"
-          ><span>Spoken prompts from the camera</span>
-        </label>
-        <p v-if="!report.voice_tip.supported" class="hint">Not offered by this camera: {{ report.voice_tip.evidence }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <div class="lab">Speaker volume</div>
-      <div class="ctl-col">
-        <template v-if="report.speaker_volume.supported">
-          <label class="field">
-            <span>{{ form.speaker }}</span>
-            <input id="image-speaker" v-model.number="form.speaker" data-testid="image-speaker" type="range" min="0" max="100" step="1">
-          </label>
-          <button class="btn btn-fill" type="button" data-testid="image-save-speaker" :aria-busy="busy === 'speaker'" @click="saveSpeaker">Save</button>
-        </template>
-        <p v-else class="hint">Not offered by this camera: {{ report.speaker_volume.evidence }}</p>
-      </div>
-    </div>
-    <div class="row">
-      <div class="lab">Microphone volume</div>
-      <div class="ctl-col">
-        <template v-if="report.mic_volume.supported">
-          <label class="field">
-            <span>{{ form.mic }}</span>
-            <input id="image-mic" v-model.number="form.mic" data-testid="image-mic" type="range" min="0" max="100" step="1">
-          </label>
-          <button class="btn btn-fill" type="button" data-testid="image-save-mic" :aria-busy="busy === 'mic'" @click="saveMic">Save</button>
-        </template>
-        <p v-else class="hint">Not offered by this camera: {{ report.mic_volume.evidence }}</p>
+      <div class="set-card">
+        <div class="set-card-h">
+          <div><h3 class="set-card-t">Indicators and sound</h3></div>
+        </div>
+        <div class="row">
+          <div class="lab">Indicators</div>
+          <div class="ctl-col">
+            <label class="switchrow">
+              <input
+                id="image-led"
+                data-testid="image-led"
+                type="checkbox"
+                role="switch"
+                :checked="Boolean(report.status_led.value)"
+                :disabled="!report.status_led.supported || busy !== ''"
+                @change="saveLed(checked($event))"
+              ><span>Status light</span>
+            </label>
+            <p v-if="!report.status_led.supported" class="hint" data-testid="image-led-reason">Not offered by this camera: {{ report.status_led.evidence }}</p>
+            <label class="switchrow">
+              <input
+                id="image-voice-tip"
+                data-testid="image-voice-tip"
+                type="checkbox"
+                role="switch"
+                :checked="Boolean(report.voice_tip.value)"
+                :disabled="!report.voice_tip.supported || busy !== ''"
+                @change="saveTip(checked($event))"
+              ><span>Spoken prompts from the camera</span>
+            </label>
+            <p v-if="!report.voice_tip.supported" class="hint" data-testid="image-voice-tip-reason">Not offered by this camera: {{ report.voice_tip.evidence }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <label class="lab" for="image-speaker">Speaker volume</label>
+          <div class="ctl-col">
+            <div v-if="report.speaker_volume.supported" class="ctl-line">
+              <input id="image-speaker" v-model.number="form.speaker" data-testid="image-speaker" type="range" min="0" max="100" step="1">
+              <span class="level">{{ form.speaker }}</span>
+              <button class="btn btn-fill" type="button" data-testid="image-save-speaker" :aria-busy="busy === 'speaker'" @click="saveSpeaker">Save</button>
+            </div>
+            <p v-else class="hint" data-testid="image-speaker-reason">Not offered by this camera: {{ report.speaker_volume.evidence }}</p>
+          </div>
+        </div>
+        <div class="row">
+          <label class="lab" for="image-mic">Microphone volume</label>
+          <div class="ctl-col">
+            <div v-if="report.mic_volume.supported" class="ctl-line">
+              <input id="image-mic" v-model.number="form.mic" data-testid="image-mic" type="range" min="0" max="100" step="1">
+              <span class="level">{{ form.mic }}</span>
+              <button class="btn btn-fill" type="button" data-testid="image-save-mic" :aria-busy="busy === 'mic'" @click="saveMic">Save</button>
+            </div>
+            <p v-else class="hint" data-testid="image-mic-reason">Not offered by this camera: {{ report.mic_volume.evidence }}</p>
+          </div>
+        </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.ctl-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: flex-end;
+  gap: var(--s2);
+  max-width: 100%;
+}
+.ctl-line input[type='range'] {
+  width: 160px;
+  max-width: 100%;
+  min-height: var(--hit);
+  accent-color: var(--accent);
+}
+.level {
+  align-self: center;
+  min-width: 3ch;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  text-align: right;
+}
+</style>
