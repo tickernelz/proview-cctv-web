@@ -179,7 +179,7 @@ pub const FIELDS: &[Field] = &[
         "Server",
         Kind::Text,
         &[],
-        "Address the standalone server listens on; --listen and PROVIEW_LISTEN in the environment win over the saved value, and the desktop app picks its own.",
+        "IP address and port the standalone server listens on, such as 127.0.0.1:8787 or [::1]:8787. A saved value is used only when it is a loopback address; listening on the network needs --listen or PROVIEW_LISTEN in the environment, which both win over it. The desktop app picks its own.",
         true,
     ),
     field(
@@ -326,6 +326,8 @@ pub fn bounds_of(key: &str) -> Option<(u64, u64)> {
         _ => None,
     }
 }
+
+pub const LISTEN_KEY: &str = "PROVIEW_LISTEN";
 
 const DESKTOP_IGNORES: &[&str] = &["ROCKET_SECRET_KEY"];
 
@@ -521,6 +523,12 @@ impl SettingsStore {
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 continue;
+            }
+            if field.key == LISTEN_KEY && trimmed.parse::<SocketAddr>().is_err() {
+                return Err(format!(
+                    "{} must be an IP address and port, such as 127.0.0.1:8787 or [::1]:8787",
+                    field.label
+                ));
             }
             match field.kind {
                 Kind::Number => {
@@ -910,6 +918,41 @@ mod tests {
             assert!(store.update(values).is_err(), "{key}={value} is refused");
         }
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_listen_address_saves_only_as_an_ip_address_and_port() {
+        let (store, dir) = temp_store("listen");
+        for good in ["127.0.0.1:8787", "[::1]:8788", "0.0.0.0:8789"] {
+            let mut values = BTreeMap::new();
+            values.insert(LISTEN_KEY.to_string(), good.to_string());
+            store.update(values).expect(good);
+        }
+        for bad in ["localhost:8787", "nope", "8787", "127.0.0.1", "::1:8787"] {
+            let mut values = BTreeMap::new();
+            values.insert(LISTEN_KEY.to_string(), bad.to_string());
+            let error = store.update(values).expect_err(bad);
+            assert!(error.contains("IP address and port"), "{bad}: {error}");
+        }
+        assert_eq!(store.value(LISTEN_KEY).as_deref(), Some("0.0.0.0:8789"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_unparsable_listen_address_is_a_400_that_writes_nothing() {
+        let app = tower("listen-route", None);
+        let (status, body) = app.save_body(
+            "127.0.0.1:8787",
+            Some("http://127.0.0.1:8787"),
+            None,
+            r#"{"values":{"PROVIEW_LISTEN":"localhost:8787"}}"#,
+        );
+        assert_eq!(status, Status::BadRequest, "{body}");
+        assert!(body.contains("IP address and port"), "{body}");
+        assert!(
+            !app.data.join(FILE).exists(),
+            "the refused save wrote nothing"
+        );
     }
 
     #[test]

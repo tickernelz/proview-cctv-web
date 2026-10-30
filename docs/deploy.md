@@ -17,8 +17,11 @@ error (`InvalidValue` / `InvalidLength`). A release build will not start
 without it (`InsecureSecretKey`). Generate once, store it in your secret
 manager.
 
-`--listen` (or `PROVIEW_LISTEN` in the environment) sets the address; the
-default is `127.0.0.1:8787`. Set `PROVIEW_DATA_DIR` too: the server has no
+`--listen` (or `PROVIEW_LISTEN` in the environment) sets the address, as an
+IP address and port; the default is `127.0.0.1:8787`. A value saved in Settings
+is used only when it is a loopback address, so binding the server to the network
+always takes `--listen` or the environment; the start log names the address and
+where it came from. Set `PROVIEW_DATA_DIR` too: the server has no
 default data directory, and without one the values saved in Settings last only
 until the process exits.
 

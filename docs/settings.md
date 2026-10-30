@@ -45,7 +45,14 @@ must carry this server's own origin.
    is exported into the environment **only when that variable is not already set**.
    An exported variable therefore wins until it is cleared. The standalone server
    takes its listen address from `--listen`, then `PROVIEW_LISTEN` in the
-   environment, then the value saved in `settings.json`, then `127.0.0.1:8787`.
+   environment, then the value saved in `settings.json`, then `127.0.0.1:8787`,
+   and logs the address it chose with its source. Each must be an IP address and
+   port (`127.0.0.1:8787`, `[::1]:8787`; names such as `localhost` are not
+   resolved): Settings refuses any other value with `400` and writes nothing, and a
+   bad `--listen` or environment value stops the start. A saved value is used only
+   when it is a loopback address. A saved network address (`0.0.0.0:8787`, a LAN
+   address) is ignored at start with a warning naming `settings.json`, so exposing
+   the server to the network always takes `--listen` or the environment.
 2. `POST /api/settings` writes the file atomically (staged `settings.json.tmp`, then
    a rename) and exports the values into the process environment at once. Each save
    merges into what is already stored, so a second save never drops the first. Keys
@@ -127,7 +134,7 @@ server does with an unset key; only the four `Desktop` keys report it in the API
 | Local network | `PROVIEW_DEVICE_USER` | Camera user | text | yes | `admin` |
 | Local network | `PROVIEW_DEVICE_PASS` | Camera password | secret | yes | empty |
 | Server | `PROVIEW_SESSION_TTL` | Sign-in lifetime | number | yes | `3600` seconds |
-| Server | `PROVIEW_LISTEN` | Server address | text | yes | `127.0.0.1:8787`; standalone server only: `--listen`, then the environment, then this saved value (see above) |
+| Server | `PROVIEW_LISTEN` | Server address | text | yes | `127.0.0.1:8787`; standalone server only: `--listen`, then the environment, then this saved value when it is loopback; an IP address and port (see above) |
 | Streaming | `PROVIEW_FFMPEG` | ffmpeg program | path | no | `ffmpeg` from `PATH` |
 | Streaming | `PROVIEW_LENS_PTZ` | Movement channel | number | no | unset; the 0-based lens index that moves, see [the lens contract](contracts/lens.md) |
 | Streaming | `PROVIEW_LENS_CAPABILITIES` | Lens features | text | no | empty; comma list of lens capabilities to advertise |

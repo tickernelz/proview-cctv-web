@@ -1,5 +1,11 @@
+use std::net::SocketAddr;
+
+use proview_server::settings::{SettingsStore, LISTEN_KEY};
 use proview_server::ServeOptions;
 use tracing_subscriber::EnvFilter;
+
+const DEFAULT_LISTEN: &str = "127.0.0.1:8787";
+const SAVED_SOURCE: &str = "settings.json";
 
 fn flag<S: AsRef<str>>(args: impl IntoIterator<Item = S>, name: &str) -> bool {
     args.into_iter().any(|item| item.as_ref() == name)
@@ -18,16 +24,52 @@ fn argument(name: &str) -> Option<String> {
     None
 }
 
-fn listen_address(choices: [Option<String>; 3]) -> (String, u16) {
-    let listen = choices
-        .into_iter()
-        .flatten()
-        .find(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
-    listen
-        .rsplit_once(':')
-        .map(|(host, port)| (host.to_string(), port.parse().unwrap_or(8787)))
-        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8787))
+fn filled(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn listen_address(
+    flag: Option<String>,
+    environment: Option<String>,
+    saved: Option<String>,
+) -> Result<(SocketAddr, &'static str), String> {
+    let saved = filled(saved).and_then(|value| match value.parse::<SocketAddr>() {
+        Ok(address) if address.ip().to_canonical().is_loopback() => Some(address),
+        Ok(address) => {
+            tracing::warn!(
+                %address,
+                source = SAVED_SOURCE,
+                "ignoring the saved listen address because it is not loopback; pass --listen or set PROVIEW_LISTEN to listen on the network"
+            );
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                value = %value,
+                source = SAVED_SOURCE,
+                "ignoring the saved listen address because it is not an IP address and port"
+            );
+            None
+        }
+    });
+    for (value, source) in [(flag, "--listen"), (environment, "PROVIEW_LISTEN")] {
+        if let Some(value) = filled(value) {
+            return value.parse().map(|address| (address, source)).map_err(|_| {
+                format!(
+                    "{source} is {value:?}, not an IP address and port such as {DEFAULT_LISTEN}"
+                )
+            });
+        }
+    }
+    Ok(match saved {
+        Some(address) => (address, SAVED_SOURCE),
+        None => (
+            DEFAULT_LISTEN.parse().expect("default listen address"),
+            "default",
+        ),
+    })
 }
 
 #[tokio::main]
@@ -43,16 +85,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let saved = proview_server::settings::SettingsStore::load(None);
-    let (address, port) = listen_address([
+    let saved = SettingsStore::load(None);
+    let (listen, source) = listen_address(
         argument("--listen"),
-        std::env::var("PROVIEW_LISTEN").ok(),
-        saved.value("PROVIEW_LISTEN"),
-    ]);
+        std::env::var(LISTEN_KEY).ok(),
+        saved.value(LISTEN_KEY),
+    )?;
+    tracing::info!(address = %listen, source, "listen address chosen");
 
     let opts = ServeOptions {
-        address,
-        port,
+        address: listen.ip().to_string(),
+        port: listen.port(),
         secret_key: std::env::var("ROCKET_SECRET_KEY").ok(),
         data_dir: None,
     };
@@ -82,7 +125,6 @@ async fn shutdown_signal() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{flag, listen_address};
-    use proview_server::settings::SettingsStore;
 
     #[test]
     fn a_bare_flag_needs_no_value_after_it() {
@@ -95,38 +137,71 @@ mod tests {
         assert!(!flag(["--listen", "127.0.0.1:8787"], "--version"));
     }
 
+    fn some(value: &str) -> Option<String> {
+        Some(value.to_string())
+    }
+
+    fn chosen(
+        flag: Option<String>,
+        environment: Option<String>,
+        saved: Option<String>,
+    ) -> (String, &'static str) {
+        let (address, source) = listen_address(flag, environment, saved).expect("an address");
+        (address.to_string(), source)
+    }
+
     #[test]
-    fn the_saved_listen_address_is_used_when_the_flag_and_environment_are_silent() {
-        let dir = std::env::temp_dir().join(format!("proview-listen-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("dir");
-        std::fs::write(
-            dir.join("settings.json"),
-            r#"{"values":{"PROVIEW_LISTEN":"127.0.0.1:9911"}}"#,
-        )
-        .expect("settings");
-        let saved = SettingsStore::load(Some(&dir)).value("PROVIEW_LISTEN");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn the_flag_then_the_environment_then_a_loopback_saved_value_choose_the_address() {
+        let saved = some("127.0.0.1:9911");
         assert_eq!(
-            listen_address([None, None, saved.clone()]),
-            ("127.0.0.1".to_string(), 9911)
+            chosen(None, None, saved.clone()),
+            ("127.0.0.1:9911".to_string(), "settings.json")
         );
         assert_eq!(
-            listen_address([None, Some("0.0.0.0:8800".to_string()), saved.clone()]),
-            ("0.0.0.0".to_string(), 8800),
-            "the environment wins over the saved value"
+            chosen(None, None, some("[::1]:9912")),
+            ("[::1]:9912".to_string(), "settings.json")
         );
         assert_eq!(
-            listen_address([
-                Some("127.0.0.1:7700".to_string()),
-                Some("0.0.0.0:8800".to_string()),
-                saved
-            ]),
-            ("127.0.0.1".to_string(), 7700),
-            "--listen wins over both"
+            chosen(None, some("0.0.0.0:8800"), saved.clone()),
+            ("0.0.0.0:8800".to_string(), "PROVIEW_LISTEN")
         );
         assert_eq!(
-            listen_address([None, Some(" ".to_string()), None]),
-            ("127.0.0.1".to_string(), 8787)
+            chosen(some("127.0.0.1:7700"), some("0.0.0.0:8800"), saved),
+            ("127.0.0.1:7700".to_string(), "--listen")
         );
+        assert_eq!(
+            chosen(None, some(" "), None),
+            ("127.0.0.1:8787".to_string(), "default")
+        );
+    }
+
+    #[test]
+    fn a_saved_network_or_unparsable_address_is_ignored() {
+        for saved in [
+            "0.0.0.0:8800",
+            "192.168.1.5:8800",
+            "[::]:8800",
+            "localhost:8800",
+            "nope",
+        ] {
+            assert_eq!(
+                chosen(None, None, some(saved)),
+                ("127.0.0.1:8787".to_string(), "default"),
+                "{saved}"
+            );
+            assert_eq!(
+                chosen(None, some("127.0.0.1:9000"), some(saved)),
+                ("127.0.0.1:9000".to_string(), "PROVIEW_LISTEN"),
+                "{saved}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unparsable_flag_or_environment_value_stops_the_start() {
+        let error = listen_address(some("localhost:8787"), None, None).expect_err("flag");
+        assert!(error.contains("--listen"), "{error}");
+        let error = listen_address(None, some("nope"), None).expect_err("environment");
+        assert!(error.contains("PROVIEW_LISTEN"), "{error}");
     }
 }
