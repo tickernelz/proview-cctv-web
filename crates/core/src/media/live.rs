@@ -491,6 +491,29 @@ mod tests {
     }
 
     #[test]
+    fn audio_between_a_split_keyframe_and_its_continuations_leaves_the_keyframe_whole() {
+        let payload: Vec<u8> = (1..=24u8).collect();
+        let head = keyframe_head(24, &payload[..8]);
+        let mut plain = LiveDemux::new();
+        let mut expected = plain.push_frames(&head);
+        expected.extend(plain.push_frames(&payload[8..16]));
+        expected.extend(plain.push_frames(&payload[16..]));
+        assert_eq!(expected.len(), 1);
+
+        let mut demux = LiveDemux::new();
+        let mut frames = demux.push_frames(&head);
+        frames.extend(demux.push_frames(&audio(0xd5)));
+        frames.extend(demux.push_frames(&payload[8..16]));
+        frames.extend(demux.push_frames(&audio(0x55)));
+        frames.extend(demux.push_frames(&payload[16..]));
+        assert_eq!(frames, expected);
+        assert_eq!(frames[0].bytes, payload);
+        assert_eq!(demux.stats().dropped, 0);
+        assert_eq!(demux.stats().continuations, 2);
+        assert_eq!(demux.take_audio().len(), 2);
+    }
+
+    #[test]
     fn a_zero_length_audio_record_holds_the_fixed_frame_and_a_short_one_is_padding() {
         let mut fixed = audio(0xd5);
         fixed[6] = 0;
