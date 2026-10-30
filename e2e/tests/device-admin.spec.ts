@@ -41,7 +41,7 @@ test('Devices lists the cameras, focuses the chosen one, and Escape or Close han
   await expect(rows).toHaveCount(2)
   await expect(rows.first()).toHaveAttribute('aria-checked', 'true')
   await expect(rows.first()).toBeFocused()
-  await expect(rows.first()).toContainText('743hrc · gate · administrator · 1 shared')
+  await expect(rows.first()).toContainText('000001 · gate · administrator · 1 shared')
   await page.keyboard.press('ArrowDown')
   await expect(rows.nth(1)).toBeFocused()
   await expect(rows.nth(1)).toHaveAttribute('aria-checked', 'true')
