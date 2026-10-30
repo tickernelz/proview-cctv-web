@@ -13,7 +13,7 @@ use proview_core::dvrip::settings::{
     EncodePatch, EncodeState, NetworkPatch, OverwriteMode, SettingsError, Stream, WriteReport,
     WriteWindow,
 };
-use proview_core::dvrip::storage_card::{FormatStep, RecordState};
+use proview_core::dvrip::storage_card::{check_packet_length, FormatStep, RecordState};
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::session::Store;
 use rocket::form::FromForm;
@@ -250,12 +250,20 @@ async fn encode_read(
         .encode_state_within(window)
         .await
         .map_err(settings_failure)?;
-    let capability = tokio::time::timeout(window, connection.encode_capability_view(&encode))
-        .await
-        .ok();
+    let capability =
+        match tokio::time::timeout(window, connection.encode_capability_view(&encode)).await {
+            Ok(view) => Some(view),
+            Err(_) => {
+                connection.discard_late_replies().await;
+                None
+            }
+        };
     let smart = match tokio::time::timeout(window, connection.smart_encode_state()).await {
         Ok(result) => result.ok().flatten(),
-        Err(_) => None,
+        Err(_) => {
+            connection.discard_late_replies().await;
+            None
+        }
     };
     finish(connection, window).await;
     Ok(Json(EncodeBody {
@@ -357,6 +365,12 @@ async fn encode_write(
     }
     let write = write_window();
     let mut connection = link.session(query.device.as_deref(), write.timeout).await?;
+    if let Some(mode) = smart {
+        if let Err(error) = smart_preflight(&mut connection, mode, write.timeout).await {
+            finish(connection, write.timeout).await;
+            return Err(settings_failure(error));
+        }
+    }
     let mut body = WriteBody {
         stream: Some(stream.label().to_string()),
         ..WriteBody::default()
@@ -368,7 +382,7 @@ async fn encode_write(
             return Err(failure);
         }
     }
-    if let Some(mode) = smart {
+    if let (Some(mode), false) = (smart, body.reverted_any()) {
         let outcome = connection.write_smart_encode(mode, &write).await;
         if let Some(failure) = collect(outcome, &mut body.reports, &mut body.errors) {
             finish(connection, write.timeout).await;
@@ -385,6 +399,49 @@ async fn encode_write(
     }
     finish(connection, write.timeout).await;
     Ok(body.settle())
+}
+
+async fn smart_preflight(
+    connection: &mut Connection,
+    mode: SmartMode,
+    window: Duration,
+) -> Result<(), SettingsError> {
+    let state = match tokio::time::timeout(window, connection.smart_encode_state()).await {
+        Ok(result) => result?,
+        Err(_) => {
+            connection.discard_late_replies().await;
+            return Err(SettingsError::Slow {
+                block: proview_core::dvrip::encode_osd::SMART_V2_BLOCK,
+                detail: "the smart encode read before the write never came".to_string(),
+            });
+        }
+    };
+    match state {
+        Some(state) if state.modes.contains(&mode) => Ok(()),
+        Some(state) => Err(SettingsError::Invalid {
+            field: "smart",
+            detail: format!(
+                "{} is not offered by this device ({} reports {})",
+                mode.label(),
+                proview_core::dvrip::encode_osd::ENCODE_264_ABILITY,
+                state
+                    .modes
+                    .iter()
+                    .map(|mode| mode.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }),
+        None => Err(SettingsError::Missing {
+            block: proview_core::dvrip::encode_osd::SMART_V2_BLOCK,
+            path: format!(
+                "{}, {} and {}",
+                proview_core::dvrip::encode_osd::SMART_V2_BLOCK,
+                proview_core::dvrip::encode_osd::ENCODE_264_ABILITY,
+                proview_core::dvrip::encode_osd::SMART_BLOCK
+            ),
+        }),
+    }
 }
 
 #[derive(Serialize)]
@@ -660,30 +717,51 @@ async fn record_write(
             "name full_time, packet_length, record_stream, splicing and/or audio",
         ));
     }
+    if let Some(minutes) = query.packet_length {
+        check_packet_length(minutes).map_err(settings_failure)?;
+    }
     let write = write_window();
     let mut connection = link.session(query.device.as_deref(), write.timeout).await?;
+    if let Err(error) = connection
+        .record_preflight(
+            query.full_time,
+            record_stream.is_some(),
+            query.splicing.is_some(),
+            write.timeout,
+        )
+        .await
+    {
+        finish(connection, write.timeout).await;
+        return Err(settings_failure(error));
+    }
     let mut body = WriteBody::default();
-    let mut outcomes = Vec::new();
-    if schedule {
-        outcomes.push(
-            connection
-                .write_record_schedule(query.full_time, query.packet_length, &write)
-                .await,
-        );
-    }
-    if let Some(stream) = record_stream {
-        outcomes.push(connection.write_record_stream(stream, &write).await);
-    }
-    if let Some(enable) = query.splicing {
-        outcomes.push(connection.write_splicing(enable, &write).await);
-    }
-    if let Some(enable) = query.audio {
-        outcomes.push(connection.write_record_audio(enable, &write).await);
-    }
-    for outcome in outcomes {
+    for step in 0..4 {
+        let outcome = match step {
+            0 if schedule => {
+                connection
+                    .write_record_schedule(query.full_time, query.packet_length, &write)
+                    .await
+            }
+            1 if record_stream.is_some() => {
+                let stream = record_stream.unwrap_or(Stream::Main);
+                connection.write_record_stream(stream, &write).await
+            }
+            2 if query.splicing.is_some() => {
+                let enable = query.splicing.unwrap_or(false);
+                connection.write_splicing(enable, &write).await
+            }
+            3 if query.audio.is_some() => {
+                let enable = query.audio.unwrap_or(false);
+                connection.write_record_audio(enable, &write).await
+            }
+            _ => continue,
+        };
         if let Some(failure) = collect(outcome, &mut body.reports, &mut body.errors) {
             finish(connection, write.timeout).await;
             return Err(failure);
+        }
+        if !body.errors.is_empty() || body.reverted_any() {
+            break;
         }
     }
     body.record = connection.record_state_within(write.timeout).await.ok();

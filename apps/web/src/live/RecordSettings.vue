@@ -36,7 +36,11 @@ function save() {
   const record = props.record
   const patch: Record<string, string> = {}
   if (record.full_time !== null && record.full_time !== undefined && form.full_time !== record.full_time) patch.full_time = String(form.full_time)
-  if (form.packet_length !== '' && Number(form.packet_length) !== record.packet_length) patch.packet_length = String(Number(form.packet_length))
+  if (form.packet_length !== '') {
+    const minutes = Math.min(PACKET_MAX, Math.max(PACKET_MIN, Math.round(Number(form.packet_length)) || PACKET_MIN))
+    form.packet_length = minutes
+    if (minutes !== record.packet_length) patch.packet_length = String(minutes)
+  }
   if (record.record_stream_supported && form.record_stream !== (record.record_stream || 'main')) patch.record_stream = form.record_stream
   if (record.splicing_supported && form.splicing !== Boolean(record.splicing)) patch.splicing = String(form.splicing)
   if (record.audio !== null && record.audio !== undefined && form.audio !== record.audio) patch.audio = String(form.audio)

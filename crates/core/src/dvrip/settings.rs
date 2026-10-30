@@ -650,7 +650,7 @@ impl Connection {
             })?
     }
 
-    pub(crate) async fn discard_late_replies(&mut self) {
+    pub async fn discard_late_replies(&mut self) {
         for _ in 0..4 {
             match tokio::time::timeout(std::time::Duration::from_millis(80), self.recv()).await {
                 Ok(Ok((_, _))) => continue,

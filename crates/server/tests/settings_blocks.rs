@@ -460,6 +460,53 @@ async fn a_clip_length_outside_the_app_range_is_refused_before_any_write() {
 }
 
 #[tokio::test]
+async fn a_bad_record_field_beside_a_good_one_sends_no_write_at_all() {
+    settings_env();
+    let mut device = camera();
+    device.blocks.insert(
+        "Record".to_string(),
+        json!([{ "RecordMode": "ConfigRecord", "PacketLength": 5 }]),
+    );
+    let (address, shared) = fake(device).await;
+    let client = client(&address).await;
+    for (path, status) in [
+        (
+            "/api/device/settings/record?packet_length=4&audio=false",
+            Status::BadRequest,
+        ),
+        (
+            "/api/device/settings/record?record_stream=extra&audio=false",
+            Status::NotImplemented,
+        ),
+        (
+            "/api/device/settings/record?splicing=true&audio=false",
+            Status::NotImplemented,
+        ),
+        (
+            "/api/device/settings/record?full_time=false&audio=false",
+            Status::NotImplemented,
+        ),
+    ] {
+        let (answered, body) = call(&client, "PUT", path, None).await;
+        assert_eq!(answered, status, "{path}: {body}");
+    }
+    assert!(sent(&shared, msg::CONFIG_SET).is_empty());
+    let encode = &shared.lock().unwrap().blocks["Simplify.Encode"];
+    assert_eq!(encode[0]["MainFormat"]["AudioEnable"], true);
+}
+
+#[tokio::test]
+async fn an_unsupported_smart_mode_beside_an_fps_change_sends_no_write() {
+    settings_env();
+    let (address, shared) = fake(camera()).await;
+    let client = client(&address).await;
+    let path = "/api/device/settings/encode?stream=main&fps=10&smart=smart";
+    let (status, body) = call(&client, "PUT", path, None).await;
+    assert_eq!(status, Status::BadRequest, "{body}");
+    assert!(sent(&shared, msg::CONFIG_SET).is_empty());
+}
+
+#[tokio::test]
 async fn the_record_stream_is_refused_when_the_device_lacks_the_ability() {
     settings_env();
     let (address, shared) = fake(camera()).await;

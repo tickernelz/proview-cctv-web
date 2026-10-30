@@ -23,6 +23,20 @@ const FULL_TIME_MASK: u32 = 0x7;
 const ALARM_MASK: u32 = 0x6;
 const DAYS: usize = 7;
 
+pub fn check_packet_length(minutes: i64) -> Result<(), SettingsError> {
+    if PACKET_MINUTES.contains(&minutes) {
+        return Ok(());
+    }
+    Err(SettingsError::Invalid {
+        field: "packet_length",
+        detail: format!(
+            "{minutes} minutes is outside {}..{}",
+            PACKET_MINUTES.start(),
+            PACKET_MINUTES.end()
+        ),
+    })
+}
+
 pub fn feature(system_function: &Value, path: &str) -> bool {
     super::settings::at(system_function, path)
         .map(|value| match value {
@@ -489,16 +503,7 @@ impl Connection {
         write: &WriteWindow,
     ) -> Result<WriteReport, SettingsError> {
         if let Some(minutes) = packet_length {
-            if !PACKET_MINUTES.contains(&minutes) {
-                return Err(SettingsError::Invalid {
-                    field: "packet_length",
-                    detail: format!(
-                        "{minutes} minutes is outside {}..{}",
-                        PACKET_MINUTES.start(),
-                        PACKET_MINUTES.end()
-                    ),
-                });
-            }
+            check_packet_length(minutes)?;
         }
         let before = self
             .setting_block_within(RECORD_BLOCK, write.window())
@@ -525,6 +530,43 @@ impl Connection {
         }
         self.write_setting(RECORD_BLOCK, desired, &fields, write)
             .await
+    }
+
+    pub async fn record_preflight(
+        &mut self,
+        full: Option<bool>,
+        record_stream: bool,
+        splicing: bool,
+        window: Duration,
+    ) -> Result<(), SettingsError> {
+        if record_stream || splicing {
+            let features = match tokio::time::timeout(window, self.system_function()).await {
+                Ok(features) => features,
+                Err(_) => {
+                    self.discard_late_replies().await;
+                    return Err(SettingsError::Slow {
+                        block: "SystemFunction",
+                        detail: "the ability read before the record write never came".to_string(),
+                    });
+                }
+            };
+            for (wanted, block, path) in [
+                (record_stream, RECORD_STREAM_BLOCK, RECORD_STREAM_FEATURE),
+                (splicing, SPLICING_BLOCK, SPLICING_FEATURE),
+            ] {
+                if wanted && !feature(&features, path) {
+                    return Err(SettingsError::Missing {
+                        block,
+                        path: path.to_string(),
+                    });
+                }
+            }
+        }
+        if let Some(full) = full {
+            let block = self.setting_block_within(RECORD_BLOCK, window).await?;
+            schedule_patch(&block, full)?;
+        }
+        Ok(())
     }
 
     pub async fn write_record_stream(
