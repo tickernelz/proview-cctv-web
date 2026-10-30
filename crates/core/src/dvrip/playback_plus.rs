@@ -232,21 +232,6 @@ pub fn picture_reply(payload: &[u8]) -> Result<Vec<u8>, PlaybackError> {
     }
 }
 
-pub fn alaw_to_linear(byte: u8) -> i16 {
-    let value = byte ^ 0x55;
-    let exponent = (value & 0x70) >> 4;
-    let mantissa = i16::from(value & 0x0f);
-    let magnitude = match exponent {
-        0 => (mantissa << 4) + 8,
-        _ => ((mantissa << 4) + 0x108) << (exponent - 1),
-    };
-    if value & 0x80 != 0 {
-        magnitude
-    } else {
-        -magnitude
-    }
-}
-
 pub fn stamp_text(raw: u32) -> Option<String> {
     stamp_seconds(raw)?;
     Some(format!(
@@ -608,15 +593,6 @@ mod tests {
             "2026-10-30 00:03:32",
         );
         assert!(picture_inside(&before, &pictures).is_none());
-    }
-
-    #[test]
-    fn a_law_decodes_silence_and_both_extremes() {
-        assert_eq!(alaw_to_linear(0xd5), 8);
-        assert_eq!(alaw_to_linear(0x55), -8);
-        assert_eq!(alaw_to_linear(0xaa), 32256);
-        assert_eq!(alaw_to_linear(0x2a), -32256);
-        assert_eq!(alaw_to_linear(0xc5), 264);
     }
 
     #[test]

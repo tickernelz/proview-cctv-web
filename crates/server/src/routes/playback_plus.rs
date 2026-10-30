@@ -30,7 +30,9 @@ const DEFAULT_WINDOW: Duration = Duration::from_secs(20);
 const PICTURE_WAIT: Duration = Duration::from_secs(6);
 const KEYFRAME_WAIT: Duration = Duration::from_secs(8);
 const DECODE_WAIT: Duration = Duration::from_secs(10);
-const MAX_THUMBS: usize = 8;
+const MAX_THUMBS: usize = 6;
+pub const BATCH_DEADLINE: Duration = Duration::from_secs(60);
+const KEYFRAME_RESERVE: Duration = Duration::from_secs(12);
 const CACHE_LIMIT: usize = 1024;
 pub const PACE_LEAD_SECONDS: f64 = 20.0;
 
@@ -323,7 +325,7 @@ fn clip_of(file: &ThumbFile) -> PlaybackFile {
 struct Draft {
     thumb: Thumb,
     reasons: Vec<String>,
-    started: Instant,
+    spent: Duration,
 }
 
 impl Draft {
@@ -338,7 +340,7 @@ impl Draft {
                 ms: 0,
             },
             reasons: Vec::new(),
-            started: Instant::now(),
+            spent: Duration::ZERO,
         }
     }
 
@@ -350,7 +352,7 @@ impl Draft {
                 self.reasons.join("; ")
             });
         }
-        self.thumb.ms = self.started.elapsed().as_millis() as u64;
+        self.thumb.ms = self.spent.as_millis() as u64;
         self.thumb
     }
 }
@@ -369,7 +371,10 @@ async fn picture_thumb(
     let Some(name) = picture else {
         return;
     };
-    match session.compressed_picture(&name, PICTURE_WAIT).await {
+    let started = Instant::now();
+    let answer = session.compressed_picture(&name, PICTURE_WAIT).await;
+    draft.spent += started.elapsed();
+    match answer {
         Ok(jpeg) => {
             draft.thumb.source = Some("picture");
             draft.thumb.picture = Some(name);
@@ -390,6 +395,14 @@ async fn keyframe_thumb(session: &mut Session, file: &ThumbFile, channel: u8, dr
         },
         Err(error) => draft.reasons.push(format!("keyframe: {error}")),
     }
+}
+
+pub fn keyframe_fits(left: Duration) -> bool {
+    left >= KEYFRAME_RESERVE
+}
+
+pub fn batch_left(started: Instant, limit: Duration) -> Duration {
+    limit.saturating_sub(started.elapsed())
 }
 
 async fn close(mut session: Session) {
@@ -423,15 +436,15 @@ pub async fn thumbnails(
         .collect();
     if thumbs.iter().any(Option::is_none) {
         let wait = window();
-        let budget =
-            wait * 2 + (PICTURE_WAIT + KEYFRAME_WAIT + DECODE_WAIT + wait) * ask.files.len() as u32;
+        let budget = BATCH_DEADLINE;
         let device = ask.device.clone();
         let files = &ask.files;
         let pending: Vec<usize> = (0..files.len())
             .filter(|&index| thumbs[index].is_none())
             .collect();
         let work = async {
-            let mut session = open_tunnel(cloud.inner(), &vendor, &device, wait).await?;
+            let mut session =
+                open_tunnel(cloud.inner(), &vendor, &device, wait.min(budget)).await?;
             let clips: Vec<&ThumbFile> = pending
                 .iter()
                 .map(|&index| &files[index])
@@ -462,21 +475,41 @@ pub async fn thumbnails(
                 if draft.thumb.image.is_some() || file.name.ends_with(".jpg") {
                     continue;
                 }
-                draft.started = Instant::now();
-                let mut session = match spare.take() {
-                    Some(session) => session,
-                    None => match open_tunnel(cloud.inner(), &vendor, &device, wait).await {
-                        Ok(session) => session,
-                        Err(failure) => {
-                            draft
-                                .reasons
-                                .push(format!("keyframe: {}", failure.1.message));
-                            continue;
-                        }
-                    },
+                let left = batch_left(started, budget);
+                if !keyframe_fits(left) {
+                    draft.reasons.push(format!(
+                        "keyframe: skipped, a thumbnail batch spends at most {} s",
+                        budget.as_secs()
+                    ));
+                    continue;
+                }
+                let begun = Instant::now();
+                let opened = match spare.take() {
+                    Some(session) => Ok(session),
+                    None => open_tunnel(cloud.inner(), &vendor, &device, wait.min(left)).await,
                 };
-                keyframe_thumb(&mut session, file, channel, draft).await;
-                close(session).await;
+                match opened {
+                    Ok(mut session) => {
+                        let left = batch_left(started, budget);
+                        if tokio::time::timeout(
+                            left,
+                            keyframe_thumb(&mut session, file, channel, draft),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            draft.reasons.push(format!(
+                                "keyframe: the batch deadline of {} s ran out",
+                                budget.as_secs()
+                            ));
+                        }
+                        close(session).await;
+                    }
+                    Err(failure) => draft
+                        .reasons
+                        .push(format!("keyframe: {}", failure.1.message)),
+                }
+                draft.spent += begun.elapsed();
             }
             if let Some(session) = spare {
                 close(session).await;
@@ -650,7 +683,7 @@ mod tests {
             .dispatch();
         assert_eq!(many.status(), Status::BadRequest);
         let text = many.into_string().unwrap_or_default();
-        assert!(text.contains("1 to 8 files"), "{text}");
+        assert!(text.contains("1 to 6 files"), "{text}");
     }
 
     #[test]
@@ -739,6 +772,18 @@ mod tests {
             .await
             .expect("a closed socket releases the pump")
             .unwrap();
+    }
+
+    #[test]
+    fn a_batch_stops_starting_keyframes_before_its_deadline() {
+        assert_eq!(BATCH_DEADLINE, Duration::from_secs(60));
+        let fresh = Instant::now();
+        assert!(keyframe_fits(batch_left(fresh, BATCH_DEADLINE)));
+        let late = Instant::now() - Duration::from_secs(50);
+        assert!(!keyframe_fits(batch_left(late, BATCH_DEADLINE)));
+        let over = Instant::now() - Duration::from_secs(90);
+        assert_eq!(batch_left(over, BATCH_DEADLINE), Duration::ZERO);
+        assert!(KEYFRAME_RESERVE >= KEYFRAME_WAIT);
     }
 
     #[test]

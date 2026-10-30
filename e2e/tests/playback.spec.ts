@@ -308,7 +308,42 @@ test('the player buttons wait for a recording and sound waits for 1x speed', asy
   await page.getByTestId('pb-speed').selectOption('2')
   await expect(page.getByTestId('pb-sound')).toBeDisabled()
   await expect(page.getByTestId('pb-sound-note')).toHaveText('Sound plays at 1x only.')
+  await expect(page.getByTestId('pb-snapshot-note')).toHaveText('Snapshot waits for the first picture.')
   await expect(page.locator('#pb-video')).toHaveJSProperty('playbackRate', 2)
   await page.getByTestId('pb-speed').selectOption('0.25')
   await expect(page.locator('#pb-video')).toHaveJSProperty('playbackRate', 0.25)
+})
+
+test('changing the day while a thumbnail batch is in flight sends the next batch only after it returns', async ({ page }) => {
+  let release!: () => void
+  const held = new Promise<void>((resolve) => (release = resolve))
+  const asked: string[][] = []
+  let open = 0
+  let most = 0
+  const other = FILES.map((file) => ({ ...file, name: file.name.replace('2026-10-27', '2026-10-26'), begin: file.begin.replace('10-27', '10-26'), end: file.end.replace('10-27', '10-26') }))
+  await page.route(/\/api\/playback\/files/, (route) =>
+    route.fulfill({ json: dayOf(route.request().url()) === '2026-10-26' ? { ...BODY, files: other } : BODY }),
+  )
+  await page.route(/\/api\/playback\/thumbnails/, async (route) => {
+    const names = (route.request().postDataJSON() as { files: { name: string }[] }).files.map((file) => file.name)
+    asked.push(names)
+    open += 1
+    most = Math.max(most, open)
+    if (asked.length === 1) await held
+    open -= 1
+    return route.fulfill({ json: { ok: true, thumbs: names.map((name) => ({ name, source: 'picture', image: PIXEL })) } })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await openPlayback(page)
+  await pickDay(page, '2026-10-27')
+  await expect.poll(() => asked.length).toBe(1)
+  await pickDay(page, '2026-10-26')
+  await expect(page.locator('.pb-row')).toHaveCount(3)
+  await page.waitForTimeout(500)
+  expect(asked.length).toBe(1)
+  release()
+  await expect(page.locator('.pb-thumb[data-state="ok"]')).toHaveCount(3)
+  expect(asked[1]).toEqual(other.map((file) => file.name))
+  expect(most).toBe(1)
 })

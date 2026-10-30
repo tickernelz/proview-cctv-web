@@ -466,9 +466,10 @@ async function fetchThumbs() {
     const message = error instanceof Error ? error.message : String(error)
     if (mine === thumbTicket) for (const file of batch) thumbs[file.name] = { name: file.name, error: message }
   } finally {
+    if (mine !== thumbTicket) for (const file of batch) if (!thumbs[file.name]?.image && !thumbs[file.name]?.error) delete thumbs[file.name]
     thumbBusy = false
   }
-  if (mine === thumbTicket) void fetchThumbs()
+  void fetchThumbs()
 }
 
 function shiftDay(delta: number) {
@@ -543,7 +544,6 @@ watch(() => [query.device, query.day, query.event], () => {
 watch(() => [list.asked.device, list.asked.day, list.asked.event], () => {
   thumbTicket += 1
   wanted = []
-  thumbBusy = false
 })
 
 watch(open, (shown) => {
@@ -633,7 +633,7 @@ onBeforeUnmount(() => {
           <button class="btn btn-line" type="button" data-testid="pb-sound" :disabled="!chosen || player.speed !== 1" :aria-pressed="player.sound" @click="toggleSound"><Icon :name="player.sound ? 'speaker' : 'speaker-off'" small />{{ player.sound ? 'Mute' : 'Sound' }}</button>
           <button class="btn btn-line" type="button" data-testid="pb-snapshot" :disabled="!player.picture" @click="snapshot"><Icon name="camera" small />Snapshot</button>
           <span v-if="soundNote" class="pb-note" data-testid="pb-sound-note">{{ soundNote }}</span>
-          <span v-else-if="chosen && !player.picture" class="pb-note" data-testid="pb-snapshot-note">Snapshot waits for the first picture.</span>
+          <span v-if="chosen && !player.picture" class="pb-note" data-testid="pb-snapshot-note">Snapshot waits for the first picture.</span>
         </div>
         <p id="pb-status" :class="['pb-status', { bad: status.bad }]" data-testid="pb-status" :role="status.bad ? 'alert' : 'status'">{{ status.text }}</p>
       </div>
