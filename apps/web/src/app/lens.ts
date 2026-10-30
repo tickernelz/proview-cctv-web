@@ -4,7 +4,7 @@ import { frameFit, pip } from '../live/stage/pip'
 import { renderCaption } from './caption'
 import { renderSwitcher } from './chrome'
 import { sessionLost } from './shell'
-import { renderFsLine } from './stage'
+import { renderFsLine, stageShowsSelected } from './stage'
 import { state } from './state'
 
 type Crop = { x: number; y: number; w: number; h: number }
@@ -110,16 +110,31 @@ export function deriveLensFromFrame() {
   )
 }
 
+function knownLayout(payload: any) {
+  if (!payload || !Array.isArray(payload.lenses) || payload.lenses.length === 0) return false
+  if (payload.countSource === 'unknown') return false
+  return typeof payload.lensCount !== 'number' || payload.lensCount > 0
+}
+
+function lensQuery(deviceId: string, channel: number) {
+  return '/api/lens?device=' + encodeURIComponent(deviceId) + '&channel=' + encodeURIComponent(channel)
+}
+
+function useLayout(lens: Lens) {
+  state.lens = lens
+  renderLensPicker()
+  applyLensView(state.lensView)
+}
+
 export async function loadLens(deviceId: string, channel: number) {
   state.lens = null
   renderLensPicker()
   if (state.lensSupport === 'absent') return
   try {
-    const payload = await api('/api/lens?device=' + encodeURIComponent(deviceId) + '&channel=' + encodeURIComponent(channel))
+    const payload = await api(lensQuery(deviceId, channel))
     state.lensSupport = 'present'
-    state.lens = normaliseLens(payload, 'contract')
-    renderLensPicker()
-    applyLensView(state.lensView)
+    if (state.selectedId !== deviceId || state.channel !== channel) return
+    if (knownLayout(payload)) useLayout(normaliseLens(payload, 'contract'))
   } catch (error: any) {
     if (error.status === 404 || error.status === 501) {
       state.lensSupport = 'absent'
@@ -132,8 +147,37 @@ export async function loadLens(deviceId: string, channel: number) {
   }
 }
 
+export async function resolveLensFromFrame() {
+  const deviceId = state.selectedId
+  const channel = state.channel
+  const frame = video()
+  if (state.lens || !deviceId || !frame || !frame.videoWidth || !frame.videoHeight || !stageShowsSelected()) return
+  const width = frame.videoWidth
+  const height = frame.videoHeight
+  if (state.lensSupport === 'present') {
+    try {
+      const payload = await api(lensQuery(deviceId, channel) + '&width=' + width + '&height=' + height)
+      if (state.lens || state.selectedId !== deviceId || state.channel !== channel || !stageShowsSelected()) return
+      if (knownLayout(payload)) {
+        useLayout(normaliseLens(payload, 'contract'))
+        return
+      }
+    } catch (error: any) {
+      if (sessionLost(error)) return
+      console.error('lens contract with the frame size failed', error)
+    }
+  }
+  if (state.lens || state.selectedId !== deviceId || state.channel !== channel || !stageShowsSelected()) return
+  const derived = deriveLensFromFrame()
+  if (derived) useLayout(derived)
+}
+
 export function lensEntries(): LensEntry[] {
   return state.lens && state.lens.lenses.length ? state.lens.lenses : []
+}
+
+export function lensViewValue() {
+  return activeView()
 }
 
 function activeView() {
@@ -189,7 +233,6 @@ function lensSub(entry: LensEntry) {
 export function renderLensPicker() {
   const entries = lensEntries()
   const pair = entries.length > 1
-  if (state.lens && !pair && state.lensView !== 'combined') state.lensView = 'combined'
   live.lens.shown = pair
   live.lens.label = lensViewLabel()
   live.settings.lensNote = lensNote()
