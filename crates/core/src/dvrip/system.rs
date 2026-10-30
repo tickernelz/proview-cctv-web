@@ -2,7 +2,6 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use super::client::{require_ok, Connection, DvrError};
-use super::crypto::sofia_hash;
 use super::msg;
 
 pub const DEFAULT_SECTIONS: [&str; 10] = [
@@ -110,6 +109,47 @@ pub fn valid_device_time(raw: &str) -> bool {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DstDate {
+    pub year: i64,
+    pub month: i64,
+    pub day: i64,
+}
+
+impl DstDate {
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if !valid_device_time(&format!("{raw} 00:00:00")) {
+            return None;
+        }
+        let year = raw[..4].parse().ok()?;
+        let month = raw[5..7].parse().ok()?;
+        let day = raw[8..10].parse().ok()?;
+        ((1..=12).contains(&month) && (1..=31).contains(&day)).then_some(Self { year, month, day })
+    }
+
+    fn wire(self) -> Value {
+        json!({ "Day": self.day, "Hour": 0, "Minute": 0, "Month": self.month, "Week": 0, "Year": self.year })
+    }
+}
+
+pub fn location_with_dst(location: &Value, rule: Option<(DstDate, DstDate)>) -> Value {
+    let mut out = if location.is_object() {
+        location.clone()
+    } else {
+        json!({})
+    };
+    match rule {
+        Some((start, end)) => {
+            out["DSTRule"] = json!("On");
+            out["DSTStart"] = start.wire();
+            out["DSTEnd"] = end.wire();
+        }
+        None => out["DSTRule"] = json!("Off"),
+    }
+    out
+}
+
 pub fn ping_body(session: u32, url: &str, count: i64, timeout_secs: i64) -> Value {
     json!({
         "Name": "Ping",
@@ -118,41 +158,8 @@ pub fn ping_body(session: u32, url: &str, count: i64, timeout_secs: i64) -> Valu
     })
 }
 
-pub fn modify_password_body(session: u32, user: &str, old: &str, new: &str) -> Value {
-    json!({
-        "EncryptType": "MD5",
-        "NewPassWord": sofia_hash(new),
-        "PassWord": sofia_hash(old),
-        "SessionID": session_field(session),
-        "UserName": user,
-    })
-}
-
-pub fn modify_user_body(session: u32, current: &str, user: &Value, new_name: &str) -> Value {
-    let mut renamed = user.clone();
-    renamed["Name"] = json!(new_name);
-    json!({
-        "Name": "ModifyUser",
-        "UserName": current,
-        "User": renamed,
-        "SessionID": session_field(session),
-    })
-}
-
-pub fn safety_body(session: u32, name: &str, inner: Option<Value>) -> Value {
-    let mut body = json!({ "Name": name, "SessionId": session_field(session) });
-    if let Some(inner) = inner {
-        body[name] = inner;
-    }
-    body
-}
-
-pub fn safety_answer_value(answers: &[String]) -> Value {
-    json!({ "Answer": answers })
-}
-
-pub fn new_password_value(user: &str, password: &str) -> Value {
-    json!({ "UserName": user, "NewPassword": password })
+pub fn safety_body(session: u32, name: &str) -> Value {
+    json!({ "Name": name, "SessionId": session_field(session) })
 }
 
 pub fn version_request_body(session: u32, language: &str) -> Value {
@@ -376,51 +383,10 @@ impl Connection {
         Ok(parse_users(&reply))
     }
 
-    pub async fn raw_users(&mut self) -> Result<Vec<Value>, DvrError> {
-        let reply = self.named(msg::USERS_GET, "GetAllUser").await?;
-        Ok(reply
-            .get("Users")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    pub async fn modify_password(
-        &mut self,
-        user: &str,
-        old: &str,
-        new: &str,
-    ) -> Result<i64, DvrError> {
+    pub async fn safety_ability(&mut self) -> Result<Value, DvrError> {
+        let name = "GetSafetyAbility";
         let reply = self
-            .request(
-                msg::MODIFY_PASSWORD,
-                modify_password_body(self.session(), user, old, new),
-            )
-            .await?;
-        require_ok(&reply)
-    }
-
-    pub async fn rename_user(&mut self, current: &str, new_name: &str) -> Result<i64, DvrError> {
-        let users = self.raw_users().await?;
-        let user = users
-            .iter()
-            .find(|user| user.get("Name").and_then(Value::as_str) == Some(current))
-            .cloned()
-            .ok_or_else(|| {
-                DvrError::Malformed(format!("the device has no user named {current}"))
-            })?;
-        let reply = self
-            .request(
-                msg::MODIFY_USER,
-                modify_user_body(self.session(), current, &user, new_name),
-            )
-            .await?;
-        require_ok(&reply)
-    }
-
-    pub async fn safety(&mut self, name: &str, inner: Option<Value>) -> Result<Value, DvrError> {
-        let reply = self
-            .request(msg::SAFETY, safety_body(self.session(), name, inner))
+            .request(msg::SAFETY, safety_body(self.session(), name))
             .await?;
         require_ok(&reply)?;
         Ok(reply.get(name).cloned().unwrap_or(Value::Null))
@@ -516,6 +482,29 @@ mod tests {
     }
 
     #[test]
+    fn dst_on_writes_the_dates_the_app_writes_and_off_keeps_them() {
+        let location = json!({"DSTRule":"Off","DSTStart":{"Day":1,"Hour":1,"Minute":1,"Month":5,"Week":0,"Year":2026},"Language":"English"});
+        let start = DstDate::parse("2026-03-29").unwrap();
+        let end = DstDate::parse("2026-10-25").unwrap();
+        let on = location_with_dst(&location, Some((start, end)));
+        assert_eq!(on["DSTRule"], "On");
+        assert_eq!(
+            on["DSTStart"],
+            json!({"Day":29,"Hour":0,"Minute":0,"Month":3,"Week":0,"Year":2026})
+        );
+        assert_eq!(
+            on["DSTEnd"],
+            json!({"Day":25,"Hour":0,"Minute":0,"Month":10,"Week":0,"Year":2026})
+        );
+        assert_eq!(on["Language"], "English");
+        let off = location_with_dst(&on, None);
+        assert_eq!(off["DSTRule"], "Off");
+        assert_eq!(off["DSTStart"], on["DSTStart"]);
+        assert_eq!(DstDate::parse("2026-13-01"), None);
+        assert_eq!(DstDate::parse("2026-3-1"), None);
+    }
+
+    #[test]
     fn device_time_shape_is_strict() {
         assert!(valid_device_time("2026-10-30 10:11:12"));
         assert!(!valid_device_time("2026-10-30T10:11:12"));
@@ -578,26 +567,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn modify_password_sends_sofia_hashes_on_1488() {
-        let (address, handle) = serve(vec![json_reply(json!({"Ret":100}))]).await;
-        let mut connection = connect(&address).await;
-        connection.set_session(0x22);
-        connection
-            .modify_password("admin", "old-secret", "new-secret")
-            .await
-            .unwrap();
-        drop(connection);
-        let seen = handle.await.unwrap();
-        let body = sent(&seen[0]);
-        assert_eq!(body["EncryptType"], "MD5");
-        assert_eq!(body["UserName"], "admin");
-        assert_eq!(body["PassWord"], sofia_hash("old-secret"));
-        assert_eq!(body["NewPassWord"], sofia_hash("new-secret"));
-        assert!(!seen[0].contains("new-secret"));
-        assert_eq!(body["SessionID"], "0x00000022");
-    }
-
-    #[tokio::test]
     async fn every_op_uses_its_message_id() {
         let (address, handle) = serve_scripted(|_, id, body| {
             let text = String::from_utf8_lossy(body).to_string();
@@ -622,22 +591,19 @@ mod tests {
         let ping = connection.ping("8.8.8.8", 3, 2).await.unwrap();
         assert!(ping.reachable);
         assert_eq!(ping.average_ms, Some(12));
-        connection.rename_user("admin", "keeper").await.unwrap();
+        assert_eq!(connection.all_users().await.unwrap()[0].name, "admin");
         connection.version_request("English").await.unwrap();
         connection
             .start_cloud_upgrade("serial-one", "DEV", "fw.bin", "2026-01-02")
             .await
             .unwrap();
-        connection
-            .safety("SetNewPassword", Some(new_password_value("admin", "pw")))
-            .await
-            .unwrap();
+        connection.safety_ability().await.unwrap();
         drop(connection);
         let seen = handle.await.unwrap();
         let ids: Vec<u16> = seen.iter().map(|(_, id, _)| *id).collect();
         assert_eq!(
             ids,
-            vec![1450, 1450, 1450, 1452, 1052, 1472, 1484, 2016, 2018, 1650]
+            vec![1450, 1450, 1450, 1452, 1052, 1472, 2016, 2018, 1650]
         );
         let bodies: Vec<Value> = seen
             .iter()
@@ -650,20 +616,18 @@ mod tests {
             bodies[4]["Ping"],
             json!({"Num":3,"Timeout":2,"URL":"8.8.8.8"})
         );
-        assert_eq!(bodies[6]["Name"], "ModifyUser");
-        assert_eq!(bodies[6]["UserName"], "admin");
-        assert_eq!(bodies[6]["User"]["Name"], "keeper");
+        assert_eq!(bodies[5]["Name"], "GetAllUser");
         assert_eq!(
-            bodies[7]["OPVersionReq"],
+            bodies[6]["OPVersionReq"],
             json!({"Expect":0,"Language":"English","Manual":1})
         );
         assert_eq!(
-            bodies[8]["OPStartUpgradeReq"],
+            bodies[7]["OPStartUpgradeReq"],
             json!({"UUID":"serial-one","DevID":"DEV","FileName":"fw.bin","VerDate":"2026-01-02","Manual":1})
         );
         assert_eq!(
-            bodies[9],
-            json!({"Name":"SetNewPassword","SessionId":"0x00000000","SetNewPassword":{"UserName":"admin","NewPassword":"pw"}})
+            bodies[8],
+            json!({"Name":"GetSafetyAbility","SessionId":"0x00000000"})
         );
     }
 

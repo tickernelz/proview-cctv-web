@@ -30,8 +30,6 @@ pub mod msg {
     pub const TIME_QUERY: u16 = 1452;
     pub const PING: u16 = 1052;
     pub const USERS_GET: u16 = 1472;
-    pub const MODIFY_USER: u16 = 1484;
-    pub const MODIFY_PASSWORD: u16 = 1488;
     pub const SYSTEM_UPGRADE: u16 = 1520;
     pub const UPGRADE_DATA: u16 = 1522;
     pub const SAFETY: u16 = 1650;

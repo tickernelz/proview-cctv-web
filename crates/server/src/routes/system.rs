@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,9 +36,6 @@ pub fn routes() -> Vec<rocket::route::Route> {
         firmware_file,
         network_check,
         users_read,
-        users_password,
-        users_rename,
-        users_recover,
     ]
 }
 
@@ -48,6 +46,9 @@ const RESET_WORD: &str = "RESET";
 const UPGRADE_WORD: &str = "UPGRADE";
 const UPGRADE_LANGUAGE: &str = "English";
 const REBOOT_HOLD: Duration = Duration::from_secs(5);
+static BACKUPS: AtomicU64 = AtomicU64::new(0);
+const NETWORK_TOTAL_ENV: &str = "PROVIEW_SYSTEM_NETWORK_TOTAL_MS";
+const DEFAULT_NETWORK_TOTAL: Duration = Duration::from_secs(60);
 
 fn window() -> Duration {
     match std::env::var(WINDOW_ENV)
@@ -56,6 +57,60 @@ fn window() -> Duration {
     {
         Some(ms) if ms > 0 => Duration::from_millis(ms),
         _ => DEFAULT_WINDOW,
+    }
+}
+
+fn network_total() -> Duration {
+    match std::env::var(NETWORK_TOTAL_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+    {
+        Some(ms) if ms > 0 => Duration::from_millis(ms),
+        _ => DEFAULT_NETWORK_TOTAL,
+    }
+}
+
+struct Budget {
+    end: Instant,
+    total: Duration,
+    window: Duration,
+}
+
+impl Budget {
+    fn new(total: Duration, window: Duration) -> Self {
+        Self {
+            end: Instant::now() + total,
+            total,
+            window,
+        }
+    }
+
+    fn spent(&self) -> bool {
+        Instant::now() >= self.end
+    }
+
+    fn over(&self, stage: &str) -> Failure {
+        fail(
+            Status::GatewayTimeout,
+            format!(
+                "network check ran past its {:?} total at {stage}",
+                self.total
+            ),
+        )
+    }
+
+    async fn run<T, F>(&self, stage: &str, work: F) -> Result<T, Failure>
+    where
+        F: Future<Output = Result<T, DvrError>>,
+    {
+        let left = self.end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(self.over(stage));
+        }
+        match within(stage, left.min(self.window), work).await {
+            Err(_) if self.spent() => Err(self.over(stage)),
+            other => other,
+        }
     }
 }
 
@@ -80,7 +135,11 @@ fn save_backup(name: &str, value: &Value) -> Result<String, Failure> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or(0);
-    let path = dir.join(format!("{stamp}-{name}.json"));
+    let serial = BACKUPS.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!(
+        "{stamp}-{}-{serial}-{name}.json",
+        std::process::id()
+    ));
     std::fs::write(&path, value.to_string()).map_err(|error| {
         fail(
             Status::InternalServerError,
@@ -347,12 +406,15 @@ async fn time_read(
     }))
 }
 
-#[post("/device/system/time?<device>&<time>&<offset>")]
+#[post("/device/system/time?<device>&<time>&<offset>&<dst>&<dst_start>&<dst_end>")]
 #[allow(clippy::too_many_arguments)]
 async fn time_write(
     device: Option<String>,
     time: Option<String>,
     offset: Option<i64>,
+    dst: Option<String>,
+    dst_start: Option<String>,
+    dst_end: Option<String>,
     cfg: &State<Config>,
     cloud: &State<Arc<CloudProvider>>,
     modes: &State<ModeStore>,
@@ -376,8 +438,31 @@ async fn time_write(
             ));
         }
     }
-    if time.is_none() && offset.is_none() {
-        return Err(fail(Status::BadRequest, "pass time, offset or both"));
+    let rule = match dst.as_deref() {
+        None => None,
+        Some("off") => Some(None),
+        Some("on") => {
+            let start = dst_start.as_deref().and_then(system::DstDate::parse);
+            let end = dst_end.as_deref().and_then(system::DstDate::parse);
+            match (start, end) {
+                (Some(start), Some(end)) => Some(Some((start, end))),
+                _ => {
+                    return Err(fail(
+                        Status::BadRequest,
+                        "dst=on needs dst_start and dst_end as YYYY-MM-DD",
+                    ))
+                }
+            }
+        }
+        Some(other) => {
+            return Err(fail(
+                Status::BadRequest,
+                format!("dst must be on or off, not {other}"),
+            ))
+        }
+    };
+    if time.is_none() && offset.is_none() && rule.is_none() {
+        return Err(fail(Status::BadRequest, "pass time, offset, dst or a mix"));
     }
     let limit = window();
     let link = Link {
@@ -388,8 +473,12 @@ async fn time_write(
         store,
     };
     let mut connection = link.connect(cookies, limit).await?;
-    let (before_time, before_zone, _) = read_time(&mut connection, limit).await?;
-    let before = json!({ "device_time": before_time, "time_zone": before_zone });
+    let (before_time, before_zone, before_location) = read_time(&mut connection, limit).await?;
+    let before = json!({
+        "device_time": before_time,
+        "time_zone": before_zone,
+        "location": before_location,
+    });
     let backup = save_backup("time", &before)?;
     if let Some(offset) = offset {
         if system::minutes_east_of_utc(&before_zone) != Some(offset) {
@@ -397,6 +486,17 @@ async fn time_write(
                 "System.TimeZone write",
                 limit,
                 connection.config_set("System.TimeZone", system::time_zone_value(offset)),
+            )
+            .await?;
+        }
+    }
+    if let Some(rule) = rule {
+        let wanted = system::location_with_dst(&before_location, rule);
+        if wanted != before_location {
+            within(
+                "General.Location write",
+                limit,
+                connection.config_set("General.Location", wanted),
             )
             .await?;
         }
@@ -413,6 +513,18 @@ async fn time_write(
                 format!(
                     "System.TimeZone read back {} after writing {offset}; the original is saved in {backup}",
                     time_zone
+                ),
+            ));
+        }
+    }
+    if let Some(rule) = rule {
+        let wanted = if rule.is_some() { "On" } else { "Off" };
+        if location.get("DSTRule").and_then(Value::as_str) != Some(wanted) {
+            return Err(fail(
+                Status::BadGateway,
+                format!(
+                    "General.Location read back DSTRule {} after writing {wanted}; the original is saved in {backup}",
+                    location.get("DSTRule").unwrap_or(&Value::Null)
                 ),
             ));
         }
@@ -601,7 +713,7 @@ async fn reboot(
     let mut connection = link.connect(cookies, limit).await?;
     let ack = within("OPMachine Reboot", limit, connection.reboot()).await?;
     if matches!(ack, RebootAck::Answered(_)) {
-        tokio::time::sleep(REBOOT_HOLD.min(limit)).await;
+        tokio::time::sleep(REBOOT_HOLD).await;
         let _ = connection.logout_within(limit).await;
     }
     Ok(Json(ActionBody {
@@ -925,15 +1037,20 @@ async fn network_check(
         modes,
         store,
     };
+    let budget = Budget::new(network_total(), limit);
     let mut connection = link.connect(cookies, limit).await?;
-    let abilities = within("SystemFunction", limit, connection.abilities()).await?;
-    let common = within(
-        "NetWork.NetCommon",
-        limit,
-        connection.config_get("NetWork.NetCommon"),
-    )
-    .await
-    .ok();
+    let abilities = budget.run("SystemFunction", connection.abilities()).await?;
+    let common = match budget
+        .run(
+            "NetWork.NetCommon",
+            connection.config_get("NetWork.NetCommon"),
+        )
+        .await
+    {
+        Ok(reply) => Some(reply),
+        Err(_) if budget.spent() => return Err(budget.over("NetWork.NetCommon")),
+        Err(_) => None,
+    };
     let gateway = common
         .as_ref()
         .and_then(|reply| reply.get("NetWork.NetCommon"))
@@ -946,37 +1063,35 @@ async fn network_check(
     let mut pings = Vec::new();
     let mut ping_errors = Vec::new();
     for host in &hosts {
-        match within("Ping", limit, connection.ping(host, 3, 2)).await {
+        match budget.run("Ping", connection.ping(host, 3, 2)).await {
             Ok(report) => pings.push(report),
+            Err(_) if budget.spent() => return Err(budget.over("Ping")),
             Err((_, body)) => ping_errors.push(format!("{host}: {}", body.message)),
         }
     }
-    let (cloud_status, cloud_status_error) = split(
-        within(
-            "XmCloudStatus",
-            limit,
-            connection.system_entry("XmCloudStatus"),
-        )
-        .await,
-    );
-    let (nat, nat_error) = split(
-        within(
-            "Status.NatInfo",
-            limit,
-            connection.config_get("Status.NatInfo"),
-        )
+    let cloud_status = budget
+        .run("XmCloudStatus", connection.system_entry("XmCloudStatus"))
+        .await;
+    if cloud_status.is_err() && budget.spent() {
+        return Err(budget.over("XmCloudStatus"));
+    }
+    let (cloud_status, cloud_status_error) = split(cloud_status);
+    let nat = budget
+        .run("Status.NatInfo", connection.config_get("Status.NatInfo"))
         .await
-        .map(|reply| reply.get("Status.NatInfo").cloned().unwrap_or(Value::Null)),
-    );
+        .map(|reply| reply.get("Status.NatInfo").cloned().unwrap_or(Value::Null));
+    if nat.is_err() && budget.spent() {
+        return Err(budget.over("Status.NatInfo"));
+    }
+    let (nat, nat_error) = split(nat);
     let (wifi, wifi_error) = if gates(&abilities).wifi_signal {
-        split(
-            within(
-                "WifiRouteInfo",
-                limit,
-                connection.system_entry("WifiRouteInfo"),
-            )
-            .await,
-        )
+        let wifi = budget
+            .run("WifiRouteInfo", connection.system_entry("WifiRouteInfo"))
+            .await;
+        if wifi.is_err() && budget.spent() {
+            return Err(budget.over("WifiRouteInfo"));
+        }
+        split(wifi)
     } else {
         (
             None,
@@ -1027,206 +1142,14 @@ async fn users_read(
     };
     let mut connection = link.connect(cookies, limit).await?;
     let users = within("GetAllUser", limit, connection.all_users()).await?;
-    let (recovery, recovery_error) = split(
-        within(
-            "GetSafetyAbility",
-            limit,
-            connection.safety("GetSafetyAbility", None),
-        )
-        .await,
-    );
+    let (recovery, recovery_error) =
+        split(within("GetSafetyAbility", limit, connection.safety_ability()).await);
     let _ = connection.logout_within(limit).await;
     Ok(Json(UsersBody {
         ok: true,
         users,
         recovery,
         recovery_error,
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct PasswordChange {
-    user: String,
-    old: String,
-    new: String,
-}
-
-#[post("/device/system/users/password?<device>", data = "<body>")]
-#[allow(clippy::too_many_arguments)]
-async fn users_password(
-    device: Option<String>,
-    body: Json<PasswordChange>,
-    cfg: &State<Config>,
-    cloud: &State<Arc<CloudProvider>>,
-    modes: &State<ModeStore>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<ActionBody>, Failure> {
-    if body.user.trim().is_empty() || body.new.is_empty() {
-        return Err(fail(
-            Status::BadRequest,
-            "user and new password are required",
-        ));
-    }
-    let started = Instant::now();
-    let limit = window();
-    let link = Link {
-        device: device.as_deref(),
-        cfg,
-        cloud,
-        modes,
-        store,
-    };
-    let mut connection = link.connect(cookies, limit).await?;
-    let ret = within(
-        "ModifyPassword",
-        limit,
-        connection.modify_password(body.user.trim(), &body.old, &body.new),
-    )
-    .await?;
-    let _ = connection.logout_within(limit).await;
-    Ok(Json(ActionBody {
-        ok: true,
-        action: "password",
-        detail: format!(
-            "the camera changed the password of {} (Ret {ret})",
-            body.user.trim()
-        ),
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct RenameUser {
-    user: String,
-    name: String,
-}
-
-#[post("/device/system/users/rename?<device>", data = "<body>")]
-#[allow(clippy::too_many_arguments)]
-async fn users_rename(
-    device: Option<String>,
-    body: Json<RenameUser>,
-    cfg: &State<Config>,
-    cloud: &State<Arc<CloudProvider>>,
-    modes: &State<ModeStore>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<ActionBody>, Failure> {
-    let name = body.name.trim();
-    if body.user.trim().is_empty() || name.is_empty() {
-        return Err(fail(Status::BadRequest, "user and name are required"));
-    }
-    let started = Instant::now();
-    let limit = window();
-    let link = Link {
-        device: device.as_deref(),
-        cfg,
-        cloud,
-        modes,
-        store,
-    };
-    let mut connection = link.connect(cookies, limit).await?;
-    let ret = within(
-        "ModifyUser",
-        limit,
-        connection.rename_user(body.user.trim(), name),
-    )
-    .await?;
-    let _ = connection.logout_within(limit).await;
-    Ok(Json(ActionBody {
-        ok: true,
-        action: "rename",
-        detail: format!(
-            "the camera renamed {} to {name} (Ret {ret})",
-            body.user.trim()
-        ),
-        elapsed_ms: started.elapsed().as_millis() as u64,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct Recovery {
-    step: String,
-    #[serde(default)]
-    answers: Vec<String>,
-    #[serde(default)]
-    user: Option<String>,
-    #[serde(default)]
-    password: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct RecoveryBody {
-    pub ok: bool,
-    pub step: String,
-    pub reply: Value,
-    pub elapsed_ms: u64,
-}
-
-#[post("/device/system/users/recover?<device>", data = "<body>")]
-#[allow(clippy::too_many_arguments)]
-async fn users_recover(
-    device: Option<String>,
-    body: Json<Recovery>,
-    cfg: &State<Config>,
-    cloud: &State<Arc<CloudProvider>>,
-    modes: &State<ModeStore>,
-    store: &State<Store>,
-    cookies: &CookieJar<'_>,
-) -> Result<Json<RecoveryBody>, Failure> {
-    let (name, inner) = match body.step.as_str() {
-        "questions" => ("GetSafetyQuestion", None),
-        "answer" => {
-            if body.answers.is_empty() {
-                return Err(fail(Status::BadRequest, "answers are required"));
-            }
-            (
-                "CheckSafetyAnswer",
-                Some(system::safety_answer_value(&body.answers)),
-            )
-        }
-        "password" => {
-            let password = body
-                .password
-                .as_deref()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| fail(Status::BadRequest, "password is required"))?;
-            let user = body
-                .user
-                .as_deref()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("admin");
-            (
-                "SetNewPassword",
-                Some(system::new_password_value(user, password)),
-            )
-        }
-        other => {
-            return Err(fail(
-                Status::BadRequest,
-                format!("unknown step {other}; use questions, answer or password"),
-            ))
-        }
-    };
-    let started = Instant::now();
-    let limit = window();
-    let link = Link {
-        device: device.as_deref(),
-        cfg,
-        cloud,
-        modes,
-        store,
-    };
-    let mut connection = link.connect(cookies, limit).await?;
-    let reply = within(name, limit, connection.safety(name, inner)).await?;
-    let _ = connection.logout_within(limit).await;
-    Ok(Json(RecoveryBody {
-        ok: true,
-        step: body.step.clone(),
-        reply,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }))
 }

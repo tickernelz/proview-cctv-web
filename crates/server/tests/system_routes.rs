@@ -1,7 +1,6 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use proview_core::dvrip::crypto::sofia_hash;
 use proview_core::dvrip::frame::Header;
 use proview_core::dvrip::{msg, HEADER_LEN};
 use proview_core::provider::Mode;
@@ -19,12 +18,15 @@ const OUTER: Duration = Duration::from_secs(4);
 enum Mood {
     Talking,
     SilentOnSystemInfo,
+    SilentOnPing,
 }
 
 #[derive(Default)]
 struct Device {
     frames: Vec<(u16, Value, usize)>,
+    stamps: Vec<(u16, Instant)>,
     time_min: i64,
+    location: Value,
     language: String,
     time: String,
 }
@@ -52,12 +54,42 @@ fn config(device: &str) -> proview_core::config::Config {
     }
 }
 
-fn env() {
+const NETWORK_TOTAL_MS: u64 = 1000;
+
+static USERS: Mutex<usize> = Mutex::new(0);
+
+fn users() -> MutexGuard<'static, usize> {
+    USERS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn data_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("pvw-system-routes-{}", std::process::id()))
+}
+
+struct DataDir;
+
+impl Drop for DataDir {
+    fn drop(&mut self) {
+        let mut count = users();
+        *count -= 1;
+        if *count == 0 {
+            let _ = std::fs::remove_dir_all(data_dir());
+        }
+    }
+}
+
+#[must_use]
+fn env() -> DataDir {
+    *users() += 1;
     std::env::set_var("PROVIEW_SYSTEM_WINDOW_MS", WINDOW_MS.to_string());
     std::env::set_var(
-        "PROVIEW_DATA_DIR",
-        std::env::temp_dir().join(format!("pvw-system-routes-{}", std::process::id())),
+        "PROVIEW_SYSTEM_NETWORK_TOTAL_MS",
+        NETWORK_TOTAL_MS.to_string(),
     );
+    std::env::set_var("PROVIEW_DATA_DIR", data_dir());
+    DataDir
 }
 
 fn trim(payload: &[u8]) -> &[u8] {
@@ -120,7 +152,9 @@ fn answer(device: &Shared, id: u16, body: &Value) -> Option<Value> {
                 json!({ "Ret": 100, "System.TimeZone": { "FirstUserTimeZone": 0, "timeMin": state.time_min } })
             }
             "General.Location" => {
-                json!({ "Ret": 100, "General.Location": { "DSTRule": "Off", "DateFormat": "YYMMDD", "Language": state.language } })
+                let mut location = state.location.clone();
+                location["Language"] = json!(state.language);
+                json!({ "Ret": 100, "General.Location": location })
             }
             "General.Location.Language" => {
                 json!({ "Ret": 100, "General.Location.Language": state.language })
@@ -138,6 +172,7 @@ fn answer(device: &Shared, id: u16, body: &Value) -> Option<Value> {
                 "System.TimeZone" => {
                     state.time_min = body["System.TimeZone"]["timeMin"].as_i64().unwrap_or(0)
                 }
+                "General.Location" => state.location = body["General.Location"].clone(),
                 "General.Location.Language" => {
                     state.language = body["General.Location.Language"]
                         .as_str()
@@ -188,12 +223,17 @@ async fn serve(mut socket: TcpStream, device: Shared, mood: Mood) {
             return;
         }
         let parsed = serde_json::from_slice::<Value>(trim(&body)).unwrap_or(Value::Null);
-        device
-            .lock()
-            .unwrap()
-            .frames
-            .push((header.id, parsed.clone(), body.len()));
-        if mood == Mood::SilentOnSystemInfo && header.id == msg::SYSTEM_INFO {
+        {
+            let mut state = device.lock().unwrap();
+            state.frames.push((header.id, parsed.clone(), body.len()));
+            state.stamps.push((header.id, Instant::now()));
+        }
+        let silent = match mood {
+            Mood::SilentOnSystemInfo => header.id == msg::SYSTEM_INFO,
+            Mood::SilentOnPing => header.id == msg::PING,
+            Mood::Talking => false,
+        };
+        if silent {
             std::future::pending::<()>().await;
         }
         if header.id == msg::UPGRADE_DATA && header.length == 0 {
@@ -219,6 +259,12 @@ async fn fake(mood: Mood) -> (String, Shared) {
         time_min: -420,
         language: "English".to_string(),
         time: "2026-10-30 08:00:00".to_string(),
+        location: json!({
+            "DSTRule": "Off",
+            "DSTStart": { "Day": 1, "Hour": 1, "Minute": 1, "Month": 5, "Week": 0, "Year": 2026 },
+            "DSTEnd": { "Day": 1, "Hour": 1, "Minute": 1, "Month": 10, "Week": 0, "Year": 2027 },
+            "DateFormat": "YYMMDD",
+        }),
         ..Device::default()
     }));
     let shared = device.clone();
@@ -253,6 +299,16 @@ async fn client(device: &str) -> Client {
 }
 
 async fn call(client: &Client, method: &str, path: &str, body: Option<Value>) -> (Status, Value) {
+    call_for(client, method, path, body, OUTER).await
+}
+
+async fn call_for(
+    client: &Client,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    outer: Duration,
+) -> (Status, Value) {
     let request = match method {
         "GET" => client.get(path),
         "PUT" => client.put(path),
@@ -262,9 +318,9 @@ async fn call(client: &Client, method: &str, path: &str, body: Option<Value>) ->
         Some(body) => request.header(ContentType::JSON).body(body.to_string()),
         None => request,
     };
-    let response = tokio::time::timeout(OUTER, request.dispatch())
+    let response = tokio::time::timeout(outer, request.dispatch())
         .await
-        .unwrap_or_else(|_| panic!("{path} never answered inside {OUTER:?}"));
+        .unwrap_or_else(|_| panic!("{path} never answered inside {outer:?}"));
     let status = response.status();
     let text = response.into_string().await.unwrap_or_default();
     (
@@ -298,7 +354,7 @@ fn ids(device: &Shared) -> Vec<u16> {
 
 #[tokio::test]
 async fn about_reads_info_abilities_and_reports_missing_info_ex() {
-    env();
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, body) = call(&client, "GET", "/api/device/system", None).await;
@@ -321,7 +377,7 @@ async fn about_reads_info_abilities_and_reports_missing_info_ex() {
 
 #[tokio::test]
 async fn a_silent_device_times_the_about_page_out_inside_the_window() {
-    env();
+    let _dir = env();
     let (address, _device) = fake(Mood::SilentOnSystemInfo).await;
     let client = client(&address).await;
     let started = Instant::now();
@@ -343,7 +399,7 @@ async fn a_silent_device_times_the_about_page_out_inside_the_window() {
 
 #[tokio::test]
 async fn reboot_and_defaults_need_their_words_and_send_the_app_bodies() {
-    env();
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, _) = call(&client, "POST", "/api/device/system/reboot", None).await;
@@ -357,14 +413,32 @@ async fn reboot_and_defaults_need_their_words_and_send_the_app_bodies() {
     .await;
     assert_eq!(status, Status::BadRequest);
     assert!(!ids(&device).contains(&msg::OP_MACHINE));
-    let (status, body) = call(
+    let asked = Instant::now();
+    let (status, body) = call_for(
         &client,
         "POST",
         "/api/device/system/reboot?confirm=reboot",
         None,
+        Duration::from_secs(8),
     )
     .await;
+    let answered = asked.elapsed();
     assert_eq!(status, Status::Ok, "{body}");
+    assert!(answered >= Duration::from_secs(5), "{answered:?}");
+    let stamps = device.lock().unwrap().stamps.clone();
+    let sent = stamps
+        .iter()
+        .position(|(id, _)| *id == msg::OP_MACHINE)
+        .expect("OPMachine frame");
+    let logout = stamps[sent..]
+        .iter()
+        .find(|(id, _)| *id == msg::LOGOUT)
+        .expect("logout after the restart request");
+    let held = logout.1 - stamps[sent].1;
+    assert!(
+        held >= Duration::from_secs(5),
+        "logout came {held:?} after OPMachine"
+    );
     let (status, body) = call(
         &client,
         "POST",
@@ -383,9 +457,20 @@ async fn reboot_and_defaults_need_their_words_and_send_the_app_bodies() {
     );
 }
 
+fn time_writes(device: &Shared) -> Vec<(u16, String)> {
+    device
+        .lock()
+        .unwrap()
+        .frames
+        .iter()
+        .filter(|(id, _, _)| *id == msg::CONFIG_SET || *id == msg::OP_MACHINE)
+        .map(|(id, body, _)| (*id, body["Name"].as_str().unwrap_or("").to_string()))
+        .collect()
+}
+
 #[tokio::test]
-async fn time_sync_writes_zone_then_time_and_reads_both_back() {
-    env();
+async fn time_sync_in_a_dst_zone_writes_base_zone_rule_then_time() {
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, _) = call(
@@ -396,32 +481,81 @@ async fn time_sync_writes_zone_then_time_and_reads_both_back() {
     )
     .await;
     assert_eq!(status, Status::BadRequest);
+    let (status, _) = call(&client, "POST", "/api/device/system/time?dst=on", None).await;
+    assert_eq!(status, Status::BadRequest);
     let (status, body) = call(
         &client,
         "POST",
-        "/api/device/system/time?time=2026-10-30%2010:11:12&offset=480",
+        "/api/device/system/time?time=2026-07-15%2010:11:12&offset=60&dst=on&dst_start=2026-03-29&dst_end=2026-10-25",
         None,
     )
     .await;
     assert_eq!(status, Status::Ok, "{body}");
-    assert_eq!(body["device_time"], "2026-10-30 10:11:12");
-    assert_eq!(body["minutes_east"], 480);
+    assert_eq!(body["device_time"], "2026-07-15 10:11:12");
+    assert_eq!(body["minutes_east"], 60);
+    assert_eq!(body["location"]["DSTRule"], "On");
     assert_eq!(body["before"]["time_zone"]["timeMin"], -420);
+    assert_eq!(body["before"]["location"]["DSTRule"], "Off");
     let zone = frames_named(&device, msg::CONFIG_SET, "System.TimeZone");
     assert_eq!(
         zone[0]["System.TimeZone"],
-        json!({ "FirstUserTimeZone": 0, "timeMin": -480 })
+        json!({ "FirstUserTimeZone": 0, "timeMin": -60 })
     );
-    let time = frames_named(&device, msg::OP_MACHINE, "OPTimeSetting");
-    assert_eq!(time[0]["OPTimeSetting"], "2026-10-30 10:11:12");
+    let location = frames_named(&device, msg::CONFIG_SET, "General.Location");
+    assert_eq!(location[0]["General.Location"]["DSTRule"], "On");
+    assert_eq!(
+        location[0]["General.Location"]["DSTStart"],
+        json!({ "Day": 29, "Hour": 0, "Minute": 0, "Month": 3, "Week": 0, "Year": 2026 })
+    );
+    assert_eq!(
+        location[0]["General.Location"]["DSTEnd"],
+        json!({ "Day": 25, "Hour": 0, "Minute": 0, "Month": 10, "Week": 0, "Year": 2026 })
+    );
+    assert_eq!(location[0]["General.Location"]["DateFormat"], "YYMMDD");
+    assert_eq!(
+        time_writes(&device),
+        vec![
+            (msg::CONFIG_SET, "System.TimeZone".to_string()),
+            (msg::CONFIG_SET, "General.Location".to_string()),
+            (msg::OP_MACHINE, "OPTimeSetting".to_string()),
+        ]
+    );
     let backup = body["backup"].as_str().unwrap();
     let saved: Value = serde_json::from_str(&std::fs::read_to_string(backup).unwrap()).unwrap();
     assert_eq!(saved["time_zone"]["timeMin"], -420);
+    assert_eq!(saved["location"]["DSTRule"], "Off");
+}
+
+#[tokio::test]
+async fn time_sync_in_a_zone_without_dst_clears_the_rule_and_keeps_the_dates() {
+    let _dir = env();
+    let (address, device) = fake(Mood::Talking).await;
+    device.lock().unwrap().location["DSTRule"] = json!("On");
+    let client = client(&address).await;
+    let (status, body) = call(
+        &client,
+        "POST",
+        "/api/device/system/time?time=2026-07-15%2010:11:12&offset=420&dst=off",
+        None,
+    )
+    .await;
+    assert_eq!(status, Status::Ok, "{body}");
+    assert_eq!(body["minutes_east"], 420);
+    assert_eq!(body["location"]["DSTRule"], "Off");
+    assert!(frames_named(&device, msg::CONFIG_SET, "System.TimeZone").is_empty());
+    let location = frames_named(&device, msg::CONFIG_SET, "General.Location");
+    assert_eq!(location[0]["General.Location"]["DSTRule"], "Off");
+    assert_eq!(
+        location[0]["General.Location"]["DSTStart"],
+        json!({ "Day": 1, "Hour": 1, "Minute": 1, "Month": 5, "Week": 0, "Year": 2026 })
+    );
+    let time = frames_named(&device, msg::OP_MACHINE, "OPTimeSetting");
+    assert_eq!(time[0]["OPTimeSetting"], "2026-07-15 10:11:12");
 }
 
 #[tokio::test]
 async fn language_write_refuses_values_outside_the_device_list() {
-    env();
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, body) = call(
@@ -448,8 +582,8 @@ async fn language_write_refuses_values_outside_the_device_list() {
 }
 
 #[tokio::test]
-async fn users_never_return_the_hash_and_password_ops_send_the_app_wire() {
-    env();
+async fn users_never_return_the_hash_and_no_user_write_route_exists() {
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, body) = call(&client, "GET", "/api/device/system/users", None).await;
@@ -457,69 +591,31 @@ async fn users_never_return_the_hash_and_password_ops_send_the_app_wire() {
     assert_eq!(body["users"][0]["name"], "admin");
     assert!(!body.to_string().contains("tlJwpbo6"));
     assert_eq!(body["recovery"]["Question"], 1);
-    let (status, body) = call(
-        &client,
-        "POST",
-        "/api/device/system/users/password",
-        Some(json!({ "user": "admin", "old": "old-pass", "new": "new-pass" })),
-    )
-    .await;
-    assert_eq!(status, Status::Ok, "{body}");
-    let change = device
-        .lock()
-        .unwrap()
-        .frames
-        .iter()
-        .find(|(id, _, _)| *id == msg::MODIFY_PASSWORD)
-        .map(|(_, body, _)| body.clone())
-        .unwrap();
-    assert_eq!(change["EncryptType"], "MD5");
-    assert_eq!(change["PassWord"], sofia_hash("old-pass"));
-    assert_eq!(change["NewPassWord"], sofia_hash("new-pass"));
-    assert_eq!(change["UserName"], "admin");
-    let (status, body) = call(
-        &client,
-        "POST",
-        "/api/device/system/users/rename",
-        Some(json!({ "user": "admin", "name": "keeper" })),
-    )
-    .await;
-    assert_eq!(status, Status::Ok, "{body}");
-    let rename = frames_named(&device, msg::MODIFY_USER, "ModifyUser");
-    assert_eq!(rename[0]["UserName"], "admin");
-    assert_eq!(rename[0]["User"]["Name"], "keeper");
-    assert_eq!(rename[0]["User"]["Group"], "admin");
-    let (status, body) = call(
-        &client,
-        "POST",
-        "/api/device/system/users/recover",
-        Some(json!({ "step": "password", "user": "admin", "password": "fresh" })),
-    )
-    .await;
-    assert_eq!(status, Status::Ok, "{body}");
-    let recover = frames_named(&device, msg::SAFETY, "SetNewPassword");
     assert_eq!(
-        recover[0]["SetNewPassword"],
-        json!({ "UserName": "admin", "NewPassword": "fresh" })
+        frames_named(&device, msg::SAFETY, "GetSafetyAbility").len(),
+        1
     );
-    let (status, body) = call(
-        &client,
-        "POST",
-        "/api/device/system/users/recover",
-        Some(json!({ "step": "answer", "answers": ["a", "b"] })),
-    )
-    .await;
-    assert_eq!(status, Status::Ok, "{body}");
-    let answer = frames_named(&device, msg::SAFETY, "CheckSafetyAnswer");
-    assert_eq!(
-        answer[0]["CheckSafetyAnswer"],
-        json!({ "Answer": ["a", "b"] })
+    for path in ["password", "rename", "recover"] {
+        let (status, _) = call(
+            &client,
+            "POST",
+            &format!("/api/device/system/users/{path}"),
+            Some(json!({ "user": "admin", "name": "keeper", "old": "a", "new": "b", "step": "password", "password": "c" })),
+        )
+        .await;
+        assert_eq!(status, Status::NotFound, "{path}");
+    }
+    let sent = ids(&device);
+    assert!(!sent.contains(&1484) && !sent.contains(&1488), "{sent:?}");
+    assert!(
+        frames_named(&device, msg::SAFETY, "SetNewPassword").is_empty()
+            && frames_named(&device, msg::SAFETY, "CheckSafetyAnswer").is_empty()
     );
 }
 
 #[tokio::test]
 async fn firmware_start_and_file_upload_need_the_word_and_use_2018_and_1520() {
-    env();
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, _) = call(
@@ -575,7 +671,7 @@ async fn firmware_start_and_file_upload_need_the_word_and_use_2018_and_1520() {
 
 #[tokio::test]
 async fn firmware_check_asks_the_device_and_the_upgrade_server() {
-    env();
+    let _dir = env();
     let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", http.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(String::new()));
@@ -639,7 +735,7 @@ async fn firmware_check_asks_the_device_and_the_upgrade_server() {
 
 #[tokio::test]
 async fn network_check_pings_the_app_hosts_plus_gateway_and_gates_wifi() {
-    env();
+    let _dir = env();
     let (address, device) = fake(Mood::Talking).await;
     let client = client(&address).await;
     let (status, body) = call(&client, "GET", "/api/device/system/network", None).await;
@@ -676,4 +772,24 @@ async fn network_check_pings_the_app_hosts_plus_gateway_and_gates_wifi() {
         ping[0]["Ping"],
         json!({ "Num": 3, "Timeout": 2, "URL": "223.5.5.5" })
     );
+}
+
+#[tokio::test]
+async fn a_network_check_that_runs_long_stops_at_its_total_and_names_the_stage() {
+    let _dir = env();
+    let (address, device) = fake(Mood::SilentOnPing).await;
+    let client = client(&address).await;
+    let started = Instant::now();
+    let (status, body) = call(&client, "GET", "/api/device/system/network", None).await;
+    let elapsed = started.elapsed();
+    assert_eq!(status, Status::GatewayTimeout, "{body}");
+    assert_eq!(
+        body["message"], "network check ran past its 1s total at Ping",
+        "{body}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(NETWORK_TOTAL_MS + WINDOW_MS + 600),
+        "{elapsed:?}"
+    );
+    assert!(ids(&device).contains(&msg::PING));
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { sessionLost } from '../app/shell'
+import { baseOffsetMinutes, dstRule } from '../app/dst'
 import { state } from '../app/state'
 
 type Reply = { ok: boolean; status: number; body: any }
@@ -18,12 +19,9 @@ const busy = ref('')
 const about = reactive({ data: null as any, error: '' })
 const clock = reactive({ data: null as any, error: '' })
 const language = reactive({ data: null as any, error: '', pick: '' })
-const firmware = reactive({ data: null as any, error: '', word: '', file: null as File | null, fileWord: '' })
+const firmware = reactive({ data: null as any, error: '', camera: '', word: '', file: null as File | null, fileWord: '' })
 const network = reactive({ data: null as any, error: '' })
 const users = reactive({ data: null as any, error: '' })
-const password = reactive({ user: 'admin', old: '', next: '' })
-const rename = reactive({ user: 'admin', name: '' })
-const recovery = reactive({ answers: '', user: 'admin', password: '', reply: null as any })
 const danger = reactive({ restart: false, reset: '' })
 
 const camera = ref('')
@@ -80,7 +78,7 @@ const noCamera = computed(() => (camera.value ? '' : 'Pick a camera first; every
 const offers = computed<any[]>(() => (firmware.data && firmware.data.server_check && firmware.data.server_check.offers) || [])
 const startReason = computed(() => {
   if (noCamera.value) return noCamera.value
-  if (!firmware.data) return 'Check for an update first.'
+  if (!firmware.data || firmware.camera !== camera.value) return 'Check for an update first.'
   if (!offers.value.length) return 'The upgrade server offers no newer firmware for this camera.'
   if (!(about.data && about.data.gates && about.data.gates.cloud_upgrade)) return 'The camera does not report cloud upgrade support (OtherFunction/SupportCfgCloudupgrade).'
   if (firmware.word !== UPGRADE_WORD) return 'Type ' + UPGRADE_WORD + ' to confirm.'
@@ -112,8 +110,17 @@ function apply(target: { data: any; error: string }, name: string, result: Reply
 
 let ticket = 0
 
+function forgetCamera() {
+  Object.assign(firmware, { data: null, error: '', camera: '', word: '', file: null, fileWord: '' })
+  Object.assign(network, { data: null, error: '' })
+  danger.restart = false
+  danger.reset = ''
+}
+
 async function load() {
-  camera.value = currentCamera()
+  const next = currentCamera()
+  if (next !== camera.value) forgetCamera()
+  camera.value = next
   if (noCamera.value) {
     say(noCamera.value, true)
     return
@@ -153,8 +160,10 @@ async function run(job: string, work: () => Promise<void>) {
 const syncTime = () =>
   run('time sync', async () => {
     say('Writing this computer’s time to the camera…')
-    const offset = String(-new Date().getTimezoneOffset())
-    const result = await request(withDevice('/time', { time: localTime(), offset }), { method: 'POST' })
+    const rule = dstRule()
+    const query: Record<string, string> = { time: localTime(), offset: String(baseOffsetMinutes()), dst: rule.on ? 'on' : 'off' }
+    if (rule.on) Object.assign(query, { dst_start: rule.start, dst_end: rule.end })
+    const result = await request(withDevice('/time', query), { method: 'POST' })
     if (expired(result)) return
     if (!result.ok) return say('Time sync failed: ' + failureText(result), true)
     clock.data = result.body
@@ -174,14 +183,17 @@ const saveLanguage = () =>
 const checkFirmware = () =>
   run('firmware check', async () => {
     say('Asking the camera and the upgrade server…')
+    const asked = camera.value
     const result = await request(withDevice('/firmware'))
-    if (expired(result)) return
+    if (expired(result) || asked !== camera.value) return
     apply(firmware, 'firmware', result)
+    firmware.camera = asked
     say(result.ok ? (result.body.server_check ? result.body.server_check.detail : result.body.server_check_error) : 'Firmware check failed: ' + failureText(result), !result.ok)
   })
 
 const startUpgrade = () =>
   run('upgrade', async () => {
+    if (startReason.value) return say(startReason.value, true)
     const offer = offers.value[0] || {}
     const result = await request(withDevice('/firmware/start'), {
       method: 'POST',
@@ -208,43 +220,11 @@ const uploadFirmware = () =>
 const checkNetwork = () =>
   run('network check', async () => {
     say('The camera is pinging from its own network…')
+    const asked = camera.value
     const result = await request(withDevice('/network'))
-    if (expired(result)) return
+    if (expired(result) || asked !== camera.value) return
     apply(network, 'network', result)
     say(result.ok ? 'Network check finished.' : 'Network check failed: ' + failureText(result), !result.ok)
-  })
-
-async function postJson(path: string, body: unknown) {
-  return request(withDevice(path), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-}
-
-const changePassword = () =>
-  run('password', async () => {
-    const result = await postJson('/users/password', { user: password.user, old: password.old, new: password.next })
-    if (expired(result)) return
-    password.old = ''
-    password.next = ''
-    say(result.ok ? result.body.detail : 'Password change failed: ' + failureText(result), !result.ok)
-  })
-
-const renameUser = () =>
-  run('rename', async () => {
-    const result = await postJson('/users/rename', { user: rename.user, name: rename.name })
-    if (expired(result)) return
-    say(result.ok ? result.body.detail : 'Rename failed: ' + failureText(result), !result.ok)
-    if (result.ok) await load()
-  })
-
-const recover = (step: 'questions' | 'answer' | 'password') =>
-  run('recovery', async () => {
-    const answers = recovery.answers
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-    const result = await postJson('/users/recover', { step, answers, user: recovery.user, password: recovery.password })
-    if (expired(result)) return
-    recovery.reply = result.ok ? result.body.reply : null
-    say(result.ok ? 'The camera answered the ' + step + ' step.' : 'Recovery step failed: ' + failureText(result), !result.ok)
   })
 
 const restart = () =>
@@ -339,7 +319,7 @@ onBeforeUnmount(() => watcher.disconnect())
         <div class="ctl-col"><p class="val">{{ (clock.data.location && clock.data.location.DateFormat) || 'unknown' }} · {{ (clock.data.location && clock.data.location.TimeFormat) || '' }}</p></div>
       </div>
       <button class="btn btn-fill" type="button" data-testid="system-sync-time" :disabled="!!noCamera" :aria-busy="busy === 'time sync'" @click="syncTime">Sync with this computer</button>
-      <p class="hint">Writes this computer’s clock and time zone ({{ zoneLabel(-new Date().getTimezoneOffset()) }}) to the camera, as the phone app does.</p>
+      <p class="hint">Writes this computer’s clock, its standard time zone ({{ zoneLabel(baseOffsetMinutes()) }}) and its daylight-saving rule to the camera, as the phone app does.</p>
     </div>
   </div>
 
@@ -435,35 +415,13 @@ onBeforeUnmount(() => watcher.disconnect())
         </tbody>
       </table>
       <div class="row">
-        <div class="lab">Change password</div>
-        <div class="ctl-col">
-          <label class="field"><span>User</span><input v-model="password.user" type="text" autocomplete="username"></label>
-          <label class="field"><span>Current password</span><input v-model="password.old" type="password" autocomplete="current-password"></label>
-          <label class="field"><span>New password</span><input v-model="password.next" type="password" autocomplete="new-password"></label>
-          <button class="btn btn-line" type="button" data-testid="system-change-password" :disabled="!!noCamera || !password.next" :aria-busy="busy === 'password'" @click="changePassword">Change password</button>
-          <p v-if="!password.next" class="hint">Enter a new password first. The app's saved device login must change with it.</p>
-        </div>
+        <div class="lab">Password recovery</div>
+        <div class="ctl-col"><p class="val">{{ users.data.recovery ? JSON.stringify(users.data.recovery) : users.data.recovery_error }}</p></div>
       </div>
-      <div class="row">
-        <div class="lab">Rename user</div>
-        <div class="ctl-col">
-          <label class="field"><span>User</span><input v-model="rename.user" type="text"></label>
-          <label class="field"><span>New name</span><input v-model="rename.name" type="text"></label>
-          <button class="btn btn-line" type="button" data-testid="system-rename-user" :disabled="!!noCamera || !rename.name.trim()" :aria-busy="busy === 'rename'" @click="renameUser">Rename</button>
-          <p v-if="!rename.name.trim()" class="hint">Enter the new name first.</p>
-        </div>
-      </div>
-      <div class="row">
-        <div class="lab">Password recovery<div class="hint">{{ users.data.recovery ? 'The camera reports ' + JSON.stringify(users.data.recovery) : users.data.recovery_error }}</div></div>
-        <div class="ctl-col">
-          <button class="btn btn-text" type="button" :disabled="!!noCamera" @click="recover('questions')">Load questions</button>
-          <label class="field"><span>Answers, one per line</span><textarea v-model="recovery.answers" rows="2"></textarea></label>
-          <button class="btn btn-text" type="button" :disabled="!!noCamera || !recovery.answers.trim()" @click="recover('answer')">Check answers</button>
-          <label class="field"><span>New password</span><input v-model="recovery.password" type="password" autocomplete="new-password"></label>
-          <button class="btn btn-text" type="button" :disabled="!!noCamera || !recovery.password" @click="recover('password')">Set new password</button>
-          <p v-if="recovery.reply" class="hint code">{{ JSON.stringify(recovery.reply) }}</p>
-        </div>
-      </div>
+      <p class="hint" data-testid="system-users-note">
+        Change the camera password from the camera list (Device names, groups, sharing, passwords, then Change through the cloud). This page reads device users only: a
+        user or password write over DVRIP is not offered because it cannot be tried on the camera and put back.
+      </p>
     </div>
   </div>
 

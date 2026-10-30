@@ -37,7 +37,12 @@ const FIRMWARE = {
   elapsed_ms: 10,
 }
 
-async function fakeSystem(page: Page) {
+const OFFER = {
+  ...FIRMWARE,
+  server_check: { http_status: 200, up_to_date: false, offers: [{ file_name: 'fw-gate.bin', date: '2026-09-01' }], detail: 'the upgrade server offers 1 firmware file(s)' },
+}
+
+async function fakeSystem(page: Page, options: { offer?: boolean } = {}) {
   const posts: string[] = []
   await page.route(/\/api\/device\/system/, async (route: Route) => {
     const request = route.request()
@@ -47,20 +52,22 @@ async function fakeSystem(page: Page) {
       posts.push(request.method() + ' ' + path + '?' + url.searchParams.toString())
       if (path === '/defaults') return route.fulfill({ json: { ok: true, action: 'defaults', detail: 'the camera restored its factory defaults (Ret 100); restart it to apply them', elapsed_ms: 5 } })
       if (path === '/language') return route.fulfill({ json: { ...LANGUAGE, current: url.searchParams.get('value'), before: 'English' } })
+      if (path === '/time') return route.fulfill({ json: { ...TIME, device_time: url.searchParams.get('time') } })
+      if (path === '/firmware/start') return route.fulfill({ json: { ok: true, action: 'upgrade', detail: 'started', elapsed_ms: 5 } })
       return route.fulfill({ status: 500, json: { ok: false, message: 'unexpected ' + path } })
     }
-    if (path === '') return route.fulfill({ json: ABOUT })
+    if (path === '') return route.fulfill({ json: options.offer ? { ...ABOUT, gates: { ...ABOUT.gates, cloud_upgrade: true } } : ABOUT })
     if (path === '/time') return route.fulfill({ json: TIME })
     if (path === '/language') return route.fulfill({ json: LANGUAGE })
     if (path === '/users') return route.fulfill({ json: USERS })
-    if (path === '/firmware') return route.fulfill({ json: FIRMWARE })
+    if (path === '/firmware') return route.fulfill({ json: options.offer ? OFFER : FIRMWARE })
     return route.fulfill({ status: 404, json: { ok: false, message: 'no such route' } })
   })
   return posts
 }
 
-async function openSystem(page: Page) {
-  await signIn(page, 'one')
+async function openSystem(page: Page, scenario: 'one' | 'many' = 'one') {
+  await signIn(page, scenario)
   await playing(page)
   await page.getByTestId('open-settings').click()
   await page.getByTestId('system-link').click()
@@ -114,4 +121,58 @@ test('Saving another language writes it and shows the read-back', async ({ page 
   await page.getByTestId('system-save-language').click()
   await expect(page.getByTestId('system-status')).toHaveText('The camera language reads back as Spanish.')
   expect(posts.some((line) => line.startsWith('PUT /language') && line.includes('value=Spanish'))).toBe(true)
+})
+
+test("Switching camera drops the firmware offer, so camera A's file is never sent to camera B", async ({ page }) => {
+  const posts = await fakeSystem(page, { offer: true })
+  await openSystem(page, 'many')
+  await page.getByTestId('system-check-firmware').click()
+  await expect(page.getByTestId('system-firmware-server')).toContainText('offers 1 firmware')
+  await page.locator('#system-upgrade-word').fill('UPGRADE')
+  await expect(page.getByTestId('system-start-upgrade')).toBeEnabled()
+  await page.getByTestId('settings-back').click()
+  await page.getByTestId('camera-switcher').click()
+  await page.getByTestId('camera-menu').getByTestId('camera-option').filter({ hasText: 'Porch' }).click()
+  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+  await page.getByTestId('open-settings').click()
+  await page.getByTestId('system-link').click()
+  await expect(page.getByTestId('system-status')).toHaveText('Read from the camera just now.')
+  await expect(page.locator('#system-upgrade-word')).toHaveValue('')
+  await expect(page.getByTestId('system-firmware-server')).toHaveCount(0)
+  await expect(page.getByTestId('system-start-upgrade')).toBeDisabled()
+  await expect(page.getByTestId('system-start-reason')).toHaveText('Check for an update first.')
+  expect(posts.filter((line) => line.startsWith('POST /firmware/start'))).toHaveLength(0)
+})
+
+test.describe('time sync in a zone with daylight saving', () => {
+  test.use({ timezoneId: 'Europe/Berlin' })
+  test("sends the standard offset and the app's daylight-saving dates", async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-07-15T10:00:00Z'))
+    const posts = await fakeSystem(page)
+    await openSystem(page)
+    await page.getByTestId('system-sync-time').click()
+    await expect(page.getByTestId('system-status')).toContainText('Camera time now reads 2026-07-15 12:00:00')
+    const sent = posts.find((line) => line.startsWith('POST /time'))!
+    const query = new URLSearchParams(sent.split('?')[1])
+    expect(query.get('offset')).toBe('60')
+    expect(query.get('dst')).toBe('on')
+    expect(query.get('dst_start')).toBe('2026-03-30')
+    expect(query.get('dst_end')).toBe('2026-10-26')
+  })
+})
+
+test.describe('time sync in a zone without daylight saving', () => {
+  test.use({ timezoneId: 'Asia/Jakarta' })
+  test('sends the zone offset and turns the rule off', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-07-15T10:00:00Z'))
+    const posts = await fakeSystem(page)
+    await openSystem(page)
+    await page.getByTestId('system-sync-time').click()
+    await expect(page.getByTestId('system-status')).toContainText('Camera time now reads 2026-07-15 17:00:00')
+    const sent = posts.find((line) => line.startsWith('POST /time'))!
+    const query = new URLSearchParams(sent.split('?')[1])
+    expect(query.get('offset')).toBe('420')
+    expect(query.get('dst')).toBe('off')
+    expect(query.has('dst_start')).toBe(false)
+  })
 })
