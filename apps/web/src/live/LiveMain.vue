@@ -5,7 +5,7 @@ import AddCamera from './AddCamera.vue'
 import PtzEditor from './PtzEditor.vue'
 import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
-import { openSettings } from '../app/shell'
+import { openSettings, setPref } from '../app/shell'
 import { copyStageDetail, renderFsLine, requestStream } from '../app/stage'
 import { state } from '../app/state'
 import { loadDevices } from '../app/view'
@@ -27,6 +27,17 @@ const LENS = [
   { act: 'focus-near', label: 'Focus near', text: 'Near', gate: 'focus' },
   { act: 'focus-far', label: 'Focus far', text: 'Far', gate: 'focus' },
 ]
+const SPEEDS = [
+  { value: 'slow', label: 'Slow' },
+  { value: 'normal', label: 'Normal' },
+  { value: 'fast', label: 'Fast' },
+]
+const speed = ref(state.prefs.ptzSpeed)
+
+function pickSpeed(event: Event) {
+  speed.value = (event.target as HTMLSelectElement).value
+  setPref('ptzSpeed', speed.value)
+}
 const showing = computed(() => stage.name === 'playing' || stage.name === 'stalled')
 let lastVideoTime = -1
 let observer: ResizeObserver | null = null
@@ -154,6 +165,11 @@ onBeforeUnmount(() => {
               >{{ key.text }}</button>
             </template>
           </span>
+          <label class="pad-speed">Speed
+            <select data-testid="ptz-speed" :value="speed" @change="pickSpeed">
+              <option v-for="option in SPEEDS" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+          </label>
           <span v-if="live.gate.aim.ok" class="pad-hint" data-testid="ptz-aim-hint">Click the top lens to aim.</span>
           <button v-if="live.gate.presetEdit.ok" id="ptz-edit" class="btn btn-text" data-testid="ptz-edit" type="button" :aria-pressed="pad.editing ? 'true' : 'false'" aria-controls="ptz-editor" @click="openEditor()">Edit presets</button>
           <button v-if="live.gate.calibrate.ok" class="btn btn-text pad-calibrate" data-testid="ptz-calibrate" type="button" :disabled="pad.busy" @click="calibrate()">Calibrate the motor</button>

@@ -13,7 +13,7 @@ export type Launcher = {
   onClick: () => void
 }
 export type LensOption = { value: string; name: string; sub: string }
-export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean }
+export type Prefs = { theme: string; quality: string; lens: string; osd: boolean; muted: boolean; flip: boolean; ptzSpeed: string }
 export type ModeReport = { mode?: string; source?: string; notice?: { message?: string; to?: string } | null }
 export type CameraOption = { key: string; index: number; name: string; sub: string; online: boolean }
 export type Preset = { token: string; name: string }

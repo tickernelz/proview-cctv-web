@@ -339,6 +339,8 @@ select.text-input { background: var(--bg-2); }
 #ptz-edit[aria-pressed="true"] { color: var(--ok); text-decoration: none; }
 .ptz-edit .btn-text:disabled { color: var(--stage-ink-2); text-decoration: none; }
 .pad-hint { font-family: var(--f-sans); }
+.pad-speed { display: flex; align-items: center; gap: var(--s2); font-family: var(--f-sans); }
+.pad-speed select { min-height: 0; font: inherit; color: var(--stage-ink); background: transparent; border: 1px solid var(--stage-ink-2); border-radius: 4px; padding: 0 var(--s1); }
 .lens-crop[data-aim="on"] { cursor: crosshair; }
 .ptz-edit { grid-column: 1 / -1; display: flex; flex-direction: column; gap: var(--s1); width: 248px; max-width: 100%; max-height: 45vh; overflow: auto; padding-top: var(--s2); font-family: var(--f-sans); font-size: var(--t-13); color: var(--stage-ink); }
 .ptz-edit-h { margin: var(--s1) 0 0; font-size: var(--t-11); color: var(--stage-ink-2); font-family: var(--f-mono); }

@@ -229,6 +229,12 @@ export function holdsAction(action: string) {
   return Boolean(state.control.dvrip) && (!state.control.onvif || LENS_ACTIONS.has(action))
 }
 
+const TURNED: Record<string, string> = { left: 'right', right: 'left', up: 'down', down: 'up' }
+
+export function screenAction(action: string) {
+  return live.stage.crop.flipped === 'true' && TURNED[action] ? TURNED[action] : action
+}
+
 let held: string | null = null
 let pressedAt = 0
 let pressing: Promise<boolean> = Promise.resolve(false)
@@ -247,7 +253,7 @@ export function pressControl(action: string) {
   const started = pressedAt
   const previous = pressing
   pressing = previous
-    .then(() => api('/api/device/controls/ptz/press?action=' + encodeURIComponent(action) + deviceQuery('&'), { method: 'POST' }))
+    .then(() => api('/api/device/controls/ptz/press?action=' + encodeURIComponent(screenAction(action)) + '&speed=' + encodeURIComponent(state.prefs.ptzSpeed) + deviceQuery('&'), { method: 'POST' }))
     .then(() => {
       if (held === action) setControlStatus('Moving ' + action + ' (' + Math.round(performance.now() - started) + ' ms to start); release to stop.')
       return true

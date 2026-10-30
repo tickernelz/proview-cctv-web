@@ -804,10 +804,7 @@ where
     }
 }
 
-fn stop_ptz_detached(control: &DvripControl, pan: f32, tilt: f32) {
-    let Some((direction, step)) = ptz_step_of(pan, tilt) else {
-        return;
-    };
+fn stop_ptz_detached(control: &DvripControl, direction: PtzDirection, step: u8) {
     let control: DvripControl = control.clone();
     tokio::spawn(async move {
         let started = Instant::now();
@@ -1222,12 +1219,32 @@ impl DeviceControl for DvripControl {
                 reason: TOP_LENS_BLOCKER,
             });
         }
+        let (asked, step) = ptz_step_of(pan, tilt).ok_or(ControlError::Device(
+            "a ptz move needs a pan or tilt velocity".to_string(),
+        ))?;
         let mut connection = self.session().await?;
+        let orientation = match call_within(
+            "ptz orientation read",
+            &self.address,
+            self.window,
+            connection.ptz_orientation(&self.address),
+        )
+        .await
+        {
+            Ok(orientation) => orientation,
+            Err(error) => {
+                if !matches!(error, ControlError::Timeout { .. }) {
+                    let _ = connection.logout_within(self.window).await;
+                }
+                return Err(error);
+            }
+        };
+        let direction = asked.oriented(&orientation);
         let result = call_within(
             "ptz move",
             &self.address,
             self.window.saturating_add(hold),
-            connection.ptz_step(pan, tilt, hold),
+            connection.ptz_step(direction, step, hold),
         )
         .await;
         let timed_out = matches!(result, Err(ControlError::Timeout { .. }));
@@ -1236,7 +1253,7 @@ impl DeviceControl for DvripControl {
         }
         drop(connection);
         if result.is_err() {
-            stop_ptz_detached(self, pan, tilt);
+            stop_ptz_detached(self, direction, step);
         }
         result
     }

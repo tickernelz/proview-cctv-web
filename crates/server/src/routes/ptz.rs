@@ -10,7 +10,8 @@ use proview_core::dvrip::client::{Connection, DvrError};
 use proview_core::dvrip::control::{PresetEntry, TourLine};
 use proview_core::dvrip::ptz::{
     ability_refusal, locate_offsets, next_preset_id, preset_name, PanoramaRange, PtzAction,
-    CALIBRATE_ABILITY, LOCATE_ABILITY, PRESET_ABILITY, PRESET_LIMIT, PRESS_STEP, ZOOM_ABILITY,
+    PtzOrientation, PtzSpeed, CALIBRATE_ABILITY, LOCATE_ABILITY, PRESET_ABILITY, PRESET_LIMIT,
+    ZOOM_ABILITY,
 };
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::session::Store;
@@ -26,10 +27,10 @@ use crate::config::ModeStore;
 
 pub const HOLD_LIMIT: Duration = Duration::from_secs(30);
 const HOLD_ENV: &str = "PROVIEW_PTZ_HOLD_MS";
-pub const TAP_WINDOW: Duration = Duration::from_millis(500);
-pub const TAP_TAIL: Duration = Duration::from_millis(800);
 pub const CALIBRATE_WINDOW: Duration = Duration::from_secs(60);
 const RELEASE_MARGIN: Duration = Duration::from_secs(2);
+pub const PARK_WINDOW: Duration = Duration::from_secs(20);
+pub const REUSE_WINDOW: Duration = Duration::from_millis(1500);
 
 pub fn routes() -> Vec<rocket::route::Route> {
     routes![
@@ -209,22 +210,155 @@ fn forget_held(key: &str, generation: u64) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PressTimes {
     session_ms: u64,
     press_ms: u64,
+    reused: bool,
+    sent: PtzAction,
+    orientation: Option<PtzOrientation>,
+}
+
+struct Parked {
+    generation: u64,
+    connection: Connection,
+}
+
+fn parked() -> &'static Mutex<HashMap<String, Parked>> {
+    static PARKED: OnceLock<Mutex<HashMap<String, Parked>>> = OnceLock::new();
+    PARKED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn take_parked(address: &str) -> Option<Connection> {
+    parked()
+        .lock()
+        .ok()?
+        .remove(address)
+        .map(|entry| entry.connection)
+}
+
+fn park(address: String, connection: Connection) {
+    let generation = next_generation();
+    let previous = match parked().lock() {
+        Ok(mut map) => map.insert(
+            address.clone(),
+            Parked {
+                generation,
+                connection,
+            },
+        ),
+        Err(_) => return,
+    };
+    tokio::spawn(async move {
+        if let Some(mut previous) = previous {
+            let _ = previous.connection.logout_within(op_window()).await;
+        }
+        tokio::time::sleep(PARK_WINDOW).await;
+        let expired = parked().lock().ok().and_then(|mut map| {
+            if map.get(&address).map(|entry| entry.generation) == Some(generation) {
+                map.remove(&address)
+            } else {
+                None
+            }
+        });
+        if let Some(mut expired) = expired {
+            let _ = expired.connection.logout_within(op_window()).await;
+        }
+    });
+}
+
+enum Started {
+    Pressed {
+        connection: Connection,
+        sent: PtzAction,
+        orientation: Option<PtzOrientation>,
+        press_ms: u64,
+    },
+    Refused(Failure),
+    Failed {
+        connection: Connection,
+        error: ControlError,
+        sent: PtzAction,
+        press_timed_out: bool,
+    },
+}
+
+async fn start(
+    control: &DvripControl,
+    mut connection: Connection,
+    gated: bool,
+    action: PtzAction,
+    step: u8,
+    window: Duration,
+) -> Started {
+    let failed = |connection, error, press_timed_out| Started::Failed {
+        connection,
+        error,
+        sent: action,
+        press_timed_out,
+    };
+    let orientation = if gated {
+        let abilities = within("ability read", control, window, connection.abilities()).await;
+        match abilities {
+            Ok(abilities) => {
+                if let Some(reason) = ability_refusal(&abilities, &ZOOM_ABILITY) {
+                    let _ = connection.logout_within(op_window()).await;
+                    return Started::Refused(unsupported("ptz press", reason));
+                }
+            }
+            Err(error) => return failed(connection, error, false),
+        }
+        None
+    } else {
+        let address = control.address();
+        match within(
+            "ptz orientation read",
+            control,
+            window,
+            connection.ptz_orientation(&address),
+        )
+        .await
+        {
+            Ok(orientation) => Some(orientation),
+            Err(error) => return failed(connection, error, false),
+        }
+    };
+    let sent = match &orientation {
+        Some(orientation) => action.oriented(orientation),
+        None => action,
+    };
+    let press_started = Instant::now();
+    match within(
+        "ptz press",
+        control,
+        window,
+        connection.ptz_press(sent, step),
+    )
+    .await
+    {
+        Ok(()) => Started::Pressed {
+            connection,
+            sent,
+            orientation,
+            press_ms: ms(press_started.elapsed()),
+        },
+        Err(error) => {
+            let timed = matches!(error, ControlError::Timeout { .. });
+            Started::Failed {
+                connection,
+                error,
+                sent,
+                press_timed_out: timed,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ReleaseTimes {
     pub held_ms: u64,
-    pub tail_ms: u64,
     pub stop_ms: u64,
     pub fresh_session: bool,
-}
-
-pub fn stop_at(acked: Instant, pressed_for: Duration) -> Option<Instant> {
-    (pressed_for < TAP_WINDOW).then(|| acked + pressed_for + TAP_TAIL)
 }
 
 async fn send_stop(
@@ -232,7 +366,7 @@ async fn send_stop(
     connection: Option<Connection>,
     action: PtzAction,
     step: u8,
-) -> Result<(u64, bool), ControlError> {
+) -> Result<(u64, bool, Option<Connection>), ControlError> {
     let window = op_window();
     if let Some(mut connection) = connection {
         let started = Instant::now();
@@ -244,8 +378,7 @@ async fn send_stop(
         )
         .await;
         if sent.is_ok() {
-            let _ = connection.logout_within(window).await;
-            return Ok((ms(started.elapsed()), false));
+            return Ok((ms(started.elapsed()), false, Some(connection)));
         }
     }
     let started = Instant::now();
@@ -259,7 +392,7 @@ async fn send_stop(
     )
     .await;
     finish(connection, sent).await?;
-    Ok((ms(started.elapsed()), true))
+    Ok((ms(started.elapsed()), true, None))
 }
 
 fn answer_unpressed(release: &mut oneshot::Receiver<Release>) {
@@ -279,94 +412,111 @@ async fn hold(
     mut release: oneshot::Receiver<Release>,
     finished: impl FnOnce(),
 ) {
-    let Opened {
-        connection,
-        session_ms,
-    } = match open(&control).await {
-        Ok(opened) => opened,
-        Err(error) => {
+    let address = control.address();
+    let mut warm = None;
+    if let Some(connection) = take_parked(&address) {
+        match start(&control, connection, gated, action, step, REUSE_WINDOW).await {
+            Started::Failed {
+                connection, error, ..
+            } => {
+                tracing::info!(device = %address, %error, "a parked ptz session failed, so the press opens a fresh one");
+                drop(connection);
+            }
+            other => warm = Some(other),
+        }
+    }
+    let reused = warm.is_some();
+    let (outcome, session_ms) = match warm {
+        Some(outcome) => (outcome, 0),
+        None => {
+            let Opened {
+                connection,
+                session_ms,
+            } = match open(&control).await {
+                Ok(opened) => opened,
+                Err(error) => {
+                    finished();
+                    let _ = started.send(Err(control_failure(error)));
+                    answer_unpressed(&mut release);
+                    return;
+                }
+            };
+            (
+                start(&control, connection, gated, action, step, op_window()).await,
+                session_ms,
+            )
+        }
+    };
+    let (connection, action) = match outcome {
+        Started::Pressed {
+            connection,
+            sent,
+            orientation,
+            press_ms,
+        } => {
+            let _ = started.send(Ok(PressTimes {
+                session_ms,
+                press_ms,
+                reused,
+                sent,
+                orientation,
+            }));
+            (connection, sent)
+        }
+        Started::Refused(failure) => {
             finished();
-            let _ = started.send(Err(control_failure(error)));
+            let _ = started.send(Err(failure));
             answer_unpressed(&mut release);
             return;
         }
-    };
-    let mut connection = if gated {
-        match gate(&control, connection, &ZOOM_ABILITY, "ptz press").await {
-            Ok(connection) => connection,
-            Err(failure) => {
-                finished();
-                let _ = started.send(Err(failure));
-                answer_unpressed(&mut release);
-                return;
-            }
-        }
-    } else {
-        connection
-    };
-    let press_started = Instant::now();
-    match within(
-        "ptz press",
-        &control,
-        op_window(),
-        connection.ptz_press(action, step),
-    )
-    .await
-    {
-        Ok(()) => {
-            let _ = started.send(Ok(PressTimes {
-                session_ms,
-                press_ms: ms(press_started.elapsed()),
-            }));
-        }
-        Err(error) => {
+        Started::Failed {
+            mut connection,
+            error,
+            sent,
+            press_timed_out,
+        } => {
             let timed = matches!(error, ControlError::Timeout { .. });
             finished();
             let _ = started.send(Err(control_failure(error)));
             answer_unpressed(&mut release);
-            if timed {
+            if press_timed_out {
                 drop(connection);
-                if let Err(error) = send_stop(&control, None, action, step).await {
-                    tracing::error!(device = %control.address(), %error, "a ptz press that timed out did not get its stop out");
+                if let Err(error) = send_stop(&control, None, sent, step).await {
+                    tracing::error!(device = %address, %error, "a ptz press that timed out did not get its stop out");
                 }
-            } else {
+            } else if !timed {
                 let _ = connection.logout_within(op_window()).await;
             }
             return;
         }
-    }
-    let acked = Instant::now();
+    };
     let request = tokio::select! {
         request = &mut release => request.ok(),
         _ = tokio::time::sleep(hold_limit()) => None,
     };
     finished();
-    let (held_ms, tail, reply) = match request {
+    let (held_ms, reply) = match request {
         Some(Release {
             asked,
             pressed_for,
             reply,
         }) => {
             let pressed_for = pressed_for.unwrap_or_else(|| asked.saturating_duration_since(begun));
-            let received = Instant::now();
-            let tail = match stop_at(acked, pressed_for) {
-                Some(at) if at > received => {
-                    tokio::time::sleep_until(at.into()).await;
-                    at - received
-                }
-                _ => Duration::ZERO,
-            };
-            (ms(pressed_for), tail, Some(reply))
+            (ms(pressed_for), Some(reply))
         }
-        None => (ms(hold_limit()), Duration::ZERO, None),
+        None => (ms(hold_limit()), None),
     };
     let outcome = send_stop(&control, Some(connection), action, step)
         .await
-        .map(|(stop_ms, fresh_session)| ReleaseTimes {
-            held_ms,
-            tail_ms: ms(tail),
-            stop_ms,
-            fresh_session,
+        .map(|(stop_ms, fresh_session, connection)| {
+            if let Some(connection) = connection {
+                park(address.clone(), connection);
+            }
+            ReleaseTimes {
+                held_ms,
+                stop_ms,
+                fresh_session,
+            }
         });
     match reply {
         Some(reply) => {
@@ -394,7 +544,7 @@ async fn release_entry(
     if entry.release.send(request).is_err() {
         return Ok(None);
     }
-    let bound = TAP_TAIL + SESSION_WINDOW + op_window() * 2 + RELEASE_MARGIN + hold_limit();
+    let bound = SESSION_WINDOW + op_window() * 2 + RELEASE_MARGIN + hold_limit();
     match tokio::time::timeout(bound, answer).await {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(_)) => Ok(None),
@@ -410,7 +560,10 @@ pub struct PressBody {
     pub backend: String,
     pub action: String,
     pub command: String,
+    pub speed: PtzSpeed,
     pub step: u8,
+    pub orientation: Option<PtzOrientation>,
+    pub reused_session: bool,
     pub session_ms: u64,
     pub press_ms: u64,
     pub limit_ms: u64,
@@ -420,7 +573,7 @@ pub struct PressBody {
 #[post("/device/controls/ptz/press?<action>&<speed>&<device>")]
 async fn ptz_press(
     action: String,
-    speed: Option<u8>,
+    speed: Option<String>,
     device: Option<String>,
     cfg: &State<Config>,
     cloud: &State<Arc<CloudProvider>>,
@@ -434,7 +587,12 @@ async fn ptz_press(
             "action must be up, down, left, right, up-left, up-right, down-left, down-right, zoom-in, zoom-out, focus-near or focus-far",
         )
     })?;
-    let step = speed.unwrap_or(PRESS_STEP).clamp(1, 8);
+    let speed = match speed.as_deref() {
+        None => PtzSpeed::default(),
+        Some(raw) => PtzSpeed::parse(raw)
+            .ok_or_else(|| fail(Status::BadRequest, "speed must be slow, normal or fast"))?,
+    };
+    let step = parsed.step(speed);
     let key = hold_key(cookies, device.as_deref())?;
     let control = dvrip_of(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     if let Some(previous) = take_held(&key) {
@@ -479,8 +637,11 @@ async fn ptz_press(
         ok: true,
         backend: "dvrip".to_string(),
         action: parsed.name().to_string(),
-        command: parsed.wire().to_string(),
+        command: times.sent.wire().to_string(),
+        speed,
         step,
+        orientation: times.orientation,
+        reused_session: times.reused,
         session_ms: times.session_ms,
         press_ms: times.press_ms,
         limit_ms: ms(hold_limit()),
@@ -536,7 +697,7 @@ async fn ptz_release(
         action: Some(action.name().to_string()),
         detail: format!(
             "{} stopped after {} ms held (stop ack {} ms)",
-            action.wire(),
+            action.name(),
             times.held_ms,
             times.stop_ms
         ),
@@ -1022,20 +1183,5 @@ mod tests {
         std::env::set_var("PROVIEW_PTZ_HOLD_MS", "0");
         assert_eq!(hold_limit(), HOLD_LIMIT);
         std::env::remove_var("PROVIEW_PTZ_HOLD_MS");
-    }
-
-    #[test]
-    fn a_tap_keeps_moving_for_the_app_tail_and_a_hold_stops_at_once() {
-        let acked = Instant::now();
-        assert_eq!(
-            stop_at(acked, Duration::from_millis(120)),
-            Some(acked + Duration::from_millis(920))
-        );
-        assert_eq!(
-            stop_at(acked, Duration::from_millis(499)),
-            Some(acked + Duration::from_millis(1299))
-        );
-        assert_eq!(stop_at(acked, Duration::from_millis(500)), None);
-        assert_eq!(stop_at(acked, Duration::from_secs(3)), None);
     }
 }

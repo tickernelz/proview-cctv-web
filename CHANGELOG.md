@@ -5,6 +5,30 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
+## Unreleased
+
+### Fixed
+
+- PTZ left and right were reversed on cameras that report
+  `Uart.PTZControlCmd` `MirrorOperation: true` (the XM535 dual-lens does).
+  The press now reads that block once per camera and swaps left and right
+  (and up and down for `FlipOperation`) the way the app pad does, so Left
+  shows what is to the left; measured on the camera, Left now moves the
+  picture +299 px where it moved it -150 px before. The DVRIP pan/tilt route
+  follows the same orientation, and with the picture turned 180° in Settings
+  the pad and arrow keys swap too.
+- A tap on a PTZ key no longer runs the motor for an extra 800 ms: the stop
+  goes out as soon as the press is acked, like the app pad (17-34 px per tap
+  instead of 130-137 px). Tilt uses the app's step 2 instead of 4.
+
+### Added
+
+- PTZ speed pick on the pad (Slow, Normal, Fast), saved in the browser: the
+  app's pan steps 2/4/8 and tilt steps 1/2/4; `speed` on
+  `POST /api/device/controls/ptz/press` takes `slow`, `normal` or `fast`.
+- A PTZ press reuses the session the last stop left open for 20 s, so a press
+  reaches the camera in 82-295 ms instead of 605-989 ms over the cloud relay.
+
 ## 0.4.0 — 2026-10-30
 
 Full mobile-app parity over the vendor cloud relay: device settings, alarm and

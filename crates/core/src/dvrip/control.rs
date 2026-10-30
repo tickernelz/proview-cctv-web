@@ -627,6 +627,34 @@ impl PtzDirection {
         })
     }
 
+    pub fn oriented(self, orientation: &super::ptz::PtzOrientation) -> Self {
+        let mirrored = if orientation.mirror {
+            match self {
+                PtzDirection::Left => PtzDirection::Right,
+                PtzDirection::Right => PtzDirection::Left,
+                PtzDirection::UpLeft => PtzDirection::UpRight,
+                PtzDirection::UpRight => PtzDirection::UpLeft,
+                PtzDirection::DownLeft => PtzDirection::DownRight,
+                PtzDirection::DownRight => PtzDirection::DownLeft,
+                other => other,
+            }
+        } else {
+            self
+        };
+        if !orientation.flip {
+            return mirrored;
+        }
+        match mirrored {
+            PtzDirection::Up => PtzDirection::Down,
+            PtzDirection::Down => PtzDirection::Up,
+            PtzDirection::UpLeft => PtzDirection::DownLeft,
+            PtzDirection::UpRight => PtzDirection::DownRight,
+            PtzDirection::DownLeft => PtzDirection::UpLeft,
+            PtzDirection::DownRight => PtzDirection::UpRight,
+            other => other,
+        }
+    }
+
     pub fn wire(self) -> &'static str {
         match self {
             PtzDirection::Up => "DirectionUp",
@@ -731,14 +759,10 @@ impl Connection {
 
     pub async fn ptz_step(
         &mut self,
-        pan: f32,
-        tilt: f32,
+        direction: PtzDirection,
+        step: u8,
         hold: std::time::Duration,
     ) -> Result<(), DvrError> {
-        let (direction, step) = ptz_step_of(pan, tilt).ok_or(DvrError::Rejected {
-            ret: 208,
-            reason: "a ptz move needs a pan or tilt velocity",
-        })?;
         self.ptz_command(direction, step, 65535).await?;
         tokio::time::sleep(hold).await;
         self.ptz_command(direction, step, -1).await?;

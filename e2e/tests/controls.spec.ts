@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { openLive } from './app'
+import { openLive, playing } from './app'
 
 test('Move opens the pan and tilt pad and each arrow and preset reaches the device', async ({ page }) => {
   const calls = await openLive(page)
@@ -12,7 +12,7 @@ test('Move opens the pan and tilt pad and each arrow and preset reaches the devi
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   await page.mouse.down()
   await expect(page.getByTestId('control-status')).toContainText('release to stop')
-  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=left&device=gate')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=left&speed=normal&device=gate')
   await expect(page.getByTestId('control-status')).toContainText('ms to start')
   expect(calls.filter((call) => call.includes('/ptz/release'))).toEqual([])
   await page.waitForTimeout(700)
@@ -34,13 +34,38 @@ test('arrow keys hold the move until the key comes up', async ({ page }) => {
   await page.getByTestId('ctl-move').click()
   await expect(page.getByTestId('ptz-pad')).toBeVisible()
   await page.keyboard.down('ArrowUp')
-  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=up&device=gate')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=up&speed=normal&device=gate')
   await page.keyboard.down('ArrowUp')
   await page.waitForTimeout(300)
   expect(calls.filter((call) => call.includes('/ptz/press')).length).toBe(1)
   await page.keyboard.up('ArrowUp')
   await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(1)
   await expect(page.getByTestId('control-status')).toContainText('Stopped up after')
+})
+
+test('the speed pick rides on every press and a turned picture swaps the keys', async ({ page }) => {
+  const calls = await openLive(page)
+  await page.getByTestId('ctl-move').click()
+  await page.getByTestId('ptz-speed').selectOption('fast')
+  await page.keyboard.down('ArrowRight')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=right&speed=fast&device=gate')
+  await page.keyboard.up('ArrowRight')
+  await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(1)
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').ptzSpeed)).toBe('fast')
+  await page.evaluate(() => {
+    const prefs = JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}')
+    localStorage.setItem('pvw_prefs_v2', JSON.stringify({ ...prefs, flip: true }))
+  })
+  await page.reload()
+  await playing(page)
+  await expect(page.getByTestId('live-frame')).toHaveAttribute('data-flipped', 'true')
+  await page.getByTestId('ctl-move').click()
+  await expect(page.getByTestId('ptz-speed')).toHaveValue('fast')
+  await page.keyboard.down('ArrowLeft')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=right&speed=fast&device=gate')
+  await page.keyboard.up('ArrowLeft')
+  await expect.poll(() => calls.filter((call) => call.includes('/ptz/release')).length).toBe(2)
+  expect(calls.filter((call) => call.includes('action=left'))).toEqual([])
 })
 
 test('a click on the top lens aims the moving lens while the pad is open', async ({ page }) => {
@@ -157,7 +182,7 @@ test('with ONVIF and DVRIP both present the editor works on DVRIP ids and the ch
   await expect(page.getByTestId('control-status')).toHaveText('At Driveway.')
   expect(calls).toContain('POST /api/device/controls/preset/goto?token=1&device=gate')
   await pad.getByTestId('ptz-zoom-in').click()
-  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=zoom-in&device=gate')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=zoom-in&speed=normal&device=gate')
   await expect.poll(() => calls.some((call) => call.startsWith('POST /api/device/controls/ptz/release'))).toBe(true)
   expect(calls.filter((call) => call.startsWith('POST /api/device/controls/ptz?'))).toEqual([])
 })
@@ -169,7 +194,7 @@ test('leaving the page mid-hold sends the release as a beacon', async ({ page })
   const box = (await left.boundingBox())!
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   await page.mouse.down()
-  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=left&device=gate')
+  await expect.poll(() => calls).toContain('POST /api/device/controls/ptz/press?action=left&speed=normal&device=gate')
   const beacons = await page.evaluate(() => {
     const sent: string[] = []
     navigator.sendBeacon = (url: string | URL) => {
