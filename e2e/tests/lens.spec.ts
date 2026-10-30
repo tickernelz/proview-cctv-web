@@ -119,3 +119,55 @@ test('a single-lens camera stays on its one picture: no inset, and the snapshot 
   expect(file.suggestedFilename()).toMatch(/_lens-combined_/)
 })
 
+
+test('a cloud camera whose lens layout is unknown until the first frame still opens in picture in picture', async ({ page }) => {
+  const asked: string[] = []
+  await page.route(/\/api\/lens\?/, (route) => {
+    const url = new URL(route.request().url())
+    asked.push(url.search)
+    const width = Number(url.searchParams.get('width') || 0)
+    const height = Number(url.searchParams.get('height') || 0)
+    if (!width || !height) {
+      return route.fulfill({
+        json: {
+          deviceId: 'gate',
+          channel: 1,
+          streams: [{ quality: 'main', codec: 'unknown', width: 0, height: 0, sizeSource: 'unknown' }],
+          lenses: [],
+          lensCount: 0,
+          countSource: 'unknown',
+          stack: 'single',
+          cropsVerified: false,
+          ptzSource: 'unknown',
+        },
+      })
+    }
+    return route.fulfill({
+      json: {
+        deviceId: 'gate',
+        channel: 1,
+        streams: [{ quality: 'main', codec: 'unknown', width, height, sizeSource: 'client_hint' }],
+        lenses: [
+          { index: 0, label: 'top', crop: { x: 0, y: 0, w: width, h: height / 2 }, ptz: false },
+          { index: 1, label: 'bottom', crop: { x: 0, y: height / 2, w: width, h: height / 2 }, ptz: true },
+        ],
+        lensCount: 2,
+        countSource: 'geometry',
+        stack: 'vertical',
+        cropsVerified: true,
+        ptzSource: 'measured_default',
+      },
+    })
+  })
+  await signIn(page, 'one')
+  await playing(page)
+  await expect(page.getByTestId('live-well')).toHaveAttribute('data-lens', 'pip')
+  await expect(page.getByTestId('pip-inset')).toBeVisible()
+  await expect(page.getByTestId('lens-pick')).toBeVisible()
+  await expect(page.getByTestId('camera-switcher')).toContainText('dual lens')
+  await expect(page.getByTestId('camera-switcher')).not.toContainText('single lens')
+  expect(asked[0]).not.toContain('width=')
+  expect(asked.some((query) => query.includes('width=640') && query.includes('height=720'))).toBe(true)
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pvw_prefs_v2') || '{}').lens)).not.toBe('combined')
+})
+

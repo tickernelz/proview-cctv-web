@@ -1,5 +1,5 @@
 import { setControlStatus } from './controls'
-import { currentCrop } from './lens'
+import { currentCrop, lensViewValue } from './lens'
 import { live } from '../live/store'
 import { elapsed, renderFlag } from './caption'
 import { selectedDevice } from './devices'
@@ -53,7 +53,7 @@ export function captureSnapshot() {
   context.drawImage(frame, sx, sy, sw, sh, 0, 0, sw, sh)
   canvas.toBlob((blob) => {
     if (!blob) return
-    const name = device.id + '_ch' + state.channel + '_lens-' + state.lensView + '_' + stamp() + '.png'
+    const name = device.id + '_ch' + state.channel + '_lens-' + lensViewValue() + '_' + stamp() + '.png'
     download(blob, name)
     toast({ title: 'Snapshot saved', description: name, tone: 'ok' })
   }, 'image/png')

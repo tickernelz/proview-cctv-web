@@ -13,7 +13,7 @@ import Timeline from './timeline/Timeline.vue'
 import { frameFit } from './stage/pip'
 import { padSheet } from './stage/sheet'
 import { aimAt } from '../app/controls'
-import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
+import { layoutLensCrop, resolveLensFromFrame } from '../app/lens'
 import { openSettings } from '../app/shell'
 import { copyStageDetail, renderFsLine, requestStream } from '../app/stage'
 import { state } from '../app/state'
@@ -33,14 +33,7 @@ function checkPassword() {
 }
 
 function onMetadata() {
-  if (!state.lens && state.selectedId) {
-    const derived = deriveLensFromFrame()
-    if (derived) {
-      state.lens = derived
-      renderLensPicker()
-      applyLensView(state.lensView)
-    }
-  }
+  if (!state.lens && state.selectedId) resolveLensFromFrame()
   layoutLensCrop()
 }
 
