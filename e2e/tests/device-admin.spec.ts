@@ -238,7 +238,7 @@ test('transferring a camera has its own field and asks before ownership moves', 
   await sheet.getByTestId('transfer-confirm').click()
   await expect(page.getByTestId('device-admin-status')).toContainText('invitation')
   expect(calls.filter((call) => call.path === '/api/cloud/device/share')).toEqual([
-    { path: '/api/cloud/device/share', body: { uuids: ['7f92970ddf5282743hrc'], account: 'heir@example.invalid' } },
+    { path: '/api/cloud/device/share', body: { uuids: [ATTRIBUTES.devices[0].uuid], account: 'heir@example.invalid' } },
   ])
 })
 
