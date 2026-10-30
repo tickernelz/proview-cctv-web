@@ -196,6 +196,10 @@ and `PROVIEW_DVRIP_WINDOW_MS` is the window, in milliseconds, that one camera
 operation waits — a capability read, a tour listing or change, a PTZ move, a
 white-light or record-mode read, a snapshot, or the logout after it (default `20000`).
 
+`PROVIEW_PLAYBACK_WINDOW_MS` (environment only) is the window, in milliseconds,
+that a playback file list, month calendar or thumbnail batch waits for the cloud
+tunnel and for each device answer (default `20000`).
+
 Nothing here is a vendor secret. The extracted application credentials from the
 APK are deliberately **not** in this repository; `docs/protocol.md` records
 where they come from and what they are used for, not their values.
