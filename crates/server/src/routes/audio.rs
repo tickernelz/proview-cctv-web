@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use futures_util::{SinkExt, StreamExt};
 use proview_core::config::Config;
 use proview_core::dvrip::talk::{TalkLink, TalkSession};
-use proview_core::media::audio;
+use proview_core::media::{audio, live};
 use proview_core::provider::cloud::CloudProvider;
 use proview_core::provider::{ProviderError, VendorSession};
 use proview_core::session::Store;
@@ -238,7 +238,8 @@ async fn ws_talk(
                         return Ok(());
                     }
                 };
-            let mut talk = match TalkSession::open(link, channel).await {
+            let (sink, mut inbound) = tokio::sync::mpsc::channel::<(u16, Vec<u8>)>(64);
+            let mut talk = match TalkSession::open_with_audio(link, channel, Some(sink)).await {
                 Ok(talk) => talk,
                 Err(error) => {
                     let _ = stream
@@ -274,7 +275,35 @@ async fn ws_talk(
 
             let mut meter = Meter::default();
             let mut last_report = Instant::now();
-            while let Some(message) = stream.next().await {
+            let mut sound = false;
+            let mut inbound_open = true;
+            let mut heard = 0u64;
+            loop {
+                let message = tokio::select! {
+                    message = stream.next() => match message {
+                        Some(message) => message,
+                        None => break,
+                    },
+                    back = inbound.recv(), if inbound_open => {
+                        match back {
+                            Some((_, body)) => {
+                                if let Some(record) = live::audio_record(&body, heard) {
+                                    heard += 1;
+                                    if sound
+                                        && stream
+                                            .send(ws::Message::Text(record.frame_text()))
+                                            .await
+                                            .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            None => inbound_open = false,
+                        }
+                        continue;
+                    }
+                };
                 match message {
                     Ok(ws::Message::Binary(payload)) => {
                         let samples = audio::from_pcm16le(&payload);
@@ -314,6 +343,10 @@ async fn ws_talk(
                         }
                     }
                     Ok(ws::Message::Text(text)) => {
+                        if let Some(on) = crate::stream::sound_request(&text) {
+                            sound = on;
+                            continue;
+                        }
                         if let Ok(control) = serde_json::from_str::<Control>(&text) {
                             if control.kind == "stop" {
                                 break;

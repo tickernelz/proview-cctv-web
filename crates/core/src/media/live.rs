@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+
+use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::media::livecipher::LiveCipher;
@@ -9,7 +12,7 @@ pub enum LiveClass {
     GopMarker,
     KeyframeHead,
     Delta,
-    Padding,
+    Audio,
     Continuation,
     Unknown,
 }
@@ -22,7 +25,7 @@ pub fn classify(body: &[u8]) -> LiveClass {
         0xf9 => LiveClass::GopMarker,
         0xfc => LiveClass::KeyframeHead,
         0xfd => LiveClass::Delta,
-        0xfa => LiveClass::Padding,
+        0xfa => LiveClass::Audio,
         nal if nal <= 0x7f => LiveClass::Continuation,
         _ => LiveClass::Unknown,
     }
@@ -34,6 +37,7 @@ pub struct LiveStats {
     pub deltas: u64,
     pub markers: u64,
     pub padding: u64,
+    pub audio: u64,
     pub continuations: u64,
     pub elementary_bytes: u64,
     pub dropped: u64,
@@ -44,6 +48,66 @@ pub struct LiveDemux {
     pending: Option<Pending>,
     cipher: Option<LiveCipher>,
     stats: LiveStats,
+    audio: VecDeque<LiveAudio>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAudio {
+    pub codec: &'static str,
+    pub rate: u32,
+    pub frame: u64,
+    pub bytes: Vec<u8>,
+}
+
+impl LiveAudio {
+    pub fn frame_text(&self) -> String {
+        json!({
+            "type": "audio",
+            "frame": self.frame,
+            "codec": self.codec,
+            "rate": self.rate,
+            "data": base64::engine::general_purpose::STANDARD.encode(&self.bytes),
+        })
+        .to_string()
+    }
+}
+
+pub const AUDIO_HEADER: usize = 8;
+pub const AUDIO_FIXED_SAMPLES: usize = 320;
+const AUDIO_QUEUE: usize = 256;
+
+pub fn audio_codec(code: u8) -> Option<&'static str> {
+    match code {
+        0x0e => Some("alaw"),
+        0x0a => Some("ulaw"),
+        _ => None,
+    }
+}
+
+pub fn audio_rate(code: u8) -> Option<u32> {
+    match code {
+        0x02 => Some(8000),
+        _ => None,
+    }
+}
+
+pub fn audio_record(body: &[u8], frame: u64) -> Option<LiveAudio> {
+    if body.len() < AUDIO_HEADER || body[..4] != [0, 0, 1, 0xfa] {
+        return None;
+    }
+    let codec = audio_codec(body[4])?;
+    let rate = audio_rate(body[5])?;
+    let declared = match u16::from_le_bytes([body[6], body[7]]) as usize {
+        0 => AUDIO_FIXED_SAMPLES,
+        length => length,
+    };
+    let bytes = body.get(AUDIO_HEADER..AUDIO_HEADER + declared)?;
+    Some(LiveAudio {
+        codec,
+        rate,
+        frame,
+        bytes: bytes.to_vec(),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +154,10 @@ impl LiveDemux {
         &self.stats
     }
 
+    pub fn take_audio(&mut self) -> Vec<LiveAudio> {
+        self.audio.drain(..).collect()
+    }
+
     pub fn push(&mut self, body: &[u8]) -> Vec<u8> {
         join(self.push_frames(body))
     }
@@ -100,8 +168,18 @@ impl LiveDemux {
             LiveClass::GopMarker => {
                 self.stats.markers += 1;
             }
-            LiveClass::Padding => {
-                self.stats.padding += 1;
+            LiveClass::Audio => {
+                let frame = self.stats.keyframes + self.stats.deltas;
+                match audio_record(body, frame) {
+                    Some(audio) => {
+                        self.stats.audio += 1;
+                        if self.audio.len() == AUDIO_QUEUE {
+                            self.audio.pop_front();
+                        }
+                        self.audio.push_back(audio);
+                    }
+                    None => self.stats.padding += 1,
+                }
             }
             LiveClass::KeyframeHead => {
                 self.flush_pending(&mut out, true);
@@ -372,6 +450,86 @@ mod tests {
         );
         assert_eq!(demux.stats().keyframes, 0);
         assert_eq!(demux.stats().deltas, 1);
+    }
+
+    fn audio(fill: u8) -> Vec<u8> {
+        let mut body = vec![0, 0, 1, 0xfa, 0x0e, 0x02, 0x40, 0x01];
+        body.extend([fill; 320]);
+        body
+    }
+
+    #[test]
+    fn an_audio_record_is_queued_and_the_video_around_it_is_unchanged() {
+        let head = keyframe_head(6, &[0, 0, 0, 1, 0x26, 0x01]);
+        let body = delta(&[0, 0, 0, 1, 0x02, 0x01]);
+        let mut plain = LiveDemux::new();
+        let mut expected = plain.push_frames(&head);
+        expected.extend(plain.push_frames(&body));
+
+        let mut demux = LiveDemux::new();
+        assert!(demux.push_frames(&audio(0xd5)).is_empty());
+        let mut frames = demux.push_frames(&head);
+        assert!(demux.push_frames(&audio(0x55)).is_empty());
+        frames.extend(demux.push_frames(&body));
+        assert_eq!(frames, expected);
+
+        let heard = demux.take_audio();
+        assert_eq!(heard.len(), 2);
+        assert_eq!(heard[0].codec, "alaw");
+        assert_eq!(heard[0].rate, 8000);
+        assert_eq!(heard[0].frame, 0);
+        assert_eq!(heard[0].bytes, vec![0xd5u8; 320]);
+        assert_eq!(
+            heard[1].frame, 1,
+            "the second record follows one video frame"
+        );
+        assert_eq!(heard[1].bytes, vec![0x55u8; 320]);
+        assert!(demux.take_audio().is_empty());
+        assert_eq!(demux.stats().audio, 2);
+        assert_eq!(demux.stats().padding, 0);
+        assert_eq!(demux.stats().elementary_bytes, 12);
+    }
+
+    #[test]
+    fn a_zero_length_audio_record_holds_the_fixed_frame_and_a_short_one_is_padding() {
+        let mut fixed = audio(0xd5);
+        fixed[6] = 0;
+        fixed[7] = 0;
+        let mut demux = LiveDemux::new();
+        demux.push_frames(&fixed);
+        assert_eq!(demux.take_audio()[0].bytes.len(), 320);
+        let mut short = audio(0xd5);
+        short.truncate(100);
+        let mut unknown = audio(0xd5);
+        unknown[4] = 0x63;
+        demux.push_frames(&short);
+        demux.push_frames(&unknown);
+        assert!(demux.take_audio().is_empty());
+        assert_eq!(demux.stats().audio, 1);
+        assert_eq!(demux.stats().padding, 2);
+    }
+
+    #[test]
+    fn the_audio_queue_keeps_only_the_newest_records() {
+        let mut demux = LiveDemux::new();
+        for _ in 0..AUDIO_QUEUE + 10 {
+            demux.push_frames(&audio(0xd5));
+        }
+        assert_eq!(demux.take_audio().len(), AUDIO_QUEUE);
+    }
+
+    #[test]
+    fn an_audio_frame_uses_the_playback_side_channel_shape() {
+        let record = audio_record(&audio(0xd5), 7).expect("audio");
+        let text: Value = serde_json::from_str(&record.frame_text()).expect("json");
+        assert_eq!(text["type"], "audio");
+        assert_eq!(text["frame"], 7);
+        assert_eq!(text["codec"], "alaw");
+        assert_eq!(text["rate"], 8000);
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(text["data"].as_str().expect("data"))
+            .expect("base64");
+        assert_eq!(data, vec![0xd5u8; 320]);
     }
 
     #[test]

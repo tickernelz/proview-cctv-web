@@ -7,6 +7,7 @@ use tokio::sync::broadcast;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::media::fmp4::{init_segment, media_segment, Sample, TrackConfig, TIMESCALE};
+pub use crate::media::live::LiveAudio;
 
 pub type Fragment = bytes::Bytes;
 
@@ -195,6 +196,7 @@ impl Replay {
 
 struct Channel {
     sender: broadcast::Sender<Arc<LivePacket>>,
+    audio: broadcast::Sender<Arc<LiveAudio>>,
     subscribers: usize,
     publishers: usize,
     init: Arc<Mutex<Option<Fragment>>>,
@@ -206,8 +208,10 @@ struct Channel {
 impl Channel {
     fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
+        let (audio, _) = broadcast::channel(AUDIO_CAPACITY);
         Self {
             sender,
+            audio,
             subscribers: 0,
             publishers: 0,
             init: Arc::new(Mutex::new(None)),
@@ -223,9 +227,11 @@ pub struct Subscription {
     pub replay: Vec<Arc<LivePacket>>,
     pub meta: Arc<Mutex<StreamMeta>>,
     pub receiver: broadcast::Receiver<Arc<LivePacket>>,
+    pub audio: broadcast::Receiver<Arc<LiveAudio>>,
 }
 
 const PASSTHROUGH_CAPACITY: usize = 96;
+const AUDIO_CAPACITY: usize = 64;
 const REPLAY_FRAGMENTS: usize = 240;
 const REPLAY_BYTES: usize = 8 * 1024 * 1024;
 
@@ -272,6 +278,7 @@ impl LiveHub {
             replay,
             meta: channel.meta.clone(),
             receiver: channel.sender.subscribe(),
+            audio: channel.audio.subscribe(),
         }
     }
 
@@ -351,6 +358,24 @@ impl LiveHub {
                 .audio_packets
                 .fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    pub fn publish_audio(&self, key: &StreamKey, audio: LiveAudio) {
+        let guard = self.channels.lock().expect("live hub poisoned");
+        let Some(channel) = guard.get(key) else {
+            return;
+        };
+        channel
+            .counters
+            .audio_packets
+            .fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut meta) = channel.meta.lock() {
+            if meta.audio_codec.as_deref() != Some(audio.codec) {
+                meta.audio_codec = Some(audio.codec.to_string());
+                meta.audio_clock = Some(audio.rate);
+            }
+        }
+        let _ = channel.audio.send(Arc::new(audio));
     }
 
     pub fn note_drop(&self, key: &StreamKey) {
@@ -491,6 +516,37 @@ mod tests {
         drop(subscription);
         hub.release(&stream);
         assert_eq!(hub.active_streams(), 0);
+    }
+
+    #[tokio::test]
+    async fn audio_rides_its_own_channel_and_names_the_codec() {
+        let hub = LiveHub::new(2);
+        let stream = key(LiveMode::Passthrough);
+        let mut subscription = hub.subscribe(stream.clone());
+        for frame in 0..40u64 {
+            hub.publish_audio(
+                &stream,
+                LiveAudio {
+                    codec: "alaw",
+                    rate: 8000,
+                    frame,
+                    bytes: vec![0xd5; 320],
+                },
+            );
+        }
+        let first = subscription.audio.recv().await.expect("audio");
+        assert_eq!(first.frame, 0);
+        assert!(
+            subscription.receiver.try_recv().is_err(),
+            "audio never fills the video queue"
+        );
+        let meta = hub.meta(&stream).expect("meta");
+        assert_eq!(meta.audio_codec.as_deref(), Some("alaw"));
+        assert_eq!(meta.audio_clock, Some(8000));
+        let snapshot = &hub.snapshots()[0];
+        assert_eq!(snapshot.audio_packets, 40);
+        assert_eq!(snapshot.packets, 0);
+        hub.release(&stream);
     }
 
     #[tokio::test]

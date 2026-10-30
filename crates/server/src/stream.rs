@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use proview_core::live::{
     ClipPlan, LiveMode, LivePacket, PacketKind, StreamKey, StreamMeta, Subscription,
 };
@@ -56,6 +56,20 @@ fn forward(packet: &LivePacket, waiting_keyframe: &mut bool) -> bool {
     true
 }
 
+#[derive(serde::Deserialize)]
+struct SoundRequest {
+    #[serde(rename = "type")]
+    kind: String,
+    on: bool,
+}
+
+pub fn sound_request(text: &str) -> Option<bool> {
+    serde_json::from_str::<SoundRequest>(text)
+        .ok()
+        .filter(|request| request.kind == "sound")
+        .map(|request| request.on)
+}
+
 pub fn frame(packet: &LivePacket) -> Vec<u8> {
     packet.bytes.to_vec()
 }
@@ -92,6 +106,7 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                 replay,
                 meta,
                 mut receiver,
+                mut audio,
             } = subscription;
             if !ready(&init, 240).await {
                 if let Some(target) = restart.clone() {
@@ -144,30 +159,56 @@ pub fn channel(ws: ws::WebSocket, state: LiveState, session: LiveSession) -> ws:
                 }
             }
             let mut waiting_keyframe = replay.is_empty();
+            let mut sound = false;
             loop {
-                match receiver.recv().await {
-                    Ok(packet) => {
-                        if !forward(&packet, &mut waiting_keyframe) {
-                            continue;
+                tokio::select! {
+                    received = receiver.recv() => match received {
+                        Ok(packet) => {
+                            if !forward(&packet, &mut waiting_keyframe) {
+                                continue;
+                            }
+                            if stream
+                                .send(ws::Message::Binary(frame(&packet)))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
-                        if stream
-                            .send(ws::Message::Binary(frame(&packet)))
-                            .await
-                            .is_err()
-                        {
-                            break;
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                device = %key.device,
+                                mode = key.mode.as_str(),
+                                "viewer fell behind, resuming at the next keyframe"
+                            );
+                            waiting_keyframe = true;
                         }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        tracing::warn!(
-                            skipped,
-                            device = %key.device,
-                            mode = key.mode.as_str(),
-                            "viewer fell behind, resuming at the next keyframe"
-                        );
-                        waiting_keyframe = true;
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                    heard = audio.recv() => match heard {
+                        Ok(record) => {
+                            if sound
+                                && stream
+                                    .send(ws::Message::Text(record.frame_text()))
+                                    .await
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                    message = stream.next() => match message {
+                        Some(Ok(ws::Message::Text(text))) => {
+                            if let Some(on) = sound_request(&text) {
+                                sound = on;
+                            }
+                        }
+                        Some(Ok(ws::Message::Close(_))) | Some(Err(_)) | None => break,
+                        Some(Ok(_)) => {}
+                    },
                 }
             }
             state.release(&key);
@@ -283,6 +324,15 @@ mod tests {
         assert_eq!(frame(&init), b"ftypmoov".to_vec());
         let fragment = LivePacket::media_fragment(Fragment::from_static(b"moofmdat"), false);
         assert_eq!(frame(&fragment), b"moofmdat".to_vec());
+    }
+
+    #[test]
+    fn only_a_sound_message_switches_the_audio_side_channel() {
+        assert_eq!(sound_request(r#"{"type":"sound","on":true}"#), Some(true));
+        assert_eq!(sound_request(r#"{"type":"sound","on":false}"#), Some(false));
+        assert_eq!(sound_request(r#"{"type":"position","on":true}"#), None);
+        assert_eq!(sound_request(r#"{"type":"sound"}"#), None);
+        assert_eq!(sound_request("sound"), None);
     }
 
     #[test]

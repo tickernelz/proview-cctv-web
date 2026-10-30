@@ -766,6 +766,7 @@ impl CloudProvider {
                 "the cloud stream did not carry VPS, SPS and PPS within 10 s".to_string(),
             ));
         }
+        demux.take_audio();
         match key.mode {
             crate::live::LiveMode::Passthrough => {
                 let config = crate::media::mux::VideoConfig::hevc(
@@ -797,6 +798,9 @@ impl CloudProvider {
                             for frame in demux.push_frames(&payload) {
                                 relay.frame(&hub, &key, frame);
                             }
+                            for audio in demux.take_audio() {
+                                hub.publish_audio(&key, audio);
+                            }
                         }
                         Ok(Err(error)) => {
                             tracing::warn!(device, error = ?error, "cloud live source read failed");
@@ -815,6 +819,7 @@ impl CloudProvider {
                     fragments = relay.fragments,
                     keyframes = stats.keyframes,
                     deltas = stats.deltas,
+                    audio = stats.audio,
                     dropped = stats.dropped,
                     fps = relay.rate.per_second(),
                     "cloud passthrough source closed"
@@ -876,6 +881,9 @@ impl CloudProvider {
                         continue;
                     }
                     let bytes = demux.push(&payload);
+                    for audio in demux.take_audio() {
+                        hub.publish_audio(key, audio);
+                    }
                     if bytes.is_empty() {
                         continue;
                     }
@@ -910,6 +918,7 @@ impl CloudProvider {
             written,
             keyframes = stats.keyframes,
             deltas = stats.deltas,
+            audio = stats.audio,
             dropped = stats.dropped,
             "cloud live source closed"
         );
