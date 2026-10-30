@@ -15,7 +15,7 @@ const moveNote = computed(() => {
 
 <template>
   <div id="dock-status" class="dock-status" data-testid="dock-status">
-    <p id="caption" data-testid="live-caption" role="status">
+    <p id="caption" class="sr" data-testid="live-caption" role="status">
       <span id="caption-state" data-testid="live-state">{{ live.state }}</span>
       <span id="caption-flag" data-testid="live-lag" :class="live.flag.tone">{{ live.flag.text }}</span>
     </p>
