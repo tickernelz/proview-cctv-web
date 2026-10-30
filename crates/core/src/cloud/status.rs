@@ -370,9 +370,9 @@ pub fn auth_code_of(device: &super::types::CloudDevice) -> String {
 mod tests {
     use super::*;
 
-    const ONLINE: &str = r#"{"StatusProtocol":{"Body":[{"WanIP":"103.85.122.66","SerialNumber":"7f92970ddf5282743hrc","ServerPort":"8765","Status":"Online","ServerIP":"110.239.85.50","NatType":"0"}],"Header":{"MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"Success OK","Version":"1.0","CSeq":"1"}}}"#;
-    const ONLINE_CAMERA: &str = r#"{"StatusProtocol":{"Body":[{"Status":"Online","WanIP":"103.85.122.66","ServerIP":"110.239.87.207","DeviceType":"Camera","SerialNumber":"7f92970ddf5282743hrc","DevicePort":"34567","ServerPort":"6510","KcpEnable":"0"}],"Header":{"Version":"1.0","CSeq":"1","MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"Success OK"}}}"#;
-    const OFFLINE: &str = r#"{"StatusProtocol":{"Body":[{"SerialNumber":"7f92970ddf5282743hrc","Status":"Offline"}],"Header":{"MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"success","Version":"1.0","CSeq":"1"}}}"#;
+    const ONLINE: &str = r#"{"StatusProtocol":{"Body":[{"WanIP":"103.85.122.66","SerialNumber":"AASN000000000001","ServerPort":"8765","Status":"Online","ServerIP":"110.239.85.50","NatType":"0"}],"Header":{"MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"Success OK","Version":"1.0","CSeq":"1"}}}"#;
+    const ONLINE_CAMERA: &str = r#"{"StatusProtocol":{"Body":[{"Status":"Online","WanIP":"103.85.122.66","ServerIP":"110.239.87.207","DeviceType":"Camera","SerialNumber":"AASN000000000001","DevicePort":"34567","ServerPort":"6510","KcpEnable":"0"}],"Header":{"Version":"1.0","CSeq":"1","MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"Success OK"}}}"#;
+    const OFFLINE: &str = r#"{"StatusProtocol":{"Body":[{"SerialNumber":"AASN000000000001","Status":"Offline"}],"Header":{"MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"200","ErrorString":"success","Version":"1.0","CSeq":"1"}}}"#;
     const REFUSED: &str = r#"{"StatusProtocol":{"Header":{"Version":"1.0","CSeq":"1","MessageType":"MSG_STATUS_MULTIQUERY_RSP","ErrorNum":"400","ErrorString":"all dev ac is invalid"}}}"#;
 
     #[test]
@@ -382,7 +382,7 @@ mod tests {
         assert_eq!(entry.wan_ip.as_deref(), Some("103.85.122.66"));
         assert_eq!(entry.server_ip.as_deref(), Some("110.239.85.50"));
         assert_eq!(entry.server_port, Some(8765));
-        assert_eq!(entry.serial_number, "7f92970ddf5282743hrc");
+        assert_eq!(entry.serial_number, "AASN000000000001");
     }
 
     #[test]

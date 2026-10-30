@@ -124,7 +124,7 @@ impl Provider for LocalProvider {
         _channel: u32,
     ) -> Result<Vec<Recording>, ProviderError> {
         Err(ProviderError::NotImplemented(
-            "LAN playback needs the DVRIP file-search call; the reference IPC answers login with ret 203",
+            "recordings play over the cloud tunnel; the local provider does not search or play device files",
         ))
     }
 

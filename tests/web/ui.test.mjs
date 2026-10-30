@@ -214,7 +214,7 @@ const ATTRIBUTE_STUB = {
         ok: true,
         groups: ['pintu'],
         devices: [
-          { uuid: '7f92970ddf5282743hrc', nickname: 'Pintu keluar masuk', group: 'pintu', favourite: false, shared_accounts: 1, administrator: true, extension: 'just_test_ext' },
+          { uuid: 'AASN000000000001', nickname: 'Pintu keluar masuk', group: 'pintu', favourite: false, shared_accounts: 1, administrator: true, extension: 'just_test_ext' },
           { uuid: '0123456789abcdef0123', nickname: 'Teras', group: '', favourite: true, shared_accounts: 0, administrator: false, extension: '' },
         ],
       };

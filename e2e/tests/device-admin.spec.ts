@@ -5,7 +5,7 @@ const ATTRIBUTES = {
   ok: true,
   groups: ['gate'],
   devices: [
-    { uuid: '7f92970ddf5282743hrc', nickname: 'Front gate', group: 'gate', favourite: false, shared_accounts: 1, administrator: true },
+    { uuid: 'AASN000000000001', nickname: 'Front gate', group: 'gate', favourite: false, shared_accounts: 1, administrator: true },
     { uuid: '0123456789abcdef0123', nickname: 'Porch', group: '', favourite: true, shared_accounts: 0, administrator: false },
   ],
 }
@@ -81,7 +81,7 @@ test('Rename says it is working, sends one request, and reports the result where
   await expect(status).toHaveText('Renamed to Gate, north side')
   await expect(status).toHaveAttribute('role', 'status')
   await expect(status).toBeInViewport()
-  expect(calls).toEqual([{ path: '/rename', body: { uuid: '7f92970ddf5282743hrc', nickname: 'Gate, north side' } }])
+  expect(calls).toEqual([{ path: '/rename', body: { uuid: 'AASN000000000001', nickname: 'Gate, north side' } }])
 })
 
 test('a refused action is a red alert with the server reason, visible without scrolling', async ({ page }) => {
@@ -210,8 +210,8 @@ test('the three jobs sit on tabs, and the favourite switch is saved with the gro
   await sheet.getByRole('button', { name: 'Save group and favourite' }).click()
   await expect(page.getByTestId('device-admin-status')).toHaveText('Saved for the test')
   expect(calls).toEqual([
-    { path: '/api/cloud/device/group', body: { uuid: '7f92970ddf5282743hrc', group: 'driveway' } },
-    { path: '/api/cloud/device/favourite', body: { uuid: '7f92970ddf5282743hrc', favourite: true } },
+    { path: '/api/cloud/device/group', body: { uuid: 'AASN000000000001', group: 'driveway' } },
+    { path: '/api/cloud/device/favourite', body: { uuid: 'AASN000000000001', favourite: true } },
   ])
   await expect(page.locator('#device-admin-accept')).toHaveCount(0)
   await sheet.getByRole('tab', { name: 'Sharing' }).click()

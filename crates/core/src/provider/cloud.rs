@@ -1464,17 +1464,17 @@ mod path_tests {
 
     #[test]
     fn the_ticket_points_at_the_live_socket_and_names_the_cloud() {
-        let ticket = live_ticket("7f92970ddf5282743hrc", 1, true).expect("ticket");
+        let ticket = live_ticket("AASN000000000001", 1, true).expect("ticket");
         assert!(matches!(ticket.kind, StreamKind::Ws));
         assert_eq!(ticket.source, ProviderSource::Cloud);
         assert_eq!(
             ticket.url,
-            "/ws/live?device=7f92970ddf5282743hrc&channel=1&quality=main"
+            "/ws/live?device=AASN000000000001&channel=1&quality=main"
         );
-        let sub = live_ticket("7f92970ddf5282743hrc", 1, false).expect("ticket");
+        let sub = live_ticket("AASN000000000001", 1, false).expect("ticket");
         assert_eq!(
             sub.url,
-            "/ws/live?device=7f92970ddf5282743hrc&channel=1&quality=sub"
+            "/ws/live?device=AASN000000000001&channel=1&quality=sub"
         );
     }
 
@@ -1500,7 +1500,7 @@ mod path_tests {
             token: Some("access".to_string()),
         };
         let error = provider
-            .stream(&session, "7f92970ddf5282743hrc", 1, true)
+            .stream(&session, "AASN000000000001", 1, true)
             .await
             .expect_err("an unreachable cloud base is not a ticket");
         assert!(

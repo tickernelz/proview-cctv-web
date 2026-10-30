@@ -18,6 +18,18 @@ fn argument(name: &str) -> Option<String> {
     None
 }
 
+fn listen_address(choices: [Option<String>; 3]) -> (String, u16) {
+    let listen = choices
+        .into_iter()
+        .flatten()
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
+    listen
+        .rsplit_once(':')
+        .map(|(host, port)| (host.to_string(), port.parse().unwrap_or(8787)))
+        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8787))
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -31,13 +43,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let listen = argument("--listen")
-        .or_else(|| std::env::var("PROVIEW_LISTEN").ok())
-        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
-    let (address, port) = listen
-        .rsplit_once(':')
-        .map(|(host, port)| (host.to_string(), port.parse().unwrap_or(8787)))
-        .unwrap_or_else(|| ("127.0.0.1".to_string(), 8787));
+    let saved = proview_server::settings::SettingsStore::load(None);
+    let (address, port) = listen_address([
+        argument("--listen"),
+        std::env::var("PROVIEW_LISTEN").ok(),
+        saved.value("PROVIEW_LISTEN"),
+    ]);
 
     let opts = ServeOptions {
         address,
@@ -70,7 +81,8 @@ async fn shutdown_signal() -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::flag;
+    use super::{flag, listen_address};
+    use proview_server::settings::SettingsStore;
 
     #[test]
     fn a_bare_flag_needs_no_value_after_it() {
@@ -81,5 +93,40 @@ mod tests {
             "--version"
         ));
         assert!(!flag(["--listen", "127.0.0.1:8787"], "--version"));
+    }
+
+    #[test]
+    fn the_saved_listen_address_is_used_when_the_flag_and_environment_are_silent() {
+        let dir = std::env::temp_dir().join(format!("proview-listen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"values":{"PROVIEW_LISTEN":"127.0.0.1:9911"}}"#,
+        )
+        .expect("settings");
+        let saved = SettingsStore::load(Some(&dir)).value("PROVIEW_LISTEN");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            listen_address([None, None, saved.clone()]),
+            ("127.0.0.1".to_string(), 9911)
+        );
+        assert_eq!(
+            listen_address([None, Some("0.0.0.0:8800".to_string()), saved.clone()]),
+            ("0.0.0.0".to_string(), 8800),
+            "the environment wins over the saved value"
+        );
+        assert_eq!(
+            listen_address([
+                Some("127.0.0.1:7700".to_string()),
+                Some("0.0.0.0:8800".to_string()),
+                saved
+            ]),
+            ("127.0.0.1".to_string(), 7700),
+            "--listen wins over both"
+        );
+        assert_eq!(
+            listen_address([None, Some(" ".to_string()), None]),
+            ("127.0.0.1".to_string(), 8787)
+        );
     }
 }

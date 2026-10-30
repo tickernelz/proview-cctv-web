@@ -768,7 +768,7 @@ mod tests {
     #[test]
     fn the_account_login_token_comes_out_of_the_first_row() {
         let data = serde_json::json!([
-            { "uuid": "7f92970ddf5282743hrc", "deviceToken": { "AdminToken": "abc" } }
+            { "uuid": "AASN000000000001", "deviceToken": { "AdminToken": "abc" } }
         ]);
         assert_eq!(login_token_of(&data).expect("row token"), "abc");
     }
@@ -788,7 +788,7 @@ mod tests {
 
     #[test]
     fn a_row_without_a_token_names_the_fields_it_did_carry() {
-        let data = serde_json::json!([{ "uuid": "7f92970ddf5282743hrc" }]);
+        let data = serde_json::json!([{ "uuid": "AASN000000000001" }]);
         let error = login_token_of(&data).expect_err("a row without a token is malformed");
         let text = format!("{error}");
         assert!(text.contains("uuid"), "{text}");
