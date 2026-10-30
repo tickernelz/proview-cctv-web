@@ -122,12 +122,11 @@ export async function overflowFindings(page: Page): Promise<string[]> {
         [box.left + (box.width * 3) / 4, box.top + (box.height * 3) / 4],
       ]
       let inView = true
-      for (let parent = target.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+      for (let parent = target.parentElement; inView && parent && parent !== document.body; parent = parent.parentElement) {
         const style = getComputedStyle(parent)
         if (scrolls(style.overflowY) || scrolls(style.overflowX)) {
           const view = parent.getBoundingClientRect()
           inView = y >= view.top && y <= view.bottom && x >= view.left && x <= view.right
-          break
         }
       }
       if (!inView) continue
