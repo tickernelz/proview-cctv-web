@@ -297,6 +297,39 @@ async fn bind_by_serial(
     bind(request, &session, cfg).await
 }
 
+const SHARE_KEY_WINDOW: Duration = Duration::from_secs(12);
+
+async fn shared_payload(
+    key: &str,
+    session: &VendorSession,
+    cfg: &State<Config>,
+) -> Result<String, Failure> {
+    let token = session.token.as_deref().ok_or_else(|| {
+        fail(
+            Status::Unauthorized,
+            "a share code is read from the cloud; sign in with the cloud account",
+        )
+    })?;
+    let client = proview_core::cloud::attributes::AttributeClient::with_base(
+        Identity::resolve(),
+        cfg.cloud_base.clone(),
+    );
+    let blob =
+        match tokio::time::timeout(SHARE_KEY_WINDOW, client.share_info_of_key(token, key)).await {
+            Ok(result) => result.map_err(|error| cloud_failure(&error))?,
+            Err(_) => {
+                return Err(fail(
+                    Status::GatewayTimeout,
+                    format!(
+                        "the cloud did not answer the share code lookup within {} ms",
+                        SHARE_KEY_WINDOW.as_millis()
+                    ),
+                ))
+            }
+        };
+    Ok(format!("https://d.xmeye.net/CSee?shareInfo={blob}"))
+}
+
 #[post("/devices/bind/qr", data = "<body>")]
 async fn bind_by_qr(
     body: Json<QrBody>,
@@ -305,7 +338,11 @@ async fn bind_by_qr(
     cookies: &CookieJar<'_>,
 ) -> Result<Json<BindReply>, Failure> {
     let (_, session) = live_session(store, cookies)?;
-    let device = parse_qr(&body.payload)
+    let payload = match proview_core::cloud::attributes::share_key_of(&body.payload) {
+        Some(key) => shared_payload(&key, &session, cfg).await?,
+        None => body.payload.clone(),
+    };
+    let device = parse_qr(&payload)
         .map_err(|error| fail_code(Status::BadRequest, "bad_qr", error.to_string()))?;
     let password = body
         .password

@@ -70,6 +70,9 @@ fn every_admin_route_refuses_a_call_without_a_session() {
         "/api/cloud/device-groups",
         "/api/cloud/device/share/pending?uuids=SN-1",
         "/api/cloud/device/share/info?key=abc",
+        "/api/cloud/device/share/permissions",
+        "/api/cloud/device/shares?uuid=SN00000001",
+        "/api/cloud/device/shares/received",
     ] {
         assert_eq!(
             client.get(path).dispatch().status(),
@@ -103,6 +106,26 @@ fn every_admin_route_refuses_a_call_without_a_session() {
             "/api/cloud/device/password",
             json!({ "uuid": "SN-1", "password": "lama", "newPassword": "baru" }),
         ),
+        (
+            "/api/cloud/device/share/permitted",
+            json!({ "uuid": "SN00000001", "acceptId": "other", "permissions": ["DP_PTZ"] }),
+        ),
+        (
+            "/api/cloud/device/shares/permissions",
+            json!({ "shareId": "s1", "permissions": ["DP_PTZ"] }),
+        ),
+        (
+            "/api/cloud/device/shares/revoke",
+            json!({ "shareId": "s1" }),
+        ),
+        (
+            "/api/cloud/device/shares/answer",
+            json!({ "shareId": "s1", "accept": true }),
+        ),
+        (
+            "/api/cloud/device/share/qr",
+            json!({ "uuid": "SN00000001", "permissions": ["DP_PTZ"] }),
+        ),
     ];
     for (path, payload) in &calls {
         let status = client
@@ -113,7 +136,7 @@ fn every_admin_route_refuses_a_call_without_a_session() {
             .status();
         assert_eq!(status, Status::Unauthorized, "{path}");
     }
-    let guarded = 1 + 3 + calls.len();
+    let guarded = 1 + 6 + calls.len();
     assert_eq!(
         guarded,
         proview_server::routes::device_admin::routes().len(),

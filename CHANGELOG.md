@@ -104,6 +104,27 @@ stability before 1.0.
   A stream with B-frames downloads as its raw `.hevc`/`.h264` stream instead.
 - A test fails when any shipped `Command::new` lacks `hide_console`, so no
   child process can open a console window on Windows.
+- Alarm messages can be deleted (selected ones, or every alarm of a camera after
+  a confirm), shown for one day picked from a month calendar of the days that
+  have alarms, filtered by type (motion or human detection, as the app offers),
+  and show whether any phone is subscribed to push for the camera. The routes
+  are `POST /api/cloud/alarms/delete`, `GET /api/cloud/alarms/calendar`,
+  `GET /api/cloud/alarms/subscription`, `GET /api/cloud/alarms/filters` and an
+  `event` filter on `GET /api/cloud/alarms`; every alarm-centre call has a
+  deadline (`PROVIEW_ALARM_WINDOW_MS`) that answers 504 naming the stage.
+- Sharing with permissions (pan and tilt, talk, card recordings, settings, alarm
+  messages, cloud video) through `mdshareadd`, with the owner's share list,
+  permission edits and revoke, the receiver's list with accept or refuse, and
+  share by QR code: `appInfoSave` keeps a 30-minute code, the sheet draws the
+  QR, and adding a camera from a `shareKey` link resolves it through
+  `appInfoQueryLimit` first.
+- Cloud account: profile from the normal sign-in (`userinfo2`), change
+  password, forgot-password and register code flows, and delete account
+  (Settings, Account; sign-in screen links).
+- Cloud recordings show whether the camera has a cloud storage plan, read the
+  native clip list fields, and can play or download a clip (signed HLS index
+  and segments, joined TS or MP4), with per-stage deadlines that answer 504
+  naming the stage.
 
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,

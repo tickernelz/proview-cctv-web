@@ -7,8 +7,9 @@ import { state as page } from '../app/state'
 import { addLauncher, live } from './store'
 
 type Camera = { id: string; name?: string }
-type Recording = { start: string; duration_secs?: number; size_bytes?: number }
+type Recording = { start: string; duration_secs?: number; size_bytes?: number; index_file?: string; storage_bucket?: string }
 type Listing = { recordings?: Recording[]; notice?: string }
+type PlanState = { plan: 'open' | 'none' | 'expired' | 'unsupported' | 'unknown'; reason: string }
 
 const open = computed(() => live.sheet === 'recordings')
 const panel = ref<HTMLElement>()
@@ -19,7 +20,16 @@ const result = reactive({
   phase: 'idle' as 'idle' | 'loading' | 'done' | 'error',
   message: '',
   recordings: [] as Recording[],
+  device: '',
+  plan: '' as PlanState['plan'] | '',
 })
+const clip = reactive({
+  phase: 'idle' as 'idle' | 'loading' | 'playing' | 'error',
+  start: '',
+  message: '',
+  url: '',
+})
+const NO_PLAN = ['none', 'expired', 'unsupported']
 
 const launcher = addLauncher({
   id: 'recordings-launcher',
@@ -48,6 +58,7 @@ async function show() {
 }
 
 function close(returnFocus = true) {
+  stopClip()
   if (live.sheet === 'recordings') live.sheet = ''
   if (returnFocus) document.getElementById('recordings-launcher')?.focus()
 }
@@ -63,21 +74,89 @@ async function load() {
   if (result.phase === 'loading') return
   result.phase = 'loading'
   result.recordings = []
+  result.plan = ''
+  stopClip()
   const day = form.day
+  result.device = form.device
   const camera = cameras.value.find((entry) => entry.id === form.device)?.name || form.device
   const query = new URLSearchParams({ day, channel: '0' })
   if (form.device) query.set('device', form.device)
+  const planQuery = new URLSearchParams({ device: form.device, channel: '0', day })
+  const planned = form.device ? api<PlanState>('/api/cloud/clips/state?' + planQuery.toString()).catch(() => null) : Promise.resolve(null)
   try {
-    const listing = await api<Listing>('/api/recordings?' + query.toString())
+    const [listing, plan] = await Promise.all([api<Listing>('/api/recordings?' + query.toString()), planned])
     result.recordings = listing.recordings || []
+    result.plan = plan ? plan.plan : ''
     const count = result.recordings.length
+    const noPlan = plan && NO_PLAN.includes(plan.plan) ? plan.reason : ''
     result.message = count
-      ? [count + (count === 1 ? ' clip' : ' clips'), camera, day].filter(Boolean).join(' · ')
-      : listing.notice || 'No cloud clips for ' + camera + ' on ' + day + '.'
+      ? [count + (count === 1 ? ' clip' : ' clips'), camera, day].filter(Boolean).join(' · ') + (noPlan ? '. ' + noPlan : '')
+      : noPlan || listing.notice || 'No cloud clips for ' + camera + ' on ' + day + '.'
     result.phase = 'done'
   } catch (error) {
     if (sessionLost(error)) return close(false)
     fail(error)
+  }
+}
+
+function playable(item: Recording) {
+  return Boolean(item.index_file && item.storage_bucket) && !NO_PLAN.includes(result.plan)
+}
+
+function clipPath(kind: 'play' | 'download', item: Recording) {
+  const query = new URLSearchParams({ device: result.device, object: item.index_file || '', bucket: item.storage_bucket || '' })
+  return '/api/cloud/clips/' + kind + '?' + query.toString()
+}
+
+function stopClip() {
+  if (clip.url) URL.revokeObjectURL(clip.url)
+  clip.phase = 'idle'
+  clip.url = ''
+  clip.start = ''
+  clip.message = ''
+}
+
+async function fetchClip(kind: 'play' | 'download', item: Recording) {
+  const response = await fetch(clipPath(kind, item), { credentials: 'same-origin' })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    const error: Error & { status?: number } = new Error(body && body.message ? body.message : response.status + ' ' + response.statusText)
+    error.status = response.status
+    throw error
+  }
+  return response.blob()
+}
+
+async function takeClip(kind: 'play' | 'download', item: Recording) {
+  if (clip.phase === 'loading') return
+  stopClip()
+  clip.phase = 'loading'
+  clip.start = item.start
+  clip.message = kind === 'play' ? 'Fetching the clip from the cloud…' : 'Downloading the clip from the cloud…'
+  try {
+    const blob = await fetchClip(kind, item)
+    const url = URL.createObjectURL(blob)
+    if (kind === 'download') {
+      const link = document.createElement('a')
+      link.href = url
+      link.download = (result.device || 'clip') + '-' + item.start.replace(/[^0-9]/g, '') + '.ts'
+      document.body.append(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      clip.phase = 'idle'
+      clip.message = ''
+      clip.start = ''
+      return
+    }
+    clip.url = url
+    clip.phase = 'playing'
+    clip.message = 'Clip of ' + item.start
+  } catch (error) {
+    if (sessionLost(error)) return close(false)
+    clip.phase = 'error'
+    const text = error instanceof Error ? error.message : String(error)
+    clip.message = text.charAt(0).toUpperCase() + text.slice(1)
   }
 }
 
@@ -136,7 +215,16 @@ function duration(seconds?: number) {
     <ul v-if="result.recordings.length" data-testid="recordings-list">
       <li v-for="item in result.recordings" :key="item.start" data-testid="recordings-item">
         <span>{{ item.start }}</span><span>{{ duration(item.duration_secs) }} · {{ size(item.size_bytes) }}</span>
+        <div v-if="playable(item)" class="clip-actions">
+          <button class="btn btn-line" type="button" data-testid="recordings-play" :aria-busy="clip.phase === 'loading' && clip.start === item.start" @click="takeClip('play', item)">Play</button>
+          <button class="btn btn-line" type="button" data-testid="recordings-download" @click="takeClip('download', item)">Download</button>
+        </div>
       </li>
     </ul>
+    <p v-if="clip.phase === 'error'" class="err" data-status data-testid="recordings-clip-error" role="alert">
+      <Icon name="warning" small /><span>{{ clip.message }}</span>
+    </p>
+    <p v-else-if="clip.message" data-status data-testid="recordings-clip-status" role="status">{{ clip.message }}</p>
+    <video v-if="clip.url" class="clip-player" :src="clip.url" controls autoplay playsinline data-testid="recordings-player" />
   </section>
 </template>

@@ -1,5 +1,7 @@
+use proview_core::cloud::cloud_clip::window;
 use proview_core::cloud::dss::{cloud_recordings, RecordingError, RecordingPage, RecordingQuery};
 use proview_core::cloud::CloudError;
+use proview_core::config::Config;
 use proview_core::session::Store;
 use rocket::http::{CookieJar, Status};
 use rocket::serde::json::Json;
@@ -16,6 +18,7 @@ async fn recordings(
     device: Option<String>,
     channel: Option<u32>,
     day: Option<String>,
+    cfg: &State<Config>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<RecordingPage>, Failure> {
@@ -44,10 +47,20 @@ async fn recordings(
         channel: channel.unwrap_or_default(),
         day: &day,
     };
-    cloud_recordings(request)
-        .await
-        .map(Json)
-        .map_err(|error| fail(status_of(&error), error.to_string()))
+    let client = super::cloud_clips::envelope_for(cfg);
+    let limit = window();
+    match tokio::time::timeout(limit, cloud_recordings(&client, request)).await {
+        Ok(reply) => reply
+            .map(Json)
+            .map_err(|error| fail(status_of(&error), error.to_string())),
+        Err(_) => Err(fail(
+            Status::GatewayTimeout,
+            format!(
+                "the cloud clip list stage did not answer within {} ms",
+                limit.as_millis()
+            ),
+        )),
+    }
 }
 
 fn status_of(error: &RecordingError) -> Status {

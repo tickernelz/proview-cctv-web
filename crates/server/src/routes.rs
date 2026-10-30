@@ -56,6 +56,12 @@ pub mod system;
 #[path = "routes/recordings.rs"]
 pub mod recordings;
 
+#[path = "routes/account.rs"]
+pub mod account;
+
+#[path = "routes/cloud_clips.rs"]
+pub mod cloud_clips;
+
 pub fn files() -> Vec<rocket::route::Route> {
     routes![index, media_clip, bundled_asset, font]
 }
@@ -89,6 +95,8 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(system::routes())
     .chain(playback_plus::routes())
     .chain(detect::routes())
+    .chain(account::routes())
+    .chain(cloud_clips::routes())
     .collect()
 }
 

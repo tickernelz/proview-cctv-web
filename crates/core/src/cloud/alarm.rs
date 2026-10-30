@@ -13,6 +13,17 @@ pub const API_VERSION: &str = "1.0";
 pub const TERMINAL: &str = "Camera";
 pub const QUERY_BY_TIME: &str = "MSG_ALARM_QUERY_BY_TIME_REQ";
 pub const QUERY_PAGE: &str = "MSG_ALARM_QUERY_REQ";
+pub const DELETE_REQ: &str = "MSG_ALARM_DELETE_REQ";
+pub const CALENDAR_REQ: &str = "MSG_VIDEO_NODE_QUERY_REQ";
+pub const SUBSCRIPTION_REQ: &str = "MSG_QUERY_SUBSCRIBE_REQ";
+pub const DELETE_TYPE: &str = "MSG";
+pub const CALENDAR_TYPE: &str = "MSG";
+pub const CALENDAR_STREAM: &str = "Main";
+pub const SUBSCRIPTION_ALL: &str = "ALL";
+pub const EVENT_FILTERS: [(&str, &str); 2] = [
+    ("VideoMotion", "Motion detection"),
+    ("appEventHumanDetectAlarm", "Human detection"),
+];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +40,10 @@ pub struct AlarmQuery {
     pub offset: u32,
     #[serde(default = "default_number")]
     pub number: u32,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub user_id: String,
 }
 
 fn default_number() -> u32 {
@@ -107,16 +122,25 @@ impl AlarmClient {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| ALARM_HOST.to_string());
-        Self::new(host)
+        let port = std::env::var("PROVIEW_ALARM_PORT")
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(ALARM_PORT);
+        let mut client = Self::new(host);
+        client.port = port;
+        client
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
     }
 
     pub fn endpoint(&self) -> String {
         format!("http://{}:{}/", self.host, self.port)
     }
 
-    pub async fn list(&self, query: &AlarmQuery) -> CloudResult<AlarmPage> {
-        let started = Instant::now();
-        let body = request_body(query);
+    async fn post(&self, body: &Value) -> CloudResult<(reqwest::StatusCode, String)> {
         let reply = self
             .http
             .post(self.endpoint())
@@ -131,6 +155,41 @@ impl AlarmClient {
             .text()
             .await
             .map_err(|error| CloudError::Unreachable(error.without_url().to_string()))?;
+        Ok((status, text))
+    }
+
+    pub async fn delete(&self, target: &AlarmTarget, scope: &DeleteScope) -> CloudResult<()> {
+        let body = delete_body(target, scope)?;
+        let (status, text) = self.post(&body).await?;
+        center_of(&text, status)?;
+        Ok(())
+    }
+
+    pub async fn calendar(
+        &self,
+        target: &AlarmTarget,
+        month: &str,
+        channel: u32,
+    ) -> CloudResult<Vec<AlarmDay>> {
+        let body = calendar_body(target, month, channel)?;
+        let (status, text) = self.post(&body).await?;
+        parse_calendar(&text, status)
+    }
+
+    pub async fn subscription(
+        &self,
+        target: &AlarmTarget,
+        tokens: &[String],
+    ) -> CloudResult<Vec<String>> {
+        let body = subscription_body(target, tokens);
+        let (status, text) = self.post(&body).await?;
+        parse_subscription(&text, status)
+    }
+
+    pub async fn list(&self, query: &AlarmQuery) -> CloudResult<AlarmPage> {
+        let started = Instant::now();
+        let body = request_body(query);
+        let (status, text) = self.post(&body).await?;
         let mut page = parse_page(&text)?;
         page.serial = if page.serial.is_empty() {
             query.serial.clone()
@@ -170,6 +229,12 @@ pub fn request_body(query: &AlarmQuery) -> Value {
     for (key, value) in fields.as_object().expect("alarm fields object") {
         target.insert(key.clone(), value.clone());
     }
+    if !query.event.trim().is_empty() {
+        target.insert("AlarmEvent".to_string(), json!(query.event.trim()));
+    }
+    if !query.user_id.trim().is_empty() {
+        target.insert("UserId".to_string(), json!(query.user_id.trim()));
+    }
     json!({
         "AlarmCenter": {
             "Header": {
@@ -181,6 +246,193 @@ pub fn request_body(query: &AlarmQuery) -> Value {
             "Body": body,
         }
     })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AlarmTarget {
+    pub serial: String,
+    pub auth_code: String,
+    pub user_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteScope {
+    Ids(Vec<String>),
+    All,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlarmDay {
+    pub day: String,
+    pub count: u32,
+}
+
+pub fn alarm_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 32 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+pub fn month_ok(month: &str) -> bool {
+    let bytes = month.as_bytes();
+    bytes.len() == 7
+        && bytes[4] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| index == 4 || byte.is_ascii_digit())
+        && matches!(month[5..].parse::<u32>(), Ok(1..=12))
+}
+
+fn envelope(message: &str, body: Value) -> Value {
+    json!({
+        "AlarmCenter": {
+            "Header": {
+                "Version": API_VERSION,
+                "TerminalType": TERMINAL,
+                "CSeq": "1",
+                "MessageType": message,
+            },
+            "Body": body,
+        }
+    })
+}
+
+fn target_fields(target: &AlarmTarget) -> serde_json::Map<String, Value> {
+    let mut fields = serde_json::Map::new();
+    fields.insert("SerialNumber".to_string(), json!(target.serial));
+    fields.insert("AuthCode".to_string(), json!(target.auth_code));
+    if !target.user_id.trim().is_empty() {
+        fields.insert("UserId".to_string(), json!(target.user_id.trim()));
+    }
+    fields
+}
+
+pub fn delete_body(target: &AlarmTarget, scope: &DeleteScope) -> CloudResult<Value> {
+    let mut fields = target_fields(target);
+    fields.insert("DelType".to_string(), json!(DELETE_TYPE));
+    if let DeleteScope::Ids(ids) = scope {
+        if ids.is_empty() {
+            return Err(CloudError::Rejected(
+                "no alarm was selected; clearing every alarm is a separate request".to_string(),
+            ));
+        }
+        if let Some(bad) = ids.iter().find(|id| !alarm_id_ok(id)) {
+            return Err(CloudError::Rejected(format!("{bad:?} is not an alarm id")));
+        }
+        let items: Vec<Value> = ids.iter().map(|id| json!({ "id": id })).collect();
+        fields.insert("AlarmId".to_string(), Value::Array(items));
+    }
+    Ok(envelope(DELETE_REQ, Value::Object(fields)))
+}
+
+pub fn calendar_body(target: &AlarmTarget, month: &str, channel: u32) -> CloudResult<Value> {
+    if !month_ok(month) {
+        return Err(CloudError::Rejected(format!(
+            "{month:?} is not a month in YYYY-MM form"
+        )));
+    }
+    let mut fields = target_fields(target);
+    fields.insert("Date".to_string(), json!(month));
+    fields.insert("StramType".to_string(), json!(CALENDAR_STREAM));
+    fields.insert("Type".to_string(), json!(CALENDAR_TYPE));
+    fields.insert("Channel".to_string(), json!(channel.to_string()));
+    Ok(envelope(CALENDAR_REQ, Value::Object(fields)))
+}
+
+pub fn subscription_body(target: &AlarmTarget, tokens: &[String]) -> Value {
+    let mut fields = target_fields(target);
+    let tokens: Vec<&str> = tokens
+        .iter()
+        .map(|token| token.trim())
+        .filter(|token| !token.is_empty())
+        .collect();
+    if !tokens.is_empty() {
+        fields.insert("Token".to_string(), json!(tokens));
+    }
+    fields.insert("SubType".to_string(), json!(SUBSCRIPTION_ALL));
+    envelope(SUBSCRIPTION_REQ, Value::Object(fields))
+}
+
+fn center_of(text: &str, status: reqwest::StatusCode) -> CloudResult<Value> {
+    let root: Value = match serde_json::from_str(text) {
+        Ok(root) => root,
+        Err(error) if status.is_success() => {
+            return Err(CloudError::Malformed(format!("alarm reply: {error}")))
+        }
+        Err(_) => {
+            return Err(CloudError::Unreachable(format!(
+                "alarm center answered {status}"
+            )))
+        }
+    };
+    let center = root
+        .get("AlarmCenter")
+        .cloned()
+        .ok_or_else(|| CloudError::Malformed("alarm reply has no AlarmCenter".to_string()))?;
+    let code = center
+        .get("Header")
+        .and_then(|header| header.get("ErrorNum"))
+        .and_then(value_text)
+        .unwrap_or_default();
+    if code != "200" && code != "0" {
+        let reason = center
+            .get("Header")
+            .and_then(|header| header.get("ErrorString"))
+            .and_then(Value::as_str)
+            .unwrap_or("the alarm center refused the request");
+        return Err(CloudError::Rejected(format!(
+            "{reason} ({})",
+            if code.is_empty() { "no code" } else { &code }
+        )));
+    }
+    Ok(center)
+}
+
+pub fn parse_calendar(text: &str, status: reqwest::StatusCode) -> CloudResult<Vec<AlarmDay>> {
+    let center = center_of(text, status)?;
+    let mut days: Vec<AlarmDay> = center
+        .get("Body")
+        .and_then(|body| body.get("Date"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let day = item.get("Time").and_then(Value::as_str)?.trim().to_string();
+                    if day.len() != 10 {
+                        return None;
+                    }
+                    let count = item.get("Count").and_then(value_u32).unwrap_or(1);
+                    Some(AlarmDay { day, count })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    days.sort_by(|left, right| left.day.cmp(&right.day));
+    days.dedup_by(|later, earlier| later.day == earlier.day);
+    Ok(days)
+}
+
+pub fn parse_subscription(text: &str, status: reqwest::StatusCode) -> CloudResult<Vec<String>> {
+    let center = center_of(text, status)?;
+    let mut tokens: Vec<String> = Vec::new();
+    let rows = match center.get("Body") {
+        Some(Value::Array(rows)) => rows.clone(),
+        Some(Value::Object(row)) if !row.is_empty() => vec![Value::Object(row.clone())],
+        _ => Vec::new(),
+    };
+    for row in rows {
+        if let Some(items) = row.get("Token").and_then(Value::as_array) {
+            for item in items {
+                if let Some(token) = item.as_str() {
+                    if !token.trim().is_empty() && !tokens.iter().any(|seen| seen == token) {
+                        tokens.push(token.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Ok(tokens)
 }
 
 pub fn parse_page(text: &str) -> CloudResult<AlarmPage> {
@@ -434,6 +686,136 @@ mod tests {
         assert_eq!(paged["AlarmCenter"]["Header"]["MessageType"], QUERY_PAGE);
         assert_eq!(paged["AlarmCenter"]["Body"]["AlarmOffset"], 20);
         assert_eq!(paged["AlarmCenter"]["Body"]["AlarmNumber"], 10);
+    }
+
+    fn target() -> AlarmTarget {
+        AlarmTarget {
+            serial: "serial-one".into(),
+            auth_code: "code".into(),
+            user_id: "user-one".into(),
+        }
+    }
+
+    #[test]
+    fn deleting_selected_alarms_lists_each_id_under_alarm_id() {
+        let body = delete_body(
+            &target(),
+            &DeleteScope::Ids(vec!["261028205437".into(), "261028205333".into()]),
+        )
+        .expect("body");
+        assert_eq!(body["AlarmCenter"]["Header"]["MessageType"], DELETE_REQ);
+        assert_eq!(body["AlarmCenter"]["Header"]["TerminalType"], "Camera");
+        let fields = &body["AlarmCenter"]["Body"];
+        assert_eq!(fields["SerialNumber"], "serial-one");
+        assert_eq!(fields["AuthCode"], "code");
+        assert_eq!(fields["UserId"], "user-one");
+        assert_eq!(fields["DelType"], "MSG");
+        assert_eq!(
+            fields["AlarmId"],
+            json!([{ "id": "261028205437" }, { "id": "261028205333" }])
+        );
+    }
+
+    #[test]
+    fn clearing_all_alarms_sends_no_id_list_and_an_empty_selection_is_refused() {
+        let all = delete_body(&target(), &DeleteScope::All).expect("body");
+        assert!(all["AlarmCenter"]["Body"].get("AlarmId").is_none());
+        assert_eq!(all["AlarmCenter"]["Body"]["DelType"], "MSG");
+        assert!(matches!(
+            delete_body(&target(), &DeleteScope::Ids(Vec::new())),
+            Err(CloudError::Rejected(_))
+        ));
+        assert!(matches!(
+            delete_body(&target(), &DeleteScope::Ids(vec!["1;2".into()])),
+            Err(CloudError::Rejected(_))
+        ));
+    }
+
+    #[test]
+    fn the_month_calendar_asks_for_message_days_on_the_main_stream() {
+        let body = calendar_body(&target(), "2026-10", 0).expect("body");
+        assert_eq!(body["AlarmCenter"]["Header"]["MessageType"], CALENDAR_REQ);
+        let fields = &body["AlarmCenter"]["Body"];
+        assert_eq!(fields["Date"], "2026-10");
+        assert_eq!(fields["Type"], "MSG");
+        assert_eq!(fields["StramType"], "Main");
+        assert_eq!(fields["Channel"], "0");
+        for bad in ["2026-13", "2026-1", "2026/10", "202610", "2026-00"] {
+            assert!(calendar_body(&target(), bad, 0).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn calendar_days_read_from_an_array_and_an_empty_month_reads_as_none() {
+        let ok = reqwest::StatusCode::OK;
+        let text = r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":{"Date":[{"Time":"2026-10-28","Count":"14"},{"Time":"2026-10-27","Count":"52"}]}}}"#;
+        let days = parse_calendar(text, ok).expect("days");
+        assert_eq!(
+            days,
+            vec![
+                AlarmDay {
+                    day: "2026-10-27".into(),
+                    count: 52
+                },
+                AlarmDay {
+                    day: "2026-10-28".into(),
+                    count: 14
+                },
+            ]
+        );
+        let empty = r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":{"Date":{}}}}"#;
+        assert!(parse_calendar(empty, ok).expect("empty").is_empty());
+        let refused =
+            r#"{"AlarmCenter":{"Header":{"ErrorNum":"400","ErrorString":"invalid parameter"}}}"#;
+        match parse_calendar(refused, ok) {
+            Err(CloudError::Rejected(reason)) => {
+                assert!(reason.contains("invalid parameter (400)"))
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_subscription_query_lists_tokens_only_when_given_and_reads_subscribed_ones() {
+        let bare = subscription_body(&target(), &[]);
+        assert!(bare["AlarmCenter"]["Body"].get("Token").is_none());
+        assert_eq!(bare["AlarmCenter"]["Body"]["SubType"], "ALL");
+        assert_eq!(
+            bare["AlarmCenter"]["Header"]["MessageType"],
+            SUBSCRIPTION_REQ
+        );
+        let named = subscription_body(&target(), &[" a ".into(), "".into()]);
+        assert_eq!(named["AlarmCenter"]["Body"]["Token"], json!(["a"]));
+        let ok = reqwest::StatusCode::OK;
+        let rows = r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":[{"SerialNumber":"serial-one","Token":["a","b","a"]}]}}"#;
+        assert_eq!(parse_subscription(rows, ok).expect("rows"), vec!["a", "b"]);
+        let none = r#"{"AlarmCenter":{"Header":{"ErrorNum":"200"},"Body":{}}}"#;
+        assert!(parse_subscription(none, ok).expect("none").is_empty());
+    }
+
+    #[test]
+    fn an_event_filter_and_the_user_ride_in_the_query_body() {
+        let body = request_body(&AlarmQuery {
+            serial: "serial-one".into(),
+            auth_code: "code".into(),
+            start: "2026-10-01 00:00:00".into(),
+            end: "2026-10-30 23:59:59".into(),
+            event: "appEventHumanDetectAlarm".into(),
+            user_id: "user-one".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            body["AlarmCenter"]["Body"]["AlarmEvent"],
+            "appEventHumanDetectAlarm"
+        );
+        assert_eq!(body["AlarmCenter"]["Body"]["UserId"], "user-one");
+        let plain = request_body(&AlarmQuery {
+            serial: "serial-one".into(),
+            auth_code: "code".into(),
+            ..Default::default()
+        });
+        assert!(plain["AlarmCenter"]["Body"].get("AlarmEvent").is_none());
+        assert!(plain["AlarmCenter"]["Body"].get("UserId").is_none());
     }
 
     #[test]

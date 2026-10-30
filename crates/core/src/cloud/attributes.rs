@@ -21,6 +21,151 @@ pub const SHARE_PENDING_ENDPOINT: &str = "hasDevicesTrans";
 pub const SHARE_INFO_ENDPOINT: &str = "devicesTransInfo";
 pub const SHARE_ACCEPT_ENDPOINT: &str = "devicesTransIn";
 pub const SHARE_CANCEL_ENDPOINT: &str = "devicesTransCancel";
+pub const SHARE_ADD_ENDPOINT: &str = "mdshareadd";
+pub const SHARE_MINE_ENDPOINT: &str = "mdsharemylist";
+pub const SHARE_RECEIVED_ENDPOINT: &str = "mdsharelist";
+pub const SHARE_PERMISSION_ENDPOINT: &str = "mdsharesetpermission";
+pub const SHARE_DELETE_ENDPOINT: &str = "mdsharedel";
+pub const SHARE_REFUSE_ENDPOINT: &str = "mdsharerefuse";
+pub const APP_INFO_SAVE_ENDPOINT: &str = "appInfoSave";
+pub const APP_INFO_QUERY_ENDPOINT: &str = "appInfoQueryLimit";
+pub const SHARE_QR_BASE: &str = "https://d.xmeye.net/CSee";
+pub const SHARE_QR_LIFETIME_MS: u64 = 1_800_000;
+pub const SHARE_PERMISSIONS: [(&str, &str, bool); 6] = [
+    ("DP_PTZ", "Pan and tilt", true),
+    ("DP_Intercom", "Two-way talk", true),
+    ("DP_LocalStorage", "Recordings on the card", true),
+    ("DP_ModifyConfig", "Change settings", false),
+    ("DP_AlarmPush", "Alarm messages", false),
+    ("DP_ViewCloudVideo", "Cloud video", false),
+];
+
+pub fn permission_list(wanted: &[String]) -> CloudResult<String> {
+    let mut picked: Vec<&str> = Vec::new();
+    for item in wanted {
+        let name = item.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let known = SHARE_PERMISSIONS
+            .iter()
+            .find(|(id, _, _)| *id == name)
+            .ok_or_else(|| CloudError::Rejected(format!("{name:?} is not a share permission")))?;
+        if !picked.contains(&known.0) {
+            picked.push(known.0);
+        }
+    }
+    picked.sort_by_key(|id| {
+        SHARE_PERMISSIONS
+            .iter()
+            .position(|(known, _, _)| known == id)
+            .unwrap_or(usize::MAX)
+    });
+    Ok(picked.join(","))
+}
+
+pub fn dev_info_plain(serial: &str, user: &str, password: &str, kind: u32, time: i64) -> String {
+    let user = if user.trim() == "admin" {
+        ""
+    } else {
+        user.trim()
+    };
+    format!("{serial},{user},{password},{kind},{time}")
+}
+
+pub fn share_powers(blob: &str) -> String {
+    json!({ "devInfo": blob }).to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareQrInfo {
+    #[serde(rename = "devId")]
+    pub dev_id: String,
+    #[serde(rename = "devType")]
+    pub dev_type: u32,
+    #[serde(rename = "userId")]
+    pub user_id: String,
+    #[serde(rename = "loginName")]
+    pub login_name: String,
+    pub pwd: String,
+    #[serde(rename = "shareTimes")]
+    pub share_times: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub permissions: String,
+}
+
+pub fn share_qr_link(key: &str) -> String {
+    format!("{SHARE_QR_BASE}?shareKey={}", url_encode(key.trim()))
+}
+
+pub fn share_key_of(payload: &str) -> Option<String> {
+    let index = payload.find("shareKey=")?;
+    let value = &payload[index + "shareKey=".len()..];
+    let key = value.split(['&', '#']).next().unwrap_or(value).trim();
+    (!key.is_empty()
+        && key.len() <= 128
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')))
+    .then(|| key.to_string())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareEntry {
+    pub share_id: String,
+    pub serial: String,
+    pub account: String,
+    pub user_id: String,
+    pub permissions: Vec<String>,
+    pub state: String,
+    pub device_name: String,
+}
+
+fn text_of(row: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| match row.get(*key) {
+            Some(Value::String(text)) if !text.trim().is_empty() => Some(text.trim().to_string()),
+            Some(Value::Number(number)) => Some(number.to_string()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+pub fn share_entries(data: &Value) -> Vec<ShareEntry> {
+    let rows: Vec<&Value> = match data {
+        Value::Array(rows) => rows.iter().collect(),
+        Value::Object(fields) => ["list", "shares", "data"]
+            .iter()
+            .find_map(|key| fields.get(*key).and_then(Value::as_array))
+            .map(|rows| rows.iter().collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    rows.into_iter()
+        .filter_map(|row| {
+            let share_id = text_of(row, &["id", "shareId"]);
+            if share_id.is_empty() {
+                return None;
+            }
+            let permissions = text_of(row, &["permissions"])
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect();
+            Some(ShareEntry {
+                share_id,
+                serial: text_of(row, &["uuid", "shareUuid", "devId"]),
+                account: text_of(row, &["account", "username", "userName", "acceptAccount"]),
+                user_id: text_of(row, &["userId", "acceptId", "shareUserId"]),
+                permissions,
+                state: text_of(row, &["shareState", "state", "status"]),
+                device_name: text_of(row, &["devName", "nickname", "name"]),
+            })
+        })
+        .collect()
+}
 
 const ACCEPT: &str = "text/html, image/gif, image/jpeg, *; q=.2, */*; q=.2";
 const USER_AGENT: &str = "proview-cctv-web/0.3";
@@ -65,7 +210,12 @@ impl AttributeClient {
         signed_request(&self.identity, counter, super::envelope::now_millis())
     }
 
-    async fn call(&self, endpoint: &str, body: Option<String>, access: &str) -> CloudResult<Value> {
+    pub async fn call(
+        &self,
+        endpoint: &str,
+        body: Option<String>,
+        access: &str,
+    ) -> CloudResult<Value> {
         let signed = self.next();
         let url = format!(
             "{}/{endpoint}/{}/{}/{}.rs",
@@ -248,6 +398,118 @@ impl AttributeClient {
     }
 }
 
+impl AttributeClient {
+    pub async fn share_with_permissions(
+        &self,
+        access: &str,
+        serial: &str,
+        accept_id: &str,
+        powers: &str,
+        permissions: &str,
+    ) -> CloudResult<Value> {
+        let target = accept_id.trim();
+        if target.is_empty() {
+            return Err(CloudError::Rejected(
+                "the receiving account id is empty".to_string(),
+            ));
+        }
+        let body = format!(
+            "uuid={}&shareUuid={}&acceptId={}&powers={}&permissions={}",
+            url_encode(serial.trim()),
+            url_encode(serial.trim()),
+            url_encode(target),
+            url_encode(powers),
+            url_encode(permissions)
+        );
+        self.call(SHARE_ADD_ENDPOINT, Some(body), access).await
+    }
+
+    pub async fn shares_of_device(
+        &self,
+        access: &str,
+        serial: &str,
+    ) -> CloudResult<Vec<ShareEntry>> {
+        let body = format!("shareUuid={}", url_encode(serial.trim()));
+        let reply = self.call(SHARE_MINE_ENDPOINT, Some(body), access).await?;
+        Ok(share_entries(&reply["data"]))
+    }
+
+    pub async fn shares_received(&self, access: &str) -> CloudResult<Vec<ShareEntry>> {
+        let reply = self.call(SHARE_RECEIVED_ENDPOINT, None, access).await?;
+        Ok(share_entries(&reply["data"]))
+    }
+
+    pub async fn set_share_permissions(
+        &self,
+        access: &str,
+        share_id: &str,
+        permissions: &str,
+    ) -> CloudResult<Value> {
+        let body = format!(
+            "shareId={}&permissions={}",
+            url_encode(share_id.trim()),
+            url_encode(permissions)
+        );
+        self.call(SHARE_PERMISSION_ENDPOINT, Some(body), access)
+            .await
+    }
+
+    pub async fn revoke_share(&self, access: &str, share_id: &str) -> CloudResult<Value> {
+        let body = format!("devId={}", url_encode(share_id.trim()));
+        self.call(SHARE_DELETE_ENDPOINT, Some(body), access).await
+    }
+
+    pub async fn accept_permission_share(
+        &self,
+        access: &str,
+        share_id: &str,
+    ) -> CloudResult<Value> {
+        let body = format!("devId={}", url_encode(share_id.trim()));
+        self.call(SHARE_ACCEPT_DEVICE_ENDPOINT, Some(body), access)
+            .await
+    }
+
+    pub async fn refuse_share(&self, access: &str, share_id: &str) -> CloudResult<Value> {
+        let body = format!("devId={}", url_encode(share_id.trim()));
+        self.call(SHARE_REFUSE_ENDPOINT, Some(body), access).await
+    }
+
+    pub async fn save_share_info(
+        &self,
+        access: &str,
+        blob: &str,
+        lifetime_ms: u64,
+    ) -> CloudResult<(String, i64)> {
+        let body = format!("info={}&expireTime={lifetime_ms}", url_encode(blob));
+        let reply = self
+            .call(APP_INFO_SAVE_ENDPOINT, Some(body), access)
+            .await?;
+        let key = reply["data"]["key"]
+            .as_str()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .ok_or_else(|| CloudError::Malformed("appInfoSave answered without a key".to_string()))?
+            .to_string();
+        let expires = reply["data"]["expireTime"].as_i64().unwrap_or_default();
+        Ok((key, expires))
+    }
+
+    pub async fn share_info_of_key(&self, access: &str, key: &str) -> CloudResult<String> {
+        let body = format!("key={}", url_encode(key.trim()));
+        let reply = self
+            .call(APP_INFO_QUERY_ENDPOINT, Some(body), access)
+            .await?;
+        reply["data"]
+            .as_str()
+            .map(str::trim)
+            .filter(|blob| !blob.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                CloudError::Rejected("the share code has expired or was never issued".to_string())
+            })
+    }
+}
+
 pub fn trans_key_of(reply: &Value) -> Option<String> {
     let data = reply.get("data").unwrap_or(reply);
     for candidate in [data.get("transKey"), data.get("key"), data.get("shareKey")] {
@@ -412,6 +674,92 @@ fn parse_user_hits(data: &Value) -> Vec<UserSearchHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permissions_keep_the_app_order_drop_repeats_and_refuse_strangers() {
+        let picked = permission_list(&[
+            "DP_ViewCloudVideo".into(),
+            " DP_PTZ ".into(),
+            "".into(),
+            "DP_PTZ".into(),
+        ])
+        .expect("known");
+        assert_eq!(picked, "DP_PTZ,DP_ViewCloudVideo");
+        assert_eq!(permission_list(&[]).expect("none"), "");
+        assert!(permission_list(&["DP_Root".into()]).is_err());
+        let defaults: Vec<&str> = SHARE_PERMISSIONS
+            .iter()
+            .filter(|(_, _, on)| *on)
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert_eq!(defaults, ["DP_PTZ", "DP_Intercom", "DP_LocalStorage"]);
+    }
+
+    #[test]
+    fn device_info_blanks_the_admin_user_like_the_native_encoder() {
+        assert_eq!(dev_info_plain("SN1", "admin", "pw", 0, 9), "SN1,,pw,0,9");
+        assert_eq!(
+            dev_info_plain("SN1", "guard", "pw", 0, 9),
+            "SN1,guard,pw,0,9"
+        );
+        let powers: Value = serde_json::from_str(&share_powers("blob")).expect("json");
+        assert_eq!(powers, json!({ "devInfo": "blob" }));
+    }
+
+    #[test]
+    fn a_share_key_is_read_from_the_link_and_nothing_else_is() {
+        let link = share_qr_link("Ab3-x_9.z");
+        assert_eq!(link, "https://d.xmeye.net/CSee?shareKey=Ab3-x_9.z");
+        assert_eq!(share_key_of(&link).as_deref(), Some("Ab3-x_9.z"));
+        assert_eq!(
+            share_key_of("https://d.xmeye.net/CSee?shareKey=k1&x=2").as_deref(),
+            Some("k1")
+        );
+        assert_eq!(share_key_of("https://d.xmeye.net/CSee?shareInfo=abc"), None);
+        assert_eq!(share_key_of("shareKey=a/b"), None);
+        assert_eq!(share_key_of("shareKey="), None);
+    }
+
+    #[test]
+    fn share_rows_read_ids_accounts_and_split_permissions() {
+        let rows = share_entries(&json!([
+            { "id": 7, "uuid": "SN1", "account": "a@x", "userId": "u1", "permissions": "DP_PTZ, DP_Intercom", "shareState": 1, "devName": "Gate" },
+            { "uuid": "SN2" }
+        ]));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].share_id, "7");
+        assert_eq!(rows[0].permissions, vec!["DP_PTZ", "DP_Intercom"]);
+        assert_eq!(rows[0].state, "1");
+        assert_eq!(rows[0].device_name, "Gate");
+        assert!(share_entries(&json!("")).is_empty());
+        assert_eq!(
+            share_entries(&json!({ "list": [{ "shareId": "s" }] }))[0].share_id,
+            "s"
+        );
+    }
+
+    #[test]
+    fn a_share_code_blob_round_trips_through_the_qr_parser() {
+        let info = ShareQrInfo {
+            dev_id: "SN00000001".into(),
+            dev_type: 0,
+            user_id: "owner".into(),
+            login_name: "admin".into(),
+            pwd: "pw".into(),
+            share_times: 1_793_000_000,
+            permissions: "DP_PTZ".into(),
+        };
+        let text = serde_json::to_string(&info).expect("json");
+        assert!(text.contains("\"devId\":\"SN00000001\""), "{text}");
+        assert!(text.contains("\"shareTimes\":1793000000"), "{text}");
+        let blob = super::super::bind::encode_qr_blob(&text, 211);
+        let device =
+            super::super::bind::parse_qr(&format!("https://d.xmeye.net/CSee?shareInfo={blob}"))
+                .expect("parses");
+        assert_eq!(device.serial, "SN00000001");
+        assert_eq!(device.password, "pw");
+        assert_eq!(device.share_time, Some(1_793_000_000));
+    }
 
     #[test]
     fn user_hits_are_read_from_an_array_a_string_and_a_list() {

@@ -2,11 +2,14 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use proview_core::cloud::account::AccountProfile;
 use proview_core::cloud::{
     new_session_id, AlarmClient, AppCaps, CapsClient, Captcha, CloudClient, CloudDevice,
-    CloudError, CloudProfile, CloudSessions, CssClient, EnvelopeClient, Identity, REQUESTED_CAPS,
+    CloudError, CloudSessions, CssClient, EnvelopeClient, Identity, REQUESTED_CAPS,
 };
+use proview_core::config::Config;
 use proview_core::provider::Device;
+use proview_core::session::Store;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::serde::json::Json;
 use rocket::State;
@@ -45,6 +48,11 @@ impl CloudState {
             css,
             devices: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn with_alarms(mut self, alarms: AlarmClient) -> Self {
+        self.alarms = alarms;
+        self
     }
 
     pub fn portal(&self) -> &str {
@@ -219,14 +227,30 @@ fn logout(state: &State<CloudState>, cookies: &CookieJar<'_>) -> Json<StatusBody
 #[get("/cloud/profile")]
 async fn profile(
     state: &State<CloudState>,
+    cfg: &State<Config>,
+    store: &State<Store>,
     cookies: &CookieJar<'_>,
-) -> Result<Json<CloudProfile>, Failure> {
-    let session = restore(state, cookies)?;
+) -> Result<Json<AccountProfile>, Failure> {
+    if let Some(found) = super::account::envelope_profile(cfg, store, cookies).await {
+        return found
+            .map(Json)
+            .map_err(|(status, message)| fail(status, message));
+    }
+    let session = restore(state, cookies).map_err(|failure| {
+        if super::account::local_session(store, cookies) {
+            fail(
+                Status::Conflict,
+                "this session is on a camera on this network; the account profile needs the cloud account sign-in",
+            )
+        } else {
+            failure
+        }
+    })?;
     state
         .client
         .profile(&session)
         .await
-        .map(Json)
+        .map(|profile| Json(AccountProfile::from_portal(&profile)))
         .map_err(|error| cloud_failure(&error))
 }
 
