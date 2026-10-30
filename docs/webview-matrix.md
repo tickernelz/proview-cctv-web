@@ -1,17 +1,20 @@
 # Video support per webview
 
-The app decodes H.264 in fragmented MP4 delivered over a binary WebSocket into
-MediaSource, and offers a second transport that hands HEVC access units to
-WebCodecs when the webview has it. H.265 is detected at runtime and reported,
-never assumed. Recorded clips still travel over HTTP.
+The app plays fragmented MP4 delivered over a binary WebSocket into
+MediaSource. When the webview decodes H.265 (`MediaSource.isTypeSupported` for
+the stream's codec string and, where present, `VideoDecoder.isConfigSupported`
+at the coded size), the camera's H.265 is muxed into `hvc1` fMP4 without
+ffmpeg; otherwise the server transcodes to H.264 once per stream. H.265 is
+detected at runtime and confirmed by a decoded frame, never assumed. Recorded
+clips download as MP4 over HTTP.
 
 | Webview | Platform | H.264 fMP4 | H.265 | Notes |
 |---|---|---|---|---|
 | WebView2 (Chromium) | Windows 10/11 | yes | yes, if the OS has the HEVC codec extension | hardware decode via Media Foundation |
 | WKWebView | macOS 13.3+ | yes | yes on Apple silicon for most profiles | hardware decode via VideoToolbox |
 | WebKitGTK | Linux | yes, when a GStreamer H.264 decoder is installed (`gstreamer1.0-libav`, or `gstreamer1-plugin-openh264` on Fedora) | not guaranteed | distro dependent; the app surfaces a clear message instead of a black frame |
-| Chromium / Edge | any | yes | depends on build | WebCodecs available |
-| Firefox | any | yes via MSE | depends on build | no WebCodecs for H.265 |
+| Chromium / Edge | any | yes | depends on build | Windows Chrome 156 on the owner's PC reports MSE `hvc1` and `VideoDecoder` at 2304x2592 supported (reported 2026-10-30); headless Chrome 156 on Linux reports neither |
+| Firefox | any | yes via MSE | depends on build | the client falls back to the transcode when H.265 is refused |
 
 Measured verification so far: Chromium (headless 129, Linux) decoded the served
 fMP4 — `videoWidth=640`, `currentTime` advancing, `error=null`.

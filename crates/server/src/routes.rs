@@ -22,6 +22,7 @@ pub mod cloud_bind;
 
 #[path = "routes/playback.rs"]
 pub mod playback;
+pub mod playback_mux;
 
 #[path = "routes/playback_plus.rs"]
 pub mod playback_plus;
@@ -490,7 +491,7 @@ pub async fn ws_live(
             device.clone(),
             channel,
             sub_stream,
-            LiveMode::Transcode,
+            crate::stream::requested_mode(codec.as_deref()),
         );
         let subscription = live.hub.subscribe(key.clone());
         live.ensure_cloud_source(

@@ -5,6 +5,7 @@ pub mod h264;
 pub mod hevc;
 pub mod live;
 pub mod livecipher;
+pub mod mux;
 pub mod nal;
 pub mod ps;
 pub mod rtp;
