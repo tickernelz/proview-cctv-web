@@ -156,8 +156,10 @@ Every run writes `~/re/proview-cctv/acceptance/<sha>-<timestamp>/`:
 | `dump/frames.tsv` | one row per dumped frame: kind, pts, bytes, seconds into the run |
 
 The first binary message is the init segment (`live.inits`); every later one is a `moof`+`mdat`
-fragment whose first `trun` sample flags tell a keyframe from a delta, which is how the harness
-counts `live.keyframes_ws` and `live.deltas`. The dump keeps the boxes untouched.
+fragment. Its `trun` (flags `0x705`: data offset, first-sample flags, then duration, size and
+flags per sample) carries sample 0's own flags 28 bytes after the `trun` type; bit `0x02000000`
+(does not depend on others) marks a keyframe, which is how the harness counts
+`live.keyframes_ws` and `live.deltas`. The dump keeps the boxes untouched.
 `report.md` always prints the exact `ffprobe` line for the file that run wrote, so there is no second
 place to keep in sync.
 

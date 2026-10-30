@@ -7,6 +7,12 @@ stability before 1.0.
 
 ## Unreleased
 
+### Fixed
+
+- Two settings writes of the same block in the same millisecond no longer fail
+  with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
+  and a name that already exists is skipped instead of refused.
+
 ### Added
 
 - Live view plays the camera's own sound (G.711 A-law, 8 kHz) over the cloud
@@ -16,22 +22,74 @@ stability before 1.0.
   during Talk the live sound stops while the camera audio returned on the talk
   channel plays instead. Measured on the dual-lens camera: about 25 audio
   frames a second for main and sub, room noise near -50 dBFS.
-
+- PTZ at parity with the phone app's live and preset screens, over the cloud
+  relay: the pad keys, arrow keys and zoom/focus buttons now move while held and
+  stop on release (`/api/device/controls/ptz/press` and `/ptz/release` keep one
+  DVRIP session per hold; a tap keeps moving 800 ms like the app); a click on the
+  top lens picture aims the moving lens there (`/ptz/locate`, `OPPtzLocate`);
+  "Edit presets" in the pad saves the current position as a preset, renames and
+  deletes presets and edits the tour stops (`/preset/add`, `/preset/rename`,
+  `/preset/delete`, `/tour/remove`). Zoom, focus, calibration
+  (`/ptz/calibrate`) and the panoramic PTZ range (`/panorama`) follow the
+  device's ability flags and stay hidden on this camera, which reports none of
+  them; the capability table shows why. Every one of these writes reads the
+  device's ability on its session first and answers 501 with the device's
+  wording when the flag is missing, before anything is sent. A hold stops by
+  itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
+  sends the release as a beacon.
+- Playback parity with the mobile app over the cloud relay: a month calendar
+  (`OPSCalendar`, `GET /api/playback/calendar`) marks the days with
+  recordings; playback runs by time (`OPPlayBack` `ByTime`,
+  `/ws/playback?mode=time`) so it continues across file boundaries, with the
+  playhead on the strip following device time; pause/resume and 1/4x-4x speed;
+  thumbnails for the file list (`OPCompressPic` for motion pictures, the first
+  keyframe otherwise, `POST /api/playback/thumbnails`); a snapshot of the
+  playing frame; playback sound (the `fa` records are G.711 A-law audio, sent
+  as `audio` text frames and played with Web Audio at 1x) with mute; and the
+  app's Regular/Alarm record filter (`GET /api/playback/files?event=`). The
+  file query, calendar and thumbnail routes answer 504 naming the stage when
+  the device stays silent past `PROVIEW_PLAYBACK_WINDOW_MS` (default 20 s).
+- Alarm and detection settings over the vendor cloud (Settings, Alarm and
+  detection): motion detection (on/off, Low/Middle/High, schedule, alarm
+  actions, alarm tone), human detection (track box, area/line rule), human
+  tracking and the device push interval (30 to 1800 s, nothing else on that
+  block), each read and written through `/api/device/detect` with a saved copy, a read-back and an
+  automatic revert. Blocks the camera does not advertise (vehicle, pet, cry,
+  abnormal sound, intelligent vigilance, one-key call) are listed with the
+  ability flag that hides them, the same gate the phone app uses. The live bar
+  offers Stop alarm only on cameras that report the manual alarm ability.
+- Device settings work through the vendor cloud: `/api/device/settings/{encode,network,storage}`
+  and `/api/device/controls/settings` take `device` and open DVRIP over the relay,
+  so they answer without the camera on the local network. New blocks with the
+  mobile app's gating: SD card usage by partition kind and the missing-card alarm
+  (`Storage.StorageNotExist`), the record schedule (full-time or alarm-only),
+  clip length, record stream (`Storage.RecordStream`), lens splicing, record
+  audio (`/api/device/settings/record`), smart encode behind `Encode264ability`,
+  an encoder form bounded by `EncodeCapability`, the burned-in channel title and
+  time overlay (`/api/device/settings/osd`, `AVEnc.VideoWidget` + `ChannelTitle`,
+  optional `TitleDot` bitmap), and Format SD (`OPStorageManager`, cmd 1460)
+  behind a typed `FORMAT` confirmation.
 - H.265 plays without ffmpeg where the webview decodes it: cloud live (stage
   and grid tiles), LAN passthrough and device playback mux the camera's HEVC
   in-process into fragmented MP4 (`hvc1`) for the MediaSource player. The
   client asks for it only when `MediaSource.isTypeSupported` and, where present,
   `VideoDecoder.isConfigSupported` accept the stream's real codec string at its
   coded size, and falls back to the H.264 transcode when the buffer refuses it
-  or no frame is presented within 4 s, remembering the verdict per session.
+  or no frame is decoded within 4 s of a visible page, remembering the verdict
+  per session (a later success never overwrites a refusal). The hello names the
+  mode actually served: an H.264 camera asked for H.265 gets its own stream
+  remuxed natively, and a stream that reorders frames (B-frames) is transcoded,
+  because the muxers write no composition offsets.
   Measured over the cloud relay on the dual-lens camera: 0.3-0.4 % of a core and
   no child process for the main stream against 76-81 % with ffmpeg, first
   fragment 2.17-2.27 s against 2.88-3.08 s. ffmpeg stays a hidden fallback and
   is never bundled.
-- Clip downloads are playable MP4 files (`2026-10-30_05.20.31-05.25.00[R]...mp4`)
-  muxed natively for H.264 and H.265, timed from the record stamps: a 269 s
-  file reads as 269.2 s at 12.5 fps in `ffprobe`, where the header byte's
-  12 fps would have stretched it to 280 s.
+- Clip downloads are playable MP4 files
+  (`2026-10-30_05.20.31-05.25.00[R]...mp4`) muxed natively for H.264 and H.265
+  while the file arrives, so the server holds about one copy of it, and timed
+  from the record stamps: a 269 s file reads as 269.2 s at 12.5 fps in
+  `ffprobe`, where the header byte's 12 fps would have stretched it to 280 s.
+  A stream with B-frames downloads as its raw `.hevc`/`.h264` stream instead.
 - A test fails when any shipped `Command::new` lacks `hide_console`, so no
   child process can open a console window on Windows.
 
@@ -79,6 +137,9 @@ stability before 1.0.
 
 ### Fixed
 
+- Fragmented MP4 from the native muxers no longer marks the first sample of a
+  delta fragment as a sync sample (`trun` first-sample flags), which let
+  MediaSource treat a delta as a random access point.
 - Live view no longer opens an ffmpeg console window on Windows (ZHA-4280):
   every ffmpeg spawn now carries `CREATE_NO_WINDOW`, so the desktop shell shows
   only its own window.

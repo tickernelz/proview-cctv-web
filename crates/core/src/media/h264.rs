@@ -10,6 +10,7 @@ pub struct SpsInfo {
     pub height: u32,
     pub sps: Vec<u8>,
     pub pps: Vec<u8>,
+    pub may_reorder: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -177,6 +178,15 @@ pub fn parse_sps(nal: &[u8]) -> Result<SpsInfo, SpsError> {
 
     let width = width_mbs * 16 - 2 * (crop_left + crop_right);
     let height = (2 - frame_mbs_only) * height_map_units * 16 - 2 * (crop_top + crop_bottom);
+    let declared = if reader.bit() == Some(1) {
+        vui_reorder(&mut reader)
+    } else {
+        None
+    };
+    let may_reorder = match declared {
+        Some(frames) => frames > 0,
+        None => profile_idc != 66 && pic_order_cnt_type != 2,
+    };
 
     Ok(SpsInfo {
         profile_idc,
@@ -185,7 +195,64 @@ pub fn parse_sps(nal: &[u8]) -> Result<SpsInfo, SpsError> {
         height,
         sps: nal.to_vec(),
         pps: Vec::new(),
+        may_reorder,
     })
+}
+
+fn skip_hrd(reader: &mut BitReader<'_>) -> Option<()> {
+    let count = reader.ue()? + 1;
+    reader.bits(8)?;
+    for _ in 0..count {
+        reader.ue()?;
+        reader.ue()?;
+        reader.bit()?;
+    }
+    reader.bits(20)?;
+    Some(())
+}
+
+fn vui_reorder(reader: &mut BitReader<'_>) -> Option<u32> {
+    if reader.bit()? == 1 && reader.bits(8)? == 255 {
+        reader.bits(32)?;
+    }
+    if reader.bit()? == 1 {
+        reader.bit()?;
+    }
+    if reader.bit()? == 1 {
+        reader.bits(4)?;
+        if reader.bit()? == 1 {
+            reader.bits(24)?;
+        }
+    }
+    if reader.bit()? == 1 {
+        reader.ue()?;
+        reader.ue()?;
+    }
+    if reader.bit()? == 1 {
+        reader.bits(32)?;
+        reader.bits(32)?;
+        reader.bit()?;
+    }
+    let nal_hrd = reader.bit()? == 1;
+    if nal_hrd {
+        skip_hrd(reader)?;
+    }
+    let vcl_hrd = reader.bit()? == 1;
+    if vcl_hrd {
+        skip_hrd(reader)?;
+    }
+    if nal_hrd || vcl_hrd {
+        reader.bit()?;
+    }
+    reader.bit()?;
+    if reader.bit()? == 0 {
+        return None;
+    }
+    reader.bit()?;
+    for _ in 0..4 {
+        reader.ue()?;
+    }
+    reader.ue()
 }
 
 pub const STAP_A: u8 = 24;

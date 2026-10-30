@@ -1,4 +1,4 @@
-import { AVC_TYPE, HEVC_FIRST_FRAME_MS, decodes, mimeOf, rememberHevc, shouldAskForHevc, type StreamShape } from './hevc'
+import { AVC_TYPE, decodes, mimeOf, rememberHevc, shouldAskForHevc, watchFirstFrame, type StreamShape } from './hevc'
 import { decodeAlaw, PlaybackSound } from '../live/playback-audio'
 
 export const LIVE_WINDOW_SECONDS = 12
@@ -45,8 +45,7 @@ export class StreamPlayer {
   announced = false
   onMetadata: (() => void) | null = null
   transport: 'hevc' | 'avc' | null = null
-  hevcTimer: number | null = null
-  frameCallback: number | null = null
+  stopHevcWatch: (() => void) | null = null
   sound = new PlaybackSound()
   soundOn = false
   soundState: SoundState = 'off'
@@ -136,15 +135,8 @@ export class StreamPlayer {
   }
 
   clearHevcWatch() {
-    if (this.hevcTimer) {
-      window.clearTimeout(this.hevcTimer)
-      this.hevcTimer = null
-    }
-    const video = this.video as HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void }
-    if (this.frameCallback !== null && video.cancelVideoFrameCallback) {
-      video.cancelVideoFrameCallback(this.frameCallback)
-    }
-    this.frameCallback = null
+    if (this.stopHevcWatch) this.stopHevcWatch()
+    this.stopHevcWatch = null
   }
 
   setSoundState(next: SoundState) {
@@ -317,7 +309,7 @@ export class StreamPlayer {
     try {
       buffer.appendBuffer(next as BufferSource)
     } catch (error) {
-      if (this.transport === 'hevc' && this.hevcTimer) {
+      if (this.transport === 'hevc' && this.stopHevcWatch) {
         this.fallBack('the H.265 fragment was refused')
         return
       }
@@ -361,27 +353,15 @@ export class StreamPlayer {
   }
 
   watchHevc(media: MediaSource, shape: StreamShape) {
-    const video = this.video as HTMLVideoElement & { requestVideoFrameCallback?: (callback: () => void) => number }
-    const confirm = () => {
-      if (this.media !== media || this.transport !== 'hevc') return
-      this.clearHevcWatch()
-      rememberHevc('yes', shape)
-    }
-    if (video.requestVideoFrameCallback) {
-      this.frameCallback = video.requestVideoFrameCallback(confirm)
-    } else {
-      video.addEventListener('loadeddata', confirm, { once: true })
-    }
-    video.addEventListener(
-      'error',
-      () => {
-        if (this.media === media && this.transport === 'hevc') this.fallBack('the video element failed to decode')
+    this.stopHevcWatch = watchFirstFrame(
+      this.video,
+      () => this.media === media && this.transport === 'hevc',
+      (ok, reason) => {
+        this.stopHevcWatch = null
+        if (ok) rememberHevc('yes', shape)
+        else this.fallBack(reason)
       },
-      { once: true },
     )
-    this.hevcTimer = window.setTimeout(() => {
-      if (this.media === media && this.transport === 'hevc') this.fallBack('no frame decoded within ' + HEVC_FIRST_FRAME_MS / 1000 + ' s')
-    }, HEVC_FIRST_FRAME_MS)
   }
 
   onHello(media: MediaSource, text: string) {

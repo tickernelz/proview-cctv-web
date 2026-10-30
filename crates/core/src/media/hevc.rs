@@ -191,6 +191,7 @@ pub struct Sps {
     pub chroma_format_idc: u8,
     pub bit_depth_luma: u8,
     pub bit_depth_chroma: u8,
+    pub max_num_reorder: Option<u32>,
 }
 
 struct Bits<'a> {
@@ -339,6 +340,7 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, String> {
     let bit_depth_chroma = u8::try_from(bits.ue().ok_or("sps ended before the chroma depth")?)
         .unwrap_or(8)
         .saturating_add(8);
+    let max_num_reorder = read_reorder(&mut bits, max_sub_layers);
     Ok(Sps {
         profile,
         width,
@@ -346,7 +348,21 @@ pub fn parse_sps(nal: &[u8]) -> Result<Sps, String> {
         chroma_format_idc: chroma_format_idc as u8,
         bit_depth_luma,
         bit_depth_chroma,
+        max_num_reorder,
     })
+}
+
+fn read_reorder(bits: &mut Bits<'_>, max_sub_layers: u32) -> Option<u32> {
+    bits.ue()?;
+    let every_layer = bits.u(1)? == 1;
+    let first = if every_layer { 0 } else { max_sub_layers };
+    let mut reorder = 0;
+    for _ in first..=max_sub_layers {
+        bits.ue()?;
+        reorder = bits.ue()?;
+        bits.ue()?;
+    }
+    Some(reorder)
 }
 
 pub fn codec_string(profile: &ProfileTierLevel) -> String {
@@ -648,6 +664,7 @@ mod tests {
                 chroma_format_idc: 1,
                 bit_depth_luma: 8,
                 bit_depth_chroma: 8,
+                max_num_reorder: Some(0),
             },
             &[0x40, 0x01, 0x0c, 0x01],
             &sps_nal,

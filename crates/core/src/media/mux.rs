@@ -1,4 +1,4 @@
-use crate::dvrip::playback::{snap_rate, FrameRate, Record, RecordKind};
+use crate::dvrip::playback::{codec_of, is_video, snap_rate, FrameRate, Record, RecordKind};
 use crate::media::fmp4::{
     build_avcc, fragmented_init, ftyp, full_box, media_segment, movie, visual_sample_entry, Sample,
     MOVIE_TIMESCALE, TIMESCALE,
@@ -11,6 +11,7 @@ pub struct VideoConfig {
     pub codec_string: String,
     pub width: u32,
     pub height: u32,
+    pub reorders: bool,
     sample_entry: Vec<u8>,
 }
 
@@ -23,6 +24,7 @@ impl VideoConfig {
             codec_string: hevc::codec_string(&parsed.profile),
             width: parsed.width,
             height: parsed.height,
+            reorders: parsed.max_num_reorder.is_none_or(|frames| frames > 0),
             sample_entry: visual_sample_entry(b"hvc1", parsed.width, parsed.height, b"hvcC", &hvcc),
         })
     }
@@ -44,6 +46,7 @@ impl VideoConfig {
             ),
             width,
             height,
+            reorders: parsed.may_reorder,
             sample_entry: visual_sample_entry(
                 b"avc1",
                 width,
@@ -79,10 +82,6 @@ impl VideoConfig {
     pub fn fragmented_init(&self) -> Vec<u8> {
         fragmented_init(self.width, self.height, &self.sample_entry)
     }
-
-    pub fn progressive(&self, samples: &[Sample]) -> Vec<u8> {
-        progressive(self, samples)
-    }
 }
 
 fn nal_kind(codec: Codec, nal: &[u8]) -> Option<u8> {
@@ -100,17 +99,25 @@ fn out_of_band(codec: Codec, kind: u8) -> bool {
     }
 }
 
-pub fn is_keyframe(codec: Codec, nals: &[Vec<u8>]) -> bool {
-    nals.iter().any(|nal| match (codec, nal_kind(codec, nal)) {
-        (Codec::H265, Some(kind)) => (16..=21).contains(&kind),
-        (Codec::H264, Some(kind)) => kind == 5,
-        _ => false,
-    })
+pub fn is_keyframe<N: AsRef<[u8]>>(codec: Codec, nals: &[N]) -> bool {
+    nals.iter()
+        .any(|nal| match (codec, nal_kind(codec, nal.as_ref())) {
+            (Codec::H265, Some(kind)) => (16..=21).contains(&kind),
+            (Codec::H264, Some(kind)) => kind == 5,
+            _ => false,
+        })
 }
 
-pub fn sample_data(codec: Codec, nals: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(nals.iter().map(|nal| nal.len() + 4).sum());
+pub fn sample_data<N: AsRef<[u8]>>(codec: Codec, nals: &[N]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nals.iter().map(|nal| nal.as_ref().len() + 4).sum());
+    append_sample(codec, nals, &mut out);
+    out
+}
+
+fn append_sample<N: AsRef<[u8]>>(codec: Codec, nals: &[N], out: &mut Vec<u8>) -> usize {
+    let start = out.len();
     for nal in nals {
+        let nal = nal.as_ref();
         let Some(kind) = nal_kind(codec, nal) else {
             continue;
         };
@@ -120,7 +127,14 @@ pub fn sample_data(codec: Codec, nals: &[Vec<u8>]) -> Vec<u8> {
         out.extend_from_slice(&(nal.len() as u32).to_be_bytes());
         out.extend_from_slice(nal);
     }
-    out
+    out.len() - start
+}
+
+fn units(bytes: &[u8]) -> Vec<&[u8]> {
+    crate::media::nal::split_annexb(bytes)
+        .into_iter()
+        .map(|unit| unit.data)
+        .collect()
 }
 
 pub fn split_annexb(bytes: &[u8]) -> Vec<Vec<u8>> {
@@ -244,55 +258,222 @@ impl LiveRate {
     }
 }
 
-pub fn clip_rate(records: &[Record]) -> (f64, &'static str) {
-    let mut frames = 0usize;
-    let mut first: Option<(i64, usize)> = None;
-    let mut last: Option<(i64, usize)> = None;
-    let mut header = None;
-    for record in records {
-        if !matches!(record.kind, RecordKind::Key | RecordKind::Delta) {
-            continue;
-        }
+#[derive(Debug, Default)]
+struct ClipRate {
+    frames: usize,
+    first: Option<(i64, usize)>,
+    last: Option<(i64, usize)>,
+    header: Option<u8>,
+}
+
+impl ClipRate {
+    fn observe(&mut self, record: &Record) {
         if record.kind == RecordKind::Key {
-            if header.is_none() {
-                header = record.rate.filter(|fps| (1..=60).contains(fps));
+            if self.header.is_none() {
+                self.header = record.rate.filter(|fps| (1..=60).contains(fps));
             }
             if let Some(seconds) = record.stamp.and_then(crate::dvrip::playback::stamp_seconds) {
-                if first.is_none() {
-                    first = Some((seconds, frames));
+                if self.first.is_none() {
+                    self.first = Some((seconds, self.frames));
                 }
-                last = Some((seconds, frames));
+                self.last = Some((seconds, self.frames));
             }
         }
-        frames += 1;
+        self.frames += 1;
     }
-    if let (Some((start, at_start)), Some((end, at_end))) = (first, last) {
-        let span = end - start;
-        if span >= 2 {
-            let measured = (at_end - at_start) as f64 / span as f64;
-            if (1.0..=60.0).contains(&measured) {
-                return (snap_rate(measured), "stamps");
+
+    fn rate(&self) -> (f64, &'static str) {
+        if let (Some((start, at_start)), Some((end, at_end))) = (self.first, self.last) {
+            let span = end - start;
+            if span >= 2 {
+                let measured = (at_end - at_start) as f64 / span as f64;
+                if (1.0..=60.0).contains(&measured) {
+                    return (snap_rate(measured), "stamps");
+                }
             }
         }
-    }
-    match header {
-        Some(fps) => (f64::from(fps), "header"),
-        None => (DEFAULT_RATE, "default"),
+        match self.header {
+            Some(fps) => (f64::from(fps), "header"),
+            None => (DEFAULT_RATE, "default"),
+        }
     }
 }
 
-pub fn progressive(config: &VideoConfig, samples: &[Sample]) -> Vec<u8> {
-    let media_duration: u64 = samples
-        .iter()
-        .map(|sample| u64::from(sample.duration))
-        .sum();
+pub fn clip_rate(records: &[Record]) -> (f64, &'static str) {
+    let mut rate = ClipRate::default();
+    for record in records.iter().filter(|record| is_video(record)) {
+        rate.observe(record);
+    }
+    rate.rate()
+}
+
+enum ClipState {
+    Waiting,
+    Mux(VideoConfig),
+    Raw(Codec),
+}
+
+pub struct ClipMux {
+    state: ClipState,
+    rate: ClipRate,
+    bytes: Vec<u8>,
+    sizes: Vec<u32>,
+    keys: Vec<u32>,
+}
+
+#[derive(Debug)]
+pub struct ClipFile {
+    pub bytes: Vec<u8>,
+    pub codec: Codec,
+    pub muxed: bool,
+    pub frames: usize,
+    pub fps: f64,
+    pub fps_source: &'static str,
+    pub seconds: f64,
+}
+
+const MDAT_HEADER: usize = 16;
+
+impl ClipMux {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            state: ClipState::Waiting,
+            rate: ClipRate::default(),
+            bytes: Vec::with_capacity(capacity),
+            sizes: Vec::new(),
+            keys: Vec::new(),
+        }
+    }
+
+    pub fn held(&self) -> usize {
+        self.bytes.len()
+    }
+
+    pub fn push(&mut self, record: Record) {
+        if !is_video(&record) {
+            return;
+        }
+        self.rate.observe(&record);
+        if matches!(self.state, ClipState::Waiting) {
+            if record.kind != RecordKind::Key {
+                return;
+            }
+            let owned = split_annexb(&record.bytes);
+            let Some(codec) = codec_of(&owned) else {
+                return;
+            };
+            let Ok(config) = VideoConfig::from_nals(codec, &owned) else {
+                return;
+            };
+            if config.reorders {
+                self.state = ClipState::Raw(codec);
+            } else {
+                self.bytes.extend(ftyp(brands(codec)));
+                self.bytes.extend_from_slice(&[0, 0, 0, 1]);
+                self.bytes.extend_from_slice(b"mdat");
+                self.bytes.extend_from_slice(&[0u8; 8]);
+                self.state = ClipState::Mux(config);
+            }
+        }
+        match &self.state {
+            ClipState::Waiting => {}
+            ClipState::Raw(_) => self.bytes.extend_from_slice(&record.bytes),
+            ClipState::Mux(config) => {
+                let codec = config.codec;
+                let nals = units(&record.bytes);
+                let keyframe = is_keyframe(codec, &nals);
+                if self.sizes.is_empty() && !keyframe {
+                    return;
+                }
+                let size = append_sample(codec, &nals, &mut self.bytes);
+                if size == 0 {
+                    return;
+                }
+                self.sizes.push(size as u32);
+                if keyframe {
+                    self.keys.push(self.sizes.len() as u32);
+                }
+            }
+        }
+    }
+
+    pub fn finish(self) -> Result<ClipFile, String> {
+        let (fps, fps_source) = self.rate.rate();
+        let ClipMux {
+            state,
+            mut bytes,
+            sizes,
+            keys,
+            ..
+        } = self;
+        match state {
+            ClipState::Waiting => Err(
+                "the clip carries no keyframe with parameter sets, so its codec is unknown"
+                    .to_string(),
+            ),
+            ClipState::Raw(codec) => Ok(ClipFile {
+                bytes,
+                codec,
+                muxed: false,
+                frames: 0,
+                fps,
+                fps_source,
+                seconds: 0.0,
+            }),
+            ClipState::Mux(config) => {
+                if sizes.is_empty() {
+                    return Err("the clip holds no keyframe".to_string());
+                }
+                let head = ftyp(brands(config.codec)).len();
+                let payload = (bytes.len() - head) as u64;
+                bytes[head + 8..head + MDAT_HEADER].copy_from_slice(&payload.to_be_bytes());
+                let mut ticks = Ticks::default();
+                let durations: Vec<u32> = sizes.iter().map(|_| ticks.next(fps)).collect();
+                let moov = progressive_moov(
+                    &config,
+                    &sizes,
+                    &durations,
+                    &keys,
+                    (head + MDAT_HEADER) as u64,
+                );
+                bytes.extend(moov);
+                let frames = sizes.len();
+                Ok(ClipFile {
+                    bytes,
+                    codec: config.codec,
+                    muxed: true,
+                    frames,
+                    fps,
+                    fps_source,
+                    seconds: frames as f64 / fps,
+                })
+            }
+        }
+    }
+}
+
+fn brands(codec: Codec) -> &'static [u8] {
+    match codec {
+        Codec::H265 => b"isomiso2hvc1mp41",
+        Codec::H264 => b"isomiso2avc1mp41",
+    }
+}
+
+pub fn progressive_moov(
+    config: &VideoConfig,
+    sizes: &[u32],
+    durations: &[u32],
+    keys: &[u32],
+    offset: u64,
+) -> Vec<u8> {
+    let media_duration: u64 = durations.iter().map(|duration| u64::from(*duration)).sum();
     let movie_duration = media_duration * u64::from(MOVIE_TIMESCALE) / u64::from(TIMESCALE);
 
     let mut stts_runs: Vec<(u32, u32)> = Vec::new();
-    for sample in samples {
+    for duration in durations {
         match stts_runs.last_mut() {
-            Some((count, delta)) if *delta == sample.duration => *count += 1,
-            _ => stts_runs.push((1, sample.duration)),
+            Some((count, delta)) if delta == duration => *count += 1,
+            _ => stts_runs.push((1, *duration)),
         }
     }
     let mut stts = Vec::with_capacity(4 + stts_runs.len() * 8);
@@ -302,88 +483,53 @@ pub fn progressive(config: &VideoConfig, samples: &[Sample]) -> Vec<u8> {
         stts.extend_from_slice(&delta.to_be_bytes());
     }
 
-    let keys: Vec<u32> = samples
-        .iter()
-        .enumerate()
-        .filter(|(_, sample)| sample.keyframe)
-        .map(|(index, _)| index as u32 + 1)
-        .collect();
     let mut stss = Vec::with_capacity(4 + keys.len() * 4);
     stss.extend_from_slice(&(keys.len() as u32).to_be_bytes());
-    for key in &keys {
+    for key in keys {
         stss.extend_from_slice(&key.to_be_bytes());
     }
 
+    let chunks: u32 = u32::from(!sizes.is_empty());
     let mut stsc = Vec::new();
-    let chunks: u32 = u32::from(!samples.is_empty());
     stsc.extend_from_slice(&chunks.to_be_bytes());
     if chunks == 1 {
         stsc.extend_from_slice(&1u32.to_be_bytes());
-        stsc.extend_from_slice(&(samples.len() as u32).to_be_bytes());
+        stsc.extend_from_slice(&(sizes.len() as u32).to_be_bytes());
         stsc.extend_from_slice(&1u32.to_be_bytes());
     }
 
-    let mut stsz = Vec::with_capacity(8 + samples.len() * 4);
+    let mut stsz = Vec::with_capacity(8 + sizes.len() * 4);
     stsz.extend_from_slice(&0u32.to_be_bytes());
-    stsz.extend_from_slice(&(samples.len() as u32).to_be_bytes());
-    for sample in samples {
-        stsz.extend_from_slice(&(sample.data.len() as u32).to_be_bytes());
+    stsz.extend_from_slice(&(sizes.len() as u32).to_be_bytes());
+    for size in sizes {
+        stsz.extend_from_slice(&size.to_be_bytes());
     }
 
-    let payload: u64 = samples.iter().map(|sample| sample.data.len() as u64).sum();
-    let brands: &[u8] = match config.codec {
-        Codec::H265 => b"isomiso2hvc1mp41",
-        Codec::H264 => b"isomiso2avc1mp41",
-    };
-    let head = ftyp(brands);
-    let build = |offset: u64| -> Vec<u8> {
-        let mut stsd = Vec::new();
-        stsd.extend_from_slice(&1u32.to_be_bytes());
-        stsd.extend_from_slice(&config.sample_entry);
-        let mut stbl = full_box(b"stsd", 0, 0, &stsd);
-        stbl.extend(full_box(b"stts", 0, 0, &stts));
-        if keys.len() < samples.len() {
-            stbl.extend(full_box(b"stss", 0, 0, &stss));
-        }
-        stbl.extend(full_box(b"stsc", 0, 0, &stsc));
-        stbl.extend(full_box(b"stsz", 0, 0, &stsz));
-        let mut co64 = Vec::new();
-        co64.extend_from_slice(&chunks.to_be_bytes());
-        if chunks == 1 {
-            co64.extend_from_slice(&offset.to_be_bytes());
-        }
-        stbl.extend(full_box(b"co64", 0, 0, &co64));
-        movie(
-            config.width,
-            config.height,
-            u32::try_from(movie_duration).unwrap_or(u32::MAX),
-            u32::try_from(media_duration).unwrap_or(u32::MAX),
-            &stbl,
-            None,
-        )
-    };
-    let probe = build(0);
-    let large = payload + 8 > u64::from(u32::MAX);
-    let mdat_header = if large { 16 } else { 8 };
-    let offset = (head.len() + probe.len()) as u64 + mdat_header;
-    let moov = build(offset);
+    let mut co64 = Vec::new();
+    co64.extend_from_slice(&chunks.to_be_bytes());
+    if chunks == 1 {
+        co64.extend_from_slice(&offset.to_be_bytes());
+    }
 
-    let mut out =
-        Vec::with_capacity(head.len() + moov.len() + mdat_header as usize + payload as usize);
-    out.extend(head);
-    out.extend(moov);
-    if large {
-        out.extend_from_slice(&1u32.to_be_bytes());
-        out.extend_from_slice(b"mdat");
-        out.extend_from_slice(&(payload + 16).to_be_bytes());
-    } else {
-        out.extend_from_slice(&((payload + 8) as u32).to_be_bytes());
-        out.extend_from_slice(b"mdat");
+    let mut stsd = Vec::new();
+    stsd.extend_from_slice(&1u32.to_be_bytes());
+    stsd.extend_from_slice(&config.sample_entry);
+    let mut stbl = full_box(b"stsd", 0, 0, &stsd);
+    stbl.extend(full_box(b"stts", 0, 0, &stts));
+    if keys.len() < sizes.len() {
+        stbl.extend(full_box(b"stss", 0, 0, &stss));
     }
-    for sample in samples {
-        out.extend_from_slice(&sample.data);
-    }
-    out
+    stbl.extend(full_box(b"stsc", 0, 0, &stsc));
+    stbl.extend(full_box(b"stsz", 0, 0, &stsz));
+    stbl.extend(full_box(b"co64", 0, 0, &co64));
+    movie(
+        config.width,
+        config.height,
+        u32::try_from(movie_duration).unwrap_or(u32::MAX),
+        u32::try_from(media_duration).unwrap_or(u32::MAX),
+        &stbl,
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -420,6 +566,11 @@ mod tests {
                 data[index + 2],
                 data[index + 3],
             ]) as usize;
+            let size = if size == 1 {
+                u64::from_be_bytes(data[index + 8..index + 16].try_into().expect("u64")) as usize
+            } else {
+                size
+            };
             if size < 8 {
                 break;
             }
@@ -528,6 +679,17 @@ mod tests {
         let second = mux.push(sample(false));
         assert_eq!(second.len(), 1);
         assert!(!second[0].1);
+        let key_trun = find(&first[0].0, b"trun");
+        assert_eq!(word(&first[0].0, key_trun + 4), 0x0705);
+        assert_eq!(word(&first[0].0, key_trun + 16), 0x0200_0000);
+        assert_eq!(word(&first[0].0, key_trun + 28), 0x0200_0000);
+        let delta_trun = find(&second[0].0, b"trun");
+        assert_eq!(
+            word(&second[0].0, delta_trun + 16),
+            0x0101_0000,
+            "a delta must not open its fragment as a sync sample"
+        );
+        assert_eq!(word(&second[0].0, delta_trun + 28), 0x0101_0000);
         let tfdt = find(&second[0].0, b"tfdt");
         let base = u64::from_be_bytes(second[0].0[tfdt + 8..tfdt + 16].try_into().expect("u64"));
         assert_eq!(base, 7200);
@@ -639,26 +801,19 @@ mod tests {
 
     #[test]
     fn a_progressive_file_indexes_every_sample_and_its_duration() {
-        let config = VideoConfig::hevc(&vps(), &sps(), &pps()).expect("config");
-        let mut ticks = Ticks::default();
-        let samples: Vec<Sample> = (0..75)
-            .map(|index| Sample {
-                data: vec![
-                    0,
-                    0,
-                    0,
-                    2,
-                    if index % 25 == 0 { 0x26 } else { 0x02 },
-                    index as u8,
-                ],
-                duration: ticks.next(12.5),
-                keyframe: index % 25 == 0,
-            })
-            .collect();
-        let file = config.progressive(&samples);
+        let records = clip(75, 25, &sps());
+        let mut mux = ClipMux::new(1 << 16);
+        for record in records {
+            mux.push(record);
+        }
+        let clip = mux.finish().expect("clip");
+        assert!(clip.muxed);
+        assert_eq!(clip.frames, 75);
+        assert_eq!((clip.fps, clip.fps_source), (12.5, "stamps"));
+        let file = clip.bytes;
         let top = top_boxes(&file);
         let kinds: Vec<&str> = top.iter().map(|(kind, _, _)| kind.as_str()).collect();
-        assert_eq!(kinds, ["ftyp", "moov", "mdat"]);
+        assert_eq!(kinds, ["ftyp", "mdat", "moov"]);
         assert_eq!(top[2].1 + top[2].2, file.len());
         let mdhd = find(&file, b"mdhd");
         assert_eq!(word(&file, mdhd + 16), TIMESCALE);
@@ -681,8 +836,12 @@ mod tests {
         let co64 = find(&file, b"co64");
         let offset =
             u64::from_be_bytes(file[co64 + 12..co64 + 20].try_into().expect("u64")) as usize;
-        assert_eq!(offset, top[2].1 + 8);
-        assert_eq!(&file[offset..offset + 6], samples[0].data.as_slice());
+        assert_eq!(offset, top[1].1 + 16);
+        assert_eq!(&file[offset..offset + 7], &[0, 0, 0, 3, 0x26, 0x01, 0x80]);
+        assert_eq!(
+            &file[offset + 7..offset + 14],
+            &[0, 0, 0, 3, 0x02, 0x01, 0x81]
+        );
         let stts = find(&file, b"stts");
         let runs = word(&file, stts + 8) as usize;
         let total: u64 = (0..runs)
@@ -692,6 +851,117 @@ mod tests {
             })
             .sum();
         assert_eq!(total, 6 * u64::from(TIMESCALE));
+    }
+
+    fn annexb(nals: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for nal in nals {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(nal);
+        }
+        out
+    }
+
+    fn clip(frames: usize, gop: usize, sps: &[u8]) -> Vec<Record> {
+        (0..frames)
+            .map(|index| {
+                if index % gop == 0 {
+                    let second = (index as f64 / 12.5) as u32;
+                    Record {
+                        kind: RecordKind::Key,
+                        stamp: Some(packed(10, 0, second)),
+                        bytes: annexb(&[
+                            vps(),
+                            sps.to_vec(),
+                            pps(),
+                            vec![0x26, 0x01, 0x80 | index as u8],
+                        ]),
+                        rate: Some(12),
+                    }
+                } else {
+                    Record {
+                        kind: RecordKind::Delta,
+                        stamp: None,
+                        bytes: annexb(&[vec![0x02, 0x01, 0x80 | index as u8]]),
+                        rate: None,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_reordering_stream_is_kept_as_its_own_elementary_stream() {
+        let b_frames = hex(
+            "42010101600000030090000003000003003ca00a080f165959a4932bc05a020000030002000003003210",
+        );
+        let records = clip(30, 25, &b_frames);
+        let raw: Vec<u8> = records
+            .iter()
+            .flat_map(|record| record.bytes.clone())
+            .collect();
+        let mut mux = ClipMux::new(0);
+        mux.push(Record {
+            kind: RecordKind::Pad,
+            stamp: None,
+            bytes: vec![0xd5; 320],
+            rate: None,
+        });
+        for record in records {
+            mux.push(record);
+        }
+        let clip = mux.finish().expect("raw clip");
+        assert!(!clip.muxed);
+        assert_eq!(clip.codec, Codec::H265);
+        assert_eq!(clip.bytes, raw);
+    }
+
+    #[test]
+    fn a_clip_without_a_keyframe_is_refused_with_its_reason() {
+        let mut mux = ClipMux::new(0);
+        mux.push(Record {
+            kind: RecordKind::Delta,
+            stamp: None,
+            bytes: annexb(&[vec![0x02, 0x01, 0]]),
+            rate: None,
+        });
+        let error = mux.finish().expect_err("no keyframe");
+        assert!(error.contains("codec is unknown"), "{error}");
+    }
+
+    #[test]
+    fn b_frame_encoders_are_told_apart_from_the_camera_by_their_sps() {
+        let camera = VideoConfig::hevc(&vps(), &sps(), &pps()).expect("camera");
+        assert!(
+            !camera.reorders,
+            "the dual-lens camera declares no reordering"
+        );
+        let x265_b4 = VideoConfig::hevc(
+            &hex("40010c01ffff01600000030090000003000003003c959809"),
+            &hex("42010101600000030090000003000003003ca00a080f165959a4932bc05a020000030002000003003210"),
+            &hex("4401c172b46240"),
+        )
+        .expect("x265 bframes=4");
+        assert!(x265_b4.reorders);
+        let x265_b0 = VideoConfig::hevc(
+            &hex("40010c01ffff01600000030090000003000003003c928090"),
+            &hex("42010101600000030090000003000003003ca00a080f16592a4932bc05a02000000300200000030321"),
+            &hex("4401c172b46240"),
+        )
+        .expect("x265 bframes=0");
+        assert!(!x265_b0.reorders);
+        let x264_b3 = VideoConfig::h264(
+            &hex("6764000dacd94141fb011000000300100000030320f1429960"),
+            &hex("68ebe3cb22c0"),
+        )
+        .expect("x264 high bf=3");
+        assert!(x264_b3.reorders);
+        let x264_b0 = VideoConfig::h264(
+            &hex("674d400dd90141fb011000000300100000030320f142a480"),
+            &hex("68ebc3cb20"),
+        )
+        .expect("x264 main bf=0");
+        assert!(!x264_b0.reorders);
     }
 
     #[test]

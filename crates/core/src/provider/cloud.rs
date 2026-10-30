@@ -768,7 +768,7 @@ impl CloudProvider {
         }
         demux.take_audio();
         match key.mode {
-            crate::live::LiveMode::Passthrough => {
+            crate::live::LiveMode::Passthrough if passthrough_fits(&parameter_sets) => {
                 let config = crate::media::mux::VideoConfig::hevc(
                     &parameter_sets[0],
                     &parameter_sets[1],
@@ -826,7 +826,7 @@ impl CloudProvider {
                 );
                 Ok(true)
             }
-            crate::live::LiveMode::Transcode => {
+            _ => {
                 self.relay_transcode(
                     &hub,
                     &key,
@@ -926,6 +926,11 @@ impl CloudProvider {
     }
 }
 
+fn passthrough_fits(sets: &[Vec<u8>]) -> bool {
+    matches!(sets, [vps, sps, pps] if crate::media::mux::VideoConfig::hevc(vps, sps, pps)
+        .is_ok_and(|config| !config.reorders))
+}
+
 struct PassthroughRelay {
     mux: crate::source::HevcPassthrough,
     rate: crate::media::mux::LiveRate,
@@ -1003,6 +1008,18 @@ mod passthrough_tests {
             stamp: None,
             bytes,
         }
+    }
+
+    #[test]
+    fn only_a_stream_without_reordering_is_passed_through() {
+        assert!(super::passthrough_fits(&sets()));
+        let b_frames = [
+            hex("40010c01ffff01600000030090000003000003003c959809"),
+            hex("42010101600000030090000003000003003ca00a080f165959a4932bc05a020000030002000003003210"),
+            hex("4401c172b46240"),
+        ];
+        assert!(!super::passthrough_fits(&b_frames));
+        assert!(!super::passthrough_fits(&sets()[..2]));
     }
 
     #[tokio::test]

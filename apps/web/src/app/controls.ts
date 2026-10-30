@@ -2,7 +2,7 @@ import { api } from '../lib/api'
 import { live, type Gate } from '../live/store'
 import { renderCaption } from './caption'
 import { selectedDevice } from './devices'
-import { lensEntries, renderLensPicker } from './lens'
+import { currentCrop, lensEntries, renderLensPicker } from './lens'
 import { sessionLost } from './shell'
 import { state, type Device } from './state'
 
@@ -19,6 +19,11 @@ const CONTROL_FEATURE: Record<string, string> = {
   cruise: 'ptz patrol',
   intercom: 'two-way audio',
   move: 'ptz move',
+  aim: 'ptz aim',
+  zoom: 'ptz zoom',
+  focus: 'ptz focus',
+  presetEdit: 'ptz preset edit',
+  calibrate: 'ptz calibrate',
 }
 
 const CONTROL_ABSENT: Record<string, string> = {
@@ -115,17 +120,207 @@ export function setControlStatus(message: string) {
   live.pad.status = message || ''
 }
 
+type DevicePreset = { channel?: number; id: number; name?: string }
+type DeviceTourLine = { channel: number; id: number; name: string; points: { preset: number; seconds: number }[] }
+
+const LENS_ACTIONS = new Set(['zoom-in', 'zoom-out', 'focus-near', 'focus-far'])
+
+function showPresets(presets: { token: string; name?: string }[]) {
+  live.pad.presets = presets.map((preset) => ({ token: preset.token, name: preset.name || preset.token }))
+  live.pad.presetsShown = presets.length > 0
+}
+
+function editLines(lines: DeviceTourLine[]) {
+  live.pad.edit.lines = lines.map((line) => ({ channel: line.channel, id: line.id, name: line.name, points: line.points.map((point) => point.preset) }))
+}
+
+function showEditListing(presets: DevicePreset[], lines: DeviceTourLine[]) {
+  live.pad.edit.presets = presets.map((preset) => ({ token: String(preset.id), name: preset.name || 'Preset' + preset.id }))
+  editLines(lines)
+  live.pad.edit.loaded = true
+}
+
 async function loadPresets() {
   live.pad.presets = []
   live.pad.presetsShown = false
   const row = capabilityRow('ptz preset', movingLensName())
-  if (!row || row.state !== 'supported') return
+  const editable = live.gate.presetEdit.ok
+  if (!editable && (!row || row.state !== 'supported')) return
   try {
-    const presets = await api('/api/device/controls/presets' + deviceQuery('?'))
-    live.pad.presets = presets.map((preset: { token: string; name?: string }) => ({ token: preset.token, name: preset.name || preset.token }))
-    live.pad.presetsShown = presets.length > 0
+    showPresets(await api('/api/device/controls/presets' + deviceQuery('?')))
   } catch (error: any) {
     if (!sessionLost(error)) setControlStatus('Presets could not be read: ' + error.status + ' ' + error.message)
+  }
+}
+
+async function editCall(path: string, done: (body: any) => string) {
+  if (live.pad.busy) return
+  live.pad.busy = true
+  try {
+    const body = await api(path + deviceQuery(path.includes('?') ? '&' : '?'), { method: 'POST' })
+    if (Array.isArray(body.presets)) {
+      showEditListing(body.presets, Array.isArray(body.lines) ? body.lines : [])
+      loadPresets()
+    } else if (Array.isArray(body.lines)) {
+      editLines(body.lines)
+    }
+    setControlStatus(done(body))
+  } catch (error: any) {
+    if (!sessionLost(error)) setControlStatus('The camera refused: ' + error.status + ' ' + error.message)
+  } finally {
+    live.pad.busy = false
+  }
+}
+
+async function readEditListing(what: string) {
+  try {
+    const tour = await api('/api/device/controls/tour' + deviceQuery('?'))
+    showEditListing(Array.isArray(tour.presets) ? tour.presets : [], Array.isArray(tour.lines) ? tour.lines : [])
+  } catch (error: any) {
+    if (!sessionLost(error)) setControlStatus(what + ' could not be read: ' + error.status + ' ' + error.message)
+  }
+}
+
+export async function openEditor() {
+  live.pad.editing = !live.pad.editing
+  if (!live.pad.editing) return
+  live.pad.edit.loaded = false
+  live.pad.edit.presets = []
+  live.pad.edit.lines = []
+  await readEditListing('Presets and tours')
+}
+
+export function addPreset(name: string) {
+  return editCall('/api/device/controls/preset/add?name=' + encodeURIComponent(name.trim()), (body) => 'Saved this position as ' + body.name + ' (preset ' + body.id + ').')
+}
+
+export function renamePreset(token: string, name: string) {
+  if (!name.trim()) {
+    setControlStatus('A preset name cannot be blank.')
+    return Promise.resolve()
+  }
+  return editCall('/api/device/controls/preset/rename?token=' + encodeURIComponent(token) + '&name=' + encodeURIComponent(name.trim()), (body) => 'Renamed preset ' + body.id + ' to ' + body.name + '.')
+}
+
+export function deletePreset(token: string, name: string) {
+  if (!window.confirm('Are you sure you want to delete this preset? (' + name + ')')) return Promise.resolve()
+  return editCall('/api/device/controls/preset/delete?token=' + encodeURIComponent(token), (body) => 'Deleted ' + body.name + '.')
+}
+
+export function addTourStop(tour: number, preset: string, index: number) {
+  return editCall('/api/device/controls/tour/add?tour=' + tour + '&preset=' + encodeURIComponent(preset) + '&index=' + index, () => 'Added the stop to the tour.').then(() => readEditListing('The tour'))
+}
+
+export function removeTourStop(tour: number, preset: number) {
+  return editCall('/api/device/controls/tour/remove?tour=' + tour + '&preset=' + preset, () => 'Removed the stop from the tour.')
+}
+
+export function clearTour(tour: number) {
+  if (!window.confirm('Remove every stop from this tour?')) return Promise.resolve()
+  return editCall('/api/device/controls/tour/clear?tour=' + tour, () => 'Cleared the tour.').then(() => readEditListing('The tour'))
+}
+
+export function calibrate() {
+  if (!window.confirm('Calibrate the PTZ motor? The lens sweeps its full range and the picture moves for up to a minute.')) return Promise.resolve()
+  return editCall('/api/device/controls/ptz/calibrate', (body) => 'Calibration finished in ' + body.calibrate_ms + ' ms.')
+}
+
+export function holdsAction(action: string) {
+  return Boolean(state.control.dvrip) && (!state.control.onvif || LENS_ACTIONS.has(action))
+}
+
+let held: string | null = null
+let pressedAt = 0
+let pressing: Promise<boolean> = Promise.resolve(false)
+
+export function pressControl(action: string) {
+  if (!selectedDevice()) return
+  if (!holdsAction(action)) {
+    sendControl(action)
+    return
+  }
+  if (held === action) return
+  if (held) releaseControl()
+  held = action
+  pressedAt = performance.now()
+  setControlStatus('Moving ' + action + '; release to stop.')
+  const started = pressedAt
+  const previous = pressing
+  pressing = previous
+    .then(() => api('/api/device/controls/ptz/press?action=' + encodeURIComponent(action) + deviceQuery('&'), { method: 'POST' }))
+    .then(() => {
+      if (held === action) setControlStatus('Moving ' + action + ' (' + Math.round(performance.now() - started) + ' ms to start); release to stop.')
+      return true
+    })
+    .catch((error: any) => {
+      if (held === action) held = null
+      if (!sessionLost(error)) setControlStatus('The camera refused "' + action + '": ' + error.status + ' ' + error.message)
+      return false
+    })
+}
+
+export async function releaseControl() {
+  if (!held) return
+  const action = held
+  const pressedMs = Math.round(performance.now() - pressedAt)
+  held = null
+  const pressed = pressing
+  pressing = pressed.then(async (ok) => {
+    if (!ok) return false
+    const started = performance.now()
+    try {
+      const body = await api('/api/device/controls/ptz/release?pressed_ms=' + pressedMs + deviceQuery('&'), { method: 'POST' })
+      if (held === null) setControlStatus(body.held ? 'Stopped ' + action + ' after ' + pressedMs + ' ms (' + Math.round(performance.now() - started) + ' ms to stop).' : 'Stopped.')
+    } catch (error: any) {
+      if (!sessionLost(error)) setControlStatus('The stop for "' + action + '" failed: ' + error.status + ' ' + error.message)
+    }
+    return false
+  })
+  await pressing
+}
+
+export function releaseOnExit() {
+  if (!held) return
+  const pressedMs = Math.round(performance.now() - pressedAt)
+  held = null
+  navigator.sendBeacon('/api/device/controls/ptz/release?pressed_ms=' + pressedMs + deviceQuery('&'))
+}
+
+export function tapControl(action: string) {
+  pressControl(action)
+  if (holdsAction(action)) releaseControl()
+}
+
+function aimLens() {
+  const entries = lensEntries()
+  return entries.find((entry) => entry.role === 'fixed') || entries.find((entry) => entry.rawLabel === 'top') || null
+}
+
+export async function aimAt(event: MouseEvent) {
+  if (!live.padOpen || !live.gate.aim.ok || !selectedDevice()) return
+  const frame = event.currentTarget as HTMLElement
+  const box = frame.getBoundingClientRect()
+  if (!box.width || !box.height) return
+  let x = (event.clientX - box.left) / box.width
+  let y = (event.clientY - box.top) / box.height
+  if (live.stage.crop.flipped === 'true') {
+    x = 1 - x
+    y = 1 - y
+  }
+  const crop = currentCrop()
+  const lens = aimLens()
+  if (!lens) return
+  const u = (crop.x + x * crop.w - lens.crop.x) / lens.crop.w
+  const v = (crop.y + y * crop.h - lens.crop.y) / lens.crop.h
+  if (u < 0 || u > 1 || v < 0 || v > 1) {
+    setControlStatus('Click inside the ' + lens.label.toLowerCase() + ' picture to aim the moving lens there.')
+    return
+  }
+  try {
+    const body = await api('/api/device/controls/ptz/locate?x=' + u.toFixed(4) + '&y=' + v.toFixed(4) + deviceQuery('&'), { method: 'POST' })
+    setControlStatus('Aiming at ' + Math.round(u * 100) + '% across, ' + Math.round(v * 100) + '% down (offset ' + body.xoffset + ', ' + body.yoffset + ').')
+  } catch (error: any) {
+    if (!sessionLost(error)) setControlStatus('The camera refused the aim: ' + error.status + ' ' + error.message)
   }
 }
 
@@ -210,8 +405,10 @@ function openPad() {
 
 export function closePad() {
   if (!state.padOpen) return
+  releaseControl()
   state.padOpen = false
   live.padOpen = false
+  live.pad.editing = false
   renderCaption()
 }
 

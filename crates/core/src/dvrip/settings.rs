@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -70,11 +71,11 @@ impl WriteWindow {
         }
     }
 
-    fn dir(&self) -> &Path {
+    pub(crate) fn dir(&self) -> &Path {
         &self.backup_dir
     }
 
-    fn window(&self) -> std::time::Duration {
+    pub(crate) fn window(&self) -> std::time::Duration {
         self.timeout
     }
 }
@@ -123,14 +124,14 @@ impl std::error::Error for SettingsError {}
 
 static NULL_BLOCK: Value = Value::Null;
 
-fn first_entry(block: &Value) -> (&Value, &'static str) {
+pub(crate) fn first_entry(block: &Value) -> (&Value, &'static str) {
     match block {
         Value::Array(items) => (items.first().unwrap_or(&NULL_BLOCK), "0."),
         _ => (block, ""),
     }
 }
 
-fn number(value: &Value, key: &str) -> Option<i64> {
+pub(crate) fn number(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(|item| {
         item.as_i64()
             .or_else(|| item.as_f64().map(|float| float as i64))
@@ -138,17 +139,17 @@ fn number(value: &Value, key: &str) -> Option<i64> {
     })
 }
 
-fn text(value: &Value, key: &str) -> Option<String> {
+pub(crate) fn text(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
-fn boolean(value: &Value, key: &str) -> Option<bool> {
+pub(crate) fn boolean(value: &Value, key: &str) -> Option<bool> {
     value
         .get(key)
         .and_then(|item| item.as_bool().or_else(|| item.as_i64().map(|n| n != 0)))
 }
 
-fn at<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
+pub(crate) fn at<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     let mut cursor = value;
     for segment in path.split('.') {
         cursor = match cursor {
@@ -160,7 +161,7 @@ fn at<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     Some(cursor)
 }
 
-fn slot<'a>(value: &'a mut Value, path: &str) -> Option<&'a mut Value> {
+pub(crate) fn slot<'a>(value: &'a mut Value, path: &str) -> Option<&'a mut Value> {
     let mut cursor = value;
     for segment in path.split('.') {
         cursor = match cursor {
@@ -203,7 +204,7 @@ fn hidden(key: &str) -> bool {
         || lower == "user"
 }
 
-fn redact(value: &Value) -> Value {
+pub(crate) fn redact(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
@@ -249,7 +250,7 @@ impl WriteReport {
     }
 }
 
-fn describe(changes: &[FieldChange]) -> String {
+pub(crate) fn describe(changes: &[FieldChange]) -> String {
     let drift: Vec<String> = changes
         .iter()
         .filter(|change| !change.matches)
@@ -263,7 +264,7 @@ fn describe(changes: &[FieldChange]) -> String {
     drift.join("; ")
 }
 
-fn compare(
+pub(crate) fn compare(
     fields: &[String],
     prior: &Value,
     desired: &Value,
@@ -333,20 +334,56 @@ fn private_file(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
-fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, SettingsError> {
+static BACKUP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const BACKUP_ATTEMPTS: usize = 16;
+
+fn backup_path(dir: &Path, name: &str, at_ms: u128) -> PathBuf {
+    let sequence = BACKUP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        "config-backup-{}-{at_ms}-{}-{sequence}.json",
+        slug(name),
+        std::process::id()
+    ))
+}
+
+fn create_backup(
+    dir: &Path,
+    name: &str,
+    at_ms: u128,
+) -> Result<(PathBuf, fs::File), SettingsError> {
+    let mut last = None;
+    for _ in 0..BACKUP_ATTEMPTS {
+        let path = backup_path(dir, name, at_ms);
+        match private_file(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                last = Some((path, error))
+            }
+            Err(error) => {
+                return Err(SettingsError::Backup {
+                    path: path.display().to_string(),
+                    detail: error.to_string(),
+                })
+            }
+        }
+    }
+    let (path, error) = last.expect("at least one attempt ran");
+    Err(SettingsError::Backup {
+        path: path.display().to_string(),
+        detail: error.to_string(),
+    })
+}
+
+pub(crate) fn backup_file(name: &str, value: &Value, dir: &Path) -> Result<PathBuf, SettingsError> {
     private_dir(dir)?;
     let at_ms = stamp();
-    let path = dir.join(format!("config-backup-{}-{at_ms}.json", slug(name)));
+    let (path, mut file) = create_backup(dir, name, at_ms)?;
     let body = json!({
         "block": name,
         "captured_at_ms": at_ms,
         "value": value,
     });
     let text = serde_json::to_string_pretty(&body).map_err(|error| SettingsError::Backup {
-        path: path.display().to_string(),
-        detail: error.to_string(),
-    })?;
-    let mut file = private_file(&path).map_err(|error| SettingsError::Backup {
         path: path.display().to_string(),
         detail: error.to_string(),
     })?;
@@ -423,6 +460,16 @@ pub struct EncodeState {
     pub main: VideoFormat,
     pub extra: VideoFormat,
     pub snap: VideoFormat,
+}
+
+impl EncodeState {
+    pub fn from_block(block: &Value) -> Self {
+        Self {
+            main: VideoFormat::read(block, "MainFormat"),
+            extra: VideoFormat::read(block, "ExtraFormat"),
+            snap: VideoFormat::read(block, "SnapFormat"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -521,22 +568,16 @@ impl OverwriteMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct Partition {
-    pub index: usize,
-    pub current: Option<bool>,
-    pub status: Option<i64>,
-    pub total_space: Option<String>,
-    pub remain_space: Option<String>,
-    pub start: Option<String>,
-    pub end: Option<String>,
-}
+pub use super::storage_card::{CardUsage, Partition};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StorageState {
     pub partitions: Vec<Partition>,
+    pub usage: CardUsage,
+    pub percent_view: bool,
     pub overwrite: Option<String>,
     pub record_mode: Option<String>,
+    pub missing_alarm: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -598,7 +639,7 @@ impl Connection {
             })
     }
 
-    async fn setting_block_within(
+    pub(crate) async fn setting_block_within(
         &mut self,
         name: &'static str,
         window: std::time::Duration,
@@ -626,7 +667,7 @@ impl Connection {
         Ok(())
     }
 
-    async fn commit_block(
+    pub(crate) async fn commit_block(
         &mut self,
         name: &'static str,
         value: &Value,
@@ -646,7 +687,7 @@ impl Connection {
             })?
     }
 
-    async fn discard_late_replies(&mut self) {
+    pub async fn discard_late_replies(&mut self) {
         for _ in 0..4 {
             match tokio::time::timeout(std::time::Duration::from_millis(80), self.recv()).await {
                 Ok(Ok((_, _))) => continue,
@@ -776,11 +817,7 @@ impl Connection {
 
     pub async fn encode_state(&mut self) -> Result<EncodeState, SettingsError> {
         let block = self.setting_block(ENCODE_BLOCK).await?;
-        Ok(EncodeState {
-            main: VideoFormat::read(&block, "MainFormat"),
-            extra: VideoFormat::read(&block, "ExtraFormat"),
-            snap: VideoFormat::read(&block, "SnapFormat"),
-        })
+        Ok(EncodeState::from_block(&block))
     }
 
     pub async fn encode_state_within(
@@ -810,6 +847,33 @@ impl Connection {
         let before = self
             .setting_block_within(ENCODE_BLOCK, write.window())
             .await?;
+        if patch.fps.is_some() || patch.resolution.is_some() {
+            let current = EncodeState::from_block(&before);
+            let view =
+                match tokio::time::timeout(write.window(), self.encode_capability_view(&current))
+                    .await
+                {
+                    Ok(view) => view,
+                    Err(_) => {
+                        self.discard_late_replies().await;
+                        return Err(SettingsError::Slow {
+                            block: super::encode_osd::ENCODE_CAPABILITY,
+                            detail: "the capability read before the write never came".to_string(),
+                        });
+                    }
+                };
+            let format = match stream {
+                Stream::Main => &current.main,
+                Stream::Extra => &current.extra,
+            };
+            super::encode_osd::check_encode(
+                &view,
+                stream,
+                format,
+                patch.fps,
+                patch.resolution.as_deref(),
+            )?;
+        }
         let mut desired = before.clone();
         let (_, prefix) = first_entry(&before);
         let base = format!("{prefix}{}.Video", stream.key());
@@ -850,7 +914,7 @@ impl Connection {
         let dns = self.setting_block(DNS_BLOCK).await.ok();
         Ok(NetworkState {
             host_ip: text(common, "HostIP"),
-            submask: text(common, "SubMask"),
+            submask: text(common, "SubMask").or_else(|| text(common, "Submask")),
             gateway: text(common, "GateWay"),
             mac: text(common, "MAC"),
             dhcp,
@@ -922,35 +986,9 @@ impl Connection {
     }
 
     pub async fn storage_state(&mut self) -> Result<StorageState, SettingsError> {
-        let raw = match self.system_block(STORAGE_BLOCK).await {
-            Ok(value) => value,
-            Err(SettingsError::Device(DvrError::Rejected { .. })) => Value::Null,
-            Err(error) => return Err(error),
-        };
-        let first = if raw.is_array() {
-            raw.get(0).cloned().unwrap_or(Value::Null)
-        } else {
-            raw
-        };
-        let partitions = first
-            .get("Partition")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, item)| Partition {
-                        index,
-                        current: boolean(item, "IsCurrent"),
-                        status: number(item, "Status"),
-                        total_space: text(item, "TotalSpace"),
-                        remain_space: text(item, "RemainSpace"),
-                        start: text(item, "OldStartTime"),
-                        end: text(item, "OldEndTime"),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let raw = self.storage_raw().await?;
+        let partitions = super::storage_card::partitions(&raw);
+        let usage = super::storage_card::card_usage(&raw);
         let overwrite = self
             .setting_block(GENERAL_BLOCK)
             .await
@@ -967,10 +1005,18 @@ impl Connection {
                 let (entry, _) = first_entry(&value);
                 text(entry, "RecordMode")
             });
+        let features = self.system_function().await;
+        let missing_alarm = self.storage_missing_alarm().await;
         Ok(StorageState {
             partitions,
+            usage,
+            percent_view: super::storage_card::feature(
+                &features,
+                super::storage_card::PERCENT_VIEW,
+            ),
             overwrite,
             record_mode,
+            missing_alarm,
         })
     }
 
@@ -1214,5 +1260,61 @@ mod tests {
     fn a_backup_name_is_a_flat_file_for_any_block_name() {
         assert_eq!(slug("Simplify.Encode"), "simplify-encode");
         assert_eq!(slug("NetWork.NetCommon"), "network-netcommon");
+    }
+
+    #[test]
+    fn concurrent_backups_of_one_block_never_share_a_file() {
+        const WRITERS: usize = 64;
+        let dir = std::env::temp_dir().join(format!(
+            "pvw-backup-names-{}-{}",
+            std::process::id(),
+            stamp()
+        ));
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(WRITERS));
+        let handles: Vec<_> = (0..WRITERS)
+            .map(|writer| {
+                let dir = dir.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    gate.wait();
+                    backup_file("Simplify.Encode", &json!({ "writer": writer }), &dir)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        let failures: Vec<String> = results
+            .iter()
+            .filter_map(|result| result.as_ref().err().map(ToString::to_string))
+            .collect();
+        let paths: std::collections::BTreeSet<PathBuf> =
+            results.into_iter().filter_map(Result::ok).collect();
+        let files = fs::read_dir(&dir)
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        let writers: std::collections::BTreeSet<i64> = paths
+            .iter()
+            .map(|path| {
+                let text = fs::read_to_string(path).unwrap();
+                serde_json::from_str::<Value>(&text).unwrap()["value"]["writer"]
+                    .as_i64()
+                    .unwrap()
+            })
+            .collect();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            failures.is_empty(),
+            "{} failed: {failures:?}",
+            failures.len()
+        );
+        assert_eq!(paths.len(), WRITERS);
+        assert_eq!(files, WRITERS);
+        assert_eq!(writers.len(), WRITERS);
+        assert!(paths.iter().all(|path| path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("config-backup-simplify-encode-"))));
     }
 }
