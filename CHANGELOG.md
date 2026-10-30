@@ -30,6 +30,18 @@ stability before 1.0.
   wording when the flag is missing, before anything is sent. A hold stops by
   itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
   sends the release as a beacon.
+- Playback parity with the mobile app over the cloud relay: a month calendar
+  (`OPSCalendar`, `GET /api/playback/calendar`) marks the days with
+  recordings; playback runs by time (`OPPlayBack` `ByTime`,
+  `/ws/playback?mode=time`) so it continues across file boundaries, with the
+  playhead on the strip following device time; pause/resume and 1/4x-4x speed;
+  thumbnails for the file list (`OPCompressPic` for motion pictures, the first
+  keyframe otherwise, `POST /api/playback/thumbnails`); a snapshot of the
+  playing frame; playback sound (the `fa` records are G.711 A-law audio, sent
+  as `audio` text frames and played with Web Audio at 1x) with mute; and the
+  app's Regular/Alarm record filter (`GET /api/playback/files?event=`). The
+  file query, calendar and thumbnail routes answer 504 naming the stage when
+  the device stays silent past `PROVIEW_PLAYBACK_WINDOW_MS` (default 20 s).
 - Alarm and detection settings over the vendor cloud (Settings, Alarm and
   detection): motion detection (on/off, Low/Middle/High, schedule, alarm
   actions, alarm tone), human detection (track box, area/line rule), human
