@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { mb, modeOf, secondsBetween, span, stamp, type Clip } from './playback-clips'
 
-const props = defineProps<{ files: Clip[]; day: string; current: Clip | null; busy: boolean }>()
+const props = defineProps<{ files: Clip[]; day: string; current: Clip | null; busy: boolean; playhead?: number | null }>()
 const emit = defineEmits<{ pick: [file: Clip, offset: number] }>()
 
 const HOURS = [0, 3, 6, 9, 12, 15, 18, 21]
@@ -22,6 +22,13 @@ const segments = computed(() => {
     drawn.push({ file, key: file.name + file.begin, style: 'left:' + left + '%;width:' + width + '%', mode: modeOf(file) })
   }
   return drawn
+})
+
+const head = computed(() => {
+  const base = stamp(props.day + ' 00:00:00')
+  if (base === null || props.playhead === null || props.playhead === undefined) return null
+  const left = ((props.playhead - base) / 86400000) * 100
+  return left < 0 || left > 100 ? null : 'left:' + left + '%'
 })
 
 function fileAt(clientX: number) {
@@ -88,10 +95,11 @@ function onLeave() {
         :style="segment.style"
         aria-hidden="true"
       />
+      <span v-if="head" class="pb-head" data-testid="pb-head" :style="head" aria-hidden="true" />
     </div>
     <div class="pb-hours" aria-hidden="true">
       <span v-for="hour in HOURS" :key="'h' + hour" :style="{ left: (hour * 100) / 24 + '%' }">{{ String(hour).padStart(2, '0') }}:00</span>
     </div>
-    <p class="pb-legend"><span class="pb-key" data-mode="continuous" />Continuous<span class="pb-key" data-mode="motion" />Motion</p>
+    <p class="pb-legend"><span class="pb-key" data-mode="continuous" />Continuous<span class="pb-key" data-mode="motion" />Motion<span class="pb-key" data-mode="alarm" />Alarm</p>
   </div>
 </template>

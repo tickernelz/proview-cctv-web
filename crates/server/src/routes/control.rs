@@ -90,7 +90,7 @@ fn control_status(error: &ControlError) -> Status {
     }
 }
 
-fn control_failure(error: ControlError) -> Failure {
+pub(crate) fn control_failure(error: ControlError) -> Failure {
     fail(control_status(&error), error.to_string())
 }
 
@@ -611,6 +611,7 @@ async fn tour_start(
 ) -> Result<Json<TourActionBody>, Failure> {
     let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
+    super::ptz::tour_gate(control, "ptz tour start").await?;
     control.start_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("start", tour, None)))
 }
@@ -627,6 +628,7 @@ async fn tour_stop(
 ) -> Result<Json<TourActionBody>, Failure> {
     let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
+    super::ptz::tour_gate(control, "ptz tour stop").await?;
     control.stop_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("stop", tour, None)))
 }
@@ -653,6 +655,7 @@ async fn tour_add(
     let index = index.unwrap_or(0).max(0);
     let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
+    super::ptz::tour_gate(control, "ptz tour point add").await?;
     control
         .add_tour_point(tour, preset, index)
         .await
@@ -672,6 +675,7 @@ async fn tour_clear(
 ) -> Result<Json<TourActionBody>, Failure> {
     let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
     let control = controls.dvrip().map_err(control_failure)?;
+    super::ptz::tour_gate(control, "ptz tour clear").await?;
     control.clear_tour(tour).await.map_err(control_failure)?;
     Ok(Json(tour_action_body("clear", tour, None)))
 }

@@ -1900,7 +1900,7 @@ device was dialled again on every call.
 | Wall clock | the last data frame lands at **52.81 s** and the run ends 8 s later on the probe's idle gap: 42.97 MB in 52.81 s = **813 KB/s**, seven times the 119 KB/s the file's own duration and size suggested |
 | Records | Key 125, Delta 4,366, Pad 8,982, Info 126 = 13,599 records, 10 bytes skipped by the record scanner |
 | Video payload | Key and Delta bodies concatenated = **39,981,987 bytes**. `ffprobe`: HEVC 2304×2592, `nb_read_frames` 4,491, `r_frame_rate` 12/1 — 374 s of video |
-| Audio | none. 13,599 records is every record in the file, and all of them classify as Info/Pad/Key/Delta. No audio magic value appears, on download or on playback |
+| Audio | the 8,982 Pad (`fa`) records of this file are G.711 A-law audio, not padding; corrected in 9C |
 
 A download is verified before it starts, because a broken body cannot be signalled over HTTP here. A chunked body whose reader returns an error still reaches the client as a finished download: measured on this stack, `curl` exits 0 and keeps a short file, so a reader error is invisible. `GET /api/playback/download` therefore gathers the payload first, compares the wire bytes with `FileLength` x 1024, and only then answers. A shortfall is a `502` carrying both counts (`the device sent 42,967,040 of 47,967,040 bytes`), never a truncated `200`; a complete transfer answers with the exact `Content-Length` (39,981,987 for this file), so the browser shows real progress. `bytes` is required for that comparison and capped at 512 MiB. Measured on the file above: time to first byte 54.91 s, total 55.30 s, payload byte-identical to the probe dump; the same file asked with a 5 MB larger `bytes` answered `502` after 74.66 s and wrote no file.
 
@@ -1916,6 +1916,28 @@ PROVIEW_BEGIN="2026-10-24 10:34:00" PROVIEW_END="2026-10-24 10:34:02" \
 PROVIEW_DOWNLOAD=1 PROVIEW_WHOLE=1 PROVIEW_DUMP=/tmp/clip.h264 \
 timeout 600 cargo run -p proview-core --example playback_probe
 ```
+
+## 9C. Playback by time, the month calendar, thumbnails, and the audio that was there (2026-10-30)
+
+Measured over the cloud relay (no LAN path) on the dual-lens XM535; raw logs in
+`~/re/proview-cctv/parity/playback-plus/`.
+
+| Op | Message | Body | Answer |
+|---|---|---|---|
+| Month calendar | 1446 `OPSCalendar` | `{"Event":"*","FileType":"h264","Month":10,"Rev":"","Year":2026}` | 1447 `{"OPSCalendar":{"Mask":1056964608},"Ret":100}`: bit `n` = day `n+1` (days 25-30), 0.23-0.42 s; `Event` `M` returns the same mask |
+| Picture thumbnail | 1448 `OPCompressPic` | `{"Height":100,"IsGeo":0,"PicName":"/idea1/.../00.03.32-00.03.32[M][@1b][0].jpg","Width":160}` | 1449 carrying a bare 160x100 JFIF (2116 B) in 0.52 s; a `.h264` name answers `{"Ret":109}` |
+| Picture list | 1440 `OPFileQuery` with `Type` `jpg` | as for video | `/idea1/<day>/001/HH.MM.SS-HH.MM.SS[M][@..][0].jpg`, one per motion event |
+| Event filter | 1440 `OPFileQuery` `Event` | `*`, `R`, `M`, `A`, `H` | `R` and `M` filter; `A`/`H` with no such file answer `Ret` 119 |
+| Play by time | 1424 claim / 1420 start `OPPlayBack` | `PlayMode` `ByTime`, `Value` 67108864, the app's template `FileName`, `StartTime`/`EndTime` | claim `Ret` 100 in 0.1-0.2 s; start (plain, like `ByName`) streams on across file boundaries: 144 keys over 407 s of footage in 40 s, no key step above 3 s |
+
+A second `Claim` on the same DVRIP session after `Stop` answers `Ret` 103, so
+each extra playback needs its own tunnel.
+
+The `fa` records are audio. Their header `0e 02 40 01` is codec 0x0e (G.711
+A-law), rate index 2 (8 kHz) and length 320, i.e. 40 ms per record, 25 per
+second. The `d5`/`55` "filler" of 9B is A-law for +8/-8, near silence; a
+20 s stream from a busier hour carried 132 distinct byte values with a mean of
+-53.4 dBFS and a peak of -19.7 dBFS. `MediaReader` now keeps their bodies.
 
 ## 10. Cloud account: the v2 portal, as implemented here
 

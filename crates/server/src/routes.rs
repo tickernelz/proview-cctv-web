@@ -23,6 +23,9 @@ pub mod cloud_bind;
 #[path = "routes/playback.rs"]
 pub mod playback;
 
+#[path = "routes/playback_plus.rs"]
+pub mod playback_plus;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -45,6 +48,7 @@ use crate::config::ModeStore;
 pub mod audio;
 pub mod control;
 pub mod detect;
+pub mod ptz;
 pub mod settings_write;
 
 #[path = "routes/recordings.rs"]
@@ -77,6 +81,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     ]
     .into_iter()
     .chain(control::routes())
+    .chain(ptz::routes())
     .chain(alarms::routes())
     .chain(fisheye::api())
     .chain(recordings::routes())
@@ -85,6 +90,7 @@ pub fn api() -> Vec<rocket::route::Route> {
     .chain(device_admin::routes())
     .chain(apmode::routes())
     .chain(settings_write::routes())
+    .chain(playback_plus::routes())
     .chain(detect::routes())
     .chain(account::routes())
     .chain(cloud_clips::routes())

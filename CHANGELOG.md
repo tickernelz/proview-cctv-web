@@ -15,6 +15,33 @@ stability before 1.0.
 
 ### Added
 
+- PTZ at parity with the phone app's live and preset screens, over the cloud
+  relay: the pad keys, arrow keys and zoom/focus buttons now move while held and
+  stop on release (`/api/device/controls/ptz/press` and `/ptz/release` keep one
+  DVRIP session per hold; a tap keeps moving 800 ms like the app); a click on the
+  top lens picture aims the moving lens there (`/ptz/locate`, `OPPtzLocate`);
+  "Edit presets" in the pad saves the current position as a preset, renames and
+  deletes presets and edits the tour stops (`/preset/add`, `/preset/rename`,
+  `/preset/delete`, `/tour/remove`). Zoom, focus, calibration
+  (`/ptz/calibrate`) and the panoramic PTZ range (`/panorama`) follow the
+  device's ability flags and stay hidden on this camera, which reports none of
+  them; the capability table shows why. Every one of these writes reads the
+  device's ability on its session first and answers 501 with the device's
+  wording when the flag is missing, before anything is sent. A hold stops by
+  itself after `PROVIEW_PTZ_HOLD_MS` (30 s), and leaving the page mid-hold
+  sends the release as a beacon.
+- Playback parity with the mobile app over the cloud relay: a month calendar
+  (`OPSCalendar`, `GET /api/playback/calendar`) marks the days with
+  recordings; playback runs by time (`OPPlayBack` `ByTime`,
+  `/ws/playback?mode=time`) so it continues across file boundaries, with the
+  playhead on the strip following device time; pause/resume and 1/4x-4x speed;
+  thumbnails for the file list (`OPCompressPic` for motion pictures, the first
+  keyframe otherwise, `POST /api/playback/thumbnails`); a snapshot of the
+  playing frame; playback sound (the `fa` records are G.711 A-law audio, sent
+  as `audio` text frames and played with Web Audio at 1x) with mute; and the
+  app's Regular/Alarm record filter (`GET /api/playback/files?event=`). The
+  file query, calendar and thumbnail routes answer 504 naming the stage when
+  the device stays silent past `PROVIEW_PLAYBACK_WINDOW_MS` (default 20 s).
 - Alarm and detection settings over the vendor cloud (Settings, Alarm and
   detection): motion detection (on/off, Low/Middle/High, schedule, alarm
   actions, alarm tone), human detection (track box, area/line rule), human
