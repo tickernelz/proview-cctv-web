@@ -43,25 +43,13 @@ pub fn routes() -> Vec<rocket::route::Route> {
     ]
 }
 
-fn controls(cfg: &State<Config>) -> Controls {
-    Controls::from_config(cfg)
-}
-
-fn signed_in(store: &State<Store>, cookies: &CookieJar<'_>) -> Result<(), Failure> {
-    let id = session_id(cookies)?;
-    store
-        .get(&id)
-        .map(|_| ())
-        .ok_or_else(|| fail(Status::Unauthorized, "session expired"))
-}
-
 fn cloud_carries_control(cfg: &Config, mode: Mode) -> bool {
     cfg.provider == ProviderKind::Proview
         && (mode == Mode::Cloud
             || (LocalProvider::from_config(cfg).is_none() && cfg.device_onvif.is_none()))
 }
 
-fn controls_for(
+pub(crate) fn controls_for(
     device: Option<&str>,
     cfg: &Config,
     cloud: &Arc<CloudProvider>,
@@ -688,15 +676,20 @@ async fn tour_clear(
     Ok(Json(tour_action_body("clear", tour, None)))
 }
 
-#[get("/device/controls/settings")]
+#[get("/device/controls/settings?<device>")]
 async fn settings(
+    device: Option<String>,
     cfg: &State<Config>,
+    cloud: &State<Arc<CloudProvider>>,
+    modes: &State<ModeStore>,
     store: &State<Store>,
     cookies: &CookieJar<'_>,
 ) -> Result<Json<serde_json::Value>, Failure> {
-    signed_in(store, cookies)?;
-    let controls = controls(cfg);
-    let control = controls.onvif().map_err(control_failure)?;
-    let settings = control.settings().await.map_err(control_failure)?;
-    Ok(Json(settings))
+    let controls = controls_for(device.as_deref(), cfg, cloud, modes, store, cookies)?;
+    if let Ok(control) = controls.onvif() {
+        return Ok(Json(control.settings().await.map_err(control_failure)?));
+    }
+    Ok(Json(
+        super::settings_write::device_summary(&controls).await?,
+    ))
 }

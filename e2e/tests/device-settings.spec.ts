@@ -38,15 +38,47 @@ const STORAGE = {
   },
 }
 
+const RECORD = {
+  ok: true,
+  backend: 'dvrip',
+  record: {
+    mode: 'ConfigRecord',
+    full_time: true,
+    packet_length: 5,
+    pre_record: 5,
+    schedule: Array(7).fill('1 00:00:00-24:00:00'),
+    masks: Array(7).fill('0x7'),
+    record_stream: 'main',
+    record_stream_supported: true,
+    splicing: null,
+    splicing_supported: false,
+    audio: true,
+  },
+}
+
+const OSD = {
+  ok: true,
+  backend: 'dvrip',
+  osd: { channel: 0, name: 'Front door', titles: ['Front door'], title_shown: true, time_shown: true, dot_required: true },
+}
+
 const field = (before: number, requested: number, after: number) => ({ field: 'MainFormat.Video.FPS', before, requested, after, matches: requested === after })
 
-type Device = { encode: { main: Format; extra: Format }; writes: string[]; hold?: Promise<void>; answer: (fps: number) => { status: number; json: unknown } }
+type Device = {
+  encode: { main: Format; extra: Format }
+  writes: string[]
+  devices: Set<string>
+  hold?: Promise<void>
+  answer: (fps: number) => { status: number; json: unknown }
+}
 
 async function fakeDevice(page: Page, answer: Device['answer']) {
-  const device: Device = { encode: { main: format(12, 1536, '3072*2048'), extra: format(12, 512, '640*360') }, writes: [], answer }
+  const device: Device = { encode: { main: format(12, 1536, '3072*2048'), extra: format(12, 512, '640*360') }, writes: [], devices: new Set(), answer }
   await page.route(/\/api\/device\/settings\//, async (route: Route) => {
     const request = route.request()
     const url = new URL(request.url())
+    device.devices.add(url.searchParams.get('device') || '')
+    url.searchParams.delete('device')
     if (request.method() === 'PUT') {
       if (url.pathname.endsWith('/network')) return route.continue()
       device.writes.push(url.pathname + url.search)
@@ -56,6 +88,8 @@ async function fakeDevice(page: Page, answer: Device['answer']) {
     }
     if (url.pathname.endsWith('/encode')) return route.fulfill({ json: { ok: true, backend: 'dvrip', encode: device.encode } })
     if (url.pathname.endsWith('/network')) return route.fulfill({ json: NETWORK })
+    if (url.pathname.endsWith('/record')) return route.fulfill({ json: RECORD })
+    if (url.pathname.endsWith('/osd')) return route.fulfill({ json: OSD })
     return route.fulfill({ json: STORAGE })
   })
   return device
@@ -110,6 +144,7 @@ test('Device settings writes one encoder field, shows the read-back, and ignores
   await expect(page.getByTestId('device-status')).toHaveText('Read back after the write and kept.')
   expect(device.writes).toEqual(['/api/device/settings/encode?stream=main&fps=10'])
   expect(puts).toEqual(['/api/device/settings/encode'])
+  expect([...device.devices].every((id) => id.length > 0)).toBe(true)
   const report = page.getByTestId('device-report')
   await expect(report).toContainText('Read back and kept. Copy: /data/config-backup-simplify-encode.json')
   await expect(report.locator('tbody tr')).toHaveText([/MainFormat\.Video\.FPS\s*12\s*10\s*10\s*matches/])
@@ -182,7 +217,11 @@ test('the server refuses a gateway change and the device keeps its route', async
   await fakeDevice(page, () => ({ status: 500, json: { message: 'not faked' } }))
   const writes: string[] = []
   page.on('request', (request) => {
-    if (request.method() === 'PUT' && request.url().includes('/api/device/settings/network')) writes.push(new URL(request.url()).search)
+    if (request.method() !== 'PUT' || !request.url().includes('/api/device/settings/network')) return
+    const url = new URL(request.url())
+    if (!url.searchParams.get('device')) return
+    url.searchParams.delete('device')
+    writes.push(url.search)
   })
   await openDeviceSettings(page)
   await page.locator('#device-gateway').fill('192.168.0.254')
@@ -196,9 +235,47 @@ test('the server refuses a gateway change and the device keeps its route', async
 test('an expired session while reading the camera returns to sign-in', async ({ page }) => {
   await fakeDevice(page, () => ({ status: 500, json: { message: 'not faked' } }))
   await signIn(page, 'one')
-  await page.route(/\/api\/device\/settings\/encode$/, (route) => route.fulfill({ status: 401, json: { ok: false, message: 'session expired' } }))
+  await page.route(/\/api\/device\/settings\/encode(\?|$)/, (route) => route.fulfill({ status: 401, json: { ok: false, message: 'session expired' } }))
   await page.getByTestId('open-settings').click()
   await page.getByTestId('device-settings-link').click()
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('settings')).toBeHidden()
+})
+
+test('recording, on-screen text and the card format follow the camera abilities and ask before erasing', async ({ page }) => {
+  const posts: string[] = []
+  const device = await fakeDevice(page, () => ({ status: 200, json: { ok: true, backend: 'dvrip', reverted: false, reports: [], errors: [] } }))
+  await page.route(/\/api\/device\/settings\/storage\/format/, (route: Route) => {
+    posts.push(new URL(route.request().url()).search)
+    return route.fulfill({ json: { ok: true, backend: 'dvrip', steps: [{ disk: 0, partition: 0 }, { disk: 0, partition: 1 }] } })
+  })
+  await openDeviceSettings(page)
+  const section = page.locator('#set-body > section[data-section="device"]')
+  await expect(page.locator('#device-full-time')).toBeChecked()
+  await expect(page.locator('#device-splicing')).toBeDisabled()
+  await expect(section).toContainText('SupportMultiLensSplicingWfsRecordStream')
+  await expect(page.locator('#device-smart-mode')).toBeDisabled()
+  await expect(section).toContainText('neither AVEnc.SmartH264V2')
+  await page.locator('#device-full-time').uncheck()
+  await page.locator('#device-packet-length').fill('10')
+  await page.getByTestId('device-save-record').click()
+  await expect.poll(() => device.writes).toContain('/api/device/settings/record?full_time=false&packet_length=10')
+  await expect(page.getByTestId('device-save-record')).toHaveText('Save recording')
+  await page.locator('#device-packet-length').fill('200')
+  await page.getByTestId('device-save-record').click()
+  await expect.poll(() => device.writes).toContain('/api/device/settings/record?packet_length=120')
+  await expect(page.getByTestId('device-save-record')).toHaveText('Save recording')
+  await page.locator('#device-osd-name').fill('Gate')
+  await page.getByTestId('device-save-osd').click()
+  await expect.poll(() => device.writes).toContain('/api/device/settings/osd?name=Gate&channel=0')
+  const run = page.getByTestId('device-format-run')
+  await expect(run).toBeDisabled()
+  await expect(page.getByTestId('device-format')).toContainText('Type FORMAT to confirm')
+  await page.locator('#device-format-confirm').fill('format')
+  await expect(run).toBeDisabled()
+  await page.locator('#device-format-confirm').fill('FORMAT')
+  await run.click()
+  await expect(page.getByTestId('device-status')).toHaveText(/partitions cleared/)
+  expect(posts).toHaveLength(1)
+  expect(posts[0]).toContain('confirm=FORMAT')
 })
