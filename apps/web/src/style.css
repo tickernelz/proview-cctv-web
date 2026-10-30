@@ -327,8 +327,8 @@ select.text-input { background: var(--bg-2); }
 #tour[aria-pressed="true"] { color: var(--ok); text-decoration: none; }
 #tour:disabled { color: var(--stage-ink-2); text-decoration: none; }
 .pad-lens { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
-.pad-lens button, #ptz-edit, .ptz-edit .btn-text { min-height: 0; font-family: var(--f-sans); font-size: var(--t-13); color: var(--stage-ink); text-decoration: underline; text-underline-offset: 3px; }
-#ptz-edit { align-self: flex-start; }
+.pad-lens button, #ptz-edit, .pad-calibrate, .ptz-edit .btn-text { min-height: 0; font-family: var(--f-sans); font-size: var(--t-13); color: var(--stage-ink); text-decoration: underline; text-underline-offset: 3px; }
+#ptz-edit, .pad-calibrate { align-self: flex-start; }
 #ptz-edit[aria-pressed="true"] { color: var(--ok); text-decoration: none; }
 .ptz-edit .btn-text:disabled { color: var(--stage-ink-2); text-decoration: none; }
 .pad-hint { font-family: var(--f-sans); }

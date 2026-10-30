@@ -123,14 +123,21 @@ export function setControlStatus(message: string) {
 type DevicePreset = { channel?: number; id: number; name?: string }
 type DeviceTourLine = { channel: number; id: number; name: string; points: { preset: number; seconds: number }[] }
 
+const LENS_ACTIONS = new Set(['zoom-in', 'zoom-out', 'focus-near', 'focus-far'])
+
 function showPresets(presets: { token: string; name?: string }[]) {
   live.pad.presets = presets.map((preset) => ({ token: preset.token, name: preset.name || preset.token }))
   live.pad.presetsShown = presets.length > 0
 }
 
-function showListing(presets: DevicePreset[], lines: DeviceTourLine[]) {
-  showPresets(presets.map((preset) => ({ token: String(preset.id), name: preset.name })))
-  live.pad.lines = lines.map((line) => ({ channel: line.channel, id: line.id, name: line.name, points: line.points.map((point) => point.preset) }))
+function editLines(lines: DeviceTourLine[]) {
+  live.pad.edit.lines = lines.map((line) => ({ channel: line.channel, id: line.id, name: line.name, points: line.points.map((point) => point.preset) }))
+}
+
+function showEditListing(presets: DevicePreset[], lines: DeviceTourLine[]) {
+  live.pad.edit.presets = presets.map((preset) => ({ token: String(preset.id), name: preset.name || 'Preset' + preset.id }))
+  editLines(lines)
+  live.pad.edit.loaded = true
 }
 
 async function loadPresets() {
@@ -150,9 +157,13 @@ async function editCall(path: string, done: (body: any) => string) {
   if (live.pad.busy) return
   live.pad.busy = true
   try {
-    const body = await api(path + deviceQuery('&'), { method: 'POST' })
-    if (Array.isArray(body.presets)) showListing(body.presets, Array.isArray(body.lines) ? body.lines : [])
-    else if (Array.isArray(body.lines)) live.pad.lines = body.lines.map((line: DeviceTourLine) => ({ channel: line.channel, id: line.id, name: line.name, points: line.points.map((point) => point.preset) }))
+    const body = await api(path + deviceQuery(path.includes('?') ? '&' : '?'), { method: 'POST' })
+    if (Array.isArray(body.presets)) {
+      showEditListing(body.presets, Array.isArray(body.lines) ? body.lines : [])
+      loadPresets()
+    } else if (Array.isArray(body.lines)) {
+      editLines(body.lines)
+    }
     setControlStatus(done(body))
   } catch (error: any) {
     if (!sessionLost(error)) setControlStatus('The camera refused: ' + error.status + ' ' + error.message)
@@ -161,15 +172,22 @@ async function editCall(path: string, done: (body: any) => string) {
   }
 }
 
+async function readEditListing(what: string) {
+  try {
+    const tour = await api('/api/device/controls/tour' + deviceQuery('?'))
+    showEditListing(Array.isArray(tour.presets) ? tour.presets : [], Array.isArray(tour.lines) ? tour.lines : [])
+  } catch (error: any) {
+    if (!sessionLost(error)) setControlStatus(what + ' could not be read: ' + error.status + ' ' + error.message)
+  }
+}
+
 export async function openEditor() {
   live.pad.editing = !live.pad.editing
   if (!live.pad.editing) return
-  try {
-    const tour = await api('/api/device/controls/tour' + deviceQuery('?'))
-    showListing(Array.isArray(tour.presets) ? tour.presets : [], Array.isArray(tour.lines) ? tour.lines : [])
-  } catch (error: any) {
-    if (!sessionLost(error)) setControlStatus('Presets and tours could not be read: ' + error.status + ' ' + error.message)
-  }
+  live.pad.edit.loaded = false
+  live.pad.edit.presets = []
+  live.pad.edit.lines = []
+  await readEditListing('Presets and tours')
 }
 
 export function addPreset(name: string) {
@@ -190,7 +208,7 @@ export function deletePreset(token: string, name: string) {
 }
 
 export function addTourStop(tour: number, preset: string, index: number) {
-  return editCall('/api/device/controls/tour/add?tour=' + tour + '&preset=' + encodeURIComponent(preset) + '&index=' + index, () => 'Added the stop to the tour.').then(() => refreshTour())
+  return editCall('/api/device/controls/tour/add?tour=' + tour + '&preset=' + encodeURIComponent(preset) + '&index=' + index, () => 'Added the stop to the tour.').then(() => readEditListing('The tour'))
 }
 
 export function removeTourStop(tour: number, preset: number) {
@@ -199,25 +217,16 @@ export function removeTourStop(tour: number, preset: number) {
 
 export function clearTour(tour: number) {
   if (!window.confirm('Remove every stop from this tour?')) return Promise.resolve()
-  return editCall('/api/device/controls/tour/clear?tour=' + tour, () => 'Cleared the tour.').then(() => refreshTour())
-}
-
-async function refreshTour() {
-  try {
-    const tour = await api('/api/device/controls/tour' + deviceQuery('?'))
-    showListing(Array.isArray(tour.presets) ? tour.presets : [], Array.isArray(tour.lines) ? tour.lines : [])
-  } catch (error: any) {
-    if (!sessionLost(error)) setControlStatus('The tour could not be read back: ' + error.status + ' ' + error.message)
-  }
+  return editCall('/api/device/controls/tour/clear?tour=' + tour, () => 'Cleared the tour.').then(() => readEditListing('The tour'))
 }
 
 export function calibrate() {
   if (!window.confirm('Calibrate the PTZ motor? The lens sweeps its full range and the picture moves for up to a minute.')) return Promise.resolve()
-  return editCall('/api/device/controls/ptz/calibrate?', (body) => 'Calibration finished in ' + body.calibrate_ms + ' ms.')
+  return editCall('/api/device/controls/ptz/calibrate', (body) => 'Calibration finished in ' + body.calibrate_ms + ' ms.')
 }
 
-export function holdMode() {
-  return state.control.dvrip && !state.control.onvif
+export function holdsAction(action: string) {
+  return Boolean(state.control.dvrip) && (!state.control.onvif || LENS_ACTIONS.has(action))
 }
 
 let held: string | null = null
@@ -226,7 +235,7 @@ let pressing: Promise<boolean> = Promise.resolve(false)
 
 export function pressControl(action: string) {
   if (!selectedDevice()) return
-  if (!holdMode()) {
+  if (!holdsAction(action)) {
     sendControl(action)
     return
   }
@@ -270,9 +279,16 @@ export async function releaseControl() {
   await pressing
 }
 
+export function releaseOnExit() {
+  if (!held) return
+  const pressedMs = Math.round(performance.now() - pressedAt)
+  held = null
+  navigator.sendBeacon('/api/device/controls/ptz/release?pressed_ms=' + pressedMs + deviceQuery('&'))
+}
+
 export function tapControl(action: string) {
   pressControl(action)
-  if (holdMode()) releaseControl()
+  if (holdsAction(action)) releaseControl()
 }
 
 function aimLens() {

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Icon from '../components/Icon.vue'
 import AddCamera from './AddCamera.vue'
 import PtzEditor from './PtzEditor.vue'
-import { aimAt, gotoPreset, holdMode, openEditor, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
+import { aimAt, calibrate, gotoPreset, holdsAction, openEditor, pressControl, releaseControl, sendControl, tapControl } from '../app/controls'
 import { applyLensView, deriveLensFromFrame, layoutLensCrop, renderLensPicker } from '../app/lens'
 import { openSettings } from '../app/shell'
 import { copyStageDetail, renderFsLine, requestStream } from '../app/stage'
@@ -32,13 +32,13 @@ let lastVideoTime = -1
 let observer: ResizeObserver | null = null
 
 function pressKey(act: string, event: PointerEvent) {
-  if (act === 'home' || event.button !== 0 || !holdMode()) return
+  if (act === 'home' || event.button !== 0 || !holdsAction(act)) return
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
   pressControl(act)
 }
 
 function clickKey(act: string, event: MouseEvent) {
-  if (act === 'home' || !holdMode()) sendControl(act)
+  if (act === 'home' || !holdsAction(act)) sendControl(act)
   else if (event.detail === 0) tapControl(act)
 }
 
@@ -156,6 +156,7 @@ onBeforeUnmount(() => {
           </span>
           <span v-if="live.gate.aim.ok" class="pad-hint" data-testid="ptz-aim-hint">Click the top lens to aim.</span>
           <button v-if="live.gate.presetEdit.ok" id="ptz-edit" class="btn btn-text" data-testid="ptz-edit" type="button" :aria-pressed="pad.editing ? 'true' : 'false'" aria-controls="ptz-editor" @click="openEditor()">Edit presets</button>
+          <button v-if="live.gate.calibrate.ok" class="btn btn-text pad-calibrate" data-testid="ptz-calibrate" type="button" :disabled="pad.busy" @click="calibrate()">Calibrate the motor</button>
           <span id="control-status" data-testid="control-status" role="status">{{ pad.status }}</span>
         </div>
         <PtzEditor v-if="pad.editing" />

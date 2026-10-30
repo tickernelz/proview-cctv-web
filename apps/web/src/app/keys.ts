@@ -1,4 +1,4 @@
-import { closePad, holdMode, pressControl, releaseControl, sendControl, togglePad } from './controls'
+import { closePad, holdsAction, pressControl, releaseControl, releaseOnExit, sendControl, togglePad } from './controls'
 import { cycleLens } from './lens'
 import { live, menuOpen } from '../live/store'
 import { startTalk, stopTalk } from '../live/talk'
@@ -40,7 +40,7 @@ function onWatchKey(event: KeyboardEvent) {
     if (state.view === 'live' && state.padOpen) {
       event.preventDefault()
       const act = ARROWS[key]
-      if (live.gate[act].ok && !(event.repeat && holdMode())) pressControl(act)
+      if (live.gate[act].ok && !(event.repeat && holdsAction(act))) pressControl(act)
     } else if (state.view === 'grid') {
       event.preventDefault()
       moveTileFocus(key)
@@ -88,6 +88,8 @@ window.addEventListener('blur', () => {
   stopTalk()
   releaseControl()
 })
+
+window.addEventListener('pagehide', () => releaseOnExit())
 
 document.querySelector('.skip')?.addEventListener('click', (event) => {
   event.preventDefault()

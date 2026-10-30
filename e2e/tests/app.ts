@@ -38,13 +38,23 @@ export async function playing(page: Page) {
 
 const supported = (feature: string, lens: string) => ({ feature, lens, backend: 'dvrip', state: 'supported', evidence: 'e2e fixture' })
 
-export async function fakeDeviceControls(page: Page) {
+export type ControlsFixture = { onvif?: boolean; extra?: string[]; drop?: string[] }
+
+const ONVIF_PRESETS = [
+  { token: '0', name: 'Gate' },
+  { token: '1', name: 'Driveway' },
+  { token: '2', name: 'Home' },
+]
+
+export async function fakeDeviceControls(page: Page, fixture: ControlsFixture = {}) {
   const calls: string[] = []
   let light = 'off'
   const presets = [
     { channel: 0, id: 1, name: 'Gate' },
     { channel: 0, id: 2, name: 'Driveway' },
+    ...(fixture.onvif ? [{ channel: 0, id: 250, name: 'Home' }] : []),
   ]
+  const features = ['ptz move', 'ptz preset', 'ptz preset edit', ...(fixture.extra ?? [])].filter((feature) => !(fixture.drop ?? []).includes(feature))
   const tour = [1, 2]
   const lines = () => [{ channel: 0, id: 1, name: 'Yard', points: tour.map((preset) => ({ preset, seconds: 5 })) }]
   await page.route(/\/api\/device\/controls/, async (route) => {
@@ -54,21 +64,21 @@ export async function fakeDeviceControls(page: Page) {
     const json = (body: unknown) => route.fulfill({ json: body })
     if (url.pathname === '/api/device/controls') {
       return json({
-        onvif: false,
+        onvif: fixture.onvif === true,
         dvrip: true,
         capabilities: [
-          supported('ptz move', 'bottom'),
-          supported('ptz preset', 'bottom'),
-          supported('ptz preset edit', 'bottom'),
+          ...features.map((feature) => supported(feature, 'bottom')),
           supported('ptz aim', 'top'),
           supported('white light', 'device'),
           supported('two-way audio', 'device'),
         ],
       })
     }
+    if (url.pathname.endsWith('/presets') && fixture.onvif) return json(ONVIF_PRESETS)
     if (url.pathname.endsWith('/presets')) return json(presets.map((preset) => ({ token: String(preset.id), name: preset.name })))
     if (url.pathname.endsWith('/ptz/press')) return json({ action: url.searchParams.get('action'), command: 'DirectionLeft', session_ms: 12, press_ms: 4 })
     if (url.pathname.endsWith('/ptz/release')) return json({ held: true, times: { held_ms: Number(url.searchParams.get('pressed_ms')), stop_ms: 3 } })
+    if (url.pathname.endsWith('/ptz/calibrate')) return json({ session_ms: 12, calibrate_ms: 1200 })
     if (url.pathname.endsWith('/ptz/locate')) return json({ xoffset: 0, yoffset: 0, session_ms: 12, locate_ms: 4 })
     if (url.pathname.endsWith('/tour')) return json({ presets, lines: lines() })
     if (url.pathname.endsWith('/tour/remove')) {
@@ -104,8 +114,8 @@ export async function fakeDeviceControls(page: Page) {
   return calls
 }
 
-export async function openLive(page: Page) {
-  const calls = await fakeDeviceControls(page)
+export async function openLive(page: Page, fixture: ControlsFixture = {}) {
+  const calls = await fakeDeviceControls(page, fixture)
   await signIn(page, 'one')
   await playing(page)
   await expect(page.getByTestId('ctl-move')).toBeEnabled()
