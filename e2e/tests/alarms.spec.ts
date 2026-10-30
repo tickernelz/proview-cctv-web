@@ -158,8 +158,14 @@ test('the panel asks for today by default and the day picker changes the window'
   await expect(page.getByTestId('alarm-status')).toHaveText('3 events in the last 7 days')
 })
 
-test('kind chips count each kind, filter the list, and rows are grouped by part of the day', async ({ page }) => {
-  await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: MIXED }))
+test('kind chips count each kind, ask the server for that kind, and rows are grouped by part of the day', async ({ page }) => {
+  const events: string[] = []
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => {
+    const event = new URL(route.request().url()).searchParams.get('event') || ''
+    events.push(event)
+    const entries = event ? MIXED.entries.filter((entry) => entry.event.startsWith(event + ':')) : MIXED.entries
+    return route.fulfill({ json: { ...MIXED, entries, total: entries.length } })
+  })
   await signIn(page, 'one')
   const centre = await openAlarms(page)
   const chip = (kind: string) => centre.locator('[data-testid="alarm-kind"][data-kind="' + kind + '"]')
@@ -168,12 +174,38 @@ test('kind chips count each kind, filter the list, and rows are grouped by part 
   await expect(chip('alarm')).toHaveText('Alarm1')
   await expect(chip('human')).toHaveText('Human1')
   await expect(centre.locator('.ev-group')).toHaveText(['Evening', 'Afternoon', 'Morning'])
+  expect(events).toEqual([''])
   await chip('motion').click()
   await expect(chip('motion')).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => events).toEqual(['', 'VideoMotion'])
   await expect(centre.getByTestId('alarm-row')).toHaveCount(2)
   await expect(centre.locator('.ev-group')).toHaveText(['Evening', 'Morning'])
+  await expect(page.getByTestId('alarm-status')).toHaveText('2 motion events today')
+  await chip('alarm').click()
+  await expect.poll(() => events.at(-1)).toBe('')
+  await expect(centre.getByTestId('alarm-row')).toHaveCount(1)
   await chip('all').click()
   await expect(centre.getByTestId('alarm-row')).toHaveCount(4)
+  await settled(page)
+  expect(events).toEqual(['', 'VideoMotion', ''])
+})
+
+test('a page the server cut short shows the total, not per-kind counts from the part it sent', async ({ page }) => {
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => {
+    const event = new URL(route.request().url()).searchParams.get('event') || ''
+    if (event) return route.fulfill({ json: { ...MIXED, entries: MIXED.entries.filter((entry) => entry.event.startsWith(event + ':')), total: 75, finished: false } })
+    return route.fulfill({ json: { ...MIXED, total: 180, finished: false } })
+  })
+  await signIn(page, 'one')
+  const centre = await openAlarms(page)
+  const chip = (kind: string) => centre.locator('[data-testid="alarm-kind"][data-kind="' + kind + '"]')
+  await expect(chip('all')).toHaveText('All180')
+  await expect(chip('motion')).toHaveText('Motion')
+  await expect(chip('human')).toHaveText('Human')
+  await expect(page.getByTestId('alarm-status')).toHaveText('Showing 4 of 180 events today')
+  await chip('motion').click()
+  await expect(chip('motion')).toHaveText('Motion75')
+  await expect(page.getByTestId('alarm-status')).toHaveText('Showing 2 of 75 motion events today')
 })
 
 test('the panel kinds come from the server filter list', async ({ page }) => {
@@ -380,18 +412,33 @@ test('Open all events goes to the full page, which shows the picture of the chos
   await expect(page.getByTestId('alarm-play')).toBeEnabled()
 })
 
-test('Play from 5 s before returns to Live on that camera', async ({ page }) => {
-  await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: serialOf(route.request().url()) === 'porch' ? { ...ALARMS, serial: 'porch' } : EMPTY }))
-  await signIn(page, 'many')
-  await playing(page)
-  const centre = await openPage(page)
-  await pickCamera(page, 'Porch')
-  await expect(centre.getByTestId('alarm-row')).toHaveCount(3)
-  await expect(page.getByTestId('alarm-preview')).toContainText('Opens Live on the timeline at 21:02:05, 5 s before the event.')
-  await page.getByTestId('alarm-play').click()
-  await expect(page).toHaveURL(/#\/live$/)
-  await expect(page.getByTestId('live')).toBeVisible()
-  await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+test.describe('in a browser time zone other than the camera account', () => {
+  test.use({ timezoneId: 'America/Sao_Paulo' })
+
+  test('Play from 5 s before returns to Live on that camera and seeks to the camera clock time', async ({ page }) => {
+    await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: serialOf(route.request().url()) === 'porch' ? { ...ALARMS, serial: 'porch' } : EMPTY }))
+    await signIn(page, 'many')
+    await playing(page)
+    const centre = await openPage(page)
+    await pickCamera(page, 'Porch')
+    await expect(centre.getByTestId('alarm-row')).toHaveCount(3)
+    await expect(page.getByTestId('alarm-preview')).toContainText('Opens Live on the timeline at 21:02:05, 5 s before the event.')
+    await page.getByTestId('alarm-play').click()
+    await expect(page).toHaveURL(/#\/live$/)
+    await expect(page.getByTestId('live')).toBeVisible()
+    await expect(page.getByTestId('camera-name')).toHaveText('Porch')
+    const seek = await page.evaluate(() => {
+      const value = (window as unknown as { ProviewEvents: { seek: () => { serial: string; at: number; id: string } } }).ProviewEvents.seek()
+      const start = new Date(value.at - 5000)
+      return { ...value, wall: new Date(2026, 9, 27, 21, 2, 10).getTime(), start: [start.getHours(), start.getMinutes(), start.getSeconds()].map((part) => String(part).padStart(2, '0')).join(':'), offset: new Date(value.at).getTimezoneOffset() }
+    })
+    expect(seek.offset).toBe(180)
+    expect(seek.serial).toBe('porch')
+    expect(seek.id).toBe('261027214632')
+    expect(seek.at).toBe(seek.wall)
+    expect(seek.at).not.toBe(ALARMS.entries[2].utcTime * 1000)
+    expect(seek.start).toBe('21:02:05')
+  })
 })
 
 test('a camera outside the list cannot be played, and the reason is on screen', async ({ page }) => {
@@ -432,6 +479,25 @@ test('deleting selected events asks first, then sends only the chosen ids', asyn
   await page.getByTestId('alarm-clear-confirm').click()
   await expect(confirm).toBeHidden()
   expect(bodies).toEqual([{ sn: 'gate', ids: ['261027214631'], all: false }])
+})
+
+test('Clear all stays available on a day with no events, because it clears every event of the camera', async ({ page }) => {
+  const bodies: unknown[] = []
+  await page.route(/\/api\/cloud\/alarms\?/, (route) => route.fulfill({ json: EMPTY }))
+  await page.route(/\/api\/cloud\/alarms\/delete/, (route) => {
+    bodies.push(route.request().postDataJSON())
+    return route.fulfill({ json: { serial: 'gate', all: true, deleted: 0, latencyMs: 2 } })
+  })
+  await signIn(page, 'one')
+  await openPage(page)
+  await expect(page.getByTestId('alarm-empty')).toHaveText('No events today')
+  await page.getByTestId('alarm-manage').click()
+  await expect(page.getByTestId('alarm-clear')).toBeEnabled()
+  await expect(page.getByTestId('alarm-clear-reason')).toHaveCount(0)
+  await page.getByTestId('alarm-clear').click()
+  await page.getByTestId('alarm-clear-confirm').click()
+  await expect(page.getByTestId('alarm-confirm')).toBeHidden()
+  expect(bodies).toEqual([{ sn: 'gate', ids: [], all: true }])
 })
 
 test('Clear all asks with the camera name and sends all', async ({ page }) => {

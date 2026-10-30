@@ -15,9 +15,9 @@ export type Range = 'today' | 'yesterday' | '24h' | '7d' | 'day'
 export type Filter = { id: string; label: string }
 export type Problem = { title: string; text: string; detail: string }
 export type Group = { key: string; label: string; entries: Alarm[] }
-export type Chip = { id: KindFilter; label: string; icon: string; count: number }
+export type Chip = { id: KindFilter; label: string; icon: string; count: number | undefined }
 type Listing = { entries?: Alarm[]; total?: number; finished?: boolean; pollSeconds?: number; latencyMs?: number; message?: string; canDelete?: boolean; deleteReason?: string }
-type Query = { serial: string; range: Range; day: string }
+type Query = { serial: string; range: Range; day: string; event: string }
 type Phase = 'idle' | 'loading' | 'ok' | 'error'
 type Day = { day: string; count: number }
 
@@ -73,11 +73,12 @@ export const ev = reactive({
   watching: false,
   devices: [] as Device[],
   extra: null as Device | null,
-  query: { serial: '', range: 'today', day: '' } as Query,
+  query: { serial: '', range: 'today', day: '', event: '' } as Query,
   kind: 'all' as KindFilter,
   filters: KNOWN.slice(),
   phase: 'idle' as Phase,
-  asked: { serial: '', range: 'today', day: '' } as Query,
+  asked: { serial: '', range: 'today', day: '', event: '' } as Query,
+  tally: { key: '', counts: {} as Partial<Record<KindFilter, number>> },
   entries: [] as Alarm[],
   problem: null as Problem | null,
   total: 0,
@@ -112,7 +113,8 @@ const two = (value: number) => String(value).padStart(2, '0')
 export const stamp = (when: Date) => dayOf(when) + ' ' + two(when.getHours()) + ':' + two(when.getMinutes()) + ':' + two(when.getSeconds())
 export const dayOf = (when: Date) => when.getFullYear() + '-' + two(when.getMonth() + 1) + '-' + two(when.getDate())
 export const monthOf = (when: Date) => when.getFullYear() + '-' + two(when.getMonth() + 1)
-const same = (left: Query, right: Query) => left.serial === right.serial && left.range === right.range && left.day === right.day
+const same = (left: Query, right: Query) => left.serial === right.serial && left.range === right.range && left.day === right.day && left.event === right.event
+const windowKey = (query: Query) => query.serial + '|' + query.range + '|' + query.day
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
 export const plural = (count: number, word = 'event') => count + ' ' + word + (count === 1 ? '' : 's')
 
@@ -191,11 +193,27 @@ export function kindOf(entry: Alarm): Kind {
 export const cameras = computed(() => (ev.extra && !ev.devices.some((device) => device.id === ev.extra!.id) ? [...ev.devices, ev.extra] : ev.devices))
 export const nameOf = (serial: string) => cameras.value.find((device) => device.id === serial)?.name || serial
 export const rows = computed(() => [...ev.entries].sort((a, b) => (b.utcTime || 0) - (a.utcTime || 0)))
-export const counts = computed(() => {
-  const found: Record<KindFilter, number> = { all: rows.value.length, motion: 0, human: 0, alarm: 0 }
-  for (const entry of rows.value) found[kindOf(entry)] += 1
-  return found
-})
+export function serverEvent(kind: KindFilter) {
+  if (kind === 'all' || kind === 'alarm') return ''
+  return ev.filters.find((filter) => kindOfFilter(filter.id) === kind)?.id || ''
+}
+
+export const counts = computed<Partial<Record<KindFilter, number>>>(() => (ev.tally.key === windowKey(ev.query) ? ev.tally.counts : {}))
+
+function tallyAnswer(asked: Query, entries: Alarm[], total: number, finished: boolean) {
+  const key = windowKey(asked)
+  if (ev.tally.key !== key) ev.tally = { key, counts: {} }
+  const found = ev.tally.counts
+  if (asked.event) {
+    found[kindOfFilter(asked.event)] = total
+    return
+  }
+  found.all = total
+  if (!finished) return
+  const kinds: Record<Kind, number> = { motion: 0, human: 0, alarm: 0 }
+  for (const entry of entries) kinds[kindOf(entry)] += 1
+  Object.assign(found, kinds)
+}
 export const shown = computed(() => (ev.kind === 'all' ? rows.value : rows.value.filter((entry) => kindOf(entry) === ev.kind)))
 export const chips = computed<Chip[]>(() => {
   const kinds = new Set<Kind>(ev.filters.map((filter) => kindOfFilter(filter.id)))
@@ -204,7 +222,7 @@ export const chips = computed<Chip[]>(() => {
   const list: Chip[] = [{ id: 'all', label: 'All', icon: '', count: counts.value.all }]
   for (const kind of order) {
     if (!kinds.has(kind)) continue
-    if (!counts.value[kind] && ev.kind !== kind) continue
+    if (counts.value[kind] === 0 && ev.kind !== kind) continue
     list.push({ id: kind, label: KIND[kind].label, icon: KIND[kind].icon, count: counts.value[kind] })
   }
   return list
@@ -257,6 +275,11 @@ export const summary = computed(() => {
   if (ev.phase === 'idle') return 'Not checked yet'
   if (ev.phase === 'loading') return 'Checking for events…'
   if (ev.phase === 'error') return ev.checked ? 'Last checked ' + ev.checked : 'Not checked'
+  if (ev.kind !== 'all') {
+    const word = KIND[ev.kind].word + ' event'
+    if (ev.asked.event) return ev.finished ? plural(ev.total || rows.value.length, word) + ' ' + rangePhrase() : 'Showing ' + rows.value.length + ' of ' + plural(ev.total, word) + ' ' + rangePhrase()
+    return plural(shown.value.length, word) + ' ' + rangePhrase() + (ev.finished ? '' : ', in the first ' + rows.value.length + ' of ' + plural(ev.total))
+  }
   if (!ev.finished) return 'Showing ' + rows.value.length + ' of ' + plural(ev.total) + ' ' + rangePhrase()
   return plural(ev.total || rows.value.length) + ' ' + rangePhrase()
 })
@@ -271,7 +294,6 @@ export const deleteReason = computed(() => {
 export const clearReason = computed(() => {
   if (ev.manage.refused) return ev.manage.refused
   if (!ev.query.serial) return 'Choose a camera first.'
-  if (!rows.value.length) return 'There are no events to clear.'
   return ''
 })
 
@@ -342,7 +364,7 @@ export function playEvent(entry: Alarm) {
   const serial = ev.asked.serial
   const camera = cameraFor(serial, entry)!
   markSeen()
-  live.seek = { serial, at: atOf(entry), kind: kindOf(entry), id: entry.id, token: live.seek.token + 1 }
+  live.seek = { serial, at: atOfLocal(entry), kind: kindOf(entry), id: entry.id, token: live.seek.token + 1 }
   const wasPage = shell.view === 'events'
   if (wasPage || shell.mode !== 'single') go(liveHash('single'))
   if (page.selectedId !== serial || page.channel !== camera.channel || page.view !== 'live') openCamera(page.cameras.indexOf(camera))
@@ -414,7 +436,7 @@ function windowOf(query: Query): [string, string] {
 export async function poll() {
   if (!ev.watching || !ev.query.serial) return
   if (document.hidden && !ev.notify.on) return
-  const asked: Query = { serial: ev.query.serial, range: ev.query.range, day: ev.query.day }
+  const asked: Query = { serial: ev.query.serial, range: ev.query.range, day: ev.query.day, event: ev.query.event }
   if (inflight && same(inflight, asked)) return
   const mine = ++ticket
   inflight = asked
@@ -430,7 +452,8 @@ export async function poll() {
   const begun = performance.now()
   try {
     const [start, end] = windowOf(asked)
-    const url = '/api/cloud/alarms?sn=' + encodeURIComponent(asked.serial) + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end)
+    let url = '/api/cloud/alarms?sn=' + encodeURIComponent(asked.serial) + '&start=' + encodeURIComponent(start) + '&end=' + encodeURIComponent(end)
+    if (asked.event) url += '&event=' + encodeURIComponent(asked.event)
     const reply = await fetch(url, { credentials: 'same-origin' })
     const body: Listing = await reply.json().catch(() => ({}))
     if (mine !== ticket) return
@@ -446,7 +469,8 @@ export async function poll() {
     if (!first) notify(entries)
     for (const entry of entries) notified.add(entry.id)
     ev.entries = entries
-    if (asked.range !== '24h' && asked.range !== '7d') {
+    tallyAnswer(asked, entries, body.total || entries.length, body.finished !== false)
+    if (!asked.event && asked.range !== '24h' && asked.range !== '7d') {
       live.alarmDay = { serial: asked.serial, day: start.slice(0, 10), entries: entries.map((entry) => ({ id: entry.id, at: atOfLocal(entry), event: entry.event || '' })), token: live.alarmDay.token + 1 }
     }
     ev.manage.refused = body.canDelete === false ? body.deleteReason || 'This account may not delete the events of this camera.' : ''
@@ -699,7 +723,8 @@ function reset() {
   ev.extra = null
   ev.query.serial = ''
   ev.phase = 'idle'
-  ev.asked = { serial: '', range: ev.query.range, day: ev.query.day }
+  ev.asked = { serial: '', range: ev.query.range, day: ev.query.day, event: ev.query.event }
+  ev.tally = { key: '', counts: {} }
   ev.entries = []
   ev.checked = ''
   ev.problem = null
@@ -727,6 +752,7 @@ function syncScreen() {
 export function startEvents() {
   if (started) return
   started = true
+  Object.assign(window, { ProviewEvents: { seek: () => ({ ...live.seek }) } })
   const screens = new MutationObserver(syncScreen)
   for (const id of ['watch', 'signin']) {
     const screen = document.getElementById(id)
@@ -761,7 +787,14 @@ watch(
 )
 
 watch(
-  () => [ev.query.range, ev.query.day],
+  () => [ev.kind, ev.filters] as const,
+  () => {
+    ev.query.event = serverEvent(ev.kind)
+  },
+)
+
+watch(
+  () => [ev.query.range, ev.query.day, ev.query.event],
   () => poll(),
 )
 

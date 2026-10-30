@@ -17,7 +17,7 @@ import { chips, ev } from './events'
     >
       <Icon v-if="chip.icon" :name="chip.icon" small :class="'ev-ink-' + chip.id" />
       <span>{{ chip.label }}</span>
-      <span class="ev-chip-n">{{ ev.phase === 'ok' || chip.count ? chip.count : '–' }}</span>
+      <span v-if="chip.count !== undefined" class="ev-chip-n">{{ chip.count }}</span>
     </button>
   </div>
 </template>

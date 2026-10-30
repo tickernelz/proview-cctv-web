@@ -7,8 +7,8 @@ import { KIND, ev, nameOf, rangePhrase, retry, rows, shown } from './events'
 const props = defineProps<{ compact?: boolean; skeletons?: number }>()
 const camera = computed(() => nameOf(ev.asked.serial))
 const loading = computed(() => ev.phase === 'loading' && !rows.value.length)
-const empty = computed(() => ev.phase === 'ok' && !rows.value.length)
-const filteredEmpty = computed(() => ev.phase === 'ok' && rows.value.length > 0 && !shown.value.length && ev.kind !== 'all')
+const empty = computed(() => ev.phase === 'ok' && !rows.value.length && ev.kind === 'all')
+const filteredEmpty = computed(() => ev.phase === 'ok' && !shown.value.length && ev.kind !== 'all')
 const kindWord = computed(() => (ev.kind === 'all' ? '' : KIND[ev.kind].word))
 const lines = computed(() => Array.from({ length: props.skeletons ?? 4 }, (_, index) => index))
 </script>
@@ -40,7 +40,7 @@ const lines = computed(() => Array.from({ length: props.skeletons ?? 4 }, (_, in
   </div>
   <div v-else-if="filteredEmpty" class="ev-empty" data-testid="alarm-filtered-empty">
     <p class="ev-empty-title">No {{ kindWord }} events {{ rangePhrase() }}</p>
-    <p class="ev-empty-text">{{ rows.length === 1 ? 'One other event is' : rows.length + ' other events are' }} hidden by the filter.</p>
+    <p class="ev-empty-text">{{ camera }} reported no {{ kindWord }} events {{ rangePhrase() }}.</p>
     <Button size="sm" data-testid="alarm-show-all" @click="ev.kind = 'all'">Show all events</Button>
   </div>
 </template>
