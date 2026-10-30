@@ -54,7 +54,7 @@ test('a 502 without stages points at the reason it shows, not at a tooltip', asy
   await expect(page.locator('#well-stage-copy')).toBeHidden()
   await page.locator('#check-password').click()
   await expect(page.getByTestId('settings')).toBeVisible()
-  await expect(page).toHaveURL(/#settings\/config$/)
+  await expect(page).toHaveURL(/#\/settings\/config$/)
 })
 
 test('an offline camera says when the picture comes back without repeating the banner', async ({ page }) => {

@@ -14,6 +14,12 @@ function serverBase(scenario: Scenario): string {
 
 export const scenarioUrl = (scenario: Scenario) => serverBase(scenario) + '/'
 
+export async function eventsPanelClosed(page: Page) {
+  await page.addInitScript(() => {
+    if (localStorage.getItem('pvw_events_panel') === null) localStorage.setItem('pvw_events_panel', 'closed')
+  })
+}
+
 export async function signIn(page: Page, scenario: Scenario): Promise<string> {
   const base = serverBase(scenario)
   await page.goto(base + '/')
@@ -28,7 +34,7 @@ export async function signIn(page: Page, scenario: Scenario): Promise<string> {
     ACCOUNT,
   )
   expect(status).toBe(200)
-  await page.goto(base + '/?signed-in#live')
+  await page.goto(base + '/?signed-in#/live')
   return base
 }
 

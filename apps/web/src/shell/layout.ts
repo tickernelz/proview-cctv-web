@@ -1,9 +1,10 @@
-import { computed, reactive } from 'vue'
+import { computed, reactive, watch } from 'vue'
+import { live } from '../live/store'
 import { EVENTS_HASH, go, liveHash, type LiveMode, type View } from './router'
 
 const PANEL_KEY = 'pvw_events_panel'
 const wideQuery = window.matchMedia('(min-width: 1280px)')
-const narrowQuery = window.matchMedia('(max-width: 639px)')
+const narrowQuery = window.matchMedia('(max-width: 640px) and (min-height: 481px)')
 
 function storedPanel(): boolean | null {
   try {
@@ -48,7 +49,15 @@ function setPanel(open: boolean) {
   }
 }
 
+watch(
+  () => live.sheet,
+  (sheet) => {
+    if (sheet) shell.overlay = false
+  },
+)
+
 export function openEvents() {
+  live.sheet = ''
   if (shell.narrow) {
     go(EVENTS_HASH)
     return

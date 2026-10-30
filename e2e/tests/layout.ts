@@ -97,7 +97,7 @@ export async function overflowFindings(page: Page): Promise<string[]> {
       found.push(...cutOff(node, box))
     }
 
-    const surfaces = ['#pb', '#device-admin', '#recordings-panel', '.alarm-sheet', '.menu:not(.sheet)', '.menu-panel', '#pad']
+    const surfaces = ['#pb', '#device-admin', '#recordings-panel', '.app[data-panel="overlay"] .alarm-sheet', '.menu:not(.sheet)', '.menu-panel', '#pad']
       .flatMap((selector) => [...document.querySelectorAll<HTMLElement>(selector)])
       .filter((node) => !node.hidden && node.checkVisibility({ visibilityProperty: true }))
     const surface = surfaces.length ? surfaces[surfaces.length - 1] : document.body
@@ -161,8 +161,55 @@ export async function smallTargets(page: Page, floor = 44): Promise<string[]> {
 }
 
 async function liveAgain(page: Page) {
+  await page.evaluate(() => history.replaceState(null, '', '#/live'))
   await page.reload()
   await expect(page.getByTestId('live')).toBeVisible()
+}
+
+const viewportWidth = (page: Page) => page.viewportSize()?.width ?? 1440
+
+export function tabBarShown(page: Page) {
+  const size = page.viewportSize()
+  return Boolean(size && size.width <= 640 && size.height > 480)
+}
+
+async function walkEvents(page: Page, check: Check) {
+  const width = viewportWidth(page)
+  if (tabBarShown(page)) {
+    await expect(page.getByTestId('tab-bar')).toBeVisible()
+    await page.getByTestId('tab-events').click()
+    await expect(page.getByTestId('events-panel')).toBeVisible()
+    await expect(page.getByTestId('live')).toBeHidden()
+    await expect(page.getByTestId('alarm-row')).toHaveCount(2)
+    await check('events page')
+    await page.getByTestId('tab-live').click()
+    await expect(page.getByTestId('live')).toBeVisible()
+    return
+  }
+  const panel = page.getByTestId('events-panel')
+  if (width >= 1280) {
+    await expect(panel).toBeVisible()
+    await expect(page.getByTestId('alarm-row')).toHaveCount(2)
+    await check('events panel, docked')
+    await page.getByTestId('alarm-bell').click()
+    await expect(panel).toBeHidden()
+    await check('events panel, closed')
+    await page.getByTestId('alarm-bell').click()
+    await expect(panel).toBeVisible()
+    return
+  }
+  await expect(panel).toBeHidden()
+  await page.getByTestId('alarm-bell').click()
+  await expect(panel).toBeVisible()
+  await expect(page.getByTestId('alarm-row')).toHaveCount(2)
+  await check('events panel, overlay')
+  await liveAgain(page)
+}
+
+async function openSettingsScreen(page: Page) {
+  if (tabBarShown(page)) await page.getByTestId('tab-settings').click()
+  else await page.getByTestId('open-settings').click()
+  await expect(page.getByTestId('settings')).toBeVisible()
 }
 
 export async function walkScreens(page: Page, check: Check) {
@@ -212,10 +259,7 @@ export async function walkScreens(page: Page, check: Check) {
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('quality-menu')).toBeHidden()
 
-  await page.getByTestId('alarm-bell').click()
-  await expect(page.getByTestId('alarm-row')).toHaveCount(2)
-  await check('alarm sheet')
-  await liveAgain(page)
+  await walkEvents(page, check)
 
   await page.locator('#recordings-launcher').click()
   await expect(page.locator('#recordings-panel')).toBeVisible()
@@ -232,13 +276,12 @@ export async function walkScreens(page: Page, check: Check) {
   await check('playback')
   await liveAgain(page)
 
-  await page.getByTestId('grid-toggle').click()
+  await page.getByTestId('view-grid').click()
   await expect(page.getByTestId('grid-tile')).toHaveCount(5)
   await check('every camera')
   await liveAgain(page)
 
-  await page.getByTestId('open-settings').click()
-  await expect(page.getByTestId('settings')).toBeVisible()
+  await openSettingsScreen(page)
   const links = page.locator('.set-nav a[data-section]')
   for (const section of await links.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.section!))) {
     await page.locator('.set-nav a[data-section="' + section + '"]').click()

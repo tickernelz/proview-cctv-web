@@ -7,6 +7,15 @@ stability before 1.0.
 
 ## Unreleased
 
+### Changed
+
+- New design foundation (ADR 0003): Graphite tokens in dark and light, one app
+  shell with a 48 px header (camera switcher, Single/Grid, Events, Settings),
+  an Events panel docked and open from 1280 px wide (closed below, remembered
+  in the browser), a bottom tab bar under 640 px, and addresses `#/live`,
+  `#/live/grid`, `#/live/playback`, `#/events` and `#/settings/<section>`.
+  Every screen keeps its features; the screens get their new look next.
+
 ### Fixed
 
 - PTZ left and right were reversed on cameras that report

@@ -109,7 +109,7 @@
   .ctl:active:not(:disabled), .pick:active { transform: translateY(1px); }
   .wait, .well-meta .right, .fs-line { font-variant-numeric: tabular-nums; }
   @media (max-width: 640px), (max-height: 480px) {
-    .pad { position: fixed; left: var(--s3); right: var(--s3); bottom: calc(var(--dock) + var(--s2)); z-index: 31; grid-template-columns: repeat(3, var(--hit)); grid-template-rows: repeat(3, var(--hit)) auto; justify-content: center; box-shadow: var(--shadow-menu); }
+    .pad { position: fixed; left: var(--s3); right: var(--s3); top: calc(var(--header) + var(--s2)); bottom: auto; max-height: calc(100dvh - var(--header) - var(--dock) - var(--below, 0px) - var(--s4)); overflow: auto; z-index: 31; grid-template-columns: repeat(3, var(--hit)); grid-template-rows: repeat(3, var(--hit)) auto; justify-content: center; box-shadow: var(--shadow-menu); }
     .pad-note { max-width: none; align-items: center; text-align: center; }
   }
   @media (max-height: 480px) {

@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { startServer, startBrowser, signIn } from './cdp.mjs';
+import { EVENTS_PANEL_CLOSED, startServer, startBrowser, signIn } from './cdp.mjs';
 
 const DEVICES = [
   { id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 },
@@ -79,7 +79,7 @@ const rowOf = (page, id) =>
   })()`);
 
 async function openPanel(respond, ready = "document.querySelectorAll('.alarm-row').length === 3") {
-  const page = await browser.page({ intercept: { patterns: PATTERNS, respond } });
+  const page = await browser.page({ init: [EVENTS_PANEL_CLOSED], intercept: { patterns: PATTERNS, respond } });
   await signIn(page, server.base);
   await page.wait("!document.querySelector('.alarm-bell').hidden", 'the alarm bell');
   await page.evaluate("document.querySelector('.alarm-bell').click()");

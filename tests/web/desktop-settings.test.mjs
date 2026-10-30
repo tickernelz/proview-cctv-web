@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { startServer, startBrowser, signIn } from './cdp.mjs';
+import { EVENTS_PANEL_CLOSED, startServer, startBrowser, signIn } from './cdp.mjs';
 
 const DEVICES = [{ id: 'gate', name: 'Gate camera', model: 'XM-IPC', online: true, channels: 1 }];
 const SHELL = ['window.__TAURI__ = { core: { invoke: () => Promise.reject(new Error("no ipc in this test")) } };'];
@@ -26,7 +26,7 @@ const idOf = (key) => 'setting-' + key.toLowerCase().replace(/_/g, '-');
 async function openSettings(init = SHELL) {
   const page = await browser.page({ init });
   await signIn(page, server.base);
-  await page.goto(server.base + '/?signed-in#settings/config');
+  await page.goto(server.base + '/?signed-in#/settings/config');
   await page.wait(init.length ? "document.getElementById('setting-proview-desktop-alarm-notify') !== null" : "document.getElementById('setting-proview-device-host') !== null", 'the settings fields', 20000);
   return page;
 }
@@ -109,7 +109,7 @@ test('the desktop page hands its run token to the settings calls', async () => {
 });
 
 test('a desktop alarm event opens the sheet on that camera', async () => {
-  const page = await browser.page({ init: SHELL });
+  const page = await browser.page({ init: [...SHELL, EVENTS_PANEL_CLOSED] });
   try {
     await signIn(page, server.base);
     await page.wait("document.getElementById('alarm-bell') !== null || document.querySelector('.alarm-bell') !== null", 'the alarm bell', 20000);
@@ -128,7 +128,7 @@ test('a desktop live event brings the live view back', async () => {
   const page = await browser.page({ init: SHELL });
   try {
     await signIn(page, server.base);
-    await page.evaluate("location.hash = '#settings/config'; document.getElementById('open-settings').click()");
+    await page.evaluate("location.hash = '#/settings/config'; document.getElementById('open-settings').click()");
     await page.wait("!document.getElementById('settings').hidden", 'the settings screen', 15000);
     await page.evaluate("window.dispatchEvent(new CustomEvent('desktop-live'))");
     await page.wait("!document.getElementById('watch').hidden", 'the live screen', 15000);

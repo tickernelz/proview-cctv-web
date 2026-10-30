@@ -26,7 +26,7 @@ function onFocusOut(event: FocusEvent): void {
   <div
     role="region"
     aria-label="Notifications"
-    class="pointer-events-none fixed right-4 bottom-4 z-50 flex w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 max-sm:inset-x-2 max-sm:bottom-[calc(var(--tabbar)+8px)] max-sm:w-auto max-sm:max-w-none"
+    class="pointer-events-none fixed right-4 bottom-4 z-50 flex w-[360px] max-w-[calc(100vw-32px)] flex-col gap-2 max-sm:inset-x-2 max-sm:bottom-[calc(var(--below,0px)+8px)] max-sm:w-auto max-sm:max-w-none"
     @pointerenter="pauseToasts"
     @pointerleave="resumeToasts"
     @focusin="pauseToasts"

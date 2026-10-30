@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test'
 import { test, expect, type Page } from '@playwright/test'
-import { playing, scenarioUrl, signIn } from './app'
+import { eventsPanelClosed, playing, scenarioUrl, signIn } from './app'
 
 const VIEWPORTS = [
   { width: 1440, height: 900 },
@@ -28,7 +28,7 @@ const SCREENS: Record<string, Open> = {
   },
   grid: async (page) => {
     await signIn(page, 'many')
-    await page.getByTestId('grid-toggle').click()
+    await page.getByTestId('view-grid').click()
     await expect(page.getByTestId('grid-tile')).toHaveCount(5)
     return [page.getByTestId('grid-tile-video'), page.getByTestId('grid-count')]
   },
@@ -58,7 +58,7 @@ const SCREENS: Record<string, Open> = {
       }),
     )
     await signIn(page, 'one')
-    await page.getByTestId('alarm-bell').click()
+    await expect(page.getByTestId('events-panel')).toBeVisible()
     await expect(page.getByTestId('alarm-row')).toHaveCount(2)
     return [page.getByTestId('live-frame'), page.getByTestId('live-state')]
   },
@@ -90,6 +90,7 @@ for (const [name, open] of Object.entries(SCREENS)) {
       const shot = name + '-' + viewport.width + 'x' + viewport.height + '-' + theme
       test(shot, async ({ page }) => {
         await page.setViewportSize(viewport)
+        if (name !== 'alarms') await eventsPanelClosed(page)
         await page.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' })
         const mask = await open(page)
         expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBe(theme)

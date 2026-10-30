@@ -36,8 +36,13 @@
     .app-header .alarm-bell .badge { position: absolute; top: 2px; right: 0; }
   }
 
-  @media (max-width: 639px) {
+  @media (max-width: 767px) {
     .app-header { gap: var(--s2); padding: 0 var(--s2) 0 var(--s3); }
-    .app-header .brand, .hdr-actions .alarm-bell { display: none; }
+    .app-header .brand { display: none; }
+  }
+
+  @media (max-width: 640px) and (min-height: 481px) {
+    :root { --below: calc(var(--tabbar) + env(safe-area-inset-bottom)); }
+    .hdr-actions .alarm-bell { display: none; }
   }
 }

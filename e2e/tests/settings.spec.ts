@@ -137,7 +137,7 @@ test('Settings opens again on the section that was clicked last, from the gear, 
   await expect(page.getByTestId('live')).toBeVisible()
   await page.keyboard.press(',')
   await expect(page.locator('#h-server')).toBeVisible()
-  await expect(page).toHaveURL(/#settings\/server$/)
+  await expect(page).toHaveURL(/#\/settings\/server$/)
 })
 
 test('a refused provider switch is not shown again when Settings opens later', async ({ page }) => {

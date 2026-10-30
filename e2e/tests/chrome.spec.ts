@@ -12,7 +12,7 @@ test('an offline camera banner says it once and offers Refresh the list, not Ret
   await expect(banner).not.toContainText('cloud status offline')
   const action = page.getByTestId('banner-action')
   await expect(action).toHaveText('Refresh the list')
-  await expect(action).toHaveClass(/\bbtn\b/)
+  await expect(action).toHaveAttribute('data-variant', 'secondary')
   let lists = 0
   page.on('request', (request) => {
     if (new URL(request.url()).pathname === '/api/devices') lists += 1
@@ -41,13 +41,13 @@ test('a lost network offers Retry now and a list that fails to load offers Refre
 test('the keyboard list closes from its button and gives focus back to where it was', async ({ page }) => {
   await signIn(page, 'many')
   await playing(page)
-  await page.getByTestId('grid-toggle').focus()
+  await page.getByTestId('view-single').focus()
   await page.keyboard.press('?')
   await expect(page.getByTestId('keys-sheet')).toBeVisible()
   await expect(page.locator('#keys-close')).toBeFocused()
   await page.locator('#keys-close').click()
   await expect(page.getByTestId('keys-sheet')).toBeHidden()
-  await expect(page.getByTestId('grid-toggle')).toBeFocused()
+  await expect(page.getByTestId('view-single')).toBeFocused()
 })
 
 test('Tab in the keyboard list closes it and moves on from where focus was', async ({ page }) => {
@@ -58,7 +58,7 @@ test('Tab in the keyboard list closes it and moves on from where focus was', asy
   await expect(page.locator('#keys-close')).toBeFocused()
   await page.keyboard.press('Tab')
   await expect(page.getByTestId('keys-sheet')).toBeHidden()
-  await expect(page.getByTestId('live').getByTestId('theme-toggle')).toBeFocused()
+  await expect(page.getByTestId('app-header').getByTestId('theme-toggle')).toBeFocused()
 })
 
 test('a digit typed while the camera menu is open switches to that camera', async ({ page }) => {

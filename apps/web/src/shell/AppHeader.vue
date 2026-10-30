@@ -156,7 +156,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', outside, true)
     />
     <div class="hdr-actions">
       <AlarmCenter />
-      <Button id="open-settings" class="max-md:w-(--hit) max-md:px-0 max-sm:hidden" data-testid="open-settings" variant="ghost" icon="gear" title="Settings (,)" :aria-pressed="shell.view === 'settings' ? 'true' : undefined" @click="openSettings(state.section)">
+      <Button v-if="!shell.narrow" id="open-settings" class="max-md:w-(--hit) max-md:px-0" data-testid="open-settings" variant="ghost" icon="gear" title="Settings (,)" :aria-pressed="shell.view === 'settings' ? 'true' : undefined" @click="openSettings(state.section)">
         <span class="hdr-label">Settings</span>
       </Button>
       <IconButton v-if="shell.view !== 'settings'" data-testid="theme-toggle" :label="themeLabel" :icon="live.theme === 'dark' ? 'sun' : 'moon'" side="bottom" @click="toggleTheme" />

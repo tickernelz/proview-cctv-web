@@ -450,6 +450,7 @@ Frozen after the foundation PR, changed only through the integrator:
 `src/components/Icon.vue`, `apps/web/icons.ts`, `src/live/store.ts` (slices may
 ask the integrator for new fields), `src/app/state.ts`, `src/app/shell.ts`,
 `src/app/view.ts`, `src/app/chrome.ts`, `src/app/keys.ts`, `src/app/boot.ts`,
+`src/app/devices.ts`, `src/app/theme.ts`,
 `src/lib/api.ts`, `tools/contrast.py`, `e2e/tests/app.ts`, `e2e/tests/layout.ts`,
 `e2e/tests/visual.spec.ts` (and its snapshots, regenerated once by the
 integrator), `e2e/tests/shell.spec.ts`, `chrome.spec.ts`, `menus.spec.ts`,
@@ -459,7 +460,7 @@ integrator), `e2e/tests/shell.spec.ts`, `chrome.spec.ts`, `menus.spec.ts`,
 
 | Slice | Owns |
 |---|---|
-| 1. live-stage | `src/live/LiveMain.vue`, `LiveBar.vue`, `ImageLive.vue`, `FisheyeOverlay.vue`, `PtzEditor.vue`, `fisheye.ts`, `talk.ts`, new `src/live/stage/**`; `src/app/stage.ts`, `controls.ts`, `lens.ts`, `media.ts`, `caption.ts`, `dst.ts`, `format.ts`; `src/lib/stream-player.ts`, `hevc.ts`; `src/styles/live.css`; e2e live, stage, controls, talk, talk-race, lens, fisheye, live-audio; tests/web snapshot, stream-orphan, stream-misconfigured, live-late-viewer, hevc-fallback, hevc-verdict |
+| 1. live-stage | `src/live/LiveMain.vue`, `LiveBar.vue`, `AlarmStop.vue`, `ImageLive.vue`, `FisheyeOverlay.vue`, `PtzEditor.vue`, `fisheye.ts`, `talk.ts`, new `src/live/stage/**`; `src/app/stage.ts`, `controls.ts`, `lens.ts`, `media.ts`, `caption.ts`, `dst.ts`, `format.ts`; `src/lib/stream-player.ts`, `hevc.ts`; `src/styles/live.css`; e2e live, stage, controls, talk, talk-race, lens, fisheye, live-audio; tests/web snapshot, stream-orphan, stream-misconfigured, live-late-viewer, hevc-fallback, hevc-verdict |
 | 2. timeline-playback | `src/live/PlaybackScreen.vue`, `PlaybackStrip.vue`, `PlaybackRows.vue`, `PlaybackCalendar.vue`, `RecordingsPanel.vue`, `playback-audio.ts`, `playback-clips.ts`, new `src/live/timeline/**`; `src/styles/playback.css`; e2e playback, playback-audio, recordings |
 | 3. events | `src/live/AlarmCenter.vue`, new `src/events/**`; `src/styles/events.css`; e2e alarms; tests/web alarms-pictures |
 | 4. settings | `src/live/SettingsScreen.vue`, `DeviceSettings.vue`, `AlarmSettings.vue`, `ImageSettings.vue`, `OsdSettings.vue`, `RecordSettings.vue`, `CardFormat.vue`, `SystemAbout.vue`, `AccountPanel.vue`, `DevicesSheet.vue`, new `src/settings/**`; `src/styles/settings.css`; e2e settings, device-settings, alarm-settings, image-settings, system-about, device-admin, devices, add-camera; tests/web device-settings, restart, settings-boot, desktop-settings |

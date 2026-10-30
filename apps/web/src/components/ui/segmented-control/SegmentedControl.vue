@@ -38,7 +38,7 @@ const itemClass = computed(() => [
     :model-value="modelValue"
     :disabled="disabled"
     :aria-label="label"
-    class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-line-soft bg-bg-2 p-0.5"
+    class="inline-flex shrink-0 items-center gap-0.5 rounded-md border border-line-soft bg-bg-2 p-0.5 pointer-coarse:border-0 pointer-coarse:p-0"
     @update:model-value="onUpdate"
   >
     <template v-for="option in options" :key="option.value">

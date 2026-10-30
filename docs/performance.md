@@ -841,3 +841,19 @@ once the forms loaded (650 px in 552 px); `e2e/tests/device-settings.spec.ts`
 checks the loaded page at 320-1920 px. e2e at this change: 232 passed, 9 skipped,
 1 flaky (signin.spec.ts:26, passed on retry), 5.1 min (CI run 40807831475); node
 web tests `device-settings` and `ui` 16/16.
+
+### UI foundation and app shell (measured 2026-10-30)
+
+One root Vue app (`src/shell/`) replaces the island mounts, and `src/components/ui/`
+gains the shared kit (button, icon-button, select, switch, slider, dialog, sheet,
+tooltip, badge, status-dot, card, field, toast, empty-state, skeleton,
+segmented-control, kbd). Production build (`grep -c 'Vue warn'` = 0 in both
+bundles), `gzip -9`, baseline origin/main ddae4f0:
+
+| File | main ddae4f0 | UI foundation | Delta |
+|---|---:|---:|---:|
+| JS | 159,770 B | 168,583 B | +8,813 B |
+| CSS | 9,817 B | 13,869 B | +4,052 B |
+
+Inside the ADR 0002 budget (JS +80 KB, CSS +20 KB). The shell already imports
+Button, IconButton, SegmentedControl, Kbd, Tooltip and Toaster.
