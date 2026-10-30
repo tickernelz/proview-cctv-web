@@ -247,7 +247,7 @@ function duration(seconds?: number) {
 </script>
 
 <template>
-  <Sheet :open="open" @update:open="setOpen">
+  <Sheet :open="open" :modal="false" @update:open="setOpen">
     <SheetContent
       id="recordings-panel"
       class="rec-sheet"

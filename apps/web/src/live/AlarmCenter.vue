@@ -218,6 +218,8 @@ async function poll() {
     primed = asked.serial
     if (!first) notify(entries)
     for (const entry of entries) seen.add(entry.id)
+    const covered = asked.event ? '' : asked.day || (asked.hours >= 24 ? stamp(until).slice(0, 10) : '')
+    if (covered) live.alarmDay = { serial: asked.serial, day: covered, entries: entries.map((entry) => ({ id: entry.id, at: (entry.time ? Date.parse(entry.time.replace(' ', 'T')) : NaN) || (entry.utcTime || 0) * 1000, event: entry.event || '' })), token: live.alarmDay.token + 1 }
     view.entries = entries
     tools.refused = body.canDelete === false ? body.deleteReason || 'This account may not delete alarms of this camera' : ''
     view.total = body.total || entries.length

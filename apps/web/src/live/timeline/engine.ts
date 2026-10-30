@@ -17,7 +17,7 @@ type Listing = { files?: Clip[]; truncated?: boolean; cap?: number }
 type Alarm = { id?: string; event?: string; name?: string; time?: string; utcTime?: number }
 type Frame = { type?: string; message?: string; [key: string]: unknown }
 type Mark = { frame: number; at: number }
-type Seek = { serial: string; at: number; kind: string; id: string; token: number }
+type Seek = typeof live.seek
 
 export const SPEEDS = [0.5, 1, 2, 4, 8]
 export const LEAD_MS = 5000
@@ -186,6 +186,23 @@ function kindOf(event: string | undefined): 'motion' | 'alarm' {
   return /motion/i.test(event || '') ? 'motion' : 'alarm'
 }
 
+function markersOf(entries: { id: string; at: number; event: string }[], day: string) {
+  const list: Marker[] = []
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.at) || dayOf(entry.at) !== day) continue
+    const kind = kindOf(entry.event)
+    list.push({ id: entry.id || String(entry.at), at: entry.at, kind, label: kind === 'motion' ? 'Motion' : 'Alarm' })
+  }
+  return list.sort((a, b) => a.at - b.at)
+}
+
+function published(serial: string, day: string) {
+  const shared = live.alarmDay
+  return shared.token > 0 && shared.serial === serial && shared.day === day ? shared : null
+}
+
+const SHARED_WAIT_MS = 4000
+
 export async function loadEvents(force = false) {
   const serial = device()
   const day = tl.day
@@ -193,20 +210,29 @@ export async function loadEvents(force = false) {
   const key = serial + '|' + day
   if (!force && tl.events.key === key && tl.events.phase !== 'error') return
   const mine = ++eventTicket
+  const shared = published(serial, day)
+  if (shared && !force) {
+    Object.assign(tl.events, { key, phase: 'ok', list: markersOf(shared.entries, day), error: '' })
+    return
+  }
+  if (!force && day === today()) {
+    Object.assign(tl.events, { key, phase: 'loading', list: [], error: '' })
+    await new Promise((done) => window.setTimeout(done, SHARED_WAIT_MS))
+    if (mine !== eventTicket) return
+    if (published(serial, day)) return
+  }
   Object.assign(tl.events, { key, phase: 'loading', list: [], error: '' })
   try {
     const body = await api<{ entries?: Alarm[] }>(
       '/api/cloud/alarms?sn=' + encodeURIComponent(serial) + '&start=' + encodeURIComponent(day + ' 00:00:00') + '&end=' + encodeURIComponent(day + ' 23:59:59'),
     )
     if (mine !== eventTicket) return
-    const list: Marker[] = []
-    for (const entry of (body && body.entries) || []) {
-      const at = (entry.time ? stamp(entry.time) : null) ?? (entry.utcTime ? entry.utcTime * 1000 : null)
-      if (at === null || dayOf(at) !== day) continue
-      const kind = kindOf(entry.event)
-      list.push({ id: entry.id || String(at), at, kind, label: kind === 'motion' ? 'Motion' : entry.name || 'Alarm' })
-    }
-    tl.events.list = list.sort((a, b) => a.at - b.at)
+    const entries = ((body && body.entries) || []).map((entry) => ({
+      id: entry.id || '',
+      at: (entry.time ? stamp(entry.time) : null) ?? (entry.utcTime ? entry.utcTime * 1000 : NaN),
+      event: entry.event || '',
+    }))
+    tl.events.list = markersOf(entries, day)
     tl.events.phase = 'ok'
   } catch (error) {
     if (mine !== eventTicket) return
@@ -761,10 +787,20 @@ watch(
 )
 
 watch(
-  () => (live as unknown as { seek?: Seek }).seek?.token,
+  () => live.alarmDay.token,
   () => {
-    const seek = (live as unknown as { seek?: Seek }).seek
-    if (!seek || !seek.serial) return
+    const shared = published(device(), tl.day)
+    if (!shared) return
+    eventTicket += 1
+    Object.assign(tl.events, { key: shared.serial + '|' + shared.day, phase: 'ok', list: markersOf(shared.entries, shared.day), error: '' })
+  },
+)
+
+watch(
+  () => live.seek.token,
+  () => {
+    const seek = live.seek
+    if (!seek.serial) return
     pendingSeek = { ...seek }
     trySeek()
   },
