@@ -59,7 +59,6 @@ ffmpeg never opens a console window.
   wire JSON and proven against a fake device only. Device password, user and
   recovery writes over DVRIP are not offered; the cloud `mdeditPass` route
   stays the way to change the camera password.
-
 - Live view plays the camera's own sound (G.711 A-law, 8 kHz) over the cloud
   relay, for the stage and the selected grid tile, in both H.265 passthrough
   and H.264 transcode. The server sends audio only to a viewer that switched
@@ -170,7 +169,6 @@ ffmpeg never opens a console window.
   native clip list fields, and can play or download a clip (signed HLS index
   and segments, joined TS or MP4), with per-stage deadlines that answer 504
   naming the stage.
-
 - Pan and tilt work through the vendor cloud (ZHA-4281): `/api/device/controls`,
   `/api/device/controls/ptz`, `/api/device/controls/presets`,
   `/api/device/controls/preset/goto` and `/api/device/controls/snapshot` open the
@@ -462,7 +460,6 @@ ffmpeg never opens a console window.
   white light and flip, settings, alarms and the grid, in Chromium and WebKit,
   plus a viewport gate from 320 to 1920 px, touch-screen projects and screenshot
   baselines in both themes. CI runs it as the `e2e` job.
-
 - Desktop alarm notifications and the tray. The desktop process polls the alarm
   centre on a timer (60 s by default, 15-3600, set in Settings) and posts one
   native system notification per new alarm — device, event and time — so the
@@ -743,46 +740,36 @@ ffmpeg never opens a console window.
   with FPS, BitRate, GOP and Resolution matching. Network writes stay on
   DNS: address, DHCP, gateway and submask answer 409 because the read-back
   and the revert both travel over that path.
-
 - Alarm message centre. `/api/cloud/alarms` speaks the recovered
   `AlarmCenter` envelope against `access-alc.secu100.net:6602`,
   `/api/cloud/alarms/picture` signs an object through the CssCenter hop, and
   `web/alarms.js` lists time, event and channel, draws the picture, and
   raises one browser notification per new alarm id once the user presses
   Notify me.
-
 - Cloud recordings. `GET /api/recordings?device=&channel=&day=` carries the
   DSS token and the PMS `video_query` call, and the panel maps `StartTime`,
   `StopTime`, `VideoSize`, `IndexFile` and `StorageBucket` from the vendor
   bean. An account without a cloud plan gets the vendor acknowledgement with
   no clips and the page renders its notice.
-
 - Playback. `GET /api/playback/files` lists a device's recordings over the
   cloud tunnel, `GET /api/playback/download` streams one, and
   `web/playback.js` draws the day timeline; a 60 s window was collected as
   84.36 MB in 107 s through the fMP4 splitter, with ffmpeg stopped by
   closing the socket.
-
 - One live tile per device with a layout the browser keeps (`GET /api/grid`,
   `web/grid.js`).
-
 - Fisheye dewarp from the recovered lens model: `/api/fisheye/model`,
   `/api/fisheye/map` and `/api/fisheye/dewarp`, driven by `web/fisheye.js`.
-
 - Talk over the vendor relay when the LAN is out of reach (`GET
   /api/ws/talk`), two audio streams with a configurable buffer.
-
 - AP-mode provisioning: `POST /api/apmode/plan` and `/api/apmode/provision`
   send the DVRIP `NetWork.Wifi` write and the app's own UDP fallback sender
   to a camera that is still on its own access point.
-
 - Device attributes on the account: `GET /api/cloud/device-attributes`,
   `/api/cloud/device-caps` and `/api/cloud/device-groups`, plus rename,
   group, favourite, share and password on the cloud envelope.
-
 - The token login now travels encrypted on the monitor channel, with the
   media bring-up the SDK itself uses.
-
 - Media channel cipher. `crates/core/src/media/dhav.rs` speaks the envelope the
   vendor SDK and the camera use on msgid 1000: AES-128-CBC with a 16-byte zero
   IV, zero padding instead of PKCS#7, base64 in the body, DVRIP header kept.
@@ -797,7 +784,6 @@ ffmpeg never opens a console window.
   workstream. `docs/protocol.md` 4C.19 carries the addresses, the body-class
   table for msgid 1412 and the controlled 28-combination sweep with its positive
   control.
-
 - Account lifecycle on the cloud envelope. `POST /api/account/remember` keeps
   the account email and access token in `account.json` (0600) next to the
   settings, and `GET /api/account/remembered` rebuilds the server session from
@@ -806,7 +792,6 @@ ffmpeg never opens a console window.
   the session and the stored token and records the vendor's raw reply, which is
   `5005 PARAM_FAIL` because the legacy cookie sign-out cannot be authenticated
   from a v3 session (`docs/protocol.md` 10D.3).
-
 - Device bind by serial and by QR. `POST /api/devices/bind`,
   `POST /api/devices/bind/qr` and `POST /api/devices/unbind` drive the vendor's
   `mdadd`/`mdrm` on the same signed envelope the device list uses. The QR codec
@@ -816,7 +801,6 @@ ffmpeg never opens a console window.
   link parse into a serial. Measured: the real serial answers `4101`, a
   fictional one answers `2000` and appears in `GET /api/devices`, `mdrm`
   removes it, `uuid=no` answers `4104` (`docs/protocol.md` 10D).
-
 - PTZ tours over DVRIP. `GET /api/device/controls/tour` reports the device own
 tour lines (`Uart.PTZTour`), the presets it can cycle (`Uart.PTZPreset`) and the
 gun/ball locate block, and `POST /api/device/controls/tour/{start,stop,add,clear}`
@@ -893,7 +877,6 @@ stops the first tour line that has points and says the ack is not motion.
   `NotImplemented`, so the linker drops it and `strings` finds no trace of it in
   the 0.3.2 binaries. It ships when the encrypted media login does;
   `docs/protocol.md` 4C.6-4C.12 records exactly what is proven and what is not.
-
 - Cloud device status. `GET /api/devices` now reads `pub-status.secu100.net`
   `/v1/status/third` across all seven clusters and answers `online`,
   `online_status`, `online_checked_at` and `online_detail` instead of a

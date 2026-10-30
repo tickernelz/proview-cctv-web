@@ -1,10 +1,11 @@
 # ADR 0001: Frontend stack
 
-- Status: accepted (Zhafron, 2026-10-28 11:58 UTC, ZHA-4133): Vite + Vue 3, full migration of `web/`
+- Status: accepted (Zhafron, 2026-10-28 11:58 UTC): Vite + Vue 3, full migration of `web/`
 - Date: 2026-10-28
 - Base: `origin/main` 6c70754
-- Scope: research and decision only. The migration itself is ZHA-4164, which starts after PR #63 (live cloud) is released.
+- Scope: research and decision only. The migration itself is separate work, which starts after PR #63 (live cloud) is released.
 - Evidence: tag `adr-0001-evidence` (commit fb87d0c) holds `tools/frontend-bench/`, `tools/webview-probe/` and every result file this ADR cites; run the commands below from a checkout of that tag.
+- Outcome (2026-10-30, v0.4.0): the page now lives in `apps/web` (`apps/web/package.json`: vue, reka-ui, tailwindcss, vite, vue-tsc) and is embedded from `apps/web/dist` through `rust-embed`; `web/` and its classic scripts are gone. UI tests are `tests/web/*.test.mjs` plus the Playwright suite in `e2e/`. Step 3 (ts-rs types) has not landed, and `tools/frontend-bench/` and `tools/webview-probe/` exist only at the tag above.
 
 ## Context
 
@@ -27,7 +28,7 @@ The 26 UI tests in `tests/web/*.test.mjs` drive the real server in headless Chro
 
 ## How the numbers were produced
 
-Every number below comes from a run on this machine on 2026-10-28: WSL2 on Fedora 44, Node 24.18.0, npm 11.16.0, rustc 1.99.1. Machine load during the runs was between 5 and 16 (`uptime`), so treat small differences as noise. Everything needed to reproduce them is under `tools/frontend-bench/` and `tools/webview-probe/`.
+Every number below comes from a run on this machine on 2026-10-28: WSL2 on Fedora 44, Node 24.18.0, npm 11.16.0, rustc 1.99.1. Machine load during the runs was between 5 and 16 (`uptime`), so treat small differences as noise. Everything needed to reproduce them is under `tools/frontend-bench/` and `tools/webview-probe/` at tag `adr-0001-evidence`.
 
 Each option is the same small app: a device rail that fetches `GET /api/devices` into a typed `Device[]`, an online counter, a selected-device state with `aria-pressed`, a `<video>` element, and one CSS file using `color-mix` and `:focus-visible`. It measures framework and tooling overhead, not the cost of porting this app.
 
@@ -154,7 +155,7 @@ Reasons:
 
 1. **Vite + TypeScript is the base for every viable option.** On its own it adds 735 B gzip and builds in under a second. It gives what `web/` lacks today: modules instead of globals, type checks, one place for the generated `/api/*` types, and hashed assets. It is also the migration path, because the existing scripts can move behind it unchanged.
 2. **Vue 3 is what was asked for, and the measurements allow it.** Its cost over vanilla is 23.9 KB gzip; on loopback the first-frame runs show no difference between the options that this size would explain (note 1 under the matrix). Its build is byte-reproducible. Its single-file component template is plain HTML, which keeps the 296 lines of approved `index.html` markup and the `redesign-v1` structure close to how they look now. `vue-tsc` type-checks templates against the generated types. Of the template frameworks it has the largest ecosystem (15.6 M weekly).
-3. **The state bugs are where a framework pays off.** ZHA-4131 (Settings edits lost when the boot finishes) is a state-ownership bug in hand-written DOM code. Settings, alarms, device admin and playback lists are form and list views. The live frame path is not: it stays a plain TS module that Vue only mounts and never makes reactive.
+3. **The state bugs are where a framework pays off.** Settings edits lost when the boot finishes (fixed in PR #61) is a state-ownership bug in hand-written DOM code. Settings, alarms, device admin and playback lists are form and list views. The live frame path is not: it stays a plain TS module that Vue only mounts and never makes reactive.
 4. **Tooling stays small.** There is one `web/package.json` with a committed `package-lock.json`, and npm comes with Node, so no extra tool is needed. One JavaScript package next to a Cargo workspace does not justify pnpm workspaces, Turborepo or Nx. The "monorepo" stays what it is: the Cargo workspace plus `web/`.
 5. **Embedding** uses `rust-embed` on `web/dist`. It replaces the per-file routes and costs the same bytes and start time as today (measured above). Precompressed gzip is an optional later step that saves 195 KB of binary.
 
@@ -185,7 +186,7 @@ Every step must pass all of these before merge:
 | 1 | Add `web/package.json` (vite, typescript, lockfile). Vite builds `index.html`, `tokens.css` and `style.css`; the scripts move unchanged into `web/public/` and are copied as-is. Rocket serves `web/dist` through `rust-embed`, replacing the per-file routes and keeping `/api/*`, `/ws/*` and `desktop.rs` injection. CI runs `npm ci && npm run build` before `cargo`. `release.yml` builds `web/dist` once and gives it to every cross target. | No JS behaviour change | `sha256` of every served script is equal before and after, checked against a **release** binary. All 26 UI tests pass. Measured binary delta and start time. `desktop-smoke` is green on 3 OS. rust-embed 8 reads the files from disk in debug builds unless the `debug-embed` feature is on, and fails to compile when the folder is missing unless `#[allow_missing = true]`: the step turns on `debug-embed` so the debug binary the UI tests use serves the embedded bytes, and every `cargo` path (clippy, test, `desktop-smoke`, the local `build-slot.sh` loop) builds `web/dist` first. |
 | 2 | Turn the scripts into ES modules imported from `src/main.ts` in the current load order. Turn on `checkJs` in `tsconfig.json` (no source comments), and fix only type errors. | Globals stay as exports | UI tests pass. Bundle gzip stays at or below today's 56 KB of JS. |
 | 3 | Add ts-rs to the response types of `/api/*` (with `#[ts(type = "number")]` on integer fields) and export into `web/src/api/generated/`. Add a CI check that fails on drift. Replace hand-written response handling with the generated types. | Rust structs only gain a derive | `cargo test` passes and the drift check is green. A changed field breaks `tsc`, proven once with a deliberate mutation. |
-| 4 | Add Vue 3. Port **Settings** first (form state; fixes the class of ZHA-4131), mounted into its existing container. | One view per PR | Settings tests plus a new test for edits kept across the boot refresh. Screenshot diff. |
+| 4 | Add Vue 3. Port **Settings** first (form state; fixes the class of the PR #61 bug), mounted into its existing container. | One view per PR | Settings tests plus a new test for edits kept across the boot refresh. Screenshot diff. |
 | 5 | Port account/sign-in, alarms, device admin, playback list and recordings, one per PR. | Same | The tests for each view, screenshot diff, focus-ring check on WebKitGTK 2.50. |
 | 6 | Port the live shell (camera picker, menus, PTZ, lens, grid). The frame path (WebSocket, MSE/WebCodecs, fisheye canvas, talk) stays plain TS modules behind a component, with no reactive state per frame. | Last, after 4-5 are stable | `ui.test.mjs`, `grid.test.mjs`, `snapshot.test.mjs`. Cold and warm first decoded frame measured as in `docs/performance.md` must not get worse. |
 | 7 | Remove `web/public/*.js`, the globals and the leftover routes. | Only deletions | Every test green, and `index.html` has no classic `<script>`. |
@@ -198,7 +199,7 @@ Rollback: each step is one revertable PR. Steps 1-3 change no user-visible behav
 2. **WebView2 and WKWebView have not been exercised**, here or on `main`. The plan does not make that worse, but it does not fix it either.
 3. **UI/UX loss against `redesign-v1`.** Porting markup into components invites "improvements". The rule is that `tokens.css` and `style.css` carry over byte for byte in step 1, `tools/contrast.py` keeps running, and a visual improvement (allowed by the decision) goes in its own PR with before/after screenshots, never inside a port step.
 4. **Node becomes a build dependency** for `release` and `desktop-smoke`, on 3 OS and in `Cross` containers. `check` already sets up Node 22 for the UI tests, which satisfies Vite 8 (`^20.19 || >=22.12`). The committed `vue-ts/package-lock.json` already lists Rolldown's native packages for Linux, macOS (`@rolldown/binding-darwin-{arm64,x64}`) and Windows (`win32-{x64,arm64}-msvc`), so what remains unproven is installing and building on each of the three runners; the first step has to show that in CI. Estimated cost for the `check` job: locally `npm ci` took 1.6-3.2 s and the Vue build 1.6-2.5 s, so `[INFERENCE]` well under the 60 s budget even with a cold npm cache on the runner.
-5. **Two runtimes during migration.** While steps 4-6 run, Vue and the legacy modules share the page. Shared state must go through one store module, or the ZHA-4131 class of bug comes back.
+5. **Two runtimes during migration.** While steps 4-6 run, Vue and the legacy modules share the page. Shared state must go through one store module, or the PR #61 class of bug comes back.
 6. **Frame-path performance.** Vue reactivity must not wrap the video, canvas or WebSocket objects. Step 6 is the one most likely to regress, so it comes last and has the measured gate.
 7. **TypeScript 7 and `vue-tsc`.** The Vue template still pins TypeScript 6.0.3 because `vue-tsc` does not accept 7 yet; the other templates use 7.0.2. A TS upgrade waits for `vue-tsc`.
 8. **The numbers are from one loaded machine** (load 5-16). Sizes and reproducibility repeat exactly; times do not, and first-frame times do not rank the options.
