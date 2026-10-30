@@ -21,9 +21,22 @@ const SOUND_TITLES: Record<string, string> = {
   waiting: 'Sound is on, waiting for the camera audio',
   playing: 'Sound is on',
   silent: 'Sound is on, but the camera is sending no audio',
+  blocked: 'The browser holds sound until you click or press a key on this page',
+  unplayable: 'The camera sends audio in a codec this page cannot play',
   unsupported: 'This browser has no Web Audio, so the camera audio cannot play',
 }
+const SOUND_LABELS: Record<string, string> = {
+  silent: 'No sound',
+  blocked: 'Click to enable sound',
+  unplayable: 'Sound not playable',
+  unsupported: 'No Web Audio',
+}
 const soundTitle = computed(() => (live.muted ? 'Sound is off' : SOUND_TITLES[live.sound] || 'Sound is on') + ' (M)')
+const soundLabel = computed(() => (live.muted ? 'Sound' : SOUND_LABELS[live.sound] || 'Sound'))
+
+function clickSound() {
+  if (live.sound !== 'blocked') live.actions.toggleMute()
+}
 const QUALITIES = [
   { value: 'main', name: 'HD', sub: 'the main stream' },
   { value: 'sub', name: 'SD', sub: 'the sub stream, lighter on the network' },
@@ -84,9 +97,9 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
       :aria-pressed="!live.muted"
       :data-sound="live.sound"
       :title="soundTitle"
-      @click="live.actions.toggleMute()"
+      @click="clickSound"
     >
-      <Icon :name="live.muted ? 'speaker-off' : 'speaker'" /><span data-testid="sound-label">{{ live.sound === 'silent' ? 'No sound' : 'Sound' }}</span>
+      <Icon :name="live.muted ? 'speaker-off' : 'speaker'" /><span data-testid="sound-label">{{ soundLabel }}</span>
     </button>
     <span class="sep" />
     <button

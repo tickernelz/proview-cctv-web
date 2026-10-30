@@ -228,7 +228,7 @@ onMounted(() => {
       :aria-pressed="!live.muted"
       :aria-label="live.muted ? 'Sound of the selected tile is off' : 'Sound of the selected tile is on'"
       :title="(live.muted ? 'Sound is off' : 'Sound follows the selected tile') + ' (M)'"
-      @click="live.actions.toggleMute()"
+      @click="live.sound === 'blocked' ? null : live.actions.toggleMute()"
     ><Icon :name="live.muted ? 'speaker-off' : 'speaker'" /></button>
     <button id="grid-fullscreen" class="iconbtn" type="button" aria-label="Full screen" title="Full screen (F)" @click="toggleFullscreen"><Icon name="expand" /></button>
   </div>

@@ -20,7 +20,13 @@ const WORDS: Record<TileState, string> = { loading: 'connecting', playing: 'live
 
 const video = ref<HTMLVideoElement>()
 const status = reactive({ name: 'loading' as TileState, detail: '', title: '', at: 0, sound: 'off' as SoundState })
-const SOUND_WORDS: Partial<Record<SoundState, string>> = { playing: ' · sound', silent: ' · no sound' }
+const SOUND_WORDS: Partial<Record<SoundState, string>> = {
+  playing: ' · sound',
+  silent: ' · no sound',
+  blocked: ' · click for sound',
+  unplayable: ' · sound not playable',
+  unsupported: ' · no Web Audio',
+}
 let player: StreamPlayer | null = null
 let nonce = 0
 
@@ -49,7 +55,9 @@ async function start() {
   if (!video.value) return
   const own = new StreamPlayer(video.value, (name, message) => player === own && set(name, message), () => live.muted || !props.selected)
   own.onSound = (sound) => {
-    if (player === own) status.sound = sound
+    if (player !== own) return
+    status.sound = sound
+    if (props.selected) live.sound = sound
   }
   player = own
   set('loading')
@@ -65,6 +73,12 @@ async function start() {
 }
 
 watch(() => [props.run, props.view.quality], start)
+watch(
+  () => props.selected,
+  (selected) => {
+    if (selected) live.sound = status.sound
+  },
+)
 onMounted(() => {
   if (video.value) video.value.muted = true
   start()

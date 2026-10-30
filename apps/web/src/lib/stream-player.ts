@@ -6,11 +6,30 @@ export const LIVE_TARGET_LAG_SECONDS = 1.0
 
 export type StreamTicket = { kind: string; url: string }
 export type PlayerState = 'playing' | 'stalled' | 'error'
-export type SoundState = 'off' | 'waiting' | 'playing' | 'silent' | 'unsupported'
+export type SoundState = 'off' | 'waiting' | 'playing' | 'silent' | 'blocked' | 'unplayable' | 'unsupported'
 
 export const SOUND_SILENT_MS = 4000
 export const TRANSCODE_VIDEO_DELAY_SECONDS = 0.2
+export const AUDIO_MAX_AHEAD_SECONDS = 1.5
 const EDGE_REACH_SECONDS = 4
+const PLAYABLE_AUDIO = new Set(['alaw', 'PCMA'])
+
+export function sequenceAt(want: number, last: number) {
+  return last > want && last - want < AUDIO_MAX_AHEAD_SECONDS ? last : want
+}
+
+export function armSoundResume(context: () => AudioContext | null) {
+  const resume = () => {
+    const current = context()
+    if (current && current.state !== 'running' && current.state !== 'closed') void current.resume()
+  }
+  window.addEventListener('pointerdown', resume, true)
+  window.addEventListener('keydown', resume, true)
+  return () => {
+    window.removeEventListener('pointerdown', resume, true)
+    window.removeEventListener('keydown', resume, true)
+  }
+}
 
 type AudioFrame = { type: 'audio'; frame: number; codec: string; rate: number; data: string }
 
@@ -53,6 +72,10 @@ export class StreamPlayer {
   soundTimer: number | null = null
   heardAt = 0
   heard = 0
+  queuedAt = 0
+  lastAt = 0
+  helloAudio: string | null = null
+  disarmResume: (() => void) | null = null
   announcedAt = 0
   edgeMedia = 0
   edgeWall = 0
@@ -162,22 +185,35 @@ export class StreamPlayer {
     }
     this.soundOn = on
     this.soundSince = performance.now()
+    this.lastAt = 0
     this.sendSound()
+  }
+
+  releaseResume() {
+    if (this.disarmResume) this.disarmResume()
+    this.disarmResume = null
   }
 
   soundTick() {
     this.applySound(!this.muted())
     this.tickSound()
     if (!this.soundOn) {
+      this.releaseResume()
       if (this.soundState !== 'unsupported' || this.muted()) this.setSoundState('off')
       return
     }
-    const from = Math.max(this.soundSince, this.announcedAt)
-    if (this.heardAt > from) {
-      this.setSoundState(performance.now() - this.heardAt > SOUND_SILENT_MS ? 'silent' : 'playing')
-      return
+    if (this.helloAudio && !PLAYABLE_AUDIO.has(this.helloAudio)) return this.setSoundState('unplayable')
+    const context = this.sound.context
+    if (context && context.state !== 'running') {
+      if (!this.disarmResume) this.disarmResume = armSoundResume(() => this.sound.context)
+      return this.setSoundState('blocked')
     }
-    this.setSoundState(this.announced && performance.now() - from > SOUND_SILENT_MS ? 'silent' : 'waiting')
+    this.releaseResume()
+    const now = performance.now()
+    const from = Math.max(this.soundSince, this.announcedAt)
+    if (this.queuedAt > from && now - this.queuedAt <= SOUND_SILENT_MS) return this.setSoundState('playing')
+    if (this.heardAt > from && now - this.heardAt <= SOUND_SILENT_MS) return this.setSoundState('waiting')
+    this.setSoundState(this.announced && now - from > SOUND_SILENT_MS ? 'silent' : 'waiting')
   }
 
   startSound() {
@@ -216,15 +252,21 @@ export class StreamPlayer {
     this.heard += 1
     this.heardAt = performance.now()
     if (!this.soundOn || frame.codec !== 'alaw' || !this.buffer) return
-    const at = this.audioTime()
-    if (at === null) return
-    this.sound.enqueue(at, decodeAlaw(frame.data), Number(frame.rate) || 8000)
+    const want = this.audioTime()
+    if (want === null) return
+    const samples = decodeAlaw(frame.data)
+    const rate = Number(frame.rate) || 8000
+    const at = sequenceAt(want, this.lastAt)
+    this.lastAt = at + samples.length / rate
+    this.sound.enqueue(at, samples, rate)
+    this.queuedAt = performance.now()
     this.tickSound()
   }
 
   destroy() {
     this.clearHevcWatch()
     this.stopSound()
+    this.releaseResume()
     this.sound.disable()
     this.sound.clear()
     if (this.sound.context) void this.sound.context.close()
@@ -232,6 +274,9 @@ export class StreamPlayer {
     this.soundOn = false
     this.heard = 0
     this.heardAt = 0
+    this.queuedAt = 0
+    this.lastAt = 0
+    this.helloAudio = null
     this.edgeMedia = 0
     this.edgeWall = 0
     this.setSoundState('off')
@@ -365,12 +410,13 @@ export class StreamPlayer {
   }
 
   onHello(media: MediaSource, text: string) {
-    let hello: { type?: string; mode?: string; codec?: string | null; width?: number | null; height?: number | null } | null = null
+    let hello: { type?: string; mode?: string; codec?: string | null; width?: number | null; height?: number | null; audio?: string | null } | null = null
     try {
       hello = JSON.parse(text)
     } catch {
       hello = null
     }
+    if (hello && hello.type === 'hello') this.helloAudio = hello.audio || null
     if (!hello || hello.type !== 'hello' || this.buffer) return
     if (hello.mode !== 'passthrough' || !hello.codec) {
       this.transport = 'avc'

@@ -57,7 +57,7 @@ function onWatchKey(event: KeyboardEvent) {
   const actions: Record<string, () => unknown> = {
     g: () => (live.top.gridDisabled ? null : setView(state.view === 'grid' ? 'live' : 'grid')),
     f: () => toggleFullscreen(),
-    m: () => toggleMute(),
+    m: () => (live.sound === 'blocked' ? null : toggleMute()),
     r: () => (live.record.disabled ? null : toggleRecord()),
     s: () => (live.snapshotDisabled ? null : captureSnapshot()),
     l: () => cycleLens(),

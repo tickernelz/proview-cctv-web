@@ -2,7 +2,7 @@ import { state } from '../app/state'
 import { renderCaption } from '../app/caption'
 import { live } from './store'
 import { decodeAlaw, PlaybackSound } from './playback-audio'
-import { audioFrame, SOUND_SILENT_MS } from '../lib/stream-player'
+import { armSoundResume, audioFrame, sequenceAt, SOUND_SILENT_MS } from '../lib/stream-player'
 
 type Ready = { kind: 'ready'; path?: string; channel: number | null; claim_ms: number }
 type Report = {
@@ -62,8 +62,16 @@ const back = {
   on: false,
   heard: 0,
   heardAt: 0,
+  queuedAt: 0,
+  lastAt: 0,
   since: 0,
   timer: null as number | null,
+  disarm: null as (() => void) | null,
+}
+
+function releaseBackResume() {
+  if (back.disarm) back.disarm()
+  back.disarm = null
 }
 
 function sendSound(session: Session) {
@@ -80,15 +88,26 @@ function backTick(session: Session) {
     }
     back.on = want
     back.since = performance.now()
+    back.lastAt = 0
     sendSound(session)
   }
   back.sound.tick(performance.now() / 1000, back.on)
   if (!back.on) {
+    releaseBackResume()
     live.sound = 'off'
     return
   }
-  const quiet = performance.now() - Math.max(back.heardAt, back.since)
-  live.sound = back.heardAt > back.since ? (quiet > SOUND_SILENT_MS ? 'silent' : 'playing') : quiet > SOUND_SILENT_MS ? 'silent' : 'waiting'
+  const context = back.sound.context
+  if (context && context.state !== 'running') {
+    if (!back.disarm) back.disarm = armSoundResume(() => back.sound.context)
+    live.sound = 'blocked'
+    return
+  }
+  releaseBackResume()
+  const now = performance.now()
+  if (back.queuedAt > back.since && now - back.queuedAt <= SOUND_SILENT_MS) live.sound = 'playing'
+  else if (back.heardAt > back.since && now - back.heardAt <= SOUND_SILENT_MS) live.sound = 'waiting'
+  else live.sound = now - back.since > SOUND_SILENT_MS ? 'silent' : 'waiting'
 }
 
 function hearBack(data: string) {
@@ -98,7 +117,12 @@ function hearBack(data: string) {
   back.heardAt = performance.now()
   if (back.on && frame.codec === 'alaw') {
     const now = performance.now() / 1000
-    back.sound.enqueue(now + TALK_BACK_DELAY, decodeAlaw(frame.data), Number(frame.rate) || TALK_RATE)
+    const samples = decodeAlaw(frame.data)
+    const rate = Number(frame.rate) || TALK_RATE
+    const at = sequenceAt(now + TALK_BACK_DELAY, back.lastAt)
+    back.lastAt = at + samples.length / rate
+    back.sound.enqueue(at, samples, rate)
+    back.queuedAt = performance.now()
     back.sound.tick(now, true)
   }
   return true
@@ -108,6 +132,8 @@ function startBack(session: Session) {
   stopBack()
   back.heard = 0
   back.heardAt = 0
+  back.queuedAt = 0
+  back.lastAt = 0
   back.since = performance.now()
   back.timer = window.setInterval(() => backTick(session), 100)
   backTick(session)
@@ -117,6 +143,7 @@ function stopBack() {
   if (!back.timer) return
   window.clearInterval(back.timer)
   back.timer = null
+  releaseBackResume()
   back.sound.disable()
   back.sound.clear()
   if (back.sound.context) void back.sound.context.close()
