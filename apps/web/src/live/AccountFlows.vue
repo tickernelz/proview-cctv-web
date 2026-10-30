@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive } from 'vue'
 import Icon from '../components/Icon.vue'
+import { Button } from '../components/ui/button'
+import { Field } from '../components/ui/field'
 import { api } from '../lib/api'
 import { looksLikeMail, sentence } from './account-flows'
 
@@ -125,65 +127,79 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="account-flow" :data-testid="'signin-' + kind">
-    <h2 class="set-h">{{ title }}</h2>
-    <p class="auth-sub">{{ lede }}</p>
-    <form novalidate @submit.prevent>
+  <div class="account-flow auth-form" :data-testid="'signin-' + kind">
+    <div class="auth-head">
+      <h2 class="auth-flow-title">{{ title }}</h2>
+      <p class="auth-sub">{{ lede }}</p>
+    </div>
+    <form class="auth-form" novalidate @submit.prevent>
       <template v-if="!forgot">
-        <div class="field">
-          <label for="flow-username">Username</label>
-          <input id="flow-username" v-model="form.username" type="text" autocomplete="username" spellcheck="false" data-testid="account-flow-username">
+        <Field id="flow-username" label="Username">
+          <template #default="{ id }">
+            <input :id="id" v-model="form.username" class="auth-input" type="text" autocomplete="username" spellcheck="false" data-testid="account-flow-username">
+          </template>
+        </Field>
+        <div class="auth-step">
+          <Button block data-testid="account-flow-name-check" :disabled="Boolean(nameBlock)" :aria-busy="step.busy === 'name' ? 'true' : 'false'" @click="checkName">
+            {{ step.busy === 'name' ? 'Checking…' : 'Check the username' }}
+          </Button>
+          <p v-if="nameBlock" class="hint">{{ nameBlock }}</p>
         </div>
-        <button class="btn btn-line wide" type="button" data-testid="account-flow-name-check" :disabled="Boolean(nameBlock)" :aria-busy="step.busy === 'name'" @click="checkName">
-          {{ step.busy === 'name' ? 'Checking…' : 'Check the username' }}
-        </button>
-        <p v-if="nameBlock" class="hint">{{ nameBlock }}</p>
       </template>
-      <div class="field">
-        <label for="flow-email">Email</label>
-        <input
-          id="flow-email"
-          v-model="form.email"
-          type="email"
-          autocomplete="email"
-          spellcheck="false"
-          placeholder="name@example.com"
-          data-testid="account-flow-email"
-          @input="step.sent = false; step.checked = false"
-        >
+      <Field id="flow-email" label="Email">
+        <template #default="{ id }">
+          <input
+            :id="id"
+            v-model="form.email"
+            class="auth-input"
+            type="email"
+            autocomplete="email"
+            spellcheck="false"
+            placeholder="you@example.com"
+            data-testid="account-flow-email"
+            @input="step.sent = false; step.checked = false"
+          >
+        </template>
+      </Field>
+      <div class="auth-step">
+        <Button block data-testid="account-flow-send" :disabled="Boolean(sendBlock)" :aria-busy="step.busy === 'send' ? 'true' : 'false'" @click="sendCode">
+          {{ step.busy === 'send' ? 'Sending…' : step.sent ? 'Send the code again' : 'Email me a code' }}
+        </Button>
+        <p v-if="sendBlock" class="hint" data-testid="account-flow-send-reason">{{ sendBlock }}</p>
       </div>
-      <button class="btn btn-line wide" type="button" data-testid="account-flow-send" :disabled="Boolean(sendBlock)" :aria-busy="step.busy === 'send'" @click="sendCode">
-        {{ step.busy === 'send' ? 'Sending…' : step.sent ? 'Send the code again' : 'Email me a code' }}
-      </button>
-      <p v-if="sendBlock" class="hint" data-testid="account-flow-send-reason">{{ sendBlock }}</p>
-      <div class="field">
-        <label for="flow-code">Code from the email</label>
-        <input id="flow-code" v-model="form.code" type="text" inputmode="numeric" autocomplete="one-time-code" data-testid="account-flow-code" :disabled="!step.sent" @input="step.checked = false">
-      </div>
-      <template v-if="forgot">
-        <button class="btn btn-line wide" type="button" data-testid="account-flow-check" :disabled="Boolean(checkBlock)" :aria-busy="step.busy === 'check'" @click="checkCode">
+      <Field id="flow-code" label="Code from the email" :disabled-reason="step.sent ? undefined : 'Send the code first.'">
+        <template #default="{ id, describedBy }">
+          <input :id="id" v-model="form.code" class="auth-input" type="text" inputmode="numeric" autocomplete="one-time-code" data-testid="account-flow-code" :aria-describedby="describedBy" :disabled="!step.sent" @input="step.checked = false">
+        </template>
+      </Field>
+      <div v-if="forgot" class="auth-step">
+        <Button block data-testid="account-flow-check" :disabled="Boolean(checkBlock)" :aria-busy="step.busy === 'check' ? 'true' : 'false'" @click="checkCode">
           {{ step.busy === 'check' ? 'Checking…' : 'Check the code' }}
-        </button>
+        </Button>
         <p v-if="checkBlock" class="hint">{{ checkBlock }}</p>
-      </template>
-      <div class="field">
-        <label for="flow-password">{{ forgot ? 'New password' : 'Password' }}</label>
-        <input id="flow-password" v-model="form.password" type="password" autocomplete="new-password" data-testid="account-flow-password">
       </div>
-      <div class="field">
-        <label for="flow-confirm">{{ forgot ? 'New password again' : 'Password again' }}</label>
-        <input id="flow-confirm" v-model="form.confirm" type="password" autocomplete="new-password" data-testid="account-flow-confirm">
+      <Field id="flow-password" :label="forgot ? 'New password' : 'Password'">
+        <template #default="{ id }">
+          <input :id="id" v-model="form.password" class="auth-input" type="password" autocomplete="new-password" data-testid="account-flow-password">
+        </template>
+      </Field>
+      <Field id="flow-confirm" :label="forgot ? 'New password again' : 'Password again'">
+        <template #default="{ id }">
+          <input :id="id" v-model="form.confirm" class="auth-input" type="password" autocomplete="new-password" data-testid="account-flow-confirm">
+        </template>
+      </Field>
+      <div class="auth-step">
+        <Button variant="primary" size="lg" block data-testid="account-flow-finish" :disabled="Boolean(finishBlock)" :aria-busy="step.busy === 'finish' ? 'true' : 'false'" @click="finish">
+          {{ step.busy === 'finish' ? 'Working…' : forgot ? 'Set the new password' : 'Create the account' }}
+        </Button>
+        <p v-if="finishBlock" class="hint" data-testid="account-flow-finish-reason">{{ finishBlock }}</p>
       </div>
-      <button class="btn btn-fill" type="button" data-testid="account-flow-finish" :disabled="Boolean(finishBlock)" :aria-busy="step.busy === 'finish'" @click="finish">
-        {{ step.busy === 'finish' ? 'Working…' : forgot ? 'Set the new password' : 'Create the account' }}
-      </button>
-      <p v-if="finishBlock" class="hint" data-testid="account-flow-finish-reason">{{ finishBlock }}</p>
       <p v-if="step.note" :class="step.bad ? 'err' : 'hint'" data-testid="account-flow-note" role="status">
         <Icon v-if="step.bad" name="warning" small /><span>{{ step.note }}</span>
       </p>
     </form>
-    <p class="auth-note">
-      <button class="btn-text" type="button" data-testid="account-flow-back" @click="emit('close', form.email.trim(), '')">Back to sign in</button>
-    </p>
+    <div class="auth-links">
+      <Button variant="ghost" size="sm" icon="arrow-left" data-testid="account-flow-back" @click="emit('close', form.email.trim(), '')">Back to sign in</Button>
+    </div>
   </div>
 </template>

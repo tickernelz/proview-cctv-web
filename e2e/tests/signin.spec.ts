@@ -33,7 +33,36 @@ test('a session the server no longer knows sends the viewer back to sign in to r
   await page.getByTestId('camera-menu').getByRole('menuitem', { name: 'Refresh the list', exact: true }).click()
   await expect(page.getByTestId('signin')).toBeVisible()
   await expect(page.getByTestId('signin-notice')).toBeVisible()
+  await expect(page.getByTestId('signin-ended')).toHaveText(/^Your session ended at \d\d:\d\d\.$/)
+  await expect(page.getByTestId('signin-notice')).toContainText('Nothing is being recorded while you are signed out.')
   await expect(page.getByTestId('signin-submit')).toHaveText('Sign in to resume')
+})
+
+test('the eye button shows and hides the password and says which it will do', async ({ page }) => {
+  await page.goto(scenarioUrl('one'))
+  const password = page.getByTestId('signin-password')
+  await password.fill('typed')
+  const reveal = page.getByTestId('signin-reveal')
+  await expect(reveal).toHaveAttribute('aria-label', 'Show the password')
+  await expect(password).toHaveAttribute('type', 'password')
+  await reveal.click()
+  await expect(password).toHaveAttribute('type', 'text')
+  await expect(reveal).toHaveAttribute('aria-label', 'Hide the password')
+  await expect(reveal).toHaveAttribute('aria-pressed', 'true')
+  await reveal.click()
+  await expect(password).toHaveAttribute('type', 'password')
+})
+
+test('Forgot password opens the reset flow in place, and Back returns to the form with the email kept', async ({ page }) => {
+  await page.goto(scenarioUrl('one'))
+  await page.getByTestId('signin-email').fill(ACCOUNT.email)
+  await page.getByTestId('signin-forgot').click()
+  await expect(page.getByRole('heading', { name: 'Reset the password' })).toBeVisible()
+  await expect(page.getByTestId('account-flow-email')).toHaveValue(ACCOUNT.email)
+  await expect(page.getByTestId('account-flow-code')).toBeDisabled()
+  await expect(page.getByText('Send the code first.').first()).toBeVisible()
+  await page.getByTestId('account-flow-back').click()
+  await expect(page.getByTestId('signin-email')).toHaveValue(ACCOUNT.email)
 })
 
 test('the sign-in page puts the cursor in Email, so typing starts at once', async ({ page }) => {
@@ -116,7 +145,8 @@ test('Remember is a switch, and with it on a sign-in asks the server to remember
 test('Open Settings before signing in is a button, not a link in running text', async ({ page }) => {
   await page.goto(scenarioUrl('one'))
   const open = page.getByTestId('signin-settings')
-  await expect(open).toHaveClass(/\bbtn\b/)
+  await expect(open).toHaveJSProperty('tagName', 'BUTTON')
+  await expect(open).toHaveText('Open settings')
   await open.click()
   await expect(page.getByTestId('settings')).toBeVisible()
 })
