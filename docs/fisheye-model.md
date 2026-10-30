@@ -176,9 +176,9 @@ from the pan (offset 84), tilt (92) and roll (100) floats, stored at offsets 848
 | `Curve::Table` | the `xd[]` interpolation of `GetThetaXYFromFlatXY` |
 | `Direction::equirect` / `from_equirect` | `GetSourcePoint` bearing/elevation convention |
 | `View::ray` | shader `Transform`, with `z` flipped so the optical axis is +Z |
-| `View::rotated` | `u_mat` pan then tilt |
+| `Direction::rotated` | `u_mat` pan then tilt |
 | `Map::equirect`, `Map::ptz` | `BuildFullPanoMap`, `Fisheye_PanTiltToInVPicturePoint` (0x6278) |
-| `Calibration::lens`, `LensType`, `MountType` | `SDK_FishEyeFrameSW`, `FISHEYE_LENS_TYPE_E`, `FISHEYE_APP_TYPE_E` |
+| `Calibration`, `LensType`, `MountType` | `SDK_FishEyeFrameSW`, `FISHEYE_LENS_TYPE_E`, `FISHEYE_APP_TYPE_E` |
 | `RgbFrame::warp` | the GL draw with a source map, bilinear instead of the GPU sampler |
 
 ### Mount type
@@ -201,11 +201,12 @@ animation frame. It is opt-in through the URL (`?fisheye=equirect|ptz`, plus `mo
 canvas), so it changes nothing until asked. `e2e/tests/fisheye.spec.ts` renders a
 coordinate-coded 512x512 lens through the shader and compares every output pixel with
 `/api/fisheye/map` for an equirect and a ptz view.
-`crates/server/src/routes/fisheye.rs` exposes the model document, a source map and a
-fixture render. Two limits are deliberate and
-recorded in the parity row: nothing in the Live screen (`apps/web/src/app/`) calls the renderer by default, so no live
-frame reaches either path, and `MountType` is decoded but does not rotate the map, so
-ceiling, table and wall mount produce the same panorama.
+`crates/server/src/routes/fisheye.rs` exposes the model document (`GET /api/fisheye/model`),
+a source map (`GET /api/fisheye/map`, up to 65536 px) and a fixture render
+(`GET /api/fisheye/dewarp`, a BMP up to 4194304 px); the last two need a session. Two
+limits are deliberate: the overlay draws only when the URL asks for it, and the server
+routes dewarp only the embedded fixture, never a live frame. The mount pitches the
+equirect view only, on both paths; the ptz view ignores it.
 
 ## 6. Measured on the fixture
 

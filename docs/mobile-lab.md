@@ -17,8 +17,8 @@ not a path we accept for a 34 MB vendor SDK.
 
 `.github/workflows/mobile-re.yml` is the CI form of the third row: `macos-15`,
 `api-level: 33`, `target: google_apis`, `arch: arm64-v8a`, emulator options
-`-no-snapshot -writable-system`, then `adb root`, install and a printed
-`ro.product.cpu.abi`.
+`-no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect`, then
+`adb root`, install and a printed `ro.product.cpu.abi`.
 
 ## The payload is not in this repository
 
@@ -33,16 +33,18 @@ job fetches its payload at run time and verifies it by hash:
 
 ## Next steps once the vendor payload runs
 
-1. `adb root` plus a writable system partition lets a mitmproxy CA go into the
-   system store, so TLS is decrypted without repackaging the APK and without
-   tripping its signature check.
+1. `adb root` plus a writable system partition (`-writable-system`, which the
+   workflow does not pass yet) lets a mitmproxy CA go into the system store,
+   so TLS is decrypted without repackaging the APK and without tripping its
+   signature check.
 2. `frida-server` arm64 on the same emulator hooks
    `XMAccountAPI::IXMAccount::XM_Video_Login_XMAccount` (0xf3fc2c) and
    `GetServerDSNAndPort`, which yields the ALC host, the encrypted query and the
    `Set-Cookie` from inside the process. No pinning to defeat, no TLS to break.
 3. That complements the in-tree client: the account login and the device list
-   already ship (`crates/core/src/cloud/envelope.rs`, `protocol.md` 3B), so the
-   emulator route is for the media path — live view over the cloud, playback and
-   PTZ — which is still unimplemented. The emulator route is reproducible in CI
-   instead of a manual phone capture, and the out-of-tree qemu-bionic harness of
-   `protocol.md` section 3A stays a reference for how the envelope was learned.
+   already ship (`crates/core/src/cloud/envelope.rs`, `protocol.md` 3B), and so do
+   live view, playback and PTZ over the cloud (`protocol.md` 4C, 9A-9C), so the
+   emulator route is for what the app does that the client does not reproduce
+   yet. The emulator route is reproducible in CI instead of a manual phone
+   capture, and the out-of-tree qemu-bionic harness of `protocol.md` section 3A
+   stays a reference for how the envelope was learned.

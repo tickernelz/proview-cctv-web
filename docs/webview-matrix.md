@@ -2,7 +2,8 @@
 
 The app plays fragmented MP4 delivered over a binary WebSocket into
 MediaSource. When the webview decodes H.265 (`MediaSource.isTypeSupported` for
-the stream's codec string and, where present, `VideoDecoder.isConfigSupported`
+the stream's codec string, or the fixed probe `hvc1.1.6.L153.B0` until a stream
+has reported one, and, where present, `VideoDecoder.isConfigSupported`
 at the coded size), the camera's H.265 is muxed into `hvc1` fMP4 without
 ffmpeg; otherwise the server transcodes to H.264 once per stream. H.265 is
 detected at runtime and confirmed by a decoded frame, never assumed. Recorded

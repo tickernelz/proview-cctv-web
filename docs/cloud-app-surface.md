@@ -6,8 +6,8 @@ on 2026-10-27. 290 entries, 174 of them decrypted HTTP, window
 `2026-10-26T23:55:44Z` .. `00:17:31Z`. Everything below is read from those entries
 unless it is marked as a probe or as inference.
 
-This surface is *not* the v2 portal of section 10. The app never calls
-`api.xmeye.net`; it talks to the jftechws / xmcsrv / secu100 families.
+This surface is *not* the v2 portal of `protocol.md` section 10. The app never
+calls `api.xmeye.net`; it talks to the jftechws / xmcsrv / secu100 families.
 
 ## 1. Identifiers the app carries
 
@@ -18,7 +18,7 @@ This surface is *not* the v2 portal of section 10. The app never calls
 | mall app key | `3a59da9c8ffd41a64d492aa064b1dcf6` | `userToken/login`, `getH5ShowEntrance`, `campaign/get/info` |
 | mall scheme | `icsee.boss.jftech.com` | `userToken/login` body `appScheme` |
 | account id | `c6f8c33b29c95774c14bae9436e721c8` | privacy `userId`, `reqCaps.sn`, JWT claim `account` |
-| device serial (uuid) | `7f92970ddf5282743hrc` | `asMsgQ.sn`, `latestCacheMulti`, share row `uuid` |
+| device serial (uuid) | `<serial>` | `asMsgQ.sn`, `latestCacheMulti`, share row `uuid` |
 | share owner id | `as5670b4b61e7940809b82a60b11246747` | share row `shareAccountId` |
 | device pid / hw | `A90A007F3000000C` | `asMsgQ` reply, share row `pid` |
 
@@ -148,8 +148,9 @@ and then reimplementing the envelope in Rust (3B): email + password yields the
 per-request `sig`, a 96-hex body (AES over 12 random + 4-byte timestamp +
 12-char seed) and no `UniqueCode` header. That `sig` is produced in
 `crates/core/src/cloud/envelope.rs` and checked against the captured rows, so
-`GET /api/devices` answers the account's real device list; the media path is
-still out of reach.
+`GET /api/devices` answers the account's real device list. The media path
+followed over the RPS relay with the account's device token (`protocol.md` 4C.24,
+4C.25, 4C.27, 4C.29): live, playback and talk run without the camera on the LAN.
 
 ## 8. What this project can use now
 
@@ -162,9 +163,12 @@ still out of reach.
    answers `ret 200` with blank `model` and `pid` for such a serial, so the route
    treats that as not found instead of passing blanks to the UI. `PROVIEW_CAPS_BASE`
    overrides the host.
-2. `appCaps` as a cheap reachability and feature-flag probe for the cloud hosts.
-3. The portal path of section 10 stays as it is: the app's login is a different
-   mechanism and does not make the v2 portal captcha/login any more solved.
+2. `appCaps` as a cheap reachability and feature-flag probe for the cloud hosts:
+   `CapsClient::app_caps` parses the reply (pinned against the captured one), but
+   no route calls it yet.
+3. The portal path of `protocol.md` section 10 stays as it is: the app's login is
+   a different mechanism and does not make the v2 portal captcha/login any more
+   solved.
 4. The cloud account login is part of the app: `POST /api/login` runs the
    signed v3 envelope from `crates/core/src/cloud/envelope.rs`, the device list
    follows on `GET /api/devices`, and the app identity the envelope signs with is a

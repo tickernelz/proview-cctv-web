@@ -20,7 +20,7 @@ Playwright (`@playwright/test` 1.64.1, pinned exactly) drives the page that
 
 ```sh
 (cd apps/web && npm ci && npm run build)
-OPENSSL_NO_VENDOR=1 ~/re/proview-cctv/build-slot.sh cargo build -p proview-server
+cargo build -p proview-server
 cd e2e
 npm ci
 npm run serve &        # fixture servers on the host; Ctrl-C stops them all

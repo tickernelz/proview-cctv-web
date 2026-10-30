@@ -1,8 +1,8 @@
 # ADR 0002: UI component layer and the v2 theme
 
-- Status: accepted (ZHA-4181, 2026-10-28; choices delegated to the engineer by Zhafron at 16:17Z)
+- Status: accepted (2026-10-28; choices delegated to the engineer by Zhafron at 16:17Z)
 - Date: 2026-10-28
-- Context issue: ZHA-4181 (refine UI/UX and responsiveness), on top of ADR 0001 (Vite + Vue 3)
+- Context: refine UI/UX and responsiveness, on top of ADR 0001 (Vite + Vue 3)
 
 ## Context
 
@@ -14,8 +14,8 @@ is a cost, not only a size.
 
 ## Candidates
 
-Bundle cost measured on 2026-10-28 on this box (numbers reported by Wira on
-ZHA-4181): minified, then `gzip -9`. Reka UI and PrimeVue were bundled with
+Bundle cost measured on 2026-10-28 on this box (numbers reported by Wira):
+minified, then `gzip -9`. Reka UI and PrimeVue were bundled with
 `esbuild --bundle --minify --format=esm`; Nuxt UI needs SFC compilation and its
 Vite plugin, so it was built with `vite build`. Both are minified and gzipped,
 so the comparison is fair in size, but not identical in method.
@@ -53,10 +53,13 @@ not by popularity:
 2. **Icons: Lucide**, one family. Until screens are Vue components the legacy
    DOM uses an inline sprite generated at build time from `lucide-static`
    1.63.0 (`apps/web/icons.ts`), so no icon runtime ships; Vue components use
-   `@lucide/vue` with the same names.
+   `@lucide/vue` with the same names. (2026-10-30: the Vue screens kept the
+   sprite through `apps/web/src/components/Icon.vue`; `@lucide/vue` is not a
+   dependency.)
 3. **Tokens: `apps/web/src/tokens.css` stays the only source of colour, space,
-   radius and motion.** Tailwind reads it through `@theme` (PR #76); no
-   component writes a raw colour.
+   radius and motion.** `apps/web/src/style.css` reads it as CSS custom
+   properties; Tailwind is built with its theme and utilities layers only
+   (`apps/web/src/tailwind.css`, PR #76). No component writes a raw colour.
 
 ## Theme decision
 

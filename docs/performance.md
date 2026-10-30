@@ -40,7 +40,9 @@ Reading the numbers:
    fragment, which is why it drops to ~200 ms. The 60 s warm window after the
    last viewer leaves is what turns device switching into a warm start.
 2. The stream is re-encoded to H.264 baseline because the IPC delivers H.265
-   only; the sub stream is the cheap option at 640×720.
+   only; the sub stream is the cheap option at 640×720. Since 2026-10-30 a
+   client that decodes H.265 gets the camera's stream untouched instead (see
+   "H.265 without ffmpeg over the cloud relay").
 3. RSS while streaming is not flat: the broadcast ring holds up to 8 fragments
    and each fragment is 2–4 MB at this resolution. That is the first thing to
    attack before a 4-tile grid, together with a bitrate cap
@@ -404,7 +406,7 @@ What the stages that do pass cost, on loopback plus vendor time:
 | camera unreachable on the LAN | 3.031 s | 3.005 s |
 | `cargo build --release -p proview-server` | 1.329 s (warm) | 93.950 s (branch switch) |
 | `POST /api/login`, signed v3 envelope | 0.208 s | 0.310 s |
-| `GET /api/devices`, one device, serial `7f92970ddf5282743hrc` | 0.276 s | 0.299 s |
+| `GET /api/devices`, one device, serial `<serial>` | 0.276 s | 0.299 s |
 | `GET /api/stream` | 0.398 s, HTTP 502 | 3.468 s, HTTP 502 |
 
 The first build that bakes the app identity (`PROVIEW_APP_*` from
@@ -428,8 +430,7 @@ Reading the numbers:
 Reproduce:
 
 ```sh
-cd ~/Projects/proview-cctv-web-wt/acceptance
-python3 tools/acceptance/live_acceptance.py --sn 7f92970ddf5282743hrc
+python3 tools/acceptance/live_acceptance.py --sn <serial>
 ```
 
 No pass can be recorded until the `stream` stage stops failing. Each run keeps
@@ -446,7 +447,10 @@ itself: same host, same LAN guard, no camera involved.
 | camera reachable on the LAN with `--allow-lan` | a local listener on `127.0.0.1:<port>` passed as `--lan-target` | verdict `lan-reachable`, exit 3, stage `stream` also recorded; report `a15a5d88ebb8-20261028T021302Z` |
 | stale binary under `--no-build` | the release binary copied aside with mtime set to 2026-01-01 | exit 1 at `build`: "would label /tmp/zha4085-old-server (built 2026-01-01T00:00:00Z) as commit 2026-10-28T01:55:01Z" |
 | fixture self-check after the fixes | `--mode fixture --duration 20 --sample 5` | verdict `pass-fixture`, exit 0, 22 messages / 195 842 B / 20.204 s, longest gap 1.001 s |
-| cloud path after the fixes | `--sn 7f92970ddf5282743hrc --duration 300` | exit 1 at `stream`, 502 `ret 117` in 0.398 s |
+| cloud path after the fixes | `--sn <serial> --duration 300` | exit 1 at `stream`, 502 `ret 117` in 0.398 s |
+
+> 2026-10-30: the framed wire format and its Annex-B dump below are gone
+> (PR #108); every live message is fMP4 and the harness dumps `frames.mp4`.
 
 Framed dump, server-format feed (a probe, not a camera run): 100 HEVC access
 units from libx265 at 640×360 (10 of them carrying VPS/SPS/PPS, as
@@ -460,7 +464,7 @@ them, the same bytes are unreadable: `ffprobe -f hevc` answers `hevc,0,0,N/A`
 with "missing picture in access unit with size 70906", so the conversion is what
 makes the artifact verify, not decoration.
 
-## Web bundle and e2e suite (measured 2026-10-28, ZHA-4181)
+## Web bundle and e2e suite (measured 2026-10-28)
 
 Bundle: `npm run build` in `apps/web`, then `gzip -9c <file> | wc -c` per file.
 Baseline is origin/main 6405caf; v2 is the redesign commit 89976a1 (lucide
@@ -490,7 +494,7 @@ pipeline wall is 227 s; main 7510ccd took 385 s, held by a 357 s macOS desktop
 job. The slowest single test is 4.9 s (WebKit, alarms). With the responsive and touch
 specs the suite is 218 tests, 1.6 min locally.
 
-### Live toolbar in Vue (measured 2026-10-29, ZHA-4181)
+### Live toolbar in Vue (measured 2026-10-29)
 
 The caption, the control row and the lens and quality menus are one Vue
 component (`apps/web/src/live/LiveBar.vue`) over a reactive store
@@ -509,7 +513,7 @@ it, so they add only their own components. Icons stay in the inline sprite
 (`Icon.vue` renders `<use href="#i-name">`), so no icon package ships.
 e2e at this change: 139 passed, 1 skipped, 1.3 min locally; node web tests 46/46.
 
-### Cloud recordings in Vue (measured 2026-10-29, ZHA-4181)
+### Cloud recordings in Vue (measured 2026-10-29)
 
 `src/live/RecordingsPanel.vue` replaces `legacy/recordings.js`. Same method,
 baseline origin/main 05fe8a3:
@@ -522,7 +526,7 @@ baseline origin/main 05fe8a3:
 e2e at this change: 159 passed, 1 skipped (5 recordings specs and 8 screenshot
 baselines added), 1.4 min locally; node web tests 46/46.
 
-### Alarm messages in Vue (measured 2026-10-29, ZHA-4181)
+### Alarm messages in Vue (measured 2026-10-29)
 
 `src/live/AlarmCenter.vue` replaces `legacy/alarms.js`. Same method, baseline
 origin/main e3db222:
@@ -559,7 +563,7 @@ user moving between Live and Settings saw no check at all there.
 e2e at this change: 183 passed, 1 skipped, 1.6 min locally; node web tests
 46/46.
 
-### Add-a-camera panel in Vue, src/legacy removed (measured 2026-10-29, ZHA-4181)
+### Add-a-camera panel in Vue, src/legacy removed (measured 2026-10-29)
 
 Steps 5 and 6 of 6. `src/live/AddCamera.vue` replaces `legacy/account.js`
 (163 lines, an IIFE that injected the panel with `innerHTML` and a
@@ -578,7 +582,7 @@ this box on 2026-10-29 (load 14 to 17 on 16 cores), and the panel is not on
 the path to the first frame. Contrast 78/78; `add-camera.spec.ts` fails 8/8
 on 3a27e01 and passes 8/8 here; the e2e suite runs in CI.
 
-### Lens, pan-and-tilt and device controls in TypeScript (measured 2026-10-29, ZHA-4181)
+### Lens, pan-and-tilt and device controls in TypeScript (measured 2026-10-29)
 
 Step 4 of 6. `src/app/lens.ts` and `src/app/controls.ts` take the last of
 `legacy/app.js` (572 lines, file deleted); the pad, presets and Tour render
@@ -603,7 +607,7 @@ measured the box, not the change, and are not kept. The presets load only
 when the pad opens, so they are not on this path. e2e 311 passed, 9 skipped;
 node web tests 44/44; contrast 78/78.
 
-### Live picture area in TypeScript and Vue (measured 2026-10-29, ZHA-4181)
+### Live picture area in TypeScript and Vue (measured 2026-10-29)
 
 Step 3 of 6. `src/live/LiveMain.vue` renders the empty state and the Live
 well; `src/app/stage.ts` (stream request, stage, full-screen line, clock),
@@ -629,7 +633,7 @@ JS grows 1.4 kB gzip for the Vue render of the well and the typed modules;
 HTML loses the same markup. Both timings overlap within their quartiles. e2e
 305 passed, 9 skipped; node web tests 44/44; contrast 78/78.
 
-### Live top bar in Vue (measured 2026-10-29, ZHA-4181)
+### Live top bar in Vue (measured 2026-10-29)
 
 Step 2 of 6. `src/live/LiveTop.vue` with `src/app/chrome.ts` and
 `src/app/caption.ts` replace the top bar, camera menu, banner and keyboard
@@ -653,7 +657,7 @@ menu items; HTML loses the static menu and keyboard markup. The two timings
 are within run-to-run spread. e2e 293 passed, 9 skipped; node web tests
 46/46; contrast 76/76.
 
-### App shell in TypeScript (measured 2026-10-29, ZHA-4181)
+### App shell in TypeScript (measured 2026-10-29)
 
 First of six steps that empty `src/legacy/`. `src/app/state.ts` (the page
 state and the stored preferences), `format.ts` (clock strings), `devices.ts`
@@ -678,7 +682,7 @@ The code moved without changing behaviour, so the two timings differ by box
 noise rather than by the change. e2e: 282 passed, 9 skipped with the new
 `shell.spec.ts` (4 tests); node web tests 46/46; contrast 76/76.
 
-### Settings in Vue (measured 2026-10-29, ZHA-4181)
+### Settings in Vue (measured 2026-10-29)
 
 `src/live/SettingsScreen.vue` replaces the Settings markup in `index.html`
 and the Settings rendering, save bar, server checks and preference handlers in
@@ -698,7 +702,7 @@ with only the changed keys, `POST /api/desktop/restart` only from the restart
 button, and the same four calls for Run checks. e2e at this change: 269
 passed, 9 skipped (both browsers); node web tests 46/46; contrast 76/76.
 
-### Sign-in in Vue (measured 2026-10-29, ZHA-4181)
+### Sign-in in Vue (measured 2026-10-29)
 
 `src/live/SignInScreen.vue` replaces the sign-in markup in `index.html`, the
 sign-in handlers in `legacy/app.js` and the remember checkbox that
@@ -716,7 +720,7 @@ Requests are unchanged: one `GET /api/account/remembered` on load, one
 120 passed in the sign-in, visual, touch and responsive specs; node web tests
 17/17 for `settings-boot` and `ui`.
 
-### Every camera in Vue (measured 2026-10-29, ZHA-4181)
+### Every camera in Vue (measured 2026-10-29)
 
 `src/live/GridView.vue` and `GridTile.vue` replace `legacy/grid.js`. Same
 method, baseline origin/main 4bdbd7e:
@@ -735,7 +739,7 @@ e2e at this change: 237 passed, 9 skipped (WebKit-only skips of the fisheye,
 Talk and notification specs), 5.1 min locally on a loaded box; node web tests
 46/46.
 
-### Playback in Vue (measured 2026-10-29, ZHA-4181)
+### Playback in Vue (measured 2026-10-29)
 
 `src/live/PlaybackScreen.vue` replaces `legacy/playback.js`; the day strip and
 the file rows are child components (`PlaybackStrip.vue`, `PlaybackRows.vue`),
@@ -772,7 +776,7 @@ Opening Playback no longer sends its own `/api/devices` (one vendor status
 query per camera in cloud mode); it reads the list the app loaded. e2e at this
 change: 212 passed, 1 skipped, 2.8 min locally; node web tests 46/46.
 
-### Devices sheet in Vue (measured 2026-10-29, ZHA-4181)
+### Devices sheet in Vue (measured 2026-10-29)
 
 `src/live/DevicesSheet.vue` replaces `legacy/device-admin.js`, with Reka UI
 Tabs vendored as `src/components/ui/tabs/`. Same method, baseline origin/main
@@ -787,7 +791,7 @@ Most of the JS is Reka's Tabs (roving focus and the tab/panel wiring). Running
 total against the pre-Vue baseline stays inside the +80 KB JS and +20 KB CSS
 budgets. e2e at this change: 197 passed, 1 skipped, 1.9 min locally; node web
 tests 46/46.
-### Fisheye overlay and Talk in Vue (measured 2026-10-29, ZHA-4213)
+### Fisheye overlay and Talk in Vue (measured 2026-10-29)
 
 `src/live/FisheyeOverlay.vue` + `src/live/fisheye.ts` replace `legacy/fisheye.js`,
 and `src/live/talk.ts` replaces `legacy/talk.js`. Same method, baseline origin/main
@@ -802,7 +806,7 @@ The shader source is byte-identical (2,572 characters). Per frame the overlay no
 longer allocates a 65-float array or a size string, nor looks up the attribute location.
 `gl.finish()` does not wait for the draw in headless Chrome 156 (SwiftShader), so each
 frame is synchronised with a 1 px `readPixels`. Base 4bdbd7e and this change in one
-page, 6 alternating rounds, box load 7.4-12.8 (measured in review, ZHA-4220):
+page, 6 alternating rounds, box load 7.4-12.8 (measured in review):
 
 | Measure | legacy/fisheye.js | Vue | |
 |---|---:|---:|---|
@@ -820,7 +824,7 @@ peer: 49 chunks of 640 B in about 2 s (legacy/talk.js: 48), stop message and
 closed socket the same. e2e at this change: 223 passed, 9 skipped (CI run
 40803589907).
 
-### Device settings in Vue (measured 2026-10-29, ZHA-4212)
+### Device settings in Vue (measured 2026-10-29)
 
 `src/live/DeviceSettings.vue` replaces `legacy/device-settings.js`. Same method,
 production build (`grep -c 'Vue warn'` = 0 in both bundles), baseline origin/main
