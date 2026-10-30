@@ -5,33 +5,15 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## Unreleased
+## 0.4.0 — 2026-10-30
 
-### Fixed
-
-- `POST /api/devices/unbind` no longer sends `mdrm` for a serial that is not
-  on the account: it reads the live `msdlistCode` `mine` list first and answers
-  409 `not_on_account` when the serial is absent, refuses when the list cannot
-  be read, and needs `confirm` to match the camera's serial or name (trimmed,
-  case-insensitive; 409 `confirm_mismatch` otherwise). This catches typos and
-  stale serials. It does not prevent the 2026-10-30 sequence (a device bound
-  and then removed on a legacy account), because that `mdrm` is the same
-  request the phone app sends. After `mdrm` succeeds the route reads the list
-  once more: a camera other than the removed one that is no longer listed is
-  returned in `also_missing` with a message to add it again from the phone app,
-  and a failed re-read answers `verified: false` with a message that the result
-  could not be verified. The device sheet gains a typed "Remove from this
-  account" control that uses it and shows either message as a red alert.
-- Share with permissions works against the live cloud: the share calls
-  (`mdshareadd`, `mdsharemylist`, `mdsharelist`, `mdsharesetpermission`,
-  `mdsharedel`, `mdshareaccept`, `mdsharerefuse`) go out the way the app sends
-  them (`v1`, query string, no body, URL-encoded reply, optional
-  `uname`/`upass`), and share rows read their permissions from the vendor's
-  `[{label, enabled}]` list, their state from `ret` and the other account from
-  `shareAccountId`, so the receiver sees the permissions the owner chose.
-- Two settings writes of the same block in the same millisecond no longer fail
-  with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
-  and a name that already exists is skipped instead of refused.
+Full mobile-app parity over the vendor cloud relay: device settings, alarm and
+detection, image, light and sound, About device and system, PTZ hold, tap-to-aim
+and presets, playback by time with a calendar, thumbnails, speed and sound,
+native H.265 without ffmpeg and playable MP4 downloads, live camera sound, and
+alarms, account, sharing with permissions and cloud storage. Removing a camera
+checks it is on the account and reports any other camera the vendor dropped.
+ffmpeg never opens a console window.
 
 ### Added
 
@@ -209,6 +191,38 @@ stability before 1.0.
 
 ### Fixed
 
+- `POST /api/devices/unbind` no longer sends `mdrm` for a serial that is not
+  on the account: it reads the live `msdlistCode` `mine` list first and answers
+  409 `not_on_account` when the serial is absent, refuses when the list cannot
+  be read, and needs `confirm` to match the camera's serial or name (trimmed,
+  case-insensitive; 409 `confirm_mismatch` otherwise). This catches typos and
+  stale serials. It does not prevent the 2026-10-30 sequence (a device bound
+  and then removed on a legacy account), because that `mdrm` is the same
+  request the phone app sends. After `mdrm` succeeds the route reads the list
+  once more: a camera other than the removed one that is no longer listed is
+  returned in `also_missing` with a message to add it again from the phone app,
+  and a failed re-read answers `verified: false` with a message that the result
+  could not be verified. The device sheet gains a typed "Remove from this
+  account" control that uses it and shows either message as a red alert.
+- Share with permissions works against the live cloud: the share calls
+  (`mdshareadd`, `mdsharemylist`, `mdsharelist`, `mdsharesetpermission`,
+  `mdsharedel`, `mdshareaccept`, `mdsharerefuse`) go out the way the app sends
+  them (`v1`, query string, no body, URL-encoded reply, optional
+  `uname`/`upass`), and share rows read their permissions from the vendor's
+  `[{label, enabled}]` list, their state from `ret` and the other account from
+  `shareAccountId`, so the receiver sees the permissions the owner chose.
+- Two settings writes of the same block in the same millisecond no longer fail
+  with 500: the pre-write copy is named `config-backup-<block>-<ms>-<pid>-<seq>.json`
+  and a name that already exists is skipped instead of refused.
+- Playback over the cloud relay logs in with the account device token, the login
+  live view uses, instead of the camera user and password, which the device
+  refused with `Ret 205` ("ip locked"). The cloud provider has no password
+  fallback, refusals name the stage and the `Ret` the device sent, and a file
+  query that answers a non-100 `Ret` is an error instead of an empty day.
+- Talk is enabled only when a path exists: `GET /api/device/controls?device=`
+  carries a `two-way audio` row for the camera on screen, over the direct address
+  or the vendor relay, and a disabled Talk button shows its reason on screen
+  instead of only in a tooltip.
 - Fragmented MP4 from the native muxers no longer marks the first sample of a
   delta fragment as a sync sample (`trun` first-sample flags), which let
   MediaSource treat a delta as a random access point.

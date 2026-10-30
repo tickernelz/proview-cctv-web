@@ -4,13 +4,17 @@ A small Rocket server, and a Tauri desktop shell around it, that put PROVIEW
 CCTV (package `com.proview.cctv`, a Xiongmai / XMEye white-label) cameras on a
 desktop instead of a phone.
 
-Current release: **v0.3.7** (`CHANGELOG.md` carries what changed). Status: a
-working server and desktop app with configuration in the app itself. Live video
-from a LAN camera works end to end. The vendor cloud account login **ships
-here**: email + password is sealed in the signed v3 envelope from Rust
-(`crates/core/src/cloud/envelope.rs`) and the account's device list follows it
-(see "Cloud account login" below). `docs/protocol.md` records exactly what is
-proven and what is not.
+Current release: **v0.4.0** (`CHANGELOG.md` carries what changed). Status: a
+working server and desktop app with configuration in the app itself, at parity
+with the phone app over the vendor cloud relay: live view with camera sound and
+Talk, PTZ, playback by time with downloads, device settings, alarms, the account,
+sharing and cloud storage, all through the account sign-in with no camera
+password and no LAN path. A LAN camera works end to end too. The vendor cloud
+account login **ships here**: email + password is sealed in the signed v3
+envelope from Rust (`crates/core/src/cloud/envelope.rs`) and the account's device
+list follows it (see "Cloud account login" below). `docs/parity.md` lists every
+feature of the app with its state and the boundaries that remain;
+`docs/protocol.md` records exactly what is proven and what is not.
 
 ## What works today
 
@@ -26,7 +30,14 @@ proven and what is not.
 | Annex-B NAL splitter, H.264/H.265 detection, SPS parse | works, tested |
 | Media packaging to fMP4 (playable) | works: Annex-B clip → init+moof+mdat, verified with ffprobe and in-browser playback |
 | Device caps from the app cloud | works: `GET /api/cloud/device-caps?sn=<serial>` answers model, firmware, WAN address and the capability block, no account session needed; unknown serial is a 404 |
-| Live video to the browser | works: RTSP pull + H.265 depacketize, then either H.265 passthrough muxed in-process into fMP4 (no ffmpeg) for a webview that decodes HEVC, or one transcode per stream as the fallback, both over WebSocket into MSE |
+| Live video to the browser | works over the vendor cloud relay and from a LAN camera (RTSP): H.265 passthrough muxed in-process into `hvc1` fMP4 (no ffmpeg) for a webview that decodes HEVC, H.264 remuxed in process, and one ffmpeg transcode per stream only as the fallback, all over WebSocket into MSE; main or sub stream per tile, grid of up to nine tiles |
+| Live sound and Talk | works: the camera's own G.711 A-law sound plays in the live bar and the grid, and Talk sends the microphone over the relay (account device token, no camera password) or the direct address; the Talk button is enabled only when a path exists |
+| PTZ over the cloud relay | works: press and hold to move, tap-to-aim on the wide lens, presets add, rename, delete and go, tour start, stop and edit; zoom, focus, calibration and panorama are shown only when the camera reports them, as the app does |
+| Playback | works over the relay: day file list, play by time across files, month calendar, thumbnails, pause and speed 1/4x to 4x (4x shows only where the webview decodes 48 fps of H.265), sound and mute, snapshot of the playing frame, record-type filter, and clip download as a playable MP4 |
+| Device settings over the cloud relay | works: encode, network (DNS writes only), storage and SD status, record schedule, OSD, alarm and detection, image, light and sound; encode, network and storage writes are read back and restored from a backup on a mismatch; SD format and factory reset are fake-tested only |
+| About device | works: model, firmware, run time, camera time and sync, UI language, firmware check, network check, device users and restart; firmware install is fake-tested only |
+| Alarms | works: list with pictures, delete and clear, month calendar, type filter, push subscription state, and desktop notifications for new alarms |
+| Account, sharing, cloud storage | works: profile, change password, forgot password, register, share with permissions (share, list and revoke measured on the real account) and share by QR, and the cloud storage plan and list; delete account and the final register call are fake-tested only, and cloud clip play and download are fake-tested because the account has no plan (`docs/parity.md`) |
 | Dual-lens split of one stream | works: `GET /api/lens` returns the lens crops for a stacked frame; `docs/contracts/lens.md` |
 | Provider seam (cloud / local / fixture) | works: the same UI over the vendor cloud, a camera on the LAN, or recorded sample data |
 | Fixture provider (no camera, no account) | works, opt-in (`PROVIEW_PROVIDER=fixture`); the default provider is the vendor cloud |
@@ -54,6 +65,9 @@ The release build refuses to start without `ROCKET_SECRET_KEY` (it signs the
 sign-in cookie, and Rocket requires a real key outside debug builds). Any value
 of 32 random bytes in base64 or 64 hex characters works; make it stable so
 sessions survive a restart. A debug build generates its own.
+
+No other program is required: `ffmpeg` is only a fallback for a webview that
+cannot decode H.265 (see "Live view from a LAN camera" below).
 
 Open Settings from the sign-in screen (the link under the form) and fill in what
 you need; nothing has to be exported by hand. Sample data, no camera needed:
@@ -148,10 +162,17 @@ connection when the start misses that timeout, and `snapshot`, `light`, `flip` a
 `record` read or write the DVRIP settings. `GET /api/device/controls/settings`
 returns the read-only ONVIF device, encoder, imaging and network view.
 
-`ffmpeg` must be on `PATH` for HEVC cameras (or point the "ffmpeg program"
-setting at the binary). The camera in hand delivers H.265 only, so the server
-transcodes to H.264 baseline once per (device, channel, stream) and every viewer
-shares the result; browsers do not have to decode HEVC. Measured latency and
+`ffmpeg` is needed only as a fallback, when the webview cannot decode H.265.
+The page asks the webview (`MediaSource.isTypeSupported` and the coded size);
+when it can, the camera's H.265 is muxed into `hvc1` fMP4 in process and no
+ffmpeg starts, for live view, playback and downloads alike. Windows (WebView2;
+Chrome 156 decoded the server's 2304x2592 `hvc1` stream) and macOS (WKWebView)
+decode it where the OS carries the HEVC decoder, so the desktop app there needs
+no ffmpeg (`docs/webview-matrix.md`).
+Otherwise put `ffmpeg` on `PATH` (or point the "ffmpeg program" setting at the
+binary): the server then transcodes to H.264 once per (device, channel, stream)
+and every viewer shares the result, and on Windows it never opens a console
+window. H.264 cameras never need ffmpeg. Measured latency and
 memory are in `docs/performance.md`, the protocol in `docs/protocol.md`
 section 8. The stream source stays warm for 60 s after the last viewer leaves,
 so re-opening a camera is a warm start (~200 ms) instead of a cold one
@@ -175,12 +196,12 @@ unattended installs and wins over the file until the key is cleared in the view.
 | `PROVIEW_DEVICE_HOST` | Camera address | unset | `host:port` for DVRIP (probe, settings, snapshots) |
 | `PROVIEW_DEVICE_RTSP` | Camera video address | unset | `host:port` for RTSP; what `local` mode streams |
 | `PROVIEW_DEVICE_ONVIF` | Camera control address | unset | ONVIF base for movement and presets |
-| `PROVIEW_DEVICE_SERIAL` | Camera serial for the device sign-in | unset | `local` mode and the LAN probes send `PROVIEW_DEVICE_USER`/`PASS` only to this serial; the cloud playback, live stream and walk diagnosis never send them (talk over the relay still does, until ZHA-4283) |
+| `PROVIEW_DEVICE_SERIAL` | Camera serial for the device sign-in | unset | `local` mode and the LAN probes send `PROVIEW_DEVICE_USER`/`PASS` only to this serial; the cloud playback, live stream, talk and walk diagnosis never send them |
 | `PROVIEW_DEVICE_USER` | Camera user | `admin` | device-side account |
 | `PROVIEW_DEVICE_PASS` | Camera password | empty | device-side password, secret |
 | `PROVIEW_SESSION_TTL` | Sign-in lifetime | `3600` | browser session lifetime, seconds |
 | `PROVIEW_LISTEN` | Server address | `127.0.0.1:8787` | standalone server bind address |
-| `PROVIEW_FFMPEG` | ffmpeg program | `ffmpeg` | binary used for the HEVC → H.264 bridge |
+| `PROVIEW_FFMPEG` | ffmpeg program | `ffmpeg` | binary used for the HEVC → H.264 fallback when the webview cannot decode H.265 |
 | `PROVIEW_LENS_PTZ` | Movement channel | measured default | lens index that pans/tilts (bottom lens on the dual-lens IPC) |
 | `PROVIEW_LENS_CAPABILITIES` | Lens features | unset | comma list of `SystemFunctionBean$OtherFunction` flags to advertise |
 | `PROVIEW_FIXTURE_DIR` | Sample data folder | `fixtures` | directory the fixture provider reads |
@@ -221,7 +242,7 @@ docs                 protocol record, contracts, deploy and install guides
 
 ## Download and signing status
 
-Installers and server binaries come from one release per tag (v0.3.7 is the
+Installers and server binaries come from one release per tag (v0.4.0 is the
 current one), with `SHA256SUMS` covering every file. None of them are
 code-signed — there is no Apple Developer certificate and no Windows signing
 certificate behind this project.

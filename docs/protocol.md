@@ -1723,11 +1723,14 @@ the shipped route: home vs moved = 20.5 mean-luma points on a 0.4 noise floor,
 and `GotoPreset 0` brings the view back to 5.6, i.e. closer to home than to the
 moved position.
 
-Picture flip is the opposite case and stays `blocked`: `Camera.Param[0]` carried
-`PictureFlip`/`PictureMirror` (a write of `0x00000001` was acknowledged and read
-back, then restored), but the device now answers the same `Camera` read with an
-empty `Param` list, so the current state cannot be read. The control route and
-the capability row both report that reason instead of a value. PTZ is bound to the lower lens; the upper lens is
+Picture flip is read live: `Camera.Param[0]` carries `PictureFlip`/`PictureMirror`
+(a write of `0x00000001` was acknowledged and read back, then restored). The
+capability row is `supported` with the values it read and turns `blocked` with the
+read error only when that read fails, as it did on an earlier firmware session
+that answered the `Camera` read with an empty `Param` list. On the final sweep of
+`204f472` over the relay (2026-10-30) `GET /api/device/controls/flip` answered 200
+in 1.76 s with `flip` and `mirror` both `0x00000000`
+(`~/re/proview-cctv/sweep-final-204f472/results.json`). PTZ is bound to the lower lens; the upper lens is
 reported `blocked` per lens instead of hidden. DVRIP (`34567`) stays the
 fallback for movement and the only path for settings, snapshot and record.
 
