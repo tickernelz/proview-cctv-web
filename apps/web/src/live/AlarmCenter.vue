@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import { state as page } from '../app/state'
+import { closeEvents, eventsOpen, openEvents } from '../shell/layout'
 import { live } from './store'
 
 type Picture = { object?: string; bucket?: string }
@@ -14,7 +15,8 @@ type Filter = { id: string; label: string }
 
 const desktop = Boolean((window as unknown as { __TAURI__?: unknown }).__TAURI__)
 const watching = ref(false)
-const open = computed(() => live.sheet === 'alarms')
+const open = computed(() => eventsOpen.value)
+const signedIn = computed(() => live.settings.signedIn)
 const bell = ref<HTMLButtonElement>()
 const sheet = ref<HTMLElement>()
 const devicePick = ref<HTMLSelectElement>()
@@ -387,7 +389,7 @@ function syncDevices() {
 }
 
 async function show() {
-  live.sheet = 'alarms'
+  openEvents()
   syncDevices()
   await nextTick()
   devicePick.value?.focus()
@@ -395,7 +397,7 @@ async function show() {
 }
 
 function close(returnFocus = true) {
-  if (live.sheet === 'alarms') live.sheet = ''
+  if (open.value) closeEvents()
   if (returnFocus) bell.value?.focus()
 }
 
@@ -449,7 +451,6 @@ function syncScreen() {
     resume()
     return
   }
-  close(false)
   clearTimeout(timer)
   timer = 0
 }
@@ -519,18 +520,18 @@ onMounted(() => {
     class="iconbtn alarm-bell"
     type="button"
     data-testid="alarm-bell"
-    :hidden="!watching"
+    :hidden="!signedIn"
     aria-haspopup="dialog"
     aria-controls="alarm-sheet"
     :aria-expanded="open"
-    aria-label="Alarm messages"
-    title="Alarm messages"
+    title="Events"
     @click="open ? close() : show()"
   >
     <Icon name="bell" />
+    <span class="hdr-label">Events</span>
     <span class="badge" data-testid="alarm-badge" :hidden="!rows.length">{{ rows.length }}</span>
   </button>
-  <Teleport to="body">
+  <Teleport defer to="#events-host">
     <section
       id="alarm-sheet"
       ref="sheet"

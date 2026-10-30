@@ -91,10 +91,9 @@ window.addEventListener('blur', () => {
 
 window.addEventListener('pagehide', () => releaseOnExit())
 
-document.querySelector('.skip')?.addEventListener('click', (event) => {
-  event.preventDefault()
+export function skipToControls() {
   const controls = document.getElementById('controls')
   if (!controls) return
   const first = controls.querySelector('button:not(:disabled):not([hidden])') as HTMLElement | null
   ;(first || controls).focus()
-})
+}

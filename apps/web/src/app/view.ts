@@ -9,6 +9,8 @@ import { renderPrefsIntoForm, sessionLost } from './shell'
 import { renderCameraInfo, requestStream, setStage, stopStagePlayer } from './stage'
 import { savePrefs, state } from './state'
 import { api } from '../lib/api'
+import { shell } from '../shell/layout'
+import { liveHash, replaceHash } from '../shell/router'
 
 function renderPanes() {
   const any = state.cameras.length > 0
@@ -92,7 +94,7 @@ async function selectDevice(deviceId: string, options: { channel?: number } = {}
   }
   setStage('loading')
   await loadLens(device.id, channel)
-  if (state.view === 'live' && state.screen === 'watch') await requestStream()
+  if (state.view === 'live' && state.screen === 'watch' && shell.view !== 'events') await requestStream()
   await probeControlChannel(device)
   renderCameraInfo()
 }
@@ -136,7 +138,9 @@ export function setView(name: string, options: { keepStream?: boolean } = {}) {
   const next = name === 'grid' && state.cameras.length > 0 ? 'grid' : 'live'
   const changed = state.view !== next
   state.view = next
-  if (location.hash !== '#' + next) history.replaceState(null, '', '#' + next)
+  shell.view = 'live'
+  shell.mode = next === 'grid' ? 'grid' : 'single'
+  replaceHash(liveHash(shell.mode))
   const any = state.cameras.length > 0
   renderPanes()
   renderSwitcher()

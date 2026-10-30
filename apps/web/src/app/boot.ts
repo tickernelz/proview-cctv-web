@@ -26,13 +26,14 @@ window.addEventListener('online', () => {
   if (state.screen === 'watch' && state.view === 'live' && state.stage.name !== 'playing') requestStream()
 })
 
-state.muted = state.prefs.muted
-state.lensView = state.prefs.lens
-renderMute()
-renderPrefsIntoForm()
-applyTheme()
-renderControlAvailability()
-tick()
-signedIn()
-
-Object.assign(window, { openSettings, showSection, state, signedIn, setQuality })
+export function boot() {
+  state.muted = state.prefs.muted
+  state.lensView = state.prefs.lens
+  renderMute()
+  renderPrefsIntoForm()
+  applyTheme()
+  renderControlAvailability()
+  tick()
+  signedIn()
+  Object.assign(window, { openSettings, showSection, state, signedIn, setQuality })
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { sessionLost } from '../app/shell'
 import { state } from '../app/state'
 
@@ -40,7 +40,7 @@ type Reply = { ok: boolean; status: number; body: any }
 type Slot = { on: boolean; start: string; end: string; raw: string; held: { on: boolean; start: string; end: string } }
 type Form = Omit<Summary, 'schedule' | 'push_server'> & { schedule: Slot[][] | null }
 
-const props = defineProps<{ host: HTMLElement }>()
+const props = defineProps<{ shown: boolean }>()
 
 const LINKS: { key: 'record' | 'snapshot' | 'push' | 'voice' | 'beep' | 'alarm_out' | 'tip'; label: string }[] = [
   { key: 'push', label: 'Send an alarm message to the phone' },
@@ -241,26 +241,27 @@ function open() {
   const page = window as unknown as { openSettings?: (section: string) => void; showSection?: (section: string, focus: boolean) => void }
   if (typeof page.openSettings === 'function') page.openSettings('alarm')
   else if (typeof page.showSection === 'function') page.showSection('alarm', true)
-  else location.hash = '#settings/alarm'
+  else location.hash = '#/settings/alarm'
 }
 
 function openFromNav() {
-  const shown = !props.host.hidden
+  const shown = props.shown
   open()
   if (shown) load()
 }
 
-const watcher = new MutationObserver(() => {
-  if (!props.host.hidden) load()
-})
+watch(
+  () => props.shown,
+  (shown) => {
+    if (shown) load()
+  },
+)
 
-onMounted(() => watcher.observe(props.host, { attributes: true, attributeFilter: ['hidden'] }))
-onBeforeUnmount(() => watcher.disconnect())
 </script>
 
 <template>
-  <Teleport to=".set-nav">
-    <a href="#settings/alarm" data-section="alarm" data-testid="detect-settings-link" @click.prevent="openFromNav">Alarm and detection</a>
+  <Teleport defer to=".set-nav">
+    <a href="#/settings/alarm" data-section="alarm" data-testid="detect-settings-link" @click.prevent="openFromNav">Alarm and detection</a>
   </Teleport>
   <h2 id="h-alarm" class="set-h" tabindex="-1">Alarm and detection</h2>
   <p class="set-sub">
