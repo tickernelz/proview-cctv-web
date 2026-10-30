@@ -494,3 +494,283 @@ fn an_acceptance_that_lands_in_the_device_list_is_a_200() {
         running.shutdown.notify();
     });
 }
+
+fn forms(calls: &Calls, endpoint: &str) -> Vec<String> {
+    calls
+        .lock()
+        .expect("calls")
+        .iter()
+        .filter(|(method, _)| method == endpoint)
+        .map(|(_, form)| form.clone())
+        .collect()
+}
+
+fn field(form: &str, name: &str) -> String {
+    form.split('&')
+        .find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == name).then(|| percent(value))
+        })
+        .unwrap_or_default()
+}
+
+fn percent(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Ok(value) = u8::from_str_radix(&text[index + 1..index + 3], 16) {
+                out.push(value);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(if bytes[index] == b'+' {
+            b' '
+        } else {
+            bytes[index]
+        });
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+const SHAREABLE: &str = "SN00000001";
+
+#[test]
+fn a_permission_share_sends_the_device_the_target_the_powers_and_the_chosen_rights() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "usersearch" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
+                { "account": "zh***@gmail.com", "id": "wanted-id" }
+            ]}),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("permitted");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/permitted",
+                json!({ "uuid": SHAREABLE, "account": WANTED, "permissions": ["DP_Intercom", "DP_PTZ"] }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["permissions"], "DP_PTZ,DP_Intercom");
+        let sent = forms(&calls, "mdshareadd");
+        assert_eq!(sent.len(), 1);
+        let form = &sent[0];
+        assert_eq!(field(form, "uuid"), SHAREABLE);
+        assert_eq!(field(form, "shareUuid"), SHAREABLE);
+        assert_eq!(field(form, "acceptId"), "wanted-id");
+        assert_eq!(field(form, "permissions"), "DP_PTZ,DP_Intercom");
+        let powers: Value = serde_json::from_str(&field(form, "powers")).expect("powers json");
+        let blob = powers["devInfo"].as_str().expect("devInfo");
+        let plain = proview_core::cloud::bind::decode_qr_blob(blob).expect("decodes");
+        let parts: Vec<&str> = plain.split(',').collect();
+        assert_eq!(parts[0], SHAREABLE);
+        assert_eq!(parts[1], "", "the native encoder blanks the admin user");
+        assert_eq!(parts[2], "device-password");
+        assert_eq!(parts[3], "0");
+        assert!(parts[4].parse::<i64>().expect("time") > 1_700_000_000);
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn an_unknown_permission_is_refused_before_any_vendor_call() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("badperm");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/permitted",
+                json!({ "uuid": SHAREABLE, "acceptId": "x", "permissions": ["DP_Everything"] }),
+            )
+            .await;
+        assert_eq!(status, 400, "{body}");
+        assert!(forms(&calls, "mdshareadd").is_empty());
+        assert!(forms(&calls, "usersearch").is_empty());
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn the_owner_lists_changes_and_revokes_a_share_by_its_id() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "mdsharemylist" => json!({ "code": 2000, "msg": "SUCCESS", "data": [
+                { "id": "share-7", "uuid": SHAREABLE, "account": "zh***@gmail.com", "userId": "wanted-id", "permissions": "DP_PTZ,DP_Intercom", "shareState": 1 }
+            ]}),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("manage");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, rows) = browser
+            .send(
+                Method::GET,
+                &format!("{}/api/cloud/device/shares?uuid={SHAREABLE}", running.base),
+                None,
+            )
+            .await;
+        assert_eq!(status, 200, "{rows}");
+        assert_eq!(rows[0]["shareId"], "share-7");
+        assert_eq!(rows[0]["permissions"], json!(["DP_PTZ", "DP_Intercom"]));
+        assert_eq!(rows[0]["state"], "1");
+        assert_eq!(
+            field(&forms(&calls, "mdsharemylist")[0], "shareUuid"),
+            SHAREABLE
+        );
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/shares/permissions",
+                json!({ "shareId": "share-7", "permissions": ["DP_PTZ"] }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        let changed = forms(&calls, "mdsharesetpermission");
+        assert_eq!(field(&changed[0], "shareId"), "share-7");
+        assert_eq!(field(&changed[0], "permissions"), "DP_PTZ");
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/shares/revoke",
+                json!({ "shareId": "share-7" }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(field(&forms(&calls, "mdsharedel")[0], "devId"), "share-7");
+        let (status, _) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/shares/revoke",
+                json!({ "shareId": "../x" }),
+            )
+            .await;
+        assert_eq!(status, 400);
+        assert_eq!(forms(&calls, "mdsharedel").len(), 1);
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn a_vendor_refusal_of_a_permission_share_names_the_vendor_code() {
+    block_on(async {
+        let (cloud, _) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "mdshareadd" => json!({ "code": 4124, "msg": "DEV_SHARE_NOT_DEV", "data": "" }),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("refused");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/permitted",
+                json!({ "uuid": SHAREABLE, "acceptId": "wanted-id", "permissions": ["DP_PTZ"] }),
+            )
+            .await;
+        assert_eq!(status, 400, "{body}");
+        assert!(body.to_string().contains("4124"), "{body}");
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn a_share_code_is_saved_for_thirty_minutes_and_comes_back_as_a_link_and_a_qr() {
+    block_on(async {
+        let (cloud, calls) = cloud_stub(|method, _| match method {
+            "loginExist" => login_reply(),
+            "appInfoSave" => {
+                json!({ "code": 2000, "msg": "SUCCESS", "data": { "key": "key-1", "expireTime": 1793200000000i64 } })
+            }
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("qr");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (status, body) = browser
+            .post(
+                &running.base,
+                "/api/cloud/device/share/qr",
+                json!({ "uuid": SHAREABLE, "permissions": ["DP_PTZ"] }),
+            )
+            .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["link"], "https://d.xmeye.net/CSee?shareKey=key-1");
+        assert!(
+            body["svg"].as_str().unwrap_or_default().contains("<svg"),
+            "{body}"
+        );
+        assert_eq!(body["expiresAt"], 1793200000000i64);
+        let saved = forms(&calls, "appInfoSave");
+        assert_eq!(saved.len(), 1);
+        assert_eq!(field(&saved[0], "expireTime"), "1800000");
+        let plain =
+            proview_core::cloud::bind::decode_qr_blob(&field(&saved[0], "info")).expect("blob");
+        let info: Value = serde_json::from_str(&plain).expect("info json");
+        assert_eq!(info["devId"], SHAREABLE);
+        assert_eq!(info["userId"], ACCOUNT);
+        assert_eq!(info["loginName"], "admin");
+        assert_eq!(info["permissions"], "DP_PTZ");
+        running.shutdown.notify();
+    });
+}
+
+#[test]
+fn a_scanned_share_key_is_resolved_through_the_cloud_before_binding() {
+    block_on(async {
+        let info = json!({ "devId": SHAREABLE, "devType": 0, "userId": "owner", "loginName": "admin", "pwd": "pw", "shareTimes": 1 }).to_string();
+        let blob = proview_core::cloud::bind::encode_qr_blob(&info, 123);
+        let (cloud, calls) = cloud_stub(move |method, _| match method {
+            "loginExist" => login_reply(),
+            "appInfoQueryLimit" => json!({ "code": 2000, "msg": "SUCCESS", "data": blob.clone() }),
+            "mdadd" => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+            _ => json!({ "code": 2000, "msg": "SUCCESS", "data": "" }),
+        });
+        let dir = data_dir("scan");
+        let running = start(&dir, &cloud).await;
+        let mut browser = Browser::new();
+        assert_eq!(sign_in(&mut browser, &running.base).await, 200);
+        let (_, body) = browser
+            .post(
+                &running.base,
+                "/api/devices/bind/qr",
+                json!({ "payload": "https://d.xmeye.net/CSee?shareKey=key-1" }),
+            )
+            .await;
+        let asked = forms(&calls, "appInfoQueryLimit");
+        assert_eq!(asked.len(), 1, "{body}");
+        assert_eq!(field(&asked[0], "key"), "key-1");
+        let bound = calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .filter(|(method, _)| method != "loginExist" && method != "appInfoQueryLimit")
+            .map(|(_, form)| form.clone())
+            .collect::<Vec<_>>();
+        assert!(
+            bound.iter().any(|form| form.contains(SHAREABLE)),
+            "{bound:?} {body}"
+        );
+        running.shutdown.notify();
+    });
+}

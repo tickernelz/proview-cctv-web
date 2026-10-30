@@ -9,7 +9,10 @@ import { addLauncher, live, menuOpen } from './store'
 type Device = { uuid: string; nickname: string; group?: string; favourite?: boolean; administrator?: boolean; shared_accounts?: number }
 type Attributes = { devices?: Device[]; groups?: string[] }
 type Reply = { message?: string; resolved?: string; materialised?: boolean; data?: any } | null
-type Action = 'rename' | 'save' | 'share' | 'check' | 'cancel' | 'accept' | 'password'
+type Action = 'rename' | 'save' | 'share' | 'check' | 'cancel' | 'accept' | 'password' | 'permit' | 'shares' | 'perm' | 'revoke' | 'qr' | 'answer'
+type Permission = { id: string; label: string; default: boolean }
+type ShareRow = { shareId: string; serial: string; account: string; userId: string; permissions: string[]; state: string; deviceName: string }
+type QrReply = { link: string; svg: string; expiresAt: number; lifetimeSecs: number; permissions: string }
 
 const BUSY: Record<Action, string> = {
   rename: 'Renaming…',
@@ -19,7 +22,22 @@ const BUSY: Record<Action, string> = {
   cancel: 'Cancelling…',
   accept: 'Accepting…',
   password: 'Changing…',
+  permit: 'Sharing…',
+  shares: 'Loading…',
+  perm: 'Saving…',
+  revoke: 'Revoking…',
+  qr: 'Making…',
+  answer: 'Answering…',
 }
+
+const FALLBACK_PERMISSIONS: Permission[] = [
+  { id: 'DP_PTZ', label: 'Pan and tilt', default: true },
+  { id: 'DP_Intercom', label: 'Two-way talk', default: true },
+  { id: 'DP_LocalStorage', label: 'Recordings on the card', default: true },
+  { id: 'DP_ModifyConfig', label: 'Change settings', default: false },
+  { id: 'DP_AlarmPush', label: 'Alarm messages', default: false },
+  { id: 'DP_ViewCloudVideo', label: 'Cloud video', default: false },
+]
 
 const open = computed(() => live.sheet === 'devices')
 const sheet = ref<HTMLElement>()
@@ -30,6 +48,12 @@ const chosen = ref('')
 const tab = ref('name')
 const form = reactive({ name: '', group: '', favourite: false, shareTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
 const action = reactive({ busy: '' as Action | '', message: '', kind: '' as '' | 'ok' | 'bad' })
+const permissions = ref<Permission[]>(FALLBACK_PERMISSIONS)
+const granted = reactive(new Set<string>(FALLBACK_PERMISSIONS.filter((item) => item.default).map((item) => item.id)))
+const shares = reactive({ mine: [] as ShareRow[], received: [] as ShareRow[], loaded: false, qr: null as QrReply | null })
+const labelOf = (id: string) => permissions.value.find((item) => item.id === id)?.label || id
+const permitReason = computed(() => (!form.shareTo.trim() ? 'Type the other account email to share' : ''))
+const qrImage = computed(() => (shares.qr ? 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(shares.qr.svg) : ''))
 
 const launcher = addLauncher({
   id: 'device-admin-open',
@@ -103,6 +127,8 @@ async function refresh() {
 
 async function show() {
   live.sheet = 'devices'
+  if (permissions.value === FALLBACK_PERMISSIONS) loadPermissions()
+  loadReceived()
   const loading = refresh()
   await nextTick()
   closeButton.value?.focus()
@@ -219,12 +245,93 @@ const password = () =>
     return sentence(reply?.message || 'the cloud changed the device password')
   })
 
+async function loadPermissions() {
+  try {
+    const list = await api<Permission[]>('/api/cloud/device/share/permissions')
+    if (Array.isArray(list) && list.length) permissions.value = list
+  } catch {
+    return
+  }
+}
+
+function toggleGrant(id: string) {
+  if (granted.has(id)) granted.delete(id)
+  else granted.add(id)
+}
+
+const permit = () =>
+  run('permit', async (uuid) => {
+    const target = form.shareTo.trim()
+    if (!target) throw new Error('the receiving account is empty')
+    const body = { uuid, permissions: [...granted], ...(target.includes('@') ? { account: target } : { acceptId: target }) }
+    const reply = await post('/api/cloud/device/share/permitted', body)
+    await loadShares(uuid)
+    return 'Shared' + (reply?.resolved ? ' with ' + reply.resolved : '') + '; the other account accepts it in its app'
+  })
+
+async function loadReceived() {
+  try {
+    const received = await api<ShareRow[]>('/api/cloud/device/shares/received')
+    if (Array.isArray(received)) shares.received = received
+  } catch {
+    return
+  }
+}
+
+async function loadShares(uuid: string) {
+  const [mine, received] = await Promise.all([
+    api<ShareRow[]>('/api/cloud/device/shares?uuid=' + encodeURIComponent(uuid)),
+    api<ShareRow[]>('/api/cloud/device/shares/received'),
+  ])
+  shares.mine = mine || []
+  shares.received = received || []
+  shares.loaded = true
+}
+
+const listShares = () =>
+  run('shares', async (uuid) => {
+    await loadShares(uuid)
+    return shares.mine.length + (shares.mine.length === 1 ? ' account has' : ' accounts have') + ' this camera; ' + shares.received.length + ' shared with you'
+  })
+
+const savePermissions = (row: ShareRow) =>
+  run('perm', async (uuid) => {
+    await post('/api/cloud/device/shares/permissions', { shareId: row.shareId, permissions: row.permissions })
+    await loadShares(uuid)
+    return 'Permissions of ' + (row.account || 'that account') + ' saved'
+  })
+
+function toggleRowPermission(row: ShareRow, id: string) {
+  row.permissions = row.permissions.includes(id) ? row.permissions.filter((item) => item !== id) : [...row.permissions, id]
+}
+
+const revoke = (row: ShareRow) =>
+  run('revoke', async (uuid) => {
+    await post('/api/cloud/device/shares/revoke', { shareId: row.shareId })
+    await loadShares(uuid)
+    return 'Stopped sharing with ' + (row.account || 'that account')
+  })
+
+const answer = (row: ShareRow, accept: boolean) =>
+  run('answer', async (uuid) => {
+    await post('/api/cloud/device/shares/answer', { shareId: row.shareId, accept })
+    if (uuid) await loadShares(uuid)
+    return accept ? 'Accepted ' + (row.deviceName || row.serial) : 'Refused ' + (row.deviceName || row.serial)
+  }, false)
+
+const makeQr = () =>
+  run('qr', async (uuid) => {
+    shares.qr = (await post('/api/cloud/device/share/qr', { uuid, permissions: [...granted] })) as unknown as QrReply
+    return 'Share code ready; it works for ' + Math.round((shares.qr?.lifetimeSecs || 1800) / 60) + ' minutes'
+  })
+
 const label = (name: Action, idle: string) => (action.busy === name ? BUSY[name] : idle)
 
 function forgetForm() {
   Object.assign(form, { name: '', group: '', favourite: false, shareTo: '', key: '', sharedDevice: '', accountPassword: '', oldPassword: '', newPassword: '' })
   Object.assign(action, { busy: '', message: '', kind: '' })
   Object.assign(list, { phase: 'idle', devices: [], groups: [], error: '' })
+  Object.assign(shares, { mine: [], received: [], loaded: false, qr: null })
   chosen.value = ''
 }
 
@@ -322,8 +429,60 @@ onMounted(() => {
           </section>
         </TabsContent>
         <TabsContent value="share">
+          <section v-if="device" class="devices-group" data-testid="share-permitted">
+            <h3>Share with permissions</h3>
+            <label class="field">
+              <span class="lab">Share to account</span>
+              <input id="device-admin-permit-to" v-model="form.shareTo" type="text" placeholder="the other account email or its account id">
+            </label>
+            <fieldset class="share-perms">
+              <legend class="lab">What the other account may do</legend>
+              <label v-for="item in permissions" :key="item.id" class="switchrow">
+                <input type="checkbox" :data-perm="item.id" :checked="granted.has(item.id)" @change="toggleGrant(item.id)">{{ item.label }}
+              </label>
+            </fieldset>
+            <div class="sheet-actions">
+              <button class="btn btn-fill" type="button" data-testid="share-permit" :disabled="Boolean(permitReason)" :aria-busy="action.busy === 'permit'" @click="permit">{{ label('permit', 'Share with these permissions') }}</button>
+              <button class="btn btn-line" type="button" data-testid="share-qr" :aria-busy="action.busy === 'qr'" @click="makeQr">{{ label('qr', 'Share by QR code') }}</button>
+            </div>
+            <span v-if="permitReason" class="hint" data-testid="share-permit-reason">{{ permitReason }}</span>
+            <figure v-if="shares.qr" class="share-qr" data-testid="share-qr-code">
+              <img :src="qrImage" alt="QR code to add this camera with the chosen permissions" width="232" height="232">
+              <figcaption class="hint">Scan it in the PROVIEW app, or paste the link into Add camera. It expires {{ new Date(shares.qr.expiresAt).toLocaleTimeString() }}.<br><code>{{ shares.qr.link }}</code></figcaption>
+            </figure>
+            <div class="sheet-actions">
+              <button class="btn btn-line" type="button" data-testid="share-list" :aria-busy="action.busy === 'shares'" @click="listShares">{{ label('shares', 'Show who has it') }}</button>
+            </div>
+            <ul v-if="shares.loaded" class="share-rows" data-testid="share-rows">
+              <li v-if="!shares.mine.length" class="hint">No account has this camera through a share.</li>
+              <li v-for="row in shares.mine" :key="row.shareId" data-testid="share-row">
+                <strong>{{ row.account || row.userId }}</strong>
+                <span class="hint">{{ row.state ? row.state + ' · ' : '' }}{{ row.permissions.map(labelOf).join(', ') || 'no permissions' }}</span>
+                <span class="share-row-perms">
+                  <label v-for="item in permissions" :key="item.id"><input type="checkbox" :checked="row.permissions.includes(item.id)" @change="toggleRowPermission(row, item.id)">{{ item.label }}</label>
+                </span>
+                <span class="sheet-actions">
+                  <button class="btn btn-line" type="button" :aria-busy="action.busy === 'perm'" @click="savePermissions(row)">{{ label('perm', 'Save permissions') }}</button>
+                  <button class="btn-text danger" type="button" :aria-busy="action.busy === 'revoke'" @click="revoke(row)">{{ label('revoke', 'Stop sharing') }}</button>
+                </span>
+              </li>
+            </ul>
+          </section>
+          <section v-if="shares.received.length" class="devices-group" data-testid="share-received">
+            <h3>Shared with you</h3>
+            <ul class="share-rows">
+              <li v-for="row in shares.received" :key="row.shareId">
+                <strong>{{ row.deviceName || row.serial }}</strong>
+                <span class="hint">{{ row.account }}{{ row.permissions.length ? ' · ' + row.permissions.map(labelOf).join(', ') : '' }}</span>
+                <span class="sheet-actions">
+                  <button class="btn btn-line" type="button" :aria-busy="action.busy === 'answer'" @click="answer(row, true)">Accept</button>
+                  <button class="btn-text" type="button" @click="answer(row, false)">Refuse</button>
+                </span>
+              </li>
+            </ul>
+          </section>
           <section v-if="device" class="devices-group">
-            <h3>Share this camera</h3>
+            <h3>Transfer this camera</h3>
             <label class="field">
               <span class="lab">Share to account</span>
               <input id="device-admin-accept" v-model="form.shareTo" type="text" placeholder="the other account email or its account id">
