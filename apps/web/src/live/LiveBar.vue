@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Icon from '../components/Icon.vue'
 import AlarmStop from './AlarmStop.vue'
 import MoreMenu from './stage/MoreMenu.vue'
@@ -41,6 +41,37 @@ const moveOff = computed(() => playback.value || !live.gate.move.ok)
 const talkWhy = computed(() => (playback.value ? 'playback-note' : live.gate.intercom.ok ? undefined : 'talk-note'))
 const moveWhy = computed(() => (playback.value ? 'playback-note' : live.gate.move.ok ? undefined : 'move-note'))
 
+const MIN_SHEET = 240
+const bar = ref<HTMLElement>()
+let observer: ResizeObserver | null = null
+
+function clearDock() {
+  const root = document.documentElement.style
+  const dock = bar.value
+  if (!dock || shell.narrow || !dock.getClientRects().length) return root.removeProperty('--dock-clear')
+  const clear = Math.max(0, Math.ceil(window.innerHeight - dock.getBoundingClientRect().top))
+  const header = document.querySelector('[data-testid="app-header"]')?.getBoundingClientRect().bottom || 0
+  if (window.innerHeight - header - clear < MIN_SHEET) return root.removeProperty('--dock-clear')
+  root.setProperty('--dock-clear', clear + 'px')
+}
+
+onMounted(() => {
+  observer = new ResizeObserver(clearDock)
+  for (let node = bar.value as Element | null; node; node = node.nextElementSibling) observer.observe(node)
+  window.addEventListener('resize', clearDock)
+  bar.value?.closest('.viewer')?.addEventListener('scroll', clearDock, { passive: true })
+  clearDock()
+})
+
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  window.removeEventListener('resize', clearDock)
+  bar.value?.closest('.viewer')?.removeEventListener('scroll', clearDock)
+  document.documentElement.style.removeProperty('--dock-clear')
+})
+
+watch(() => shell.narrow, clearDock)
+
 function clickSound() {
   if (live.sound !== 'blocked') live.actions.toggleMute()
 }
@@ -60,7 +91,7 @@ function keyTalk(event: KeyboardEvent, down: boolean) {
 </script>
 
 <template>
-  <div id="controls" :class="['controls', 'dock', { 'dock-row': shell.narrow && !playback }]" data-testid="live-controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
+  <div id="controls" ref="bar" :class="['controls', 'dock', { 'dock-row': shell.narrow && !playback }]" data-testid="live-controls" role="toolbar" aria-label="Stream controls" tabindex="-1">
     <button
       id="talk"
       data-testid="ctl-talk"

@@ -235,7 +235,7 @@ function duration(seconds?: number) {
   <Sheet :open="open" :modal="false" @update:open="setOpen">
     <SheetContent
       id="recordings-panel"
-      :class="['rec-sheet', shell.narrow ? '' : 'top-(--header)']"
+      :class="['rec-sheet', shell.narrow ? '' : 'top-(--header) bottom-(--dock-clear) rounded-bl-lg border-b']"
       data-testid="recordings-panel"
       :side="shell.narrow ? 'bottom' : 'right'"
       @open-auto-focus="focusFirst"

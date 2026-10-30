@@ -365,8 +365,7 @@ test('only one corner sheet is open: the Events overlay and Cloud replace each o
   await playing(page)
   const recordings = page.getByTestId('recordings-panel')
   const cloud = async () => {
-    await page.getByTestId('ctl-more').focus()
-    await page.keyboard.press('Enter')
+    await page.getByTestId('ctl-more').click()
     await page.getByTestId('more-cloud').click()
     await expect(recordings).toBeVisible()
     await expect(page.getByTestId('rec-tab-cloud')).toHaveAttribute('aria-selected', 'true')

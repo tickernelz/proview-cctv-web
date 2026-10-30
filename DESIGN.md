@@ -311,13 +311,22 @@ Oct."), not an empty bar.
 on the left, Lens, Quality, More, Full screen on the right (mockup H01). Every
 other action sits under More: lens swap, flip, white light, low light,
 Recordings, Cloud recordings, Camera info, Camera settings and Manage cameras.
-Under 640 px (`shell.narrow`) the dock is Talk, Sound, Snapshot, Move and More
-in one row (mockup A14); Record, Full screen and the Quality and Lens choices
+At most 640 px wide and more than 480 px tall (`shell.narrow`, the same
+condition that shows the phone tab bar) the dock is Talk, Sound, Snapshot, Move
+and More in one row (mockup A14); Record, Full screen and the Quality and Lens choices
 move into More as plain rows, not submenus, so a tap picks them; the keys stay
 the same. A control the camera cannot use right now stays
 in place, disabled, with its reason in words on screen. A sheet opened from a
 menu or a button hands focus back to that menu's trigger or that button when it
 closes.
+
+Corner sheets (Devices, Recordings, the Events overlay, the keyboard list) never
+cover the dock: their bottom edge sits on `--dock-clear`, the distance from the
+bottom of the window to the top of the dock, measured from the dock and the
+timeline under it whenever they resize or the window does. Without a visible
+dock (Settings) and on phones (`shell.narrow`, where Recordings is a bottom
+sheet) it falls back to `--dock` plus the phone tab bar. When the
+window is too short to leave 240 px above the dock, the fallback applies.
 
 **PTZ pad.** Shown on the stage while Move is on; click-to-aim works only while
 Move is on, so a click on the picture never moves the camera by surprise. Speed is
