@@ -5,7 +5,13 @@ installers and a `SHA256SUMS` file from the same workflow. Format follows
 Keep a Changelog; this project uses `0.MINOR.PATCH` and does not promise API
 stability before 1.0.
 
-## Unreleased
+## 0.5.0 — 2026-10-31
+
+A new interface: Live with picture in picture and the PTZ joystick on the
+video, a ruler timeline with playback inside Live, the Events panel and page,
+and Settings in three groups. PTZ follows the camera's mirror and the app's
+speeds, the desktop app keeps its preferences between launches, and Settings
+uses plain words.
 
 ### Changed
 

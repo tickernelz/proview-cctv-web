@@ -27,11 +27,11 @@ SmartScreen will show "Windows protected your PC" and the publisher appears as
 unknown. That is expected, not a sign of tampering — verify the checksum above.
 
 1. Download the `.msi` (or `.exe` NSIS installer) for your architecture:
-   `PROVIEW.CCTV_0.4.0_x64_en-US.msi` / `PROVIEW.CCTV_0.4.0_x64-setup.exe`, or
-   `PROVIEW.CCTV_0.4.0_arm64_en-US.msi` / `PROVIEW.CCTV_0.4.0_arm64-setup.exe`.
+   `PROVIEW.CCTV_0.5.0_x64_en-US.msi` / `PROVIEW.CCTV_0.5.0_x64-setup.exe`, or
+   `PROVIEW.CCTV_0.5.0_arm64_en-US.msi` / `PROVIEW.CCTV_0.5.0_arm64-setup.exe`.
 2. Unblock the file before running it:
    ```powershell
-   Unblock-File .\PROVIEW.CCTV_0.4.0_x64_en-US.msi
+   Unblock-File .\PROVIEW.CCTV_0.5.0_x64_en-US.msi
    ```
    (Or: right-click the file → Properties → tick **Unblock** → OK.)
 3. Run the installer. On the SmartScreen prompt choose **More info** →
@@ -53,9 +53,9 @@ configured, so the only signature is the ad-hoc one the linker puts on an Apple
 silicon binary, which Apple silicon requires to run at all. Gatekeeper will
 refuse the first launch.
 
-1. Download the `.dmg` for your Mac: `PROVIEW.CCTV_0.4.0_aarch64.dmg` for
-   Apple silicon, `PROVIEW.CCTV_0.4.0_x64.dmg` for Intel, or
-   `PROVIEW.CCTV_0.4.0_universal.dmg`.
+1. Download the `.dmg` for your Mac: `PROVIEW.CCTV_0.5.0_aarch64.dmg` for
+   Apple silicon, `PROVIEW.CCTV_0.5.0_x64.dmg` for Intel, or
+   `PROVIEW.CCTV_0.5.0_universal.dmg`.
 2. Open the disk image and drag the app to `/Applications`.
 3. Right-click the app → **Open** → **Open**. (Double-clicking only shows the
    refusal dialog the first time.) On macOS 15 and later that bypass is gone:
@@ -71,15 +71,15 @@ Path to a signed build later: Apple Developer ID certificate + notarization.
 ## Linux
 
 ```sh
-# AppImage (x86_64; PROVIEW.CCTV_0.4.0_aarch64.AppImage on ARM)
-chmod +x PROVIEW.CCTV_0.4.0_amd64.AppImage
-./PROVIEW.CCTV_0.4.0_amd64.AppImage
+# AppImage (x86_64; PROVIEW.CCTV_0.5.0_aarch64.AppImage on ARM)
+chmod +x PROVIEW.CCTV_0.5.0_amd64.AppImage
+./PROVIEW.CCTV_0.5.0_amd64.AppImage
 
-# Debian / Ubuntu (PROVIEW.CCTV_0.4.0_arm64.deb on ARM)
-sudo apt install ./PROVIEW.CCTV_0.4.0_amd64.deb
+# Debian / Ubuntu (PROVIEW.CCTV_0.5.0_arm64.deb on ARM)
+sudo apt install ./PROVIEW.CCTV_0.5.0_amd64.deb
 
-# Fedora / RHEL (PROVIEW.CCTV-0.4.0-1.aarch64.rpm on ARM)
-sudo rpm -i PROVIEW.CCTV-0.4.0-1.x86_64.rpm
+# Fedora / RHEL (PROVIEW.CCTV-0.5.0-1.aarch64.rpm on ARM)
+sudo rpm -i PROVIEW.CCTV-0.5.0-1.x86_64.rpm
 ```
 
 The desktop build needs `webkit2gtk-4.1` at runtime (installed automatically by

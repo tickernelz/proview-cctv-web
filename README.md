@@ -8,19 +8,19 @@ desktop app that speak to the vendor cloud the way the PROVIEW Android app
 PROVIEW account and watch, move, play back and configure your cameras. No camera
 password, no port forwarding, no vendor binary.
 
-Current release: **v0.4.0** ([CHANGELOG.md](CHANGELOG.md)). Not affiliated with
+Current release: **v0.5.0** ([CHANGELOG.md](CHANGELOG.md)). Not affiliated with
 the vendor; it talks only to cameras and an account you own.
 
 ## Features
 
 | Area | What you get |
 |---|---|
-| Live view | One camera fills the window, or a grid of up to nine tiles; main or sub stream; dual-lens split; fisheye dewarp; snapshot; keyboard shortcuts (`?`) |
+| Live view | One camera fills the window, or a grid of up to nine tiles; main or sub stream; dual-lens picture in picture or split; fisheye dewarp; snapshot; keyboard shortcuts (`?`) |
 | Sound and Talk | Camera sound in live view and playback; Talk sends your microphone to the camera |
-| PTZ | Press and hold to move, tap-to-aim on the wide lens, presets and tours |
-| Playback | Day file list, play by time, month calendar, thumbnails, speed 1/4x to 4x, MP4 download |
+| PTZ | Move pad on the picture with Slow / Normal / Fast that follows the camera's mirror; press and hold, tap-to-aim on the wide lens, presets and tours |
+| Playback | Ruler timeline inside Live with recordings and event markers, 24 h to 10 min zoom, calendar, thumbnails, speed 1/2x to 8x, MP4 download |
 | Device settings | Encode, network, storage and SD card, record schedule, OSD, alarm and detection, image, light and sound, time, language, users, restart |
-| Alarms | List with pictures, calendar, filters, delete; native desktop notifications and a tray icon |
+| Events | Side panel and page with pictures, filter chips, day picker, delete and clear all; opening an event plays from 5 s before it; native desktop notifications and a tray icon |
 | Account | Profile, password change and reset, register, sharing with permissions and by QR, cloud storage plan |
 | Without the cloud | Live view and controls of a camera on your LAN (RTSP, ONVIF, DVRIP); built-in sample data for a demo |
 
@@ -68,8 +68,8 @@ sample data; sign in with `fixture@example.invalid` / `fixture-password`.
 
 ## Configuration
 
-Everything is in the app: **Settings → Configuration** (the sign-in screen's
-**Open Settings** button goes straight there). Settings answer only a browser
+Everything is in the app: **Settings → App → Configuration** (the sign-in
+screen's **Open settings** button goes straight there). Settings answer only a browser
 on the same machine as the server (a loopback address); for a remote server use
 an SSH tunnel or the environment. Values are saved to `settings.json` in the data folder; a key
 read only at startup carries a **Restart** tag, and the desktop app offers a
